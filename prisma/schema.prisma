@@ -1,0 +1,558 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Autenticación (Better Auth) ─────────────────────────────────────────────
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  rol           Rol      @default(OPERATIVO)
+
+  sessions                Session[]
+  accounts                Account[]
+  auditLogs               AuditLog[]
+  doCreados               TramiteDO[]       @relation("CreadoPor")
+  checklistChecks         ChecklistItem[]   @relation("ValidadoPor")
+  documentos              Documento[]       @relation("SubidoPor")
+  borradoresAprobados     BorradorFactura[] @relation("AprobadoPor")
+  borradoresFact          BorradorFactura[] @relation("FacturadoPor")
+  facturasProveedorSubidas FacturaProveedor[] @relation("FacturasProveedorSubidas")
+  pagosFactura            PagoFactura[]     @relation("PagosFacturaRegistrados")
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                   String    @id @default(cuid())
+  accountId            String
+  providerId           String
+  userId               String
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken          String?
+  refreshToken         String?
+  idToken              String?
+  accessTokenExpiresAt DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                String?
+  password             String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("verification")
+}
+
+enum Rol {
+  ADMIN     // Camila — acceso total
+  REVISOR   // Papá — aprueba facturas
+  OPERATIVO // Karina, Sr. Lucho — operación diaria
+  SOCIO     // Luis Martínez — solo sus trámites
+}
+
+// ─── Clientes ─────────────────────────────────────────────────────────────────
+enum TipoCliente {
+  PROPIO
+  SOCIO_LM
+}
+
+model Cliente {
+  id              String      @id @default(cuid())
+  nombre          String
+  nit             String      @unique
+  tipo            TipoCliente @default(PROPIO)
+  contactoNombre  String?
+  contactoEmail   String?
+  contactoTel     String?
+  manejaAnticipo  Boolean     @default(true)
+  activo          Boolean     @default(true)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  tarifas  TarifaCliente[]
+  tramites TramiteDO[]
+  anticipos Anticipo[]
+  facturas  Factura[]
+
+  @@map("cliente")
+}
+
+model TarifaCliente {
+  id        String  @id @default(cuid())
+  clienteId String
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  anio      Int
+  tipo      String  // "por_contenedor" | "fijo" | "porcentaje_cif"
+  valor     BigInt  // COP sin decimales
+
+  @@unique([clienteId, anio, tipo])
+  @@map("tarifa_cliente")
+}
+
+// ─── Trámites (DO) ────────────────────────────────────────────────────────────
+enum Ciudad {
+  BAQ
+  CTG
+  BUN
+  SMR
+}
+
+enum AgenciaAduanas {
+  MOVIADUANAS
+  COLDEX
+}
+
+enum EstadoTramite {
+  SOLICITUD
+  APERTURA
+  EN_TRAMITE
+  EN_PUERTO
+  DESPACHADO
+  ENVIADO_A_FACTURAR
+  FACTURADO
+  PAGADO
+  CERRADO
+}
+
+model TramiteDO {
+  id               String         @id @default(cuid())
+  consecutivo      String         @unique // DO.CTG26-0124
+  ciudad           Ciudad
+  anio             Int
+  numero           Int
+  clienteId        String
+  cliente          Cliente        @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  proveedorCliente String?
+  agenciaAduanas   AgenciaAduanas
+  doAgencia        String?
+  doCliente        String?
+  eta              DateTime?
+  estado           EstadoTramite  @default(SOLICITUD)
+  comentarios      String?
+
+  fechaAceptacionDeclaracion DateTime?
+  fechaLevante               DateTime?
+  fechaEnviadoAFacturar      DateTime?
+  fechaDocumentosOk          DateTime?
+  fechaSalidaCarga           DateTime?
+
+  creadoPorId String
+  creadoPor   User      @relation("CreadoPor", fields: [creadoPorId], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  checklistItems       ChecklistItem[]
+  documentos           Documento[]
+  aplicacionesAnticipo AplicacionAnticipo[]
+  pagos                PagoTramite[]
+  borradores           BorradorFactura[]
+  estadoLogs           EstadoLog[]
+  auditLogs            AuditLog[]
+  facturasProveedor    FacturaProveedor[]
+
+  // Un número de DO es único por ciudad y año
+  @@unique([ciudad, anio, numero])
+  @@map("tramite_do")
+}
+
+model EstadoLog {
+  id          String        @id @default(cuid())
+  tramiteId   String
+  tramite     TramiteDO     @relation(fields: [tramiteId], references: [id], onDelete: Cascade)
+  estadoAntes EstadoTramite
+  estadoDes   EstadoTramite
+  usuarioId   String
+  createdAt   DateTime      @default(now())
+
+  @@map("estado_log")
+}
+
+// ─── Checklist de apertura ────────────────────────────────────────────────────
+model PlantillaChecklist {
+  id    String                  @id @default(cuid())
+  nombre String
+  items PlantillaChecklistItem[]
+
+  @@map("plantilla_checklist")
+}
+
+model PlantillaChecklistItem {
+  id          String             @id @default(cuid())
+  plantillaId String
+  plantilla   PlantillaChecklist @relation(fields: [plantillaId], references: [id], onDelete: Cascade)
+  descripcion String
+  requerido   Boolean            @default(true)
+  orden       Int                @default(0)
+
+  @@map("plantilla_checklist_item")
+}
+
+model ChecklistItem {
+  id              String    @id @default(cuid())
+  tramiteId       String
+  tramite         TramiteDO @relation(fields: [tramiteId], references: [id], onDelete: Cascade)
+  descripcion     String
+  requerido       Boolean   @default(true)
+  recibido        Boolean   @default(false)
+  validadoPorId   String?
+  validadoPor     User?     @relation("ValidadoPor", fields: [validadoPorId], references: [id])
+  fechaValidacion DateTime?
+
+  @@map("checklist_item")
+}
+
+// ─── Documentos ───────────────────────────────────────────────────────────────
+enum CategoriaDocumento {
+  FACTURA_COMERCIAL
+  BL
+  PACKING_LIST
+  DECLARACION_DIAN
+  SOPORTE_FACTURACION
+  FOTO_RECONOCIMIENTO
+  COMPROBANTE_BANCARIO
+  FACTURA_PROVEEDOR
+  OTRO
+}
+
+model Documento {
+  id            String             @id @default(cuid())
+  tramiteId     String
+  tramite       TramiteDO          @relation(fields: [tramiteId], references: [id], onDelete: Cascade)
+  categoria     CategoriaDocumento
+  nombreArchivo String
+  // Estructura en MinIO: tramites/{consecutivo}/{categoria}/{uuid}.ext
+  storageKey    String
+  mimeType      String
+  tamanoBytes   Int
+  eliminado     Boolean            @default(false)
+  subidoPorId   String
+  subidoPor     User               @relation("SubidoPor", fields: [subidoPorId], references: [id])
+  createdAt     DateTime           @default(now())
+
+  pagosTramite      PagoTramite[]      @relation("SoporteDocumento")
+  facturasProveedor FacturaProveedor[] @relation("FacturaProveedorDoc")
+
+  @@map("documento")
+}
+
+// ─── Anticipos ────────────────────────────────────────────────────────────────
+enum TipoRecaudo {
+  BANCOLOMBIA    // $1.950 (digital)
+  OTROS_BANCOS   // $2.200 (digital)
+  SUCURSAL       // $11.290 (físico)
+  CORRESPONSAL   // $6.190 (físico)
+  CAJERO         // $5.200 (físico)
+}
+
+enum CanalPago {
+  TRANSF_BANCOLOMBIA   // $3.900
+  PSE                  // $0
+  TRANSF_OTROS_BANCOS  // $7.300
+}
+
+model MatrizRecaudo {
+  id          String      @id @default(cuid())
+  tipoRecaudo TipoRecaudo @unique
+  grupo       String      // "DIGITAL" | "FISICO"
+  descripcion String
+  costoFijo   BigInt
+
+  @@map("matriz_recaudo")
+}
+
+model MatrizPago {
+  id          String    @id @default(cuid())
+  canalPago   CanalPago @unique
+  descripcion String
+  costoFijo   BigInt
+
+  @@map("matriz_pago")
+}
+
+model Anticipo {
+  id              String      @id @default(cuid())
+  clienteId       String
+  cliente         Cliente     @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  monto           BigInt      // COP sin decimales
+  fecha           DateTime
+  tipoRecaudo     TipoRecaudo
+  costoRecaudo    BigInt      @default(0) // Snapshot del costo al momento del registro
+  soporteKey      String?     // Comprobante bancario en MinIO
+  verificadoBanco Boolean     @default(false)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  aplicaciones AplicacionAnticipo[]
+
+  @@map("anticipo")
+}
+
+model AplicacionAnticipo {
+  id            String    @id @default(cuid())
+  anticipoId    String
+  anticipo      Anticipo  @relation(fields: [anticipoId], references: [id], onDelete: Restrict)
+  tramiteId     String
+  tramite       TramiteDO @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
+  montoAplicado BigInt    // COP sin decimales
+  createdAt     DateTime  @default(now())
+
+  @@map("aplicacion_anticipo")
+}
+
+// ─── Facturas de proveedor ────────────────────────────────────────────────────
+enum EstadoFacturaProveedor {
+  REGISTRADA
+  PAGADA
+  FACTURADA_CLIENTE
+}
+
+model FacturaProveedor {
+  id               String                 @id @default(cuid())
+  tramiteId        String
+  tramite          TramiteDO              @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
+  proveedorNombre  String
+  proveedorNit     String?
+  numFactura       String
+  valor            BigInt                 // COP sin decimales
+  fecha            DateTime
+  estado           EstadoFacturaProveedor @default(REGISTRADA)
+  documentoId      String?
+  documento        Documento?             @relation("FacturaProveedorDoc", fields: [documentoId], references: [id])
+  subidaPorId      String
+  subidoPor        User                   @relation("FacturasProveedorSubidas", fields: [subidaPorId], references: [id])
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  pagos            PagoTramite[]          @relation("PagoFacturaProveedor")
+
+  @@unique([tramiteId, numFactura])
+  @@map("factura_proveedor")
+}
+
+// ─── Beneficiarios (proveedores y terceros a quienes se paga) ─────────────────
+model Beneficiario {
+  id         String   @id @default(cuid())
+  nombre     String
+  nit        String?
+  banco      String?
+  numCuenta  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  pagos PagoTramite[]
+
+  @@map("beneficiario")
+}
+
+// ─── Pagos del trámite ────────────────────────────────────────────────────────
+model PagoTramite {
+  id                  String            @id @default(cuid())
+  tramiteId           String
+  tramite             TramiteDO         @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
+  concepto            String
+  beneficiarioId      String?
+  beneficiario        Beneficiario?     @relation(fields: [beneficiarioId], references: [id], onDelete: SetNull)
+  numSoporte          String?           // Nro declaración DIAN, factura electrónica, etc.
+  documentoId         String?
+  documento           Documento?        @relation("SoporteDocumento", fields: [documentoId], references: [id])
+  valor               BigInt            // COP sin decimales
+  canalPago           CanalPago
+  costoBancario       BigInt            @default(0) // Tomado de MatrizRecaudoPago
+  orden               Int               @default(0)
+  fechaEsperadaPago   DateTime?
+  fechaRealPago       DateTime?
+  facturaProveedorId  String?
+  facturaProveedor    FacturaProveedor?  @relation("PagoFacturaProveedor", fields: [facturaProveedorId], references: [id], onDelete: SetNull)
+  viaSocio            Boolean           @default(false)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  @@map("pago_tramite")
+}
+
+// ─── Borradores y Facturas ────────────────────────────────────────────────────
+enum EstadoBorrador {
+  BORRADOR
+  EN_REVISION
+  APROBADO
+  FACTURADO
+}
+
+model BorradorFactura {
+  id                 String         @id @default(cuid())
+  tramiteId          String
+  tramite            TramiteDO      @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
+
+  comision              BigInt         // Default 150.000, editable por factura
+  ivaComision           BigInt         // 19% sobre comisión
+  impuesto4x1000        BigInt         // Condicional: solo si saldo a favor del cliente
+  costosBancarios       BigInt
+  totalAnticipo         BigInt
+  totalPagos            BigInt
+  totalFactura          BigInt
+  saldoAFavorCliente    BigInt         @default(0)
+  saldoACargoCliente    BigInt         @default(0)
+  saldoAFavorLM         BigInt         @default(0)
+  saldoACargoLM         BigInt         @default(0)
+  retenciones           BigInt         @default(0)
+  conceptosOperacionales Json?
+
+  // JSON inmutable para auditoría — guardado al aprobar, nunca mutable
+  snapshotCalculo    Json?
+
+  estado             EstadoBorrador @default(BORRADOR)
+  aprobadoPorId      String?
+  aprobadoPor        User?          @relation("AprobadoPor", fields: [aprobadoPorId], references: [id])
+  fechaAprobacion    DateTime?
+  facturadoPorId     String?
+  facturadoPor       User?          @relation("FacturadoPor", fields: [facturadoPorId], references: [id])
+  numFacturaSiigo    String?        // ej. BAQ-18288
+  fechaFactura       DateTime?
+
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  factura        Factura?
+  lineasRevision LineaRevision[]
+
+  @@map("borrador_factura")
+}
+
+model LineaRevision {
+  id         String          @id @default(cuid())
+  borradorId String
+  borrador   BorradorFactura @relation(fields: [borradorId], references: [id], onDelete: Cascade)
+  concepto   String
+  numSoporte String?
+  valor      BigInt
+  observacion String?
+  aprobada   Boolean         @default(false)
+  orden      Int             @default(0)
+
+  @@map("linea_revision")
+}
+
+model Factura {
+  id                 String          @id @default(cuid())
+  borradorId         String          @unique
+  borrador           BorradorFactura @relation(fields: [borradorId], references: [id], onDelete: Restrict)
+  clienteId          String
+  cliente            Cliente         @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  numSiigo           String          @unique // BAQ-18288
+  fecha              DateTime
+  totalFactura       BigInt
+  saldoAFavorCliente BigInt
+  saldoACargoCliente BigInt
+  saldoAFavorLM      BigInt
+  saldoACargoLM      BigInt
+  pdfKey             String?         // PDF en MinIO
+
+  // Derivadas: se setean cuando saldoNeto del destino llega a 0
+  fechaPagoCliente DateTime?
+  fechaPagoLM      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pagos PagoFactura[]
+
+  @@map("factura")
+}
+
+// ─── Enums de pagos de factura ────────────────────────────────────────────────
+enum DestinoPago {
+  CLIENTE
+  LM
+}
+
+enum TipoPagoFactura {
+  ABONO
+  DEVOLUCION
+}
+
+// ─── Pagos de factura (abonos parciales y devoluciones) ───────────────────────
+model PagoFactura {
+  id              String          @id @default(cuid())
+  facturaId       String
+  factura         Factura         @relation(fields: [facturaId], references: [id], onDelete: Restrict)
+  destino         DestinoPago
+  tipo            TipoPagoFactura
+  monto           BigInt          // COP enteros, siempre positivo
+  fecha           DateTime
+  // Exactamente uno de (tipoRecaudo, canalPago) debe estar seteado por pago.
+  // Regla de dominio validada en código (no en BD) — ver service.ts y cartera.ts.
+  tipoRecaudo     TipoRecaudo?    // Recaudo (entra plata) → costo de matriz_recaudo
+  canalPago       CanalPago?      // Pago (sale plata)  → costo de matriz_pago
+  costoBancario   BigInt          @default(0) // Snapshot del cobro al momento del registro
+  comprobanteKey  String?         // Clave en MinIO del comprobante bancario
+  verificadoBanco Boolean         @default(false)
+  registradoPorId String
+  registradoPor   User            @relation("PagosFacturaRegistrados", fields: [registradoPorId], references: [id])
+  createdAt       DateTime        @default(now())
+
+  @@map("pago_factura")
+}
+
+// ─── Parámetros del sistema ───────────────────────────────────────────────────
+model Parametro {
+  id          String   @id @default(cuid())
+  clave       String   @unique
+  valor       String   // Siempre string; parsear según clave
+  descripcion String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("parametro")
+}
+
+// ─── Auditoría ────────────────────────────────────────────────────────────────
+model AuditLog {
+  id        String     @id @default(cuid())
+  entidad   String     // "TramiteDO", "BorradorFactura", etc.
+  entidadId String
+  accion    String     // "CREATE" | "UPDATE" | "APPROVE" | "FACTURAR"
+  usuarioId String
+  usuario   User       @relation(fields: [usuarioId], references: [id])
+  tramiteId String?
+  tramite   TramiteDO? @relation(fields: [tramiteId], references: [id])
+  antes     Json?      // Estado previo (snapshot)
+  despues   Json?      // Estado posterior (snapshot)
+  createdAt DateTime   @default(now())
+
+  @@index([entidad, entidadId])
+  @@index([usuarioId])
+  @@index([tramiteId])
+  @@map("audit_log")
+}
