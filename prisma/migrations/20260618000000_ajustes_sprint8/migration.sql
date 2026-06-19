@@ -36,10 +36,19 @@ CREATE TABLE "pago_tramite_factura" (
 );
 
 -- Backfill: migrar relación 1→N existente al pivot N↔N
-INSERT INTO "pago_tramite_factura" ("pago_id", "factura_id")
-SELECT "id", "factura_proveedor_id"
-FROM   "pago_tramite"
-WHERE  "factura_proveedor_id" IS NOT NULL;
+-- El bloque condicional protege bases de datos limpias donde la columna nunca existió.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'pago_tramite' AND column_name = 'factura_proveedor_id'
+  ) THEN
+    INSERT INTO "pago_tramite_factura" ("pago_id", "factura_id")
+    SELECT "id", "factura_proveedor_id"
+    FROM   "pago_tramite"
+    WHERE  "factura_proveedor_id" IS NOT NULL;
+  END IF;
+END $$;
 
 -- FK del pivot hacia pago_tramite (CASCADE: si se borra el pago, se borra el vínculo)
 ALTER TABLE "pago_tramite_factura"
