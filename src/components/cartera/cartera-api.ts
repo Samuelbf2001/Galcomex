@@ -57,6 +57,8 @@ export type FacturaBorradorInfo = {
   };
 };
 
+export type EstadoMovimiento = "BORRADOR" | "REALIZADO" | "VERIFICADO";
+
 export type PagoFacturaRow = {
   id: string;
   facturaId: string;
@@ -69,6 +71,7 @@ export type PagoFacturaRow = {
   costoBancario: string;   // BigInt as string
   comprobanteKey: string | null;
   verificadoBanco: boolean;
+  estado: EstadoMovimiento;
   createdAt: string;
 };
 
@@ -152,6 +155,12 @@ async function parseErrorMessage(res: Response): Promise<string> {
 }
 
 function mapPagoRow(p: Record<string, unknown>): PagoFacturaRow {
+  const estadoRaw = p.estado;
+  const estado: EstadoMovimiento =
+    estadoRaw === "BORRADOR" || estadoRaw === "REALIZADO" || estadoRaw === "VERIFICADO"
+      ? estadoRaw
+      : "REALIZADO";
+
   return {
     id: String(p.id ?? ""),
     facturaId: String(p.facturaId ?? ""),
@@ -164,6 +173,7 @@ function mapPagoRow(p: Record<string, unknown>): PagoFacturaRow {
     costoBancario: String(p.costoBancario ?? "0"),
     comprobanteKey: typeof p.comprobanteKey === "string" ? p.comprobanteKey : null,
     verificadoBanco: p.verificadoBanco === true,
+    estado,
     createdAt: String(p.createdAt ?? ""),
   };
 }

@@ -12,6 +12,8 @@ export type FacturaProveedorRow = {
   tramiteId: string;
   proveedorNombre: string;
   proveedorNit: string | null;
+  beneficiarioId: string | null;
+  concepto: string | null;
   numFactura: string;
   valor: string; // BigInt serializado
   fecha: string; // ISO string
@@ -39,6 +41,8 @@ export type PagoGeneradoRow = {
 export type CreateFacturaProveedorInput = {
   proveedorNombre: string;
   proveedorNit?: string | null;
+  beneficiarioId?: string | null;
+  concepto?: string | null;
   numFactura: string;
   valor: string; // BigInt as string
   fecha: string; // ISO string
@@ -48,6 +52,8 @@ export type CreateFacturaProveedorInput = {
 export type UpdateFacturaProveedorInput = {
   proveedorNombre?: string;
   proveedorNit?: string | null;
+  beneficiarioId?: string | null;
+  concepto?: string | null;
   numFactura?: string;
   valor?: string;
   fecha?: string;
@@ -91,6 +97,8 @@ function normalizeFactura(p: Record<string, unknown>): FacturaProveedorRow {
     tramiteId: String(p.tramiteId ?? ""),
     proveedorNombre: String(p.proveedorNombre ?? ""),
     proveedorNit: typeof p.proveedorNit === "string" ? p.proveedorNit : null,
+    beneficiarioId: typeof p.beneficiarioId === "string" ? p.beneficiarioId : null,
+    concepto: typeof p.concepto === "string" ? p.concepto : null,
     numFactura: String(p.numFactura ?? ""),
     valor: String(p.valor ?? "0"),
     fecha: typeof p.fecha === "string" ? p.fecha : "",

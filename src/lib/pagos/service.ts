@@ -1,10 +1,10 @@
 /**
  * Servicio de pagos del trámite — Galcomex
- * Implementa el libro de pagos por DO con saldo corriente en vivo.
  * A1-T6: Libro de pagos del trámite + saldo en vivo.
+ * Sprint 8: N↔N con FacturaProveedor (PagoTramiteFactura), EstadoMovimiento, sin fechaEsperadaPago.
  */
 
-import { type Beneficiario, CanalPago, EstadoFacturaProveedor, Prisma, type PagoTramite } from "@prisma/client";
+import { type Beneficiario, CanalPago, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite } from "@prisma/client";
 
 import { calcularSaldosIntermedios } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
@@ -21,9 +21,9 @@ type CrearPagoInput = {
   documentoId?: string | null;
   valor: bigint;
   canalPago: CanalPago;
-  fechaEsperadaPago?: Date | null;
   fechaRealPago?: Date | null;
-  facturaProveedorId?: string | null;
+  /** IDs de facturas de proveedor a vincular (N↔N). Vacío = pago manual. */
+  facturaProveedorIds?: string[];
   usuarioId: string;
 };
 
@@ -41,8 +41,13 @@ type AplicacionDetalle = {
   };
 };
 
+type FacturaProveedorVinculada = {
+  numFactura: string;
+  proveedorNombre: string;
+};
+
 type PagoConRelaciones = PagoTramite & {
-  facturaProveedor: { numFactura: string } | null;
+  facturasProveedor: { factura: FacturaProveedorVinculada }[];
   beneficiario: Pick<Beneficiario, "id" | "nombre" | "nit"> | null;
 };
 
@@ -61,7 +66,6 @@ type ListarPagosFiltros = {
   clienteId?: string;
   tramiteId?: string;
   canalPago?: CanalPago;
-  /** Solo pagos sin fecha real registrada (pendientes de ejecutar) */
   soloPendientes?: boolean;
 };
 
@@ -89,10 +93,6 @@ function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
   ) as Prisma.InputJsonValue;
 }
 
-/**
- * Resuelve el costo bancario desde la tabla MatrizPago según el canal.
- * Lanza un error descriptivo si el canal no existe en la matriz.
- */
 async function resolverCostoBancario(
   canal: CanalPago,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
@@ -129,10 +129,18 @@ export class PagoFacturaDeOtroTramiteError extends Error {
   }
 }
 
+export class VerificarMovimientoPermisoError extends Error {
+  public readonly status = 403;
+  constructor() {
+    super("No tienes permiso para verificar este movimiento");
+    this.name = "VerificarMovimientoPermisoError";
+  }
+}
+
 /**
  * Crea un pago en el libro del trámite.
- * - Resuelve costoBancario automáticamente desde MatrizRecaudoPago según canalPago.
- * - Asigna orden = último orden + 1.
+ * - Resuelve costoBancario automáticamente desde MatrizPago según canalPago.
+ * - Vincula N facturas de proveedor vía tabla pivot (N↔N).
  * - Genera AuditLog.
  */
 export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
@@ -144,9 +152,8 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
     documentoId,
     valor,
     canalPago,
-    fechaEsperadaPago,
     fechaRealPago,
-    facturaProveedorId,
+    facturaProveedorIds = [],
     usuarioId,
   } = input;
 
@@ -161,22 +168,20 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
 
     const orden = (ultimoPago?.orden ?? 0) + 1;
 
-    // Validar y vincular FacturaProveedor si se proporciona
-    if (facturaProveedorId != null) {
-      const fp = await tx.facturaProveedor.findUnique({
-        where: { id: facturaProveedorId },
-      });
+    // Validar y marcar facturas de proveedor como PAGADA
+    for (const fpId of facturaProveedorIds) {
+      const fp = await tx.facturaProveedor.findUnique({ where: { id: fpId } });
 
       if (!fp) {
-        throw new FacturaProveedorNoEncontradaError(facturaProveedorId);
+        throw new FacturaProveedorNoEncontradaError(fpId);
       }
 
       if (fp.tramiteId !== tramiteId) {
-        throw new PagoFacturaDeOtroTramiteError(facturaProveedorId, tramiteId);
+        throw new PagoFacturaDeOtroTramiteError(fpId, tramiteId);
       }
 
       if (fp.estado !== EstadoFacturaProveedor.REGISTRADA) {
-        throw new FacturaProveedorNoModificableError(facturaProveedorId, fp.estado);
+        throw new FacturaProveedorNoModificableError(fpId, fp.estado);
       }
     }
 
@@ -191,35 +196,25 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
         canalPago,
         costoBancario,
         orden,
-        fechaEsperadaPago,
         fechaRealPago,
-        ...(facturaProveedorId != null ? { facturaProveedorId } : {}),
       },
     });
 
-    await tx.auditLog.create({
-      data: {
-        entidad: "PagoTramite",
-        entidadId: pago.id,
-        accion: "CREATE",
-        usuarioId,
-        tramiteId,
-        despues: normalizeSerializable(pago),
-      },
-    });
+    // Crear pivot records y marcar facturas como PAGADA
+    for (const fpId of facturaProveedorIds) {
+      await tx.pagoTramiteFactura.create({
+        data: { pagoId: pago.id, facturaId: fpId },
+      });
 
-    // Si se vinculó una FP, marcarla como PAGADA y registrar auditoría.
-    // El estado anterior siempre es REGISTRADA (validado arriba en la misma transacción).
-    if (facturaProveedorId != null) {
       await tx.facturaProveedor.update({
-        where: { id: facturaProveedorId },
+        where: { id: fpId },
         data: { estado: EstadoFacturaProveedor.PAGADA },
       });
 
       await tx.auditLog.create({
         data: {
           entidad: "FacturaProveedor",
-          entidadId: facturaProveedorId,
+          entidadId: fpId,
           accion: "UPDATE_ESTADO",
           usuarioId,
           tramiteId,
@@ -228,6 +223,17 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
         },
       });
     }
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "PagoTramite",
+        entidadId: pago.id,
+        accion: "CREATE",
+        usuarioId,
+        tramiteId,
+        despues: normalizeSerializable({ ...pago, facturaProveedorIds }),
+      },
+    });
 
     return pago;
   });
@@ -245,7 +251,6 @@ export async function actualizarPago(
     concepto?: string;
     beneficiarioId?: string | null;
     numSoporte?: string | null;
-    fechaEsperadaPago?: Date | null;
     fechaRealPago?: Date | null;
   },
   usuarioId: string,
@@ -291,7 +296,7 @@ export async function actualizarPago(
 
 /**
  * Elimina un pago del libro del trámite.
- * Si el pago tenía una FacturaProveedor vinculada, revierte su estado a REGISTRADA.
+ * Revierte el estado PAGADA→REGISTRADA de las facturas de proveedor vinculadas (pivot).
  */
 export async function eliminarPago(
   pagoId: string,
@@ -300,23 +305,24 @@ export async function eliminarPago(
   return prisma.$transaction(async (tx) => {
     const actual = await tx.pagoTramite.findUnique({
       where: { id: pagoId },
+      include: { facturasProveedor: { select: { facturaId: true } } },
     });
 
     if (!actual) {
       throw new Error(`Pago ${pagoId} no encontrado`);
     }
 
-    // Revertir estado de FP vinculada antes de borrar el pago
-    if (actual.facturaProveedorId != null) {
+    // Revertir estado de FPs vinculadas antes de borrar el pago
+    for (const { facturaId } of actual.facturasProveedor) {
       await tx.facturaProveedor.update({
-        where: { id: actual.facturaProveedorId },
+        where: { id: facturaId },
         data: { estado: EstadoFacturaProveedor.REGISTRADA },
       });
 
       await tx.auditLog.create({
         data: {
           entidad: "FacturaProveedor",
-          entidadId: actual.facturaProveedorId,
+          entidadId: facturaId,
           accion: "UPDATE_ESTADO",
           usuarioId,
           tramiteId: actual.tramiteId,
@@ -326,6 +332,7 @@ export async function eliminarPago(
       });
     }
 
+    // Los pivot records se borran en cascada (onDelete: Cascade)
     await tx.pagoTramite.delete({ where: { id: pagoId } });
 
     await tx.auditLog.create({
@@ -341,22 +348,58 @@ export async function eliminarPago(
   });
 }
 
+/**
+ * Cambia el estado de un pago (BORRADOR → REALIZADO → VERIFICADO).
+ * Regla de permiso:
+ *   - Trámite con cliente SOCIO_LM: solo ADMIN puede verificar.
+ *   - Trámite con cliente PROPIO: ADMIN o OPERATIVO pueden verificar.
+ */
+export async function verificarPago(
+  pagoId: string,
+  nuevoEstado: EstadoMovimiento,
+  usuarioRol: Rol,
+): Promise<PagoTramite> {
+  return prisma.$transaction(async (tx) => {
+    const pago = await tx.pagoTramite.findUnique({
+      where: { id: pagoId },
+      include: { tramite: { include: { cliente: { select: { tipo: true } } } } },
+    });
+
+    if (!pago) {
+      throw new Error(`Pago ${pagoId} no encontrado`);
+    }
+
+    const esClienteSocioLM = pago.tramite.cliente.tipo === "SOCIO_LM";
+    const puedeVerificar = usuarioRol === Rol.ADMIN ||
+      (!esClienteSocioLM && usuarioRol === Rol.OPERATIVO);
+
+    if (!puedeVerificar) {
+      throw new VerificarMovimientoPermisoError();
+    }
+
+    return tx.pagoTramite.update({
+      where: { id: pagoId },
+      data: { estado: nuevoEstado },
+    });
+  });
+}
+
 export async function getPagoConBeneficiario(pagoId: string) {
   return prisma.pagoTramite.findUnique({
     where: { id: pagoId },
     include: {
       beneficiario: { select: { id: true, nombre: true, nit: true } },
-      facturaProveedor: { select: { numFactura: true } },
+      facturasProveedor: {
+        include: {
+          factura: { select: { numFactura: true, proveedorNombre: true } },
+        },
+      },
     },
   });
 }
 
 /**
  * Retorna el libro de pagos del trámite con saldo corriente línea a línea.
- *
- * totalAnticipoAplicado = Σ montoAplicado de AplicacionAnticipo del trámite.
- * saldos = calcularSaldosIntermedios(totalAnticipoAplicado, pagos).
- * saldoFinal = último saldo (o totalAnticipoAplicado si no hay pagos).
  */
 export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult> {
   const [pagos, rawAplicaciones] = await Promise.all([
@@ -364,7 +407,11 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
       where: { tramiteId },
       orderBy: { orden: "asc" },
       include: {
-        facturaProveedor: { select: { numFactura: true } },
+        facturasProveedor: {
+          include: {
+            factura: { select: { numFactura: true, proveedorNombre: true } },
+          },
+        },
         beneficiario: { select: { id: true, nombre: true, nit: true } },
       },
     }),
@@ -410,7 +457,7 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
     saldos.length > 0 ? saldos[saldos.length - 1] : totalAnticipoAplicado;
 
   return {
-    pagos,
+    pagos: pagos as PagoConRelaciones[],
     aplicaciones,
     totalPagos,
     costosBancarios,
@@ -423,8 +470,6 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
 
 /**
  * Lista TODOS los pagos de TODOS los trámites para el módulo global de pagos.
- * Cada pago viene enriquecido con su trámite (consecutivo, estado) y cliente.
- * El libro por-DO no se ve afectado: esto es solo una vista transversal.
  */
 export async function listarPagosGlobal(
   filtros: ListarPagosFiltros = {},

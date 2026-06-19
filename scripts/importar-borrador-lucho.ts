@@ -506,11 +506,14 @@ async function upsertPagoTramite(input: {
   });
 
   if (existing) {
-    // Already exists — update facturaProveedorId if needed (idempotent link)
+    // Already exists — link to factura via pivot if needed (idempotent)
     if (input.facturaProveedorId) {
-      await prisma.pagoTramite.update({
-        where: { id: existing.id },
-        data: { facturaProveedorId: input.facturaProveedorId },
+      await prisma.pagoTramiteFactura.upsert({
+        where: {
+          pagoId_facturaId: { pagoId: existing.id, facturaId: input.facturaProveedorId },
+        },
+        create: { pagoId: existing.id, facturaId: input.facturaProveedorId },
+        update: {},
       });
     }
     return;
@@ -539,10 +542,14 @@ async function upsertPagoTramite(input: {
     if (pago) {
       await prisma.pagoTramite.update({
         where: { id: pago.id },
-        data: {
-          facturaProveedorId: input.facturaProveedorId,
-          viaSocio: input.viaSocio,
+        data: { viaSocio: input.viaSocio },
+      });
+      await prisma.pagoTramiteFactura.upsert({
+        where: {
+          pagoId_facturaId: { pagoId: pago.id, facturaId: input.facturaProveedorId },
         },
+        create: { pagoId: pago.id, facturaId: input.facturaProveedorId },
+        update: {},
       });
     }
   } else {

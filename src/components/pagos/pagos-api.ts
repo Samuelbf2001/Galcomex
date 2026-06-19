@@ -21,6 +21,14 @@ export type BeneficiarioMinimo = {
   nit: string | null;
 };
 
+export type EstadoMovimiento = "BORRADOR" | "REALIZADO" | "VERIFICADO";
+
+export type FacturaPagoLink = {
+  facturaId: string;
+  numFactura: string;
+  proveedorNombre: string;
+};
+
 export type PagoRow = {
   id: string;
   tramiteId: string;
@@ -32,12 +40,10 @@ export type PagoRow = {
   canalPago: CanalPago;
   costoBancario: string; // BigInt serializado
   orden: number;
-  fechaEsperadaPago: string | null; // ISO string
-  fechaRealPago: string | null;     // ISO string
-  /** ID de la factura de proveedor vinculada, si existe */
-  facturaProveedorId: string | null;
-  /** N° de factura del proveedor (denormalizado para display sin fetch adicional) */
-  numFacturaProveedor: string | null;
+  fechaRealPago: string | null; // ISO string
+  estado: EstadoMovimiento;
+  /** Facturas de proveedor vinculadas (N↔N) */
+  facturasProveedor: FacturaPagoLink[];
   /** Si true, el pago fue hecho en efectivo a través del socio Lucho/LM */
   viaSocio: boolean;
   createdAt: string;
@@ -87,10 +93,9 @@ export type CreatePagoInput = {
   numSoporte?: string | null;
   valor: string; // BigInt as string
   canalPago: CanalPago;
-  fechaEsperadaPago?: string | null;
   fechaRealPago?: string | null;
-  /** ID de la factura de proveedor a vincular. null = pago manual sin vinculación. */
-  facturaProveedorId?: string | null;
+  /** IDs de facturas de proveedor a vincular (N↔N). */
+  facturaProveedorIds?: string[];
 };
 
 /**
@@ -153,7 +158,6 @@ export type UpdatePagoInput = {
   numSoporte?: string | null;
   valor?: string; // BigInt as string
   canalPago?: CanalPago;
-  fechaEsperadaPago?: string | null;
   fechaRealPago?: string | null;
 };
 
@@ -226,6 +230,50 @@ export async function fetchTramiteDetail(
   };
 }
 
+function parsePagoRow(p: Record<string, unknown>): PagoRow {
+  return {
+    id: String(p.id ?? ""),
+    tramiteId: String(p.tramiteId ?? ""),
+    concepto: String(p.concepto ?? ""),
+    beneficiarioId: typeof p.beneficiarioId === "string" ? p.beneficiarioId : null,
+    beneficiario: (() => {
+      if (isRecord(p.beneficiario)) {
+        return {
+          id: String(p.beneficiario.id ?? ""),
+          nombre: String(p.beneficiario.nombre ?? ""),
+          nit: typeof p.beneficiario.nit === "string" ? p.beneficiario.nit : null,
+        };
+      }
+      return null;
+    })(),
+    numSoporte: typeof p.numSoporte === "string" ? p.numSoporte : null,
+    valor: String(p.valor ?? "0"),
+    canalPago: (p.canalPago as CanalPago) ?? "TRANSF_BANCOLOMBIA",
+    costoBancario: String(p.costoBancario ?? "0"),
+    orden: typeof p.orden === "number" ? p.orden : 0,
+    fechaRealPago: typeof p.fechaRealPago === "string" ? p.fechaRealPago : null,
+    estado: (p.estado as EstadoMovimiento) ?? "REALIZADO",
+    facturasProveedor: (() => {
+      const raw = Array.isArray(p.facturasProveedor) ? p.facturasProveedor : [];
+      return raw.filter(isRecord).map((link) => {
+        const factura = isRecord(link.factura) ? link.factura : link;
+        return {
+          facturaId: String(link.facturaId ?? factura.id ?? ""),
+          numFactura: String(factura.numFactura ?? ""),
+          proveedorNombre: String(
+            isRecord(factura.beneficiario)
+              ? (factura.beneficiario.nombre ?? factura.proveedorNombre ?? "")
+              : (factura.proveedorNombre ?? ""),
+          ),
+        };
+      });
+    })(),
+    viaSocio: p.viaSocio === true,
+    createdAt: String(p.createdAt ?? ""),
+    updatedAt: String(p.updatedAt ?? ""),
+  };
+}
+
 export async function fetchLibroPagos(
   tramiteId: string,
   signal?: AbortSignal,
@@ -256,42 +304,7 @@ export async function fetchLibroPagos(
   const rawPagos = Array.isArray(payload.pagos) ? payload.pagos : [];
   const rawAplicaciones = Array.isArray(payload.aplicaciones) ? payload.aplicaciones : [];
 
-  const pagos: PagoRow[] = rawPagos.filter(isRecord).map(
-    (p): PagoRow => ({
-      id: String(p.id ?? ""),
-      tramiteId: String(p.tramiteId ?? ""),
-      concepto: String(p.concepto ?? ""),
-      beneficiarioId: typeof p.beneficiarioId === "string" ? p.beneficiarioId : null,
-      beneficiario: (() => {
-        if (isRecord(p.beneficiario)) {
-          return {
-            id: String(p.beneficiario.id ?? ""),
-            nombre: String(p.beneficiario.nombre ?? ""),
-            nit: typeof p.beneficiario.nit === "string" ? p.beneficiario.nit : null,
-          };
-        }
-        return null;
-      })(),
-      numSoporte: typeof p.numSoporte === "string" ? p.numSoporte : null,
-      valor: String(p.valor ?? "0"),
-      canalPago: (p.canalPago as CanalPago) ?? "TRANSF_BANCOLOMBIA",
-      costoBancario: String(p.costoBancario ?? "0"),
-      orden: typeof p.orden === "number" ? p.orden : 0,
-      fechaEsperadaPago: typeof p.fechaEsperadaPago === "string" ? p.fechaEsperadaPago : null,
-      fechaRealPago: typeof p.fechaRealPago === "string" ? p.fechaRealPago : null,
-      facturaProveedorId: typeof p.facturaProveedorId === "string" ? p.facturaProveedorId : null,
-      numFacturaProveedor: (() => {
-        // El backend puede devolver el numFactura anidado en facturaProveedor
-        if (isRecord(p.facturaProveedor) && typeof p.facturaProveedor.numFactura === "string") {
-          return p.facturaProveedor.numFactura;
-        }
-        return null;
-      })(),
-      viaSocio: p.viaSocio === true,
-      createdAt: String(p.createdAt ?? ""),
-      updatedAt: String(p.updatedAt ?? ""),
-    }),
-  );
+  const pagos: PagoRow[] = rawPagos.filter(isRecord).map(parsePagoRow);
 
   const aplicaciones: AplicacionRow[] = rawAplicaciones.filter(isRecord).map(
     (a): AplicacionRow => {
@@ -349,26 +362,7 @@ export async function createPago(
     throw new PagosApiError("Respuesta de creación no válida.");
   }
 
-  const p = payload.pago;
-  return {
-    id: String(p.id ?? ""),
-    tramiteId: String(p.tramiteId ?? ""),
-    concepto: String(p.concepto ?? ""),
-    beneficiarioId: typeof p.beneficiarioId === "string" ? p.beneficiarioId : null,
-    beneficiario: null,
-    numSoporte: typeof p.numSoporte === "string" ? p.numSoporte : null,
-    valor: String(p.valor ?? "0"),
-    canalPago: (p.canalPago as CanalPago) ?? "TRANSF_BANCOLOMBIA",
-    costoBancario: String(p.costoBancario ?? "0"),
-    orden: typeof p.orden === "number" ? p.orden : 0,
-    fechaEsperadaPago: typeof p.fechaEsperadaPago === "string" ? p.fechaEsperadaPago : null,
-    fechaRealPago: typeof p.fechaRealPago === "string" ? p.fechaRealPago : null,
-    facturaProveedorId: typeof p.facturaProveedorId === "string" ? p.facturaProveedorId : null,
-    numFacturaProveedor: null,
-    viaSocio: p.viaSocio === true,
-    createdAt: String(p.createdAt ?? ""),
-    updatedAt: String(p.updatedAt ?? ""),
-  };
+  return parsePagoRow(payload.pago);
 }
 
 export async function updatePago(
@@ -396,35 +390,7 @@ export async function updatePago(
     throw new PagosApiError("Respuesta de actualización no válida.");
   }
 
-  const p = payload.pago;
-  return {
-    id: String(p.id ?? ""),
-    tramiteId: String(p.tramiteId ?? ""),
-    concepto: String(p.concepto ?? ""),
-    beneficiarioId: typeof p.beneficiarioId === "string" ? p.beneficiarioId : null,
-    beneficiario: (() => {
-      if (isRecord(p.beneficiario)) {
-        return {
-          id: String(p.beneficiario.id ?? ""),
-          nombre: String(p.beneficiario.nombre ?? ""),
-          nit: typeof p.beneficiario.nit === "string" ? p.beneficiario.nit : null,
-        };
-      }
-      return null;
-    })(),
-    numSoporte: typeof p.numSoporte === "string" ? p.numSoporte : null,
-    valor: String(p.valor ?? "0"),
-    canalPago: (p.canalPago as CanalPago) ?? "TRANSF_BANCOLOMBIA",
-    costoBancario: String(p.costoBancario ?? "0"),
-    orden: typeof p.orden === "number" ? p.orden : 0,
-    fechaEsperadaPago: typeof p.fechaEsperadaPago === "string" ? p.fechaEsperadaPago : null,
-    fechaRealPago: typeof p.fechaRealPago === "string" ? p.fechaRealPago : null,
-    facturaProveedorId: typeof p.facturaProveedorId === "string" ? p.facturaProveedorId : null,
-    numFacturaProveedor: null,
-    viaSocio: p.viaSocio === true,
-    createdAt: String(p.createdAt ?? ""),
-    updatedAt: String(p.updatedAt ?? ""),
-  };
+  return parsePagoRow(payload.pago);
 }
 
 export async function deletePago(
@@ -440,6 +406,34 @@ export async function deletePago(
     const msg = await parseErrorMessage(response);
     throw new PagosApiError(msg, response.status);
   }
+}
+
+export async function verificarMovimientoPago(
+  tramiteId: string,
+  pagoId: string,
+  estado: EstadoMovimiento,
+): Promise<PagoRow> {
+  const response = await fetch(`/api/tramites/${tramiteId}/pagos/${pagoId}/verificar`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ estado }),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `No fue posible verificar el pago (${response.status}).`;
+    throw new PagosApiError(message, response.status);
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.pago)) {
+    throw new PagosApiError("Respuesta de verificación no válida.");
+  }
+
+  return parsePagoRow(payload.pago);
 }
 
 /** Formatea BigInt serializado como COP: $45.226.000 */

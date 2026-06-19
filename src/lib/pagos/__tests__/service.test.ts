@@ -82,11 +82,10 @@ async function cleanupTestData() {
   await prisma.aplicacionAnticipo.deleteMany({
     where: { tramiteId: { in: tramiteIds } },
   });
-  // Desvincular PagoTramite de FacturaProveedor antes de borrar (onDelete: SetNull)
+  // Desvincular PagoTramite de FacturaProveedor (pivot N↔N) antes de borrar
   // y borrar FacturaProveedor antes de PagoTramite para evitar violaciones de FK.
-  await prisma.pagoTramite.updateMany({
-    where: { tramiteId: { in: tramiteIds } },
-    data: { facturaProveedorId: null },
+  await prisma.pagoTramiteFactura.deleteMany({
+    where: { pago: { tramiteId: { in: tramiteIds } } },
   });
   await prisma.facturaProveedor.deleteMany({
     where: { tramiteId: { in: tramiteIds } },
@@ -540,11 +539,14 @@ describe("pagos service con Postgres local", () => {
       valor: 2_000_000n,
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
-      facturaProveedorId: fpId,
+      facturaProveedorIds: [fpId],
     });
 
-    // El pago debe tener el vínculo guardado
-    expect(pago.facturaProveedorId).toBe(fpId);
+    // El pago debe tener el vínculo guardado (pivot N↔N)
+    const vinculo = await prisma.pagoTramiteFactura.findFirst({
+      where: { pagoId: pago.id, facturaId: fpId },
+    });
+    expect(vinculo).not.toBeNull();
 
     // La FP debe haber quedado en estado PAGADA
     const fpActualizada = await prisma.facturaProveedor.findUnique({ where: { id: fpId } });
@@ -564,7 +566,7 @@ describe("pagos service con Postgres local", () => {
       valor: 3_000_000n,
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
-      facturaProveedorId: fpId,
+      facturaProveedorIds: [fpId],
     });
 
     // Segundo pago sobre la misma FP ya PAGADA → debe lanzar error
@@ -575,7 +577,7 @@ describe("pagos service con Postgres local", () => {
         valor: 1_000_000n,
         canalPago: CanalPago.PSE,
         usuarioId: db.userId,
-        facturaProveedorId: fpId,
+        facturaProveedorIds: [fpId],
       }),
     ).rejects.toThrow(FacturaProveedorNoModificableError);
 
@@ -600,7 +602,7 @@ describe("pagos service con Postgres local", () => {
         valor: 1_500_000n,
         canalPago: CanalPago.PSE,
         usuarioId: db.userId,
-        facturaProveedorId: fpId,
+        facturaProveedorIds: [fpId],
       }),
     ).rejects.toThrow(PagoFacturaDeOtroTramiteError);
 
@@ -621,7 +623,7 @@ describe("pagos service con Postgres local", () => {
       valor: 2_500_000n,
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
-      facturaProveedorId: fpId,
+      facturaProveedorIds: [fpId],
     });
 
     // Confirmar que la FP está PAGADA
@@ -653,7 +655,10 @@ describe("pagos service con Postgres local", () => {
       usuarioId: db.userId,
     });
 
-    expect(pago.facturaProveedorId).toBeNull();
+    const vinculos = await prisma.pagoTramiteFactura.findMany({
+      where: { pagoId: pago.id },
+    });
+    expect(vinculos).toHaveLength(0);
 
     const libro = await getLibroPagos(tramiteId);
     expect(libro.pagos).toHaveLength(1);

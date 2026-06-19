@@ -23,6 +23,7 @@ import {
   OPCIONES_RECAUDO_PAGO,
   type CarteraData,
   type ClienteOption,
+  type EstadoMovimiento,
   type FacturaRow,
   type OpcionRecaudoPago,
   type PagoFacturaRow,
@@ -490,9 +491,10 @@ type PagosListProps = {
   destino: "CLIENTE" | "LM";
   facturaId: string;
   onAnulado: () => void;
+  onVerificar: (facturaId: string, pagoId: string) => Promise<void>;
 };
 
-function PagosList({ pagos, destino, facturaId, onAnulado }: PagosListProps) {
+function PagosList({ pagos, destino, facturaId, onAnulado, onVerificar }: PagosListProps) {
   const [anulando, setAnulando] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -535,6 +537,7 @@ function PagosList({ pagos, destino, facturaId, onAnulado }: PagosListProps) {
             <th className="px-4 py-1.5 font-medium text-right">Costo banc.</th>
             <th className="px-4 py-1.5 font-medium">Verificado</th>
             <th className="px-4 py-1.5 font-medium">Comprobante</th>
+            <th className="px-4 py-1.5 font-medium">Estado</th>
             <th className="px-4 py-1.5 font-medium text-right">Anular</th>
           </tr>
         </thead>
@@ -603,6 +606,28 @@ function PagosList({ pagos, destino, facturaId, onAnulado }: PagosListProps) {
                   <span className="text-slate-300">—</span>
                 )}
               </td>
+              <td className="px-4 py-1.5 whitespace-nowrap">
+                {p.estado === "VERIFICADO" && (
+                  <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                    VERIFICADO
+                  </span>
+                )}
+                {p.estado === "BORRADOR" && (
+                  <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                    BORRADOR
+                  </span>
+                )}
+                {p.estado === "REALIZADO" && (
+                  <button
+                    type="button"
+                    onClick={() => void onVerificar(facturaId, p.id)}
+                    className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100"
+                    title="Marcar como verificado"
+                  >
+                    Verificar
+                  </button>
+                )}
+              </td>
               <td className="px-4 py-1.5 text-right">
                 <button
                   type="button"
@@ -635,6 +660,7 @@ type FilaFacturaProps = {
   onRegistrarAbono: (factura: FacturaRow, destino: "CLIENTE" | "LM") => void;
   onRegistrarDevolucion: (factura: FacturaRow, destino: "CLIENTE" | "LM") => void;
   onAnulado: () => void;
+  onVerificarPago: (facturaId: string, pagoId: string) => Promise<void>;
 };
 
 function FilaFactura({
@@ -643,6 +669,7 @@ function FilaFactura({
   onRegistrarAbono,
   onRegistrarDevolucion,
   onAnulado,
+  onVerificarPago,
 }: FilaFacturaProps) {
   const [expandido, setExpandido] = useState(false);
 
@@ -768,6 +795,7 @@ function FilaFactura({
               destino={destino}
               facturaId={factura.id}
               onAnulado={onAnulado}
+              onVerificar={onVerificarPago}
             />
           </td>
         </tr>
@@ -966,6 +994,46 @@ export function CarteraWorkspace() {
     setModalTarget(null);
     setGlobalError(null);
     recargar();
+  }
+
+  async function handleVerificarPago(facturaId: string, pagoId: string) {
+    setGlobalError(null);
+    try {
+      const response = await fetch(`/api/facturas/${facturaId}/pagos/${pagoId}/verificar`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ estado: "VERIFICADO" as EstadoMovimiento }),
+      });
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => null);
+        const msg =
+          typeof payload === "object" &&
+          payload !== null &&
+          "error" in payload &&
+          typeof (payload as Record<string, unknown>).error === "string"
+            ? (payload as Record<string, unknown>).error as string
+            : `Error al verificar (${response.status}).`;
+        setGlobalError(msg);
+        return;
+      }
+      setCartera((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          facturas: prev.facturas.map((f) => {
+            if (f.id !== facturaId) return f;
+            return {
+              ...f,
+              pagos: f.pagos.map((p) =>
+                p.id === pagoId ? { ...p, estado: "VERIFICADO" as EstadoMovimiento } : p,
+              ),
+            };
+          }),
+        };
+      });
+    } catch {
+      setGlobalError("Error de red al verificar.");
+    }
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -1200,6 +1268,7 @@ export function CarteraWorkspace() {
                             setModalTarget({ factura, destino, tipo: "DEVOLUCION" })
                           }
                           onAnulado={() => recargar()}
+                          onVerificarPago={handleVerificarPago}
                         />
                       ))}
                     </tbody>

@@ -34,7 +34,6 @@ export type PagoGlobalRow = {
   canalPago: CanalPago;
   costoBancario: string; // BigInt serializado
   orden: number;
-  fechaEsperadaPago: string | null; // ISO
   fechaRealPago: string | null; // ISO
   createdAt: string;
   updatedAt: string;
@@ -97,7 +96,6 @@ function normalizePago(raw: unknown): PagoGlobalRow | null {
     canalPago: (raw.canalPago as CanalPago) ?? "OTRO",
     costoBancario: String(raw.costoBancario ?? "0"),
     orden: typeof raw.orden === "number" ? raw.orden : 0,
-    fechaEsperadaPago: typeof raw.fechaEsperadaPago === "string" ? raw.fechaEsperadaPago : null,
     fechaRealPago: typeof raw.fechaRealPago === "string" ? raw.fechaRealPago : null,
     createdAt: String(raw.createdAt ?? ""),
     updatedAt: String(raw.updatedAt ?? ""),

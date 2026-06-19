@@ -1,4 +1,4 @@
-import { CanalPago } from "@prisma/client";
+import { CanalPago, EstadoMovimiento } from "@prisma/client";
 import { z } from "zod";
 
 export const crearPagoSchema = z.object({
@@ -10,9 +10,9 @@ export const crearPagoSchema = z.object({
     .bigint()
     .refine((v) => v >= 0n, { message: "El valor no puede ser negativo" }),
   canalPago: z.nativeEnum(CanalPago),
-  fechaEsperadaPago: z.coerce.date().optional().nullable(),
   fechaRealPago: z.coerce.date().optional().nullable(),
-  facturaProveedorId: z.string().min(1).optional().nullable(),
+  /** IDs de facturas de proveedor a vincular (N↔N). Vacío = pago manual sin vinculación. */
+  facturaProveedorIds: z.array(z.string().min(1)).optional().default([]),
 });
 
 export const listarPagosQuerySchema = z.object({
@@ -34,6 +34,9 @@ export const actualizarPagoSchema = z.object({
   concepto: z.string().trim().min(1).optional(),
   beneficiarioId: z.string().min(1).optional().nullable(),
   numSoporte: z.string().trim().min(1).optional().nullable(),
-  fechaEsperadaPago: z.coerce.date().optional().nullable(),
   fechaRealPago: z.coerce.date().optional().nullable(),
+});
+
+export const verificarMovimientoSchema = z.object({
+  estado: z.nativeEnum(EstadoMovimiento),
 });

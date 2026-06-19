@@ -24,6 +24,10 @@ import {
   validarArchivo,
 } from "@/components/documentos/documentos-api";
 import {
+  BeneficiarioCombobox,
+  type BeneficiarioSeleccion,
+} from "@/components/beneficiarios/beneficiario-combobox";
+import {
   CANALES_PAGO,
   type CanalPago,
 } from "@/components/pagos/pagos-api";
@@ -256,12 +260,19 @@ export function ModalFacturaProveedor({
 }: ModalFacturaProps) {
   const isEdit = Boolean(facturaExistente);
 
-  const [proveedorNombre, setProveedorNombre] = useState(
-    facturaExistente?.proveedorNombre ?? "",
+  const initialBeneficiario: BeneficiarioSeleccion | null =
+    facturaExistente?.beneficiarioId
+      ? {
+          id: facturaExistente.beneficiarioId,
+          nombre: facturaExistente.proveedorNombre,
+          nit: facturaExistente.proveedorNit,
+        }
+      : null;
+
+  const [beneficiario, setBeneficiario] = useState<BeneficiarioSeleccion | null>(
+    initialBeneficiario,
   );
-  const [proveedorNit, setProveedorNit] = useState(
-    facturaExistente?.proveedorNit ?? "",
-  );
+  const [concepto, setConcepto] = useState(facturaExistente?.concepto ?? "");
   const [numFactura, setNumFactura] = useState(
     facturaExistente?.numFactura ?? "",
   );
@@ -293,8 +304,8 @@ export function ModalFacturaProveedor({
       setError("El valor debe ser un número entero mayor a 0.");
       return;
     }
-    if (!proveedorNombre.trim()) {
-      setError("El nombre del proveedor es obligatorio.");
+    if (!beneficiario) {
+      setError("El proveedor es obligatorio.");
       return;
     }
     if (!numFactura.trim()) {
@@ -305,14 +316,25 @@ export function ModalFacturaProveedor({
       setError("La fecha es obligatoria.");
       return;
     }
+    if (!isEdit && !documentoId) {
+      setError("El archivo de la factura es obligatorio.");
+      return;
+    }
 
     setSubmitting(true);
     try {
       if (isEdit && facturaExistente) {
         // PATCH — update parcial usando la misma API helper de create pero con el endpoint PATCH
         const input: UpdateFacturaProveedorInput = {
-          proveedorNombre: proveedorNombre.trim(),
-          proveedorNit: proveedorNit.trim() || null,
+          beneficiarioId: beneficiario.id,
+          concepto: concepto.trim() || null,
+          // backward compatibility: send legacy fields only when they were already set
+          ...(facturaExistente.proveedorNombre
+            ? { proveedorNombre: beneficiario.nombre }
+            : {}),
+          ...(facturaExistente.proveedorNit !== null
+            ? { proveedorNit: beneficiario.nit }
+            : {}),
           numFactura: numFactura.trim(),
           valor: valorBig,
           fecha: dateInputToIso(fecha) ?? undefined,
@@ -343,6 +365,8 @@ export function ModalFacturaProveedor({
           tramiteId: String(updated.tramiteId ?? ""),
           proveedorNombre: String(updated.proveedorNombre ?? ""),
           proveedorNit: typeof updated.proveedorNit === "string" ? updated.proveedorNit : null,
+          beneficiarioId: typeof updated.beneficiarioId === "string" ? updated.beneficiarioId : null,
+          concepto: typeof updated.concepto === "string" ? updated.concepto : null,
           numFactura: String(updated.numFactura ?? ""),
           valor: String(updated.valor ?? "0"),
           fecha: typeof updated.fecha === "string" ? updated.fecha : "",
@@ -354,8 +378,10 @@ export function ModalFacturaProveedor({
         });
       } else {
         const input: CreateFacturaProveedorInput = {
-          proveedorNombre: proveedorNombre.trim(),
-          proveedorNit: proveedorNit.trim() || null,
+          beneficiarioId: beneficiario.id,
+          concepto: concepto.trim() || null,
+          proveedorNombre: beneficiario.nombre,
+          proveedorNit: beneficiario.nit,
           numFactura: numFactura.trim(),
           valor: valorBig,
           fecha: dateInputToIso(fecha) ?? "",
@@ -395,26 +421,24 @@ export function ModalFacturaProveedor({
 
         <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block space-y-1.5 sm:col-span-2">
+            <div className="block space-y-1.5 sm:col-span-2">
               <span className="text-sm font-medium text-slate-700">Proveedor *</span>
-              <input
-                value={proveedorNombre}
-                onChange={(e) => setProveedorNombre(e.target.value)}
-                placeholder="Nombre del proveedor"
-                required
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+              <BeneficiarioCombobox
+                value={beneficiario}
+                onChange={setBeneficiario}
+                placeholder="Buscar o crear proveedor…"
               />
-            </label>
+            </div>
 
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">NIT</span>
+            <div className="block space-y-1.5 sm:col-span-2">
+              <span className="text-sm font-medium text-slate-700">Concepto</span>
               <input
-                value={proveedorNit}
-                onChange={(e) => setProveedorNit(e.target.value)}
+                value={concepto}
+                onChange={(e) => setConcepto(e.target.value)}
                 placeholder="Opcional"
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
-            </label>
+            </div>
 
             <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">N° factura *</span>
@@ -453,7 +477,9 @@ export function ModalFacturaProveedor({
 
           {/* Adjuntar PDF */}
           <div>
-            <p className="mb-1.5 text-sm font-medium text-slate-700">Archivo PDF</p>
+            <p className="mb-1.5 text-sm font-medium text-slate-700">
+              Archivo PDF{!isEdit ? " *" : ""}
+            </p>
             {documentoId && !documentoNombre ? (
               <p className="text-xs text-slate-500">
                 Ya tiene un documento adjunto (ID: {documentoId.slice(0, 8)}…).
@@ -904,13 +930,14 @@ export function SeccionFacturasProveedor({
               ) : null}
               {facturas.map((f) => {
                 const doc = f.documentoId ? documentos[f.documentoId] : null;
+                const beneficiarioDisplay = f.proveedorNombre;
                 return (
                   <tr
                     key={f.id}
                     className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
                   >
                     <td className="px-3 py-2.5 font-medium text-slate-900">
-                      {f.proveedorNombre}
+                      {beneficiarioDisplay}
                     </td>
                     <td className="px-3 py-2.5 text-xs text-slate-600">
                       {f.proveedorNit ?? "—"}

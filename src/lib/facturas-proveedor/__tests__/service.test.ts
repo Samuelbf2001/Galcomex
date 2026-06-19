@@ -108,10 +108,9 @@ async function cleanupTestData() {
   });
   const fpIds = fps.map((f) => f.id);
 
-  // Desconectar pagos de facturas (SetNull por FK)
-  await prisma.pagoTramite.updateMany({
-    where: { facturaProveedorId: { in: fpIds } },
-    data: { facturaProveedorId: null },
+  // Desconectar pagos de facturas (eliminar vínculos del pivot N↔N)
+  await prisma.pagoTramiteFactura.deleteMany({
+    where: { facturaId: { in: fpIds } },
   });
 
   await prisma.pagoTramite.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
@@ -458,7 +457,10 @@ describe("generarPagoDesdeFactura", () => {
     expect(pago.valor).toBe(2_500_000n);
     expect(pago.beneficiarioId).toBeNull();
     expect(pago.numSoporte).toBe("FACT-FESP-001");
-    expect(pago.facturaProveedorId).toBe(factura.id);
+    const vinculo = await prisma.pagoTramiteFactura.findFirst({
+      where: { pagoId: pago.id, facturaId: factura.id },
+    });
+    expect(vinculo).not.toBeNull();
     expect(pago.viaSocio).toBe(false);
     expect(pago.canalPago).toBe(CanalPago.PSE);
     expect(pago.costoBancario).toBe(0n); // PSE = $0

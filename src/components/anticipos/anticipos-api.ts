@@ -27,6 +27,8 @@ export type DesgloseDO = {
   montoAplicado: string; // BigInt serializado
 };
 
+export type EstadoMovimiento = "BORRADOR" | "REALIZADO" | "VERIFICADO";
+
 export type AnticipoRow = {
   id: string;
   clienteId: string;
@@ -37,6 +39,7 @@ export type AnticipoRow = {
   costoRecaudo: string; // BigInt serializado
   soporteKey: string | null;
   verificadoBanco: boolean;
+  estado: EstadoMovimiento;
   createdAt: string;
   updatedAt: string;
   aplicado: string; // BigInt serializado
@@ -115,6 +118,12 @@ function normalizeAnticipo(raw: unknown, clientes: ClienteOption[]): AnticipoRow
     ? raw.aplicaciones.map(normalizeDesglose).filter((d): d is DesgloseDO => d !== null)
     : [];
 
+  const estadoRaw = raw.estado;
+  const estado: EstadoMovimiento =
+    estadoRaw === "BORRADOR" || estadoRaw === "REALIZADO" || estadoRaw === "VERIFICADO"
+      ? estadoRaw
+      : "REALIZADO";
+
   return {
     id: String(raw.id ?? ""),
     clienteId,
@@ -125,6 +134,7 @@ function normalizeAnticipo(raw: unknown, clientes: ClienteOption[]): AnticipoRow
     costoRecaudo: String(raw.costoRecaudo ?? "0"),
     soporteKey: typeof raw.soporteKey === "string" ? raw.soporteKey : null,
     verificadoBanco: raw.verificadoBanco === true,
+    estado,
     createdAt: String(raw.createdAt ?? ""),
     updatedAt: String(raw.updatedAt ?? ""),
     aplicado: String(raw.aplicado ?? "0"),

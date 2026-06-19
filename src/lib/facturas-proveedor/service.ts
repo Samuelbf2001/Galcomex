@@ -19,9 +19,13 @@ export type CrearFacturaProveedorInput = {
   tramiteId: string;
   proveedorNombre: string;
   proveedorNit?: string | null;
+  beneficiarioId?: string | null;
+  concepto?: string | null;
   numFactura: string;
   valor: bigint;
   fecha: Date;
+  // La obligatoriedad del archivo (p.4) se valida en la capa API (Zod del endpoint).
+  // El servicio lo acepta opcional para scripts de importación histórica y generación interna.
   documentoId?: string | null;
   subidaPorId: string;
 };
@@ -29,6 +33,8 @@ export type CrearFacturaProveedorInput = {
 export type ActualizarFacturaProveedorInput = {
   proveedorNombre?: string;
   proveedorNit?: string | null;
+  beneficiarioId?: string | null;
+  concepto?: string | null;
   numFactura?: string;
   valor?: bigint;
   fecha?: Date;
@@ -131,7 +137,7 @@ async function resolverCostoBancario(canal: CanalPago): Promise<bigint> {
  * Valida unicidad (tramiteId, numFactura).
  */
 export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
-  const { tramiteId, proveedorNombre, proveedorNit, numFactura, valor, fecha, documentoId, subidaPorId } =
+  const { tramiteId, proveedorNombre, proveedorNit, beneficiarioId, concepto, numFactura, valor, fecha, documentoId, subidaPorId } =
     input;
 
   return prisma.$transaction(async (tx) => {
@@ -148,6 +154,8 @@ export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
         tramiteId,
         proveedorNombre,
         proveedorNit,
+        beneficiarioId: beneficiarioId ?? null,
+        concepto: concepto ?? null,
         numFactura,
         valor,
         fecha,
@@ -180,7 +188,12 @@ export async function listarPorTramite(tramiteId: string) {
     include: {
       subidoPor: { select: { id: true, name: true, email: true } },
       documento: { select: { id: true, nombreArchivo: true, storageKey: true } },
-      pagos: { select: { id: true, valor: true, canalPago: true, fechaRealPago: true } },
+      beneficiario: { select: { id: true, nombre: true, nit: true } },
+      pagos: {
+        include: {
+          pago: { select: { id: true, valor: true, canalPago: true, fechaRealPago: true } },
+        },
+      },
     },
     orderBy: { fecha: "asc" },
   });
@@ -250,12 +263,13 @@ export async function eliminarFacturaProveedor(
   return prisma.$transaction(async (tx) => {
     const actual = await tx.facturaProveedor.findUnique({
       where: { id: facturaId },
-      include: { pagos: { select: { id: true } } },
+      include: { pagos: { select: { pagoId: true } } },
     });
     if (!actual) {
       throw new FacturaProveedorNoEncontradaError(facturaId);
     }
 
+    // pagos es ahora PagoTramiteFactura[] (pivot N↔N)
     if (actual.pagos.length > 0) {
       throw new FacturaProveedorConPagosError(facturaId);
     }
@@ -289,6 +303,7 @@ export async function generarPagoDesdeFactura(input: GenerarPagoInput) {
   return prisma.$transaction(async (tx) => {
     const factura = await tx.facturaProveedor.findUnique({
       where: { id: facturaProveedorId },
+      include: { beneficiario: { select: { nombre: true } } },
     });
     if (!factura) {
       throw new FacturaProveedorNoEncontradaError(facturaProveedorId);
@@ -299,7 +314,6 @@ export async function generarPagoDesdeFactura(input: GenerarPagoInput) {
 
     const costoBancario = await resolverCostoBancario(canalPago);
 
-    // Calcular orden del pago
     const ultimoPago = await tx.pagoTramite.findFirst({
       where: { tramiteId: factura.tramiteId },
       orderBy: { orden: "desc" },
@@ -307,10 +321,12 @@ export async function generarPagoDesdeFactura(input: GenerarPagoInput) {
     });
     const orden = (ultimoPago?.orden ?? 0) + 1;
 
+    const nombreProveedor = factura.beneficiario?.nombre ?? factura.proveedorNombre;
+
     const pago = await tx.pagoTramite.create({
       data: {
         tramiteId: factura.tramiteId,
-        concepto: `Pago factura ${factura.numFactura} — ${factura.proveedorNombre}`,
+        concepto: `Pago factura ${factura.numFactura} — ${nombreProveedor}`,
         numSoporte: factura.numFactura,
         valor: factura.valor,
         canalPago,
@@ -318,8 +334,12 @@ export async function generarPagoDesdeFactura(input: GenerarPagoInput) {
         orden,
         viaSocio,
         fechaRealPago,
-        facturaProveedorId,
       },
+    });
+
+    // Crear pivot record (N↔N)
+    await tx.pagoTramiteFactura.create({
+      data: { pagoId: pago.id, facturaId: facturaProveedorId },
     });
 
     // Marcar factura como PAGADA
@@ -335,7 +355,7 @@ export async function generarPagoDesdeFactura(input: GenerarPagoInput) {
         accion: "CREATE",
         usuarioId,
         tramiteId: factura.tramiteId,
-        despues: normalizeSerializable(pago),
+        despues: normalizeSerializable({ ...pago, facturaProveedorIds: [facturaProveedorId] }),
       },
     });
 

@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   TIPOS_RECAUDO,
   type AnticipoRow,
+  type EstadoMovimiento,
   type TipoRecaudo,
   type ClienteOption,
   type TramiteOption,
@@ -374,10 +375,11 @@ type AnticipoFilaProps = {
   anticipo: AnticipoRow;
   onAplicar: (anticipo: AnticipoRow) => void;
   onEliminarAplicacion: (anticipoId: string, aplicacionId: string) => void;
+  onVerificar: (id: string) => Promise<void>;
   deletingAplicacionId: string | null;
 };
 
-function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, deletingAplicacionId }: AnticipoFilaProps) {
+function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, onVerificar, deletingAplicacionId }: AnticipoFilaProps) {
   const [expanded, setExpanded] = useState(false);
   const hasAplicaciones = anticipo.aplicaciones.length > 0;
 
@@ -445,15 +447,37 @@ function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, deletingAplic
 
         {/* Acciones */}
         <td className="px-3 py-2.5">
-          <button
-            type="button"
-            onClick={() => onAplicar(anticipo)}
-            disabled={BigInt(anticipo.restante) <= 0n}
-            className="inline-flex h-7 items-center gap-1.5 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
-          >
-            <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
-            Aplicar
-          </button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {anticipo.estado === "VERIFICADO" && (
+              <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                VERIFICADO
+              </span>
+            )}
+            {anticipo.estado === "BORRADOR" && (
+              <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                BORRADOR
+              </span>
+            )}
+            {anticipo.estado === "REALIZADO" && (
+              <button
+                type="button"
+                onClick={() => void onVerificar(anticipo.id)}
+                className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100"
+                title="Marcar como verificado"
+              >
+                Verificar
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onAplicar(anticipo)}
+              disabled={BigInt(anticipo.restante) <= 0n}
+              className="inline-flex h-7 items-center gap-1.5 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
+            >
+              <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
+              Aplicar
+            </button>
+          </div>
         </td>
       </tr>
 
@@ -640,6 +664,34 @@ export function AnticiposWorkspace() {
     }
   }
 
+  async function handleVerificar(id: string) {
+    setGlobalError(null);
+    try {
+      const response = await fetch(`/api/anticipos/${id}/verificar`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ estado: "VERIFICADO" as EstadoMovimiento }),
+      });
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => null);
+        const msg =
+          typeof payload === "object" &&
+          payload !== null &&
+          "error" in payload &&
+          typeof (payload as Record<string, unknown>).error === "string"
+            ? (payload as Record<string, unknown>).error as string
+            : `Error al verificar (${response.status}).`;
+        setGlobalError(msg);
+        return;
+      }
+      setAnticipos((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, estado: "VERIFICADO" as EstadoMovimiento } : a)),
+      );
+    } catch {
+      setGlobalError("Error de red al verificar.");
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -796,6 +848,7 @@ export function AnticiposWorkspace() {
                     anticipo={anticipo}
                     onAplicar={(a) => setAplicarTarget(a)}
                     onEliminarAplicacion={handleEliminarAplicacion}
+                    onVerificar={handleVerificar}
                     deletingAplicacionId={deletingAplicacionId}
                   />
                 ))

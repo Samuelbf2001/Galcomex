@@ -11,7 +11,7 @@
  * - registrarPagoFactura (DEPRECADO): escribe fechaPagoCliente/LM directamente (compat)
  */
 
-import { CanalPago, DestinoPago, Prisma, TipoPagoFactura, TipoRecaudo } from "@prisma/client";
+import { CanalPago, DestinoPago, EstadoMovimiento, Prisma, Rol, TipoPagoFactura, TipoRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 
@@ -562,6 +562,54 @@ export async function getFacturaConPagos(facturaId: string) {
     costosBancariosLM,
     totalRealLM,
   };
+}
+
+// ─── Verificación de PagoFactura ─────────────────────────────────────────────
+
+export class VerificarPagoFacturaPermisoError extends Error {
+  public readonly status = 403;
+  constructor() {
+    super("No tienes permiso para verificar este pago de factura");
+    this.name = "VerificarPagoFacturaPermisoError";
+  }
+}
+
+/**
+ * Cambia el estado de un PagoFactura (BORRADOR → REALIZADO → VERIFICADO).
+ * Regla de permiso:
+ *   - Factura de cliente SOCIO_LM: solo ADMIN puede verificar.
+ *   - Factura de cliente PROPIO: ADMIN o OPERATIVO pueden verificar.
+ */
+export async function verificarPagoFactura(
+  pagoId: string,
+  nuevoEstado: EstadoMovimiento,
+  usuarioRol: Rol,
+) {
+  const pago = await prisma.pagoFactura.findUnique({
+    where: { id: pagoId },
+    include: {
+      factura: { include: { cliente: { select: { tipo: true } } } },
+    },
+  });
+
+  if (!pago) {
+    return { ok: false as const, status: 404, message: `PagoFactura ${pagoId} no encontrado` };
+  }
+
+  const esClienteSocioLM = pago.factura.cliente.tipo === "SOCIO_LM";
+  const puedeVerificar = usuarioRol === Rol.ADMIN ||
+    (!esClienteSocioLM && usuarioRol === Rol.OPERATIVO);
+
+  if (!puedeVerificar) {
+    throw new VerificarPagoFacturaPermisoError();
+  }
+
+  const updated = await prisma.pagoFactura.update({
+    where: { id: pagoId },
+    data: { estado: nuevoEstado },
+  });
+
+  return { ok: true as const, pago: updated };
 }
 
 // ─── Compatibilidad — DEPRECATED ─────────────────────────────────────────────

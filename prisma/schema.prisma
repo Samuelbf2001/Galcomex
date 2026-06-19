@@ -277,6 +277,12 @@ enum TipoRecaudo {
   CAJERO         // $5.200 (físico)
 }
 
+enum EstadoMovimiento {
+  BORRADOR    // Registrado pero pendiente de confirmación
+  REALIZADO   // Ejecutado, pendiente de verificación contable
+  VERIFICADO  // Verificado por ADMIN (o por ADMIN/OPERATIVO en flujo propio)
+}
+
 enum CanalPago {
   TRANSF_BANCOLOMBIA   // $3.900
   PSE                  // $0
@@ -303,17 +309,18 @@ model MatrizPago {
 }
 
 model Anticipo {
-  id              String      @id @default(cuid())
+  id              String          @id @default(cuid())
   clienteId       String
-  cliente         Cliente     @relation(fields: [clienteId], references: [id], onDelete: Restrict)
-  monto           BigInt      // COP sin decimales
+  cliente         Cliente         @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  monto           BigInt          // COP sin decimales
   fecha           DateTime
   tipoRecaudo     TipoRecaudo
-  costoRecaudo    BigInt      @default(0) // Snapshot del costo al momento del registro
-  soporteKey      String?     // Comprobante bancario en MinIO
-  verificadoBanco Boolean     @default(false)
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  costoRecaudo    BigInt          @default(0) // Snapshot del costo al momento del registro
+  soporteKey      String?         // Comprobante bancario en MinIO
+  verificadoBanco Boolean         @default(false)
+  estado          EstadoMovimiento @default(REALIZADO)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   aplicaciones AplicacionAnticipo[]
 
@@ -343,8 +350,13 @@ model FacturaProveedor {
   id               String                 @id @default(cuid())
   tramiteId        String
   tramite          TramiteDO              @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
+  // proveedorNombre/proveedorNit se mantienen como campos legacy para registros existentes.
+  // Nuevos registros deben usar beneficiarioId (unificado con Beneficiario).
   proveedorNombre  String
   proveedorNit     String?
+  beneficiarioId   String?
+  beneficiario     Beneficiario?          @relation(fields: [beneficiarioId], references: [id], onDelete: SetNull)
+  concepto         String?
   numFactura       String
   valor            BigInt                 // COP sin decimales
   fecha            DateTime
@@ -356,7 +368,7 @@ model FacturaProveedor {
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
 
-  pagos            PagoTramite[]          @relation("PagoFacturaProveedor")
+  pagos            PagoTramiteFactura[]
 
   @@unique([tramiteId, numFactura])
   @@map("factura_proveedor")
@@ -372,7 +384,8 @@ model Beneficiario {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  pagos PagoTramite[]
+  pagos             PagoTramite[]
+  facturasProveedor FacturaProveedor[]
 
   @@map("beneficiario")
 }
@@ -392,15 +405,27 @@ model PagoTramite {
   canalPago           CanalPago
   costoBancario       BigInt            @default(0) // Tomado de MatrizRecaudoPago
   orden               Int               @default(0)
-  fechaEsperadaPago   DateTime?
   fechaRealPago       DateTime?
-  facturaProveedorId  String?
-  facturaProveedor    FacturaProveedor?  @relation("PagoFacturaProveedor", fields: [facturaProveedorId], references: [id], onDelete: SetNull)
   viaSocio            Boolean           @default(false)
+  estado              EstadoMovimiento  @default(REALIZADO)
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
 
+  facturasProveedor PagoTramiteFactura[]
+
   @@map("pago_tramite")
+}
+
+// Pivot N↔N entre PagoTramite y FacturaProveedor
+// Un pago puede cubrir varias facturas; una factura puede tener varios pagos.
+model PagoTramiteFactura {
+  pagoId    String
+  pago      PagoTramite      @relation(fields: [pagoId], references: [id], onDelete: Cascade)
+  facturaId String
+  factura   FacturaProveedor @relation(fields: [facturaId], references: [id], onDelete: Restrict)
+
+  @@id([pagoId, facturaId])
+  @@map("pago_tramite_factura")
 }
 
 // ─── Borradores y Facturas ────────────────────────────────────────────────────
@@ -505,23 +530,24 @@ enum TipoPagoFactura {
 
 // ─── Pagos de factura (abonos parciales y devoluciones) ───────────────────────
 model PagoFactura {
-  id              String          @id @default(cuid())
+  id              String           @id @default(cuid())
   facturaId       String
-  factura         Factura         @relation(fields: [facturaId], references: [id], onDelete: Restrict)
+  factura         Factura          @relation(fields: [facturaId], references: [id], onDelete: Restrict)
   destino         DestinoPago
   tipo            TipoPagoFactura
-  monto           BigInt          // COP enteros, siempre positivo
+  monto           BigInt           // COP enteros, siempre positivo
   fecha           DateTime
   // Exactamente uno de (tipoRecaudo, canalPago) debe estar seteado por pago.
   // Regla de dominio validada en código (no en BD) — ver service.ts y cartera.ts.
-  tipoRecaudo     TipoRecaudo?    // Recaudo (entra plata) → costo de matriz_recaudo
-  canalPago       CanalPago?      // Pago (sale plata)  → costo de matriz_pago
-  costoBancario   BigInt          @default(0) // Snapshot del cobro al momento del registro
-  comprobanteKey  String?         // Clave en MinIO del comprobante bancario
-  verificadoBanco Boolean         @default(false)
+  tipoRecaudo     TipoRecaudo?     // Recaudo (entra plata) → costo de matriz_recaudo
+  canalPago       CanalPago?       // Pago (sale plata)  → costo de matriz_pago
+  costoBancario   BigInt           @default(0) // Snapshot del cobro al momento del registro
+  comprobanteKey  String?          // Clave en MinIO del comprobante bancario
+  verificadoBanco Boolean          @default(false)
+  estado          EstadoMovimiento @default(REALIZADO)
   registradoPorId String
-  registradoPor   User            @relation("PagosFacturaRegistrados", fields: [registradoPorId], references: [id])
-  createdAt       DateTime        @default(now())
+  registradoPor   User             @relation("PagosFacturaRegistrados", fields: [registradoPorId], references: [id])
+  createdAt       DateTime         @default(now())
 
   @@map("pago_factura")
 }

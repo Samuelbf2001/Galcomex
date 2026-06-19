@@ -63,7 +63,6 @@ type FilaPago = PagoGlobalRow & {
   editingNumSoporte: string;
   editingValor: string;
   editingCanal: CanalPago;
-  editingFechaEsperada: string;
   editingFechaReal: string;
   dirty: boolean;
   saving: boolean;
@@ -78,7 +77,6 @@ function filaFromRow(row: PagoGlobalRow): FilaPago {
     editingNumSoporte: row.numSoporte ?? "",
     editingValor: row.valor,
     editingCanal: row.canalPago,
-    editingFechaEsperada: isoToDateInput(row.fechaEsperadaPago),
     editingFechaReal: isoToDateInput(row.fechaRealPago),
     dirty: false,
     saving: false,
@@ -112,7 +110,6 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
     const concepto = String(formData.get("concepto") ?? "").trim();
     const numSoporte = String(formData.get("numSoporte") ?? "").trim() || null;
     const canalPago = String(formData.get("canalPago") ?? "") as CanalPago;
-    const fechaEsperadaPago = String(formData.get("fechaEsperadaPago") ?? "").trim() || null;
     const fechaRealPago = String(formData.get("fechaRealPago") ?? "").trim() || null;
 
     if (!tramiteId) {
@@ -134,7 +131,6 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
         numSoporte,
         valor: valorBig,
         canalPago,
-        fechaEsperadaPago,
         fechaRealPago,
       });
       onCreated();
@@ -208,18 +204,11 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
 
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Fecha esperada de pago</span>
-              <input
-                type="date"
-                name="fechaEsperadaPago"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Fecha real de pago</span>
+              <span className="text-sm font-medium text-slate-700">Fecha de pago</span>
               <input
                 type="date"
                 name="fechaRealPago"
+                defaultValue={new Date().toISOString().slice(0, 10)}
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
@@ -299,7 +288,6 @@ type FilaPagoProps = {
       | "editingNumSoporte"
       | "editingValor"
       | "editingCanal"
-      | "editingFechaEsperada"
       | "editingFechaReal"
     >,
     value: string,
@@ -387,17 +375,6 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
           </select>
         </td>
 
-        {/* Fecha esperada */}
-        <td className="px-3 py-2">
-          <input
-            type="date"
-            value={fila.editingFechaEsperada}
-            onChange={(e) => onChange(fila.id, "editingFechaEsperada", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            className="h-8 w-full min-w-[120px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
-          />
-        </td>
-
         {/* Fecha real */}
         <td className="px-3 py-2">
           <input
@@ -444,7 +421,7 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
 
       {fila.errorFila ? (
         <tr className="bg-rose-50">
-          <td colSpan={11} className="px-3 py-1.5 text-xs text-rose-700">
+          <td colSpan={10} className="px-3 py-1.5 text-xs text-rose-700">
             <AlertTriangle className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
             {fila.errorFila} — los valores anteriores se restauraron.
           </td>
@@ -541,7 +518,6 @@ export function PagosWorkspace() {
       | "editingNumSoporte"
       | "editingValor"
       | "editingCanal"
-      | "editingFechaEsperada"
       | "editingFechaReal"
     >,
     value: string,
@@ -576,7 +552,6 @@ export function PagosWorkspace() {
         numSoporte: fila.editingNumSoporte || null,
         valor: valorBig ?? fila.valor,
         canalPago: fila.editingCanal,
-        fechaEsperadaPago: fila.editingFechaEsperada || null,
         fechaRealPago: fila.editingFechaReal || null,
       });
 
@@ -591,14 +566,12 @@ export function PagosWorkspace() {
             valor: updated.valor,
             canalPago: updated.canalPago,
             costoBancario: updated.costoBancario,
-            fechaEsperadaPago: updated.fechaEsperadaPago,
             fechaRealPago: updated.fechaRealPago,
             editingConcepto: updated.concepto,
             editingBeneficiario: updated.beneficiario?.nombre ?? "",
             editingNumSoporte: updated.numSoporte ?? "",
             editingValor: updated.valor,
             editingCanal: updated.canalPago,
-            editingFechaEsperada: isoToDateInput(updated.fechaEsperadaPago),
             editingFechaReal: isoToDateInput(updated.fechaRealPago),
             dirty: false,
             saving: false,
@@ -781,8 +754,7 @@ export function PagosWorkspace() {
                 <th className="border-b border-slate-200 px-3 py-2">N° soporte</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Valor (COP)</th>
                 <th className="border-b border-slate-200 px-3 py-2">Canal</th>
-                <th className="border-b border-slate-200 px-3 py-2">F. esperada</th>
-                <th className="border-b border-slate-200 px-3 py-2">F. real pago</th>
+                <th className="border-b border-slate-200 px-3 py-2">Fecha de pago</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Costo bancario</th>
                 <th className="border-b border-slate-200 px-3 py-2 w-12"></th>
               </tr>
@@ -790,7 +762,7 @@ export function PagosWorkspace() {
             <tbody>
               {loadState === "loading" ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center">
+                  <td colSpan={10} className="px-4 py-12 text-center">
                     <div className="mx-auto flex max-w-md flex-col items-center text-sm text-slate-600">
                       <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
                       <p className="mt-3 font-medium text-slate-950">Cargando pagos…</p>
@@ -799,7 +771,7 @@ export function PagosWorkspace() {
                 </tr>
               ) : loadState === "error" ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center">
+                  <td colSpan={10} className="px-4 py-12 text-center">
                     <div className="mx-auto flex max-w-md flex-col items-center text-sm text-slate-600">
                       <AlertTriangle className="h-6 w-6 text-slate-400" aria-hidden="true" />
                       <p className="mt-3 font-medium text-slate-950">No fue posible cargar los pagos</p>
@@ -817,7 +789,7 @@ export function PagosWorkspace() {
                 </tr>
               ) : filasVisibles.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center text-sm text-slate-500">
+                  <td colSpan={10} className="px-4 py-12 text-center text-sm text-slate-500">
                     No hay pagos que coincidan con los filtros.
                   </td>
                 </tr>

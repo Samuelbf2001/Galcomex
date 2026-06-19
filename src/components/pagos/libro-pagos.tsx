@@ -15,6 +15,7 @@ import {
   CANALES_PAGO,
   type AplicacionRow,
   type CanalPago,
+  type EstadoMovimiento,
   type FacturaProveedorOpcion,
   type LibroPagosData,
   type PagoRow,
@@ -45,8 +46,7 @@ type FilaLibro = PagoRow & {
   editingBeneficiario: BeneficiarioSeleccion | null; // objeto seleccionado
   editingNumSoporte: string;
   editingCanal: CanalPago;
-  editingFechaEsperada: string; // YYYY-MM-DD o ""
-  editingFechaReal: string;     // YYYY-MM-DD o ""
+  editingFechaReal: string; // YYYY-MM-DD o ""
   dirty: boolean; // tiene cambios pendientes de PATCH
   saving: boolean;
   errorFila: string | null;
@@ -59,6 +59,10 @@ function isoToDateInput(iso: string | null): string {
   return d.toISOString().slice(0, 10);
 }
 
+function todayInput(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function filaFromRow(row: PagoRow, saldo: string): FilaLibro {
   return {
     ...row,
@@ -68,8 +72,7 @@ function filaFromRow(row: PagoRow, saldo: string): FilaLibro {
     editingBeneficiario: row.beneficiario ?? null,
     editingNumSoporte: row.numSoporte ?? "",
     editingCanal: row.canalPago,
-    editingFechaEsperada: isoToDateInput(row.fechaEsperadaPago),
-    editingFechaReal: isoToDateInput(row.fechaRealPago),
+    editingFechaReal: isoToDateInput(row.fechaRealPago) || todayInput(),
     dirty: false,
     saving: false,
     errorFila: null,
@@ -319,41 +322,61 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
   const [error, setError] = useState<string | null>(null);
   const [valorRaw, setValorRaw] = useState("");
   const [beneficiarioSel, setBeneficiarioSel] = useState<BeneficiarioSeleccion | null>(null);
+  const [fechaRealPago, setFechaRealPago] = useState(todayInput());
 
-  // --- Facturas de proveedor disponibles para vincular ---
+  // Facturas de proveedor disponibles (multiselect)
   const [facturasDisponibles, setFacturasDisponibles] = useState<FacturaProveedorOpcion[]>([]);
-  const [facturaSeleccionada, setFacturaSeleccionada] = useState<string>("");
-  // No bloqueamos el modal si falla la carga de FPs; simplemente no mostramos opciones.
+  const [facturasSeleccionadas, setFacturasSeleccionadas] = useState<Set<string>>(new Set());
   const [facturasLoadError, setFacturasLoadError] = useState(false);
+
+  // Diálogo de confirmación cuando el valor desvía ±10% del total de facturas seleccionadas
+  type PendingSubmit = { concepto: string; numSoporte: string | null; canalPago: CanalPago; valor: string };
+  const [confirmPending, setConfirmPending] = useState<PendingSubmit | null>(null);
+  const [confirmPct, setConfirmPct] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
-
     fetchFacturasProveedorTramite(tramiteId, controller.signal)
-      .then((todas) => {
-        // Solo las REGISTRADA son pagables
-        setFacturasDisponibles(todas.filter((fp) => fp.estado === "REGISTRADA"));
-      })
+      .then((todas) => setFacturasDisponibles(todas.filter((fp) => fp.estado === "REGISTRADA")))
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        // Error silencioso: el flujo manual sigue operativo
         setFacturasLoadError(true);
       });
-
     return () => controller.abort();
   }, [tramiteId]);
 
-  // Cuando el usuario selecciona una factura, autocompletar valor si está vacío
-  function handleFacturaChange(fpId: string) {
-    setFacturaSeleccionada(fpId);
+  function toggleFactura(id: string) {
+    setFacturasSeleccionadas((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
-    if (!fpId) return;
+  const sumaFacturas: bigint = facturasDisponibles
+    .filter((fp) => facturasSeleccionadas.has(fp.id))
+    .reduce((sum, fp) => {
+      try { return sum + BigInt(fp.valor); } catch { return sum; }
+    }, 0n);
 
-    const fp = facturasDisponibles.find((f) => f.id === fpId);
-    if (!fp) return;
-
-    if (!valorRaw.trim()) {
-      setValorRaw(fp.valor);
+  async function submitPayload(payload: PendingSubmit) {
+    setIsSubmitting(true);
+    setConfirmPending(null);
+    try {
+      const pago = await createPago(tramiteId, {
+        concepto: payload.concepto,
+        beneficiarioId: beneficiarioSel?.id ?? null,
+        numSoporte: payload.numSoporte,
+        valor: payload.valor,
+        canalPago: payload.canalPago,
+        fechaRealPago: fechaRealPago || null,
+        facturaProveedorIds: Array.from(facturasSeleccionadas),
+      });
+      onCreated(pago);
+    } catch (caught) {
+      setError(caught instanceof PagosApiError ? caught.message : "Error al crear el pago.");
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -365,8 +388,6 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
     const concepto = String(formData.get("concepto") ?? "").trim();
     const numSoporte = String(formData.get("numSoporte") ?? "").trim() || null;
     const canalPago = String(formData.get("canalPago") ?? "") as CanalPago;
-    const fechaEsperadaPago = String(formData.get("fechaEsperadaPago") ?? "").trim() || null;
-    const fechaRealPago = String(formData.get("fechaRealPago") ?? "").trim() || null;
 
     const valorBig = parseBigIntInput(valorRaw);
     if (!valorBig || BigInt(valorBig) <= 0n) {
@@ -374,173 +395,203 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
       return;
     }
 
-    setIsSubmitting(true);
-    try {
-      const pago = await createPago(tramiteId, {
-        concepto,
-        beneficiarioId: beneficiarioSel?.id ?? null,
-        numSoporte,
-        valor: valorBig,
-        canalPago,
-        fechaEsperadaPago,
-        fechaRealPago,
-        facturaProveedorId: facturaSeleccionada || null,
-      });
-      onCreated(pago);
-    } catch (caught) {
-      setError(caught instanceof PagosApiError ? caught.message : "Error al crear el pago.");
-    } finally {
-      setIsSubmitting(false);
+    const payload: PendingSubmit = { concepto, numSoporte, canalPago, valor: valorBig };
+
+    // Verificar desviación ±10% solo si hay facturas seleccionadas
+    if (facturasSeleccionadas.size > 0 && sumaFacturas > 0n) {
+      const diff = BigInt(valorBig) - sumaFacturas;
+      const pct = Number((diff * 1000n) / sumaFacturas) / 10;
+      if (Math.abs(pct) > 10) {
+        setConfirmPending(payload);
+        setConfirmPct(pct);
+        return;
+      }
     }
+
+    await submitPayload(payload);
   }
 
-  // Determinar si el selector de FPs debe mostrarse y su estado
-  const hayFacturasDisponibles = facturasDisponibles.length > 0;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-950">Agregar pago</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
-          {/* Factura de proveedor (opcional) */}
-          {!facturasLoadError ? (
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Factura de proveedor (opcional)</span>
-              <select
-                value={facturaSeleccionada}
-                onChange={(ev) => handleFacturaChange(ev.target.value)}
-                disabled={!hayFacturasDisponibles}
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
-              >
-                {hayFacturasDisponibles ? (
-                  <>
-                    <option value="">Ninguna (pago manual)</option>
-                    {facturasDisponibles.map((fp) => (
-                      <option key={fp.id} value={fp.id}>
-                        {fp.numFactura} — {fp.proveedorNombre} — {formatCOP(fp.valor)}
-                      </option>
-                    ))}
-                  </>
-                ) : (
-                  <option value="">No hay facturas de proveedor pendientes</option>
-                )}
-              </select>
-            </label>
-          ) : null}
-
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Concepto *</span>
-            <input
-              name="concepto"
-              required
-              placeholder="Ej. Flete terrestre"
-              className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-            />
-          </label>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Beneficiario</span>
-              <BeneficiarioCombobox
-                value={beneficiarioSel}
-                onChange={setBeneficiarioSel}
-              />
-            </div>
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">N° soporte</span>
-              <input
-                name="numSoporte"
-                placeholder="Ref. comprobante"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Fecha esperada de pago</span>
-              <input
-                type="date"
-                name="fechaEsperadaPago"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Fecha real de pago</span>
-              <input
-                type="date"
-                name="fechaRealPago"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
-              <input
-                value={valorRaw}
-                onChange={(ev) => setValorRaw(ev.target.value)}
-                placeholder="1.000.000"
-                inputMode="numeric"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Canal de pago *</span>
-              <select
-                name="canalPago"
-                required
-                defaultValue="BANCOLOMBIA_TRANSFERENCIA"
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-              >
-                {CANALES_PAGO.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          {error ? (
-            <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-              {error}
-            </div>
-          ) : null}
-
-          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+    <>
+      <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
+        <div className="w-full max-w-xl border border-slate-300 bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+            <h2 className="text-lg font-semibold text-slate-950">Agregar pago</h2>
             <button
               type="button"
               onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
+              aria-label="Cerrar"
             >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
-            >
-              {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-              Guardar pago
+              <X className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
-        </form>
+
+          <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+            {/* Facturas de proveedor — multiselect */}
+            {!facturasLoadError && facturasDisponibles.length > 0 ? (
+              <div className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">
+                  Facturas de proveedor a cubrir
+                  {facturasSeleccionadas.size > 0 ? (
+                    <span className="ml-2 font-normal text-slate-500">
+                      Total: {formatCOP(sumaFacturas.toString())}
+                    </span>
+                  ) : null}
+                </span>
+                <div className="max-h-40 overflow-y-auto divide-y divide-slate-100 border border-slate-200">
+                  {facturasDisponibles.map((fp) => (
+                    <label
+                      key={fp.id}
+                      className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-slate-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={facturasSeleccionadas.has(fp.id)}
+                        onChange={() => toggleFactura(fp.id)}
+                        className="h-4 w-4 accent-cyan-600"
+                      />
+                      <span className="flex-1 text-sm text-slate-700">
+                        <span className="font-medium">{fp.numFactura}</span>
+                        <span className="mx-1 text-slate-400">—</span>
+                        {fp.proveedorNombre}
+                      </span>
+                      <span className="font-mono text-sm text-slate-600">{formatCOP(fp.valor)}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <label className="block space-y-1.5">
+              <span className="text-sm font-medium text-slate-700">Concepto *</span>
+              <input
+                name="concepto"
+                required
+                placeholder="Ej. Flete terrestre"
+                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+              />
+            </label>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Beneficiario</span>
+                <BeneficiarioCombobox value={beneficiarioSel} onChange={setBeneficiarioSel} />
+              </div>
+              <label className="block space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">N° soporte</span>
+                <input
+                  name="numSoporte"
+                  placeholder="Ref. comprobante"
+                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                />
+              </label>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
+                <input
+                  value={valorRaw}
+                  onChange={(ev) => setValorRaw(ev.target.value)}
+                  placeholder="1.000.000"
+                  inputMode="numeric"
+                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Canal de pago *</span>
+                <select
+                  name="canalPago"
+                  required
+                  defaultValue="BANCOLOMBIA_TRANSFERENCIA"
+                  className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+                >
+                  {CANALES_PAGO.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <label className="block space-y-1.5">
+              <span className="text-sm font-medium text-slate-700">Fecha de pago</span>
+              <input
+                type="date"
+                value={fechaRealPago}
+                onChange={(ev) => setFechaRealPago(ev.target.value)}
+                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+              />
+            </label>
+
+            {error ? (
+              <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                {error}
+              </div>
+            ) : null}
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                Guardar pago
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
-    </div>
+
+      {/* Diálogo de confirmación por desviación ±10% */}
+      {confirmPending ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 px-4">
+          <div className="w-full max-w-sm border border-amber-300 bg-white p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" aria-hidden="true" />
+              <div>
+                <p className="font-semibold text-slate-900">Desviación significativa</p>
+                <p className="mt-1 text-sm text-slate-600">
+                  El valor ingresado ({formatCOP(confirmPending.valor)}) difiere{" "}
+                  <span className="font-semibold text-amber-700">
+                    {confirmPct > 0 ? "+" : ""}{confirmPct.toFixed(1)}%
+                  </span>{" "}
+                  del total de facturas seleccionadas ({formatCOP(sumaFacturas.toString())}).
+                  ¿Deseas continuar de todos modos?
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmPending(null)}
+                className="h-9 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                Revisar
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitPayload(confirmPending)}
+                disabled={isSubmitting}
+                className="inline-flex h-9 items-center gap-2 bg-amber-600 px-3 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:opacity-60"
+              >
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                Confirmar pago
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -613,7 +664,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
     id: string,
     field: keyof Pick<
       FilaLibro,
-      "editingValor" | "editingConcepto" | "editingNumSoporte" | "editingCanal" | "editingFechaEsperada" | "editingFechaReal"
+      "editingValor" | "editingConcepto" | "editingNumSoporte" | "editingCanal" | "editingFechaReal"
     >,
     value: string,
   ) {
@@ -675,7 +726,6 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
         numSoporte: fila.editingNumSoporte || null,
         valor: valorBig ?? fila.valor,
         canalPago: fila.editingCanal,
-        fechaEsperadaPago: fila.editingFechaEsperada || null,
         fechaRealPago: fila.editingFechaReal || null,
       });
 
@@ -690,8 +740,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
             editingBeneficiario: updated.beneficiario ?? null,
             editingNumSoporte: updated.numSoporte ?? "",
             editingCanal: updated.canalPago,
-            editingFechaEsperada: isoToDateInput(updated.fechaEsperadaPago),
-            editingFechaReal: isoToDateInput(updated.fechaRealPago),
+            editingFechaReal: isoToDateInput(updated.fechaRealPago) || todayInput(),
             dirty: false,
             saving: false,
             errorFila: null,
@@ -857,11 +906,10 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
                 <th className="border-b border-slate-200 px-3 py-2">Concepto</th>
                 <th className="border-b border-slate-200 px-3 py-2">Beneficiario</th>
                 <th className="border-b border-slate-200 px-3 py-2">N° soporte</th>
-                <th className="border-b border-slate-200 px-3 py-2">Factura / Vía</th>
+                <th className="border-b border-slate-200 px-3 py-2">Facturas / Vía</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Valor (COP)</th>
                 <th className="border-b border-slate-200 px-3 py-2">Canal de pago</th>
-                <th className="border-b border-slate-200 px-3 py-2">F. esperada</th>
-                <th className="border-b border-slate-200 px-3 py-2">F. real pago</th>
+                <th className="border-b border-slate-200 px-3 py-2">Fecha de pago</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Costo bancario</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Saldo corriente</th>
                 <th className="border-b border-slate-200 px-3 py-2 w-12"></th>
@@ -870,7 +918,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
             <tbody>
               {filas.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="px-4 py-10 text-center text-sm text-slate-500">
+                  <td colSpan={11} className="px-4 py-10 text-center text-sm text-slate-500">
                     Sin pagos registrados. Usa &quot;Nuevo pago&quot; para agregar el primero.
                   </td>
                 </tr>
@@ -907,6 +955,24 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
 // Sub-componente: fila editable
 // ---------------------------------------------------------------------------
 
+function estadoMovimientoBadge(estado: EstadoMovimiento) {
+  if (estado === "VERIFICADO") {
+    return (
+      <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+        VERIFICADO
+      </span>
+    );
+  }
+  if (estado === "BORRADOR") {
+    return (
+      <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+        BORRADOR
+      </span>
+    );
+  }
+  return null; // REALIZADO — sin badge extra
+}
+
 type FilaPagoProps = {
   fila: FilaLibro;
   index: number;
@@ -915,7 +981,7 @@ type FilaPagoProps = {
     id: string,
     field: keyof Pick<
       FilaLibro,
-      "editingValor" | "editingConcepto" | "editingNumSoporte" | "editingCanal" | "editingFechaEsperada" | "editingFechaReal"
+      "editingValor" | "editingConcepto" | "editingNumSoporte" | "editingCanal" | "editingFechaReal"
     >,
     value: string,
   ) => void;
@@ -960,19 +1026,24 @@ function FilaPago({ fila, index, isDeleting, onChange, onBeneficiarioChange, onB
           />
         </td>
 
-        {/* Factura proveedor / vía Lucho */}
+        {/* Facturas proveedor vinculadas / vía Lucho / estado */}
         <td className="px-3 py-2">
           <div className="flex flex-col gap-0.5">
-            {fila.numFacturaProveedor ? (
-              <span className="inline-flex items-center border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700">
-                {fila.numFacturaProveedor}
+            {fila.facturasProveedor.map((fp) => (
+              <span
+                key={fp.facturaId}
+                className="inline-flex items-center border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700"
+                title={fp.proveedorNombre}
+              >
+                {fp.numFactura}
               </span>
-            ) : null}
+            ))}
             {fila.viaSocio ? (
               <span className="inline-flex items-center border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
                 vía Lucho
               </span>
             ) : null}
+            {estadoMovimientoBadge(fila.estado)}
           </div>
         </td>
 
@@ -1012,18 +1083,7 @@ function FilaPago({ fila, index, isDeleting, onChange, onBeneficiarioChange, onB
           </select>
         </td>
 
-        {/* Fecha esperada de pago */}
-        <td className="px-3 py-2">
-          <input
-            type="date"
-            value={fila.editingFechaEsperada}
-            onChange={(e) => onChange(fila.id, "editingFechaEsperada", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            className="h-8 w-full min-w-[120px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
-          />
-        </td>
-
-        {/* Fecha real de pago */}
+        {/* Fecha de pago */}
         <td className="px-3 py-2">
           <input
             type="date"
@@ -1075,7 +1135,7 @@ function FilaPago({ fila, index, isDeleting, onChange, onBeneficiarioChange, onB
       {/* Fila de error de la fila */}
       {fila.errorFila ? (
         <tr className="bg-rose-50">
-          <td colSpan={12} className="px-3 py-1.5 text-xs text-rose-700">
+          <td colSpan={11} className="px-3 py-1.5 text-xs text-rose-700">
             <AlertTriangle className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
             {fila.errorFila} — los valores anteriores se restauraron.
           </td>

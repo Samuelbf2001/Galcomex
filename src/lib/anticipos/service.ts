@@ -1,6 +1,22 @@
-import { TipoRecaudo } from "@prisma/client";
+import { EstadoMovimiento, Rol, TipoRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+
+export class VerificarAnticipoPermisoError extends Error {
+  public readonly status = 403;
+  constructor() {
+    super("No tienes permiso para verificar este anticipo");
+    this.name = "VerificarAnticipoPermisoError";
+  }
+}
+
+export class AnticipoNoEncontradoError extends Error {
+  public readonly status = 404;
+  constructor(id: string) {
+    super(`Anticipo ${id} no encontrado`);
+    this.name = "AnticipoNoEncontradoError";
+  }
+}
 
 type CrearAnticipoInput = {
   clienteId: string;
@@ -226,4 +242,38 @@ export async function listarAnticipos(
   }
 
   return resultado;
+}
+
+/**
+ * Cambia el estado de un anticipo (BORRADOR → REALIZADO → VERIFICADO).
+ * Regla de permiso:
+ *   - Cliente SOCIO_LM: solo ADMIN puede verificar.
+ *   - Cliente PROPIO: ADMIN o OPERATIVO pueden verificar.
+ */
+export async function verificarAnticipo(
+  anticipoId: string,
+  nuevoEstado: EstadoMovimiento,
+  usuarioRol: Rol,
+) {
+  const anticipo = await prisma.anticipo.findUnique({
+    where: { id: anticipoId },
+    include: { cliente: { select: { tipo: true } } },
+  });
+
+  if (!anticipo) {
+    throw new AnticipoNoEncontradoError(anticipoId);
+  }
+
+  const esClienteSocioLM = anticipo.cliente.tipo === "SOCIO_LM";
+  const puedeVerificar = usuarioRol === Rol.ADMIN ||
+    (!esClienteSocioLM && usuarioRol === Rol.OPERATIVO);
+
+  if (!puedeVerificar) {
+    throw new VerificarAnticipoPermisoError();
+  }
+
+  return prisma.anticipo.update({
+    where: { id: anticipoId },
+    data: { estado: nuevoEstado },
+  });
 }
