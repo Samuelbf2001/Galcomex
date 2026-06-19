@@ -25,6 +25,7 @@ services:
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
       N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL}
       N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
+      PSE_ENCRYPTION_KEY: ${PSE_ENCRYPTION_KEY}
     depends_on:
       postgres:
         condition: service_healthy
