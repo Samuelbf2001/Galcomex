@@ -467,8 +467,10 @@ export function HojaTramite({ tramiteId }: { tramiteId: string }) {
                     <td className="px-3 py-2 text-xs text-slate-400">{idx + 1}</td>
                     <td className="px-3 py-2 text-slate-800">
                       {p.concepto}
-                      {p.beneficiario ? (
-                        <span className="block text-xs text-slate-400">{p.beneficiario.nombre}</span>
+                      {p.beneficiarios && p.beneficiarios.length > 0 ? (
+                        <span className="block text-xs text-slate-400">
+                          {p.beneficiarios.map((b) => b.nombre).join(", ")}
+                        </span>
                       ) : null}
                     </td>
                     <td className="px-3 py-2 text-xs text-slate-600">{p.numSoporte ?? "—"}</td>

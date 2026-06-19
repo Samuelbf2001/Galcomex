@@ -37,9 +37,9 @@ CREATE TABLE "pago_tramite_factura" (
 
 -- Backfill: migrar relación 1→N existente al pivot N↔N
 INSERT INTO "pago_tramite_factura" ("pago_id", "factura_id")
-SELECT "id", "factura_proveedor_id"
+SELECT "id", "facturaProveedorId"
 FROM   "pago_tramite"
-WHERE  "factura_proveedor_id" IS NOT NULL;
+WHERE  "facturaProveedorId" IS NOT NULL;
 
 -- FK del pivot hacia pago_tramite (CASCADE: si se borra el pago, se borra el vínculo)
 ALTER TABLE "pago_tramite_factura"
@@ -55,5 +55,5 @@ ALTER TABLE "pago_tramite_factura"
 
 -- ─── 7. Drop columna antigua (ya migrada al pivot) ───────────────────────────
 ALTER TABLE "pago_tramite"
-  DROP CONSTRAINT IF EXISTS "pago_tramite_factura_proveedor_id_fkey";
-ALTER TABLE "pago_tramite" DROP COLUMN IF EXISTS "factura_proveedor_id";
+  DROP CONSTRAINT IF EXISTS "pago_tramite_facturaProveedorId_fkey";
+ALTER TABLE "pago_tramite" DROP COLUMN IF EXISTS "facturaProveedorId";

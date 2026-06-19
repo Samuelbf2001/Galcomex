@@ -28,7 +28,8 @@ export type PagoGlobalRow = {
   clienteNombre: string;
   clienteNit: string;
   concepto: string;
-  beneficiario: string | null;
+  /** Nombres de beneficiarios vinculados (display). */
+  beneficiarios: string;
   numSoporte: string | null;
   valor: string; // BigInt serializado
   canalPago: CanalPago;
@@ -84,12 +85,18 @@ function normalizePago(raw: unknown): PagoGlobalRow | null {
     clienteNombre: String(cliente.nombre ?? ""),
     clienteNit: String(cliente.nit ?? ""),
     concepto: String(raw.concepto ?? ""),
-    beneficiario: (() => {
-      if (typeof raw.beneficiario === "object" && raw.beneficiario !== null) {
-        const b = raw.beneficiario as Record<string, unknown>;
-        return typeof b.nombre === "string" ? b.nombre : null;
-      }
-      return null;
+    beneficiarios: (() => {
+      const arr = Array.isArray(raw.beneficiarios) ? raw.beneficiarios : [];
+      return arr
+        .filter((x): x is Record<string, unknown> => typeof x === "object" && x !== null)
+        .map((link) => {
+          const b = typeof link.beneficiario === "object" && link.beneficiario !== null
+            ? (link.beneficiario as Record<string, unknown>)
+            : link;
+          return typeof b.nombre === "string" ? b.nombre : "";
+        })
+        .filter(Boolean)
+        .join(", ");
     })(),
     numSoporte: typeof raw.numSoporte === "string" ? raw.numSoporte : null,
     valor: String(raw.valor ?? "0"),

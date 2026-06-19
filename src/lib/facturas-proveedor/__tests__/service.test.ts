@@ -455,7 +455,8 @@ describe("generarPagoDesdeFactura", () => {
     // Pago creado
     expect(pago.tramiteId).toBe(tramiteId);
     expect(pago.valor).toBe(2_500_000n);
-    expect(pago.beneficiarioId).toBeNull();
+    // beneficiarios ahora en tabla pivot; el registro base no tiene beneficiarioId
+    expect(pago.id).toBeTruthy();
     expect(pago.numSoporte).toBe("FACT-FESP-001");
     const vinculo = await prisma.pagoTramiteFactura.findFirst({
       where: { pagoId: pago.id, facturaId: factura.id },

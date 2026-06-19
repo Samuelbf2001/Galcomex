@@ -182,6 +182,7 @@ model TramiteDO {
   estadoLogs           EstadoLog[]
   auditLogs            AuditLog[]
   facturasProveedor    FacturaProveedor[]
+  pseSolicitudes       PseSolicitud[]
 
   // Un número de DO es único por ciudad y año
   @@unique([ciudad, anio, numero])
@@ -354,7 +355,7 @@ model FacturaProveedor {
   // Nuevos registros deben usar beneficiarioId (unificado con Beneficiario).
   proveedorNombre  String
   proveedorNit     String?
-  beneficiarioId   String?
+  beneficiarioId   String?                @map("beneficiario_id")
   beneficiario     Beneficiario?          @relation(fields: [beneficiarioId], references: [id], onDelete: SetNull)
   concepto         String?
   numFactura       String
@@ -384,7 +385,7 @@ model Beneficiario {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  pagos             PagoTramite[]
+  pagos             PagoTramiteBeneficiario[]
   facturasProveedor FacturaProveedor[]
 
   @@map("beneficiario")
@@ -396,8 +397,6 @@ model PagoTramite {
   tramiteId           String
   tramite             TramiteDO         @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
   concepto            String
-  beneficiarioId      String?
-  beneficiario        Beneficiario?     @relation(fields: [beneficiarioId], references: [id], onDelete: SetNull)
   numSoporte          String?           // Nro declaración DIAN, factura electrónica, etc.
   documentoId         String?
   documento           Documento?        @relation("SoporteDocumento", fields: [documentoId], references: [id])
@@ -411,17 +410,30 @@ model PagoTramite {
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
 
+  beneficiarios     PagoTramiteBeneficiario[]
   facturasProveedor PagoTramiteFactura[]
 
   @@map("pago_tramite")
 }
 
+// Pivot N↔N entre PagoTramite y Beneficiario
+// Un pago puede ir a varios beneficiarios; un beneficiario puede estar en varios pagos.
+model PagoTramiteBeneficiario {
+  pagoId         String       @map("pago_id")
+  beneficiarioId String       @map("beneficiario_id")
+  pago           PagoTramite  @relation(fields: [pagoId], references: [id], onDelete: Cascade)
+  beneficiario   Beneficiario @relation(fields: [beneficiarioId], references: [id], onDelete: Restrict)
+
+  @@id([pagoId, beneficiarioId])
+  @@map("pago_tramite_beneficiario")
+}
+
 // Pivot N↔N entre PagoTramite y FacturaProveedor
 // Un pago puede cubrir varias facturas; una factura puede tener varios pagos.
 model PagoTramiteFactura {
-  pagoId    String
+  pagoId    String           @map("pago_id")
   pago      PagoTramite      @relation(fields: [pagoId], references: [id], onDelete: Cascade)
-  facturaId String
+  facturaId String           @map("factura_id")
   factura   FacturaProveedor @relation(fields: [facturaId], references: [id], onDelete: Restrict)
 
   @@id([pagoId, facturaId])
@@ -550,6 +562,21 @@ model PagoFactura {
   createdAt       DateTime         @default(now())
 
   @@map("pago_factura")
+}
+
+// ─── Solicitudes PSE ─────────────────────────────────────────────────────────
+model PseSolicitud {
+  id            String    @id @default(cuid())
+  tramiteId     String
+  tramite       TramiteDO @relation(fields: [tramiteId], references: [id], onDelete: Cascade)
+  token         String    @unique // Token aleatorio para el link de María Camila
+  codigoPseEnc  String?   // Código cifrado AES-256-GCM: iv:authTag:ciphertext (hex)
+  solicitadoPor String    // userId del operador
+  expiresAt     DateTime
+  respondidaAt  DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@map("pse_solicitud")
 }
 
 // ─── Parámetros del sistema ───────────────────────────────────────────────────

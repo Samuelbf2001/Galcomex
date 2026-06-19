@@ -3,7 +3,8 @@ import { z } from "zod";
 
 export const crearPagoSchema = z.object({
   concepto: z.string().trim().min(1, "El concepto es obligatorio"),
-  beneficiarioId: z.string().min(1).optional().nullable(),
+  /** IDs de beneficiarios (N↔N). Vacío = sin beneficiario. */
+  beneficiarioIds: z.array(z.string().min(1)).optional().default([]),
   numSoporte: z.string().trim().min(1).optional().nullable(),
   documentoId: z.string().min(1).optional().nullable(),
   valor: z.coerce
@@ -32,7 +33,8 @@ export const actualizarPagoSchema = z.object({
     .refine((v) => v >= 0n, { message: "El valor no puede ser negativo" })
     .optional(),
   concepto: z.string().trim().min(1).optional(),
-  beneficiarioId: z.string().min(1).optional().nullable(),
+  /** Si se provee, reemplaza todos los beneficiarios vinculados al pago. */
+  beneficiarioIds: z.array(z.string().min(1)).optional(),
   numSoporte: z.string().trim().min(1).optional().nullable(),
   fechaRealPago: z.coerce.date().optional().nullable(),
 });
