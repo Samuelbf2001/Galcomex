@@ -184,7 +184,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
         throw new PagoFacturaDeOtroTramiteError(fpId, tramiteId);
       }
 
-      if (fp.estado !== EstadoFacturaProveedor.REGISTRADA) {
+      if (fp.estado === EstadoFacturaProveedor.FACTURADA_CLIENTE) {
         throw new FacturaProveedorNoModificableError(fpId, fp.estado);
       }
     }
@@ -335,11 +335,22 @@ export async function eliminarPago(
       throw new Error(`Pago ${pagoId} no encontrado`);
     }
 
-    // Revertir estado de FPs vinculadas antes de borrar el pago
+    // Recalcular estado de FPs vinculadas antes de borrar el pago
     for (const { facturaId } of actual.facturasProveedor) {
+      const pagosRestantes = await tx.pagoTramiteFactura.count({
+        where: {
+          facturaId,
+          NOT: { pagoId },
+        },
+      });
+      const siguienteEstado =
+        pagosRestantes > 0
+          ? EstadoFacturaProveedor.PAGADA
+          : EstadoFacturaProveedor.REGISTRADA;
+
       await tx.facturaProveedor.update({
         where: { id: facturaId },
-        data: { estado: EstadoFacturaProveedor.REGISTRADA },
+        data: { estado: siguienteEstado },
       });
 
       await tx.auditLog.create({
@@ -350,7 +361,7 @@ export async function eliminarPago(
           usuarioId,
           tramiteId: actual.tramiteId,
           antes: normalizeSerializable({ estado: EstadoFacturaProveedor.PAGADA }),
-          despues: normalizeSerializable({ estado: EstadoFacturaProveedor.REGISTRADA }),
+          despues: normalizeSerializable({ estado: siguienteEstado }),
         },
       });
     }

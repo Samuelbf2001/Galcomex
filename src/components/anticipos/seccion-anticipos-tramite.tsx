@@ -112,7 +112,6 @@ export function RegistrarAnticipoTramiteModal({
     const formData = new FormData(e.currentTarget);
     const fecha = String(formData.get("fecha") ?? "").trim();
     const tipoRecaudo = String(formData.get("tipoRecaudo") ?? "") as TipoRecaudo;
-    const verificadoBanco = formData.get("verificadoBanco") === "on";
 
     if (!fecha) {
       setError("La fecha es obligatoria.");
@@ -126,7 +125,7 @@ export function RegistrarAnticipoTramiteModal({
         monto: montoBig,
         fecha: new Date(`${fecha}T00:00:00.000Z`).toISOString(),
         tipoRecaudo,
-        verificadoBanco,
+        verificadoBanco: false,
       });
 
       try {
@@ -234,14 +233,6 @@ export function RegistrarAnticipoTramiteModal({
             </select>
           </label>
 
-          <label className="flex items-center gap-2 text-sm text-slate-700">
-            <input
-              name="verificadoBanco"
-              type="checkbox"
-              className="h-4 w-4 rounded border-slate-300 accent-cyan-600"
-            />
-            Verificado banco
-          </label>
 
           {/* Aplicación a este DO */}
           <div className="space-y-2 border-t border-slate-200 pt-4">

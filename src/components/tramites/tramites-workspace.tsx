@@ -329,7 +329,7 @@ function CreateTramiteDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-3xl border border-slate-300 bg-white shadow-xl">
+      <div className="flex max-h-[calc(100vh-4rem)] w-full max-w-3xl flex-col overflow-hidden border border-slate-300 bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
           <div>
             <h2 className="text-lg font-semibold text-slate-950">Crear tramite</h2>
@@ -348,7 +348,7 @@ function CreateTramiteDialog({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+        <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto px-5 py-5">
           <div className="grid gap-4 md:grid-cols-4">
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Ciudad</span>
