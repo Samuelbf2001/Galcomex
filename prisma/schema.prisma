@@ -369,6 +369,7 @@ model FacturaProveedor {
   updatedAt        DateTime               @updatedAt
 
   pagos            PagoTramiteFactura[]
+  lineasRevision   LineaRevisionFactura[]
 
   @@unique([tramiteId, numFactura])
   @@map("factura_proveedor")
@@ -454,6 +455,9 @@ model BorradorFactura {
   saldoACargoLM         BigInt         @default(0)
   retenciones           BigInt         @default(0)
   conceptosOperacionales Json?
+  // Suma de las líneas (+ comisión + IVA − retenciones). Siempre se calcula.
+  // En trámites SOCIO_LM se promueve a totalFactura; en PROPIO es solo referencia.
+  totalFacturaLineas    BigInt         @default(0)
 
   // JSON inmutable para auditoría — guardado al aprobar, nunca mutable
   snapshotCalculo    Json?
@@ -476,18 +480,39 @@ model BorradorFactura {
   @@map("borrador_factura")
 }
 
+enum LineaRevisionOrigen {
+  AUTO   // generada automáticamente desde el libro de pagos
+  MANUAL // escrita a mano (portal del socio)
+}
+
 model LineaRevision {
-  id         String          @id @default(cuid())
+  id         String              @id @default(cuid())
   borradorId String
-  borrador   BorradorFactura @relation(fields: [borradorId], references: [id], onDelete: Cascade)
+  borrador   BorradorFactura     @relation(fields: [borradorId], references: [id], onDelete: Cascade)
   concepto   String
   numSoporte String?
   valor      BigInt
   observacion String?
-  aprobada   Boolean         @default(false)
-  orden      Int             @default(0)
+  aprobada   Boolean             @default(false)
+  orden      Int                 @default(0)
+  origen     LineaRevisionOrigen @default(AUTO)
+
+  facturas   LineaRevisionFactura[]
 
   @@map("linea_revision")
+}
+
+// Pivot N↔N entre LineaRevision y FacturaProveedor.
+// Una línea de la factura de venta puede respaldarse en varias facturas de
+// proveedor; una factura de proveedor puede aparecer en varias líneas.
+model LineaRevisionFactura {
+  lineaId   String
+  linea     LineaRevision    @relation(fields: [lineaId], references: [id], onDelete: Cascade)
+  facturaId String
+  factura   FacturaProveedor @relation(fields: [facturaId], references: [id], onDelete: Restrict)
+
+  @@id([lineaId, facturaId])
+  @@map("linea_revision_factura")
 }
 
 model Factura {

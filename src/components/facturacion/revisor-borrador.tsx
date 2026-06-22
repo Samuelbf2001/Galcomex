@@ -162,11 +162,13 @@ type VisorSoporteProps = {
   linea: LineaLocal | null;
   /** Map numFactura → FacturaProveedorRow (para cruzar soporte con documentoId) */
   facturasByNumFactura: Map<string, FacturaProveedorRow>;
+  /** Map id → FacturaProveedorRow (para resolver el pivot facturasVinculadas) */
+  facturasById: Map<string, FacturaProveedorRow>;
   /** URL de descarga precargada por documentoId */
   downloadUrlByDocId: Map<string, string>;
 };
 
-function VisorSoporte({ linea, facturasByNumFactura, downloadUrlByDocId }: VisorSoporteProps) {
+function VisorSoporte({ linea, facturasByNumFactura, facturasById, downloadUrlByDocId }: VisorSoporteProps) {
   if (!linea) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 bg-slate-50 text-slate-400">
@@ -178,7 +180,13 @@ function VisorSoporte({ linea, facturasByNumFactura, downloadUrlByDocId }: Visor
 
   // Intentar cruzar numSoporte con numFactura de proveedor para encontrar documentoId
   const facturaVinculada =
-    linea.numSoporte ? facturasByNumFactura.get(linea.numSoporte) : undefined;
+    // Preferir el vínculo real del pivot (facturasVinculadas); si no hay, caer al
+    // cruce histórico por string numSoporte == numFactura (líneas AUTO legacy).
+    linea.facturasVinculadas.length > 0
+      ? facturasById.get(linea.facturasVinculadas[0])
+      : linea.numSoporte
+        ? facturasByNumFactura.get(linea.numSoporte)
+        : undefined;
   const docUrl =
     facturaVinculada?.documentoId
       ? downloadUrlByDocId.get(facturaVinculada.documentoId)
@@ -281,6 +289,10 @@ export function RevisorBorrador({
   const [facturasByNumFactura, setFacturasByNumFactura] = useState<
     Map<string, FacturaProveedorRow>
   >(new Map());
+  // Indexadas por id para resolver el vínculo real del pivot (facturasVinculadas)
+  const [facturasById, setFacturasById] = useState<Map<string, FacturaProveedorRow>>(
+    new Map(),
+  );
   // URL de descarga pre-cargada por documentoId
   const [downloadUrlByDocId, setDownloadUrlByDocId] = useState<Map<string, string>>(
     new Map(),
@@ -294,10 +306,13 @@ export function RevisorBorrador({
         if (cancelled) return;
 
         const byNum = new Map<string, FacturaProveedorRow>();
+        const byId = new Map<string, FacturaProveedorRow>();
         for (const f of facturas) {
           byNum.set(f.numFactura, f);
+          byId.set(f.id, f);
         }
         setFacturasByNumFactura(byNum);
+        setFacturasById(byId);
 
         // Precargar URLs de download para facturas con documentoId
         const docIds = facturas
@@ -530,6 +545,7 @@ export function RevisorBorrador({
             <VisorSoporte
               linea={lineaSeleccionada}
               facturasByNumFactura={facturasByNumFactura}
+              facturasById={facturasById}
               downloadUrlByDocId={downloadUrlByDocId}
             />
           </div>

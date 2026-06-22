@@ -24,6 +24,11 @@ import {
   type AplicacionAnticipoEntry,
 } from "@/components/anticipos/seccion-anticipos-tramite";
 import { SeccionDocumentos } from "@/components/documentos/seccion-documentos";
+import { EditorLineas } from "@/components/facturacion/editor-lineas";
+import {
+  fetchBorradoresDeTramite,
+  type BorradorRow,
+} from "@/components/facturacion/facturacion-api";
 import {
   ModalFacturaProveedor,
   SeccionFacturasProveedor,
@@ -859,9 +864,84 @@ function TabHistorial({ tramite }: { tramite: TramiteDetalleData }) {
   );
 }
 
+// ─── Editor de líneas manuales (portal del socio, solo SOCIO_LM) ──────────────
+
+const ESTADOS_BORRADOR_EDITABLE = ["BORRADOR", "EN_REVISION"];
+
+function SeccionEditorFacturaVenta({
+  tramiteId,
+  userRol,
+}: {
+  tramiteId: string;
+  userRol: string;
+}) {
+  const [borradores, setBorradores] = useState<BorradorRow[]>([]);
+  const [estado, setEstado] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchBorradoresDeTramite(tramiteId, controller.signal)
+      .then((bs) => {
+        setBorradores(bs);
+        setEstado("ready");
+      })
+      .catch((e) => {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        setEstado("error");
+      });
+    return () => controller.abort();
+  }, [tramiteId]);
+
+  if (estado === "loading") {
+    return <p className="mt-4 text-sm text-slate-500">Cargando líneas…</p>;
+  }
+  if (estado === "error" || borradores.length === 0) {
+    return (
+      <p className="mt-4 text-sm text-slate-500">
+        Genera un borrador en Facturación para escribir las líneas a mano.
+      </p>
+    );
+  }
+
+  // El borrador editable más reciente (BORRADOR/EN_REVISION).
+  const editable = borradores.find((b) => ESTADOS_BORRADOR_EDITABLE.includes(b.estado));
+  const borrador = editable ?? borradores[0];
+  const puedeEditar =
+    ESTADOS_BORRADOR_EDITABLE.includes(borrador.estado) &&
+    (userRol === "ADMIN" || userRol === "SOCIO");
+
+  return (
+    <div className="mt-5 border border-slate-200 bg-white p-5">
+      <h3 className="mb-1 text-sm font-semibold text-slate-900">
+        Líneas de la factura de venta
+      </h3>
+      <p className="mb-4 text-xs text-slate-500">
+        Escribe los ítems a mano y vincúlalos a las facturas de proveedor. La suma define el total.
+      </p>
+      <EditorLineas
+        borrador={borrador}
+        tramiteId={tramiteId}
+        puedeEditar={puedeEditar}
+        onBorradorActualizado={(actualizado) =>
+          setBorradores((prev) =>
+            prev.map((b) => (b.id === actualizado.id ? actualizado : b)),
+          )
+        }
+      />
+    </div>
+  );
+}
+
 // ─── Pestaña Facturación ──────────────────────────────────────────────────────
 
-function TabFacturacion({ tramite }: { tramite: TramiteDetalleData }) {
+function TabFacturacion({
+  tramite,
+  userRol,
+}: {
+  tramite: TramiteDetalleData;
+  userRol: string;
+}) {
+  const esSocioLM = tramite.cliente.tipo === "SOCIO_LM";
   const esFacturable =
     tramite.estado === "ENVIADO_A_FACTURAR" ||
     tramite.estado === "FACTURADO" ||
@@ -899,6 +979,9 @@ function TabFacturacion({ tramite }: { tramite: TramiteDetalleData }) {
         <p className="mt-4 text-xs text-slate-500">
           Enviado a facturar: {formatDate(tramite.fechaEnviadoAFacturar)}
         </p>
+      ) : null}
+      {esSocioLM ? (
+        <SeccionEditorFacturaVenta tramiteId={tramite.id} userRol={userRol} />
       ) : null}
     </div>
   );
@@ -1170,7 +1253,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
           />
         ) : null}
         {activeTab === "facturacion" ? (
-          <TabFacturacion tramite={tramite} />
+          <TabFacturacion tramite={tramite} userRol={userRol} />
         ) : null}
         {activeTab === "historial" ? (
           <TabHistorial tramite={tramite} />

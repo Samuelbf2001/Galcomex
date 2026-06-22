@@ -15,6 +15,10 @@ export type LineaRevisionRow = {
   numSoporte: string | null;
   valor: string; // BigInt serializado
   orden: number;
+  observacion: string | null;
+  origen: "AUTO" | "MANUAL";
+  /** IDs de facturas de proveedor vinculadas (pivot N↔N). */
+  facturasVinculadas: string[];
 };
 
 /** Un concepto operacional: nombre + valor (BigInt como string) */
@@ -39,6 +43,8 @@ export type BorradorRow = {
   saldoACargoLM: string; // BigInt
   /** Total retenciones (RETE IVA + RETE FTE + RETE ICA). Fallback "0". */
   retenciones: string; // BigInt
+  /** Total por líneas (Σ líneas + comisión + IVA − retenciones). BigInt. */
+  totalFacturaLineas: string; // BigInt
   /** Desglose de conceptos operacionales de la comisión. Null si no aplica. */
   conceptosOperacionales: ConceptoOperacionalRow[] | null;
   estado: EstadoBorrador;
@@ -101,6 +107,13 @@ async function parseErrorMessage(response: Response): Promise<string> {
 }
 
 function normalizeLinea(raw: Record<string, unknown>): LineaRevisionRow {
+  const facturasVinculadas: string[] = Array.isArray(raw.facturas)
+    ? (raw.facturas as unknown[])
+        .filter(isRecord)
+        .map((f) => String(f.facturaId ?? ""))
+        .filter((id) => id !== "")
+    : [];
+
   return {
     id: String(raw.id ?? ""),
     borradorId: String(raw.borradorId ?? ""),
@@ -108,6 +121,9 @@ function normalizeLinea(raw: Record<string, unknown>): LineaRevisionRow {
     numSoporte: typeof raw.numSoporte === "string" ? raw.numSoporte : null,
     valor: String(raw.valor ?? "0"),
     orden: typeof raw.orden === "number" ? raw.orden : 0,
+    observacion: typeof raw.observacion === "string" ? raw.observacion : null,
+    origen: raw.origen === "MANUAL" ? "MANUAL" : "AUTO",
+    facturasVinculadas,
   };
 }
 
@@ -154,6 +170,7 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
     saldoAFavorLM: String(raw.saldoAFavorLM ?? "0"),
     saldoACargoLM: String(raw.saldoACargoLM ?? "0"),
     retenciones: String(raw.retenciones ?? "0"),
+    totalFacturaLineas: String(raw.totalFacturaLineas ?? "0"),
     conceptosOperacionales: normalizeConceptos(raw.conceptosOperacionales),
     estado: (raw.estado as EstadoBorrador) ?? "BORRADOR",
     numFacturaSiigo: typeof raw.numFacturaSiigo === "string" ? raw.numFacturaSiigo : null,
@@ -330,6 +347,75 @@ export async function transicionarBorrador(
   }
 
   return normalizeBorrador(payload.borrador);
+}
+
+// ─── Líneas manuales ──────────────────────────────────────────────────────────
+
+export type CrearLineaInput = {
+  concepto: string;
+  numSoporte?: string;
+  valor: string; // BigInt como string
+  observacion?: string;
+  facturaIds?: string[];
+};
+
+export type ActualizarLineaInput = {
+  concepto?: string;
+  numSoporte?: string | null;
+  valor?: string;
+  observacion?: string | null;
+  facturaIds?: string[];
+};
+
+async function parseBorradorResponse(response: Response): Promise<BorradorRow> {
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error (${response.status}).`;
+    throw new FacturacionApiError(message, response.status);
+  }
+  if (!isRecord(payload) || !isRecord(payload.borrador)) {
+    throw new FacturacionApiError("Respuesta de líneas no válida.");
+  }
+  return normalizeBorrador(payload.borrador);
+}
+
+export async function crearLineaManual(
+  borradorId: string,
+  input: CrearLineaInput,
+): Promise<BorradorRow> {
+  const response = await fetch(`/api/borradores/${borradorId}/lineas`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseBorradorResponse(response);
+}
+
+export async function actualizarLinea(
+  borradorId: string,
+  lineaId: string,
+  input: ActualizarLineaInput,
+): Promise<BorradorRow> {
+  const response = await fetch(`/api/borradores/${borradorId}/lineas/${lineaId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseBorradorResponse(response);
+}
+
+export async function eliminarLinea(
+  borradorId: string,
+  lineaId: string,
+): Promise<BorradorRow> {
+  const response = await fetch(`/api/borradores/${borradorId}/lineas/${lineaId}`, {
+    method: "DELETE",
+    headers: { accept: "application/json" },
+  });
+  return parseBorradorResponse(response);
 }
 
 // ─── Export SIIGO ───────────────────────────────────────────────────────────────

@@ -30,6 +30,33 @@ export const generarBorradorPayloadSchema = z.object({
 
 export type GenerarBorradorPayload = z.infer<typeof generarBorradorPayloadSchema>;
 
+// ── Líneas manuales del borrador ────────────────────────────────────────────
+
+export const crearLineaPayloadSchema = z.object({
+  concepto: z.string().trim().min(1, "El concepto es obligatorio"),
+  numSoporte: z.string().trim().min(1).optional(),
+  valor: z.coerce.bigint().positive(),
+  observacion: z.string().trim().min(1).optional(),
+  /** Facturas de proveedor que respaldan esta línea (N↔N). */
+  facturaIds: z.array(z.string().min(1)).default([]),
+});
+
+export type CrearLineaPayload = z.infer<typeof crearLineaPayloadSchema>;
+
+export const actualizarLineaPayloadSchema = z
+  .object({
+    concepto: z.string().trim().min(1).optional(),
+    numSoporte: z.string().trim().min(1).nullable().optional(),
+    valor: z.coerce.bigint().positive().optional(),
+    observacion: z.string().trim().min(1).nullable().optional(),
+    facturaIds: z.array(z.string().min(1)).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, {
+    message: "Debe enviarse al menos un campo a actualizar",
+  });
+
+export type ActualizarLineaPayload = z.infer<typeof actualizarLineaPayloadSchema>;
+
 // ── Transición de estado ──────────────────────────────────────────────────────
 
 export const transicionBorradorPayloadSchema = z

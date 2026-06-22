@@ -11,6 +11,7 @@
 import { EstadoBorrador, Prisma } from "@prisma/client";
 
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
+import { calcularTotalPorLineas } from "@/lib/calculations/total-lineas";
 import { prisma } from "@/lib/db/prisma";
 import { getParametrosSistema } from "@/lib/parametros/service";
 
@@ -127,7 +128,10 @@ async function getBorradorCompleto(borradorId: string) {
   return prisma.borradorFactura.findUnique({
     where: { id: borradorId },
     include: {
-      lineasRevision: { orderBy: { orden: "asc" } },
+      lineasRevision: {
+        orderBy: { orden: "asc" },
+        include: { facturas: { include: { factura: true } } },
+      },
       factura: true,
     },
   });
@@ -224,6 +228,15 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   // ── Calcular ──────────────────────────────────────────────────────────────
   const resultado = calcularBorrador(dto);
 
+  // Total de referencia por líneas (las líneas AUTO = los pagos). Para PROPIO es
+  // solo referencia; en SOCIO_LM se promueve a totalFactura al editar manualmente.
+  const totalFacturaLineas = calcularTotalPorLineas({
+    lineas: pagos.map((p) => ({ valor: p.valor })),
+    comision: resultado.comision,
+    ivaComision: resultado.ivaComision,
+    retenciones: resultado.retenciones,
+  });
+
   // ── Persistir en transacción ──────────────────────────────────────────────
   return prisma.$transaction(async (tx) => {
     const borrador = await tx.borradorFactura.create({
@@ -241,6 +254,7 @@ export async function generarBorrador(input: GenerarBorradorInput) {
         saldoAFavorLM: resultado.saldoAFavorLM,
         saldoACargoLM: resultado.saldoACargoLM,
         retenciones: resultado.retenciones,
+        totalFacturaLineas,
         conceptosOperacionales: conceptosOperacionales
           ? normalizeSerializable(conceptosOperacionales)
           : undefined,
@@ -362,7 +376,10 @@ export async function transicionarBorrador(
         }),
       },
       include: {
-        lineasRevision: { orderBy: { orden: "asc" } },
+        lineasRevision: {
+          orderBy: { orden: "asc" },
+          include: { facturas: { include: { factura: true } } },
+        },
         factura: true,
       },
     });
@@ -387,7 +404,10 @@ export async function transicionarBorrador(
       const reloaded = await tx.borradorFactura.findUnique({
         where: { id: borradorId },
         include: {
-          lineasRevision: { orderBy: { orden: "asc" } },
+          lineasRevision: {
+            orderBy: { orden: "asc" },
+            include: { facturas: { include: { factura: true } } },
+          },
           factura: true,
         },
       });
@@ -441,7 +461,10 @@ export async function listarBorradores(tramiteId: string) {
   return prisma.borradorFactura.findMany({
     where: { tramiteId },
     include: {
-      lineasRevision: { orderBy: { orden: "asc" } },
+      lineasRevision: {
+        orderBy: { orden: "asc" },
+        include: { facturas: { include: { factura: true } } },
+      },
       factura: true,
     },
     orderBy: { createdAt: "desc" },
