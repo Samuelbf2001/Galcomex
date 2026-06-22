@@ -43,7 +43,7 @@ type FilaLibro = PagoRow & {
   saldoLocal: string; // BigInt serializado
   editingValor: string; // cadena de texto mientras edita
   editingConcepto: string;
-  editingBeneficiario: BeneficiarioSeleccion | null; // objeto seleccionado
+  editingBeneficiarios: BeneficiarioSeleccion[]; // lista seleccionada N↔N
   editingNumSoporte: string;
   editingCanal: CanalPago;
   editingFechaReal: string; // YYYY-MM-DD o ""
@@ -69,7 +69,7 @@ function filaFromRow(row: PagoRow, saldo: string): FilaLibro {
     saldoLocal: saldo,
     editingValor: row.valor,
     editingConcepto: row.concepto,
-    editingBeneficiario: row.beneficiario ?? null,
+    editingBeneficiarios: row.beneficiarios ?? [],
     editingNumSoporte: row.numSoporte ?? "",
     editingCanal: row.canalPago,
     editingFechaReal: isoToDateInput(row.fechaRealPago) || todayInput(),
@@ -311,18 +311,23 @@ function ResumenLibro({ libro }: { libro: LibroPagosData; filas: FilaLibro[] }) 
 // Sub-componente: modal de nuevo pago
 // ---------------------------------------------------------------------------
 
+type PseStep = "form" | "soporte";
+type PendingSubmit = { concepto: string; numSoporte: string | null; canalPago: CanalPago; valor: string };
+
 type NuevoPagoModalProps = {
   tramiteId: string;
+  tramiteConsecutivo: string;
   onClose: () => void;
   onCreated: (pago: PagoRow) => void;
 };
 
-export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModalProps) {
+export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreated }: NuevoPagoModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [valorRaw, setValorRaw] = useState("");
-  const [beneficiarioSel, setBeneficiarioSel] = useState<BeneficiarioSeleccion | null>(null);
+  const [beneficiariosSel, setBeneficiariosSel] = useState<BeneficiarioSeleccion[]>([]);
   const [fechaRealPago, setFechaRealPago] = useState(todayInput());
+  const [canalPago, setCanalPago] = useState<CanalPago>(CANALES_PAGO[0]?.value ?? "TRANSF_BANCOLOMBIA");
 
   // Facturas de proveedor disponibles (multiselect)
   const [facturasDisponibles, setFacturasDisponibles] = useState<FacturaProveedorOpcion[]>([]);
@@ -330,9 +335,33 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
   const [facturasLoadError, setFacturasLoadError] = useState(false);
 
   // Diálogo de confirmación cuando el valor desvía ±10% del total de facturas seleccionadas
-  type PendingSubmit = { concepto: string; numSoporte: string | null; canalPago: CanalPago; valor: string };
   const [confirmPending, setConfirmPending] = useState<PendingSubmit | null>(null);
   const [confirmPct, setConfirmPct] = useState(0);
+
+  // PSE: wizard de 2 pasos (form → soporte)
+  const [pseStep, setPseStep] = useState<PseStep>("form");
+  const [psePendingPayload, setPsePendingPayload] = useState<PendingSubmit | null>(null);
+  const [isRequestingToken, setIsRequestingToken] = useState(false);
+  const [pseCodigoRecibido, setPseCodigoRecibido] = useState<string | null>(null);
+  const [soporteFile, setSoporteFile] = useState<File | null>(null);
+  const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+
+  // Polling: espera el código PSE que María Camila ingresa en su landing
+  useEffect(() => {
+    if (pseStep !== "soporte" || pseCodigoRecibido) return;
+    const interval = setInterval(() => {
+      fetch(`/api/tramites/${tramiteId}/pse-codigo`, { method: "GET" })
+        .then(async (r) => {
+          if (!r.ok) return;
+          const data = (await r.json()) as { ready: boolean; codigo?: string };
+          if (data.ready && data.codigo) {
+            setPseCodigoRecibido(data.codigo);
+          }
+        })
+        .catch(() => undefined);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [pseStep, pseCodigoRecibido, tramiteId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -365,7 +394,7 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
     try {
       const pago = await createPago(tramiteId, {
         concepto: payload.concepto,
-        beneficiarioId: beneficiarioSel?.id ?? null,
+        beneficiarioIds: beneficiariosSel.map((b) => b.id),
         numSoporte: payload.numSoporte,
         valor: payload.valor,
         canalPago: payload.canalPago,
@@ -380,6 +409,62 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
     }
   }
 
+  async function notificarCamilaPse(payload: PendingSubmit) {
+    setIsRequestingToken(true);
+    setError(null);
+    try {
+      const resp = await fetch(`/api/tramites/${tramiteId}/pse-token`, {
+        method: "POST",
+        headers: { accept: "application/json" },
+      });
+      if (!resp.ok) throw new Error("No fue posible notificar a María Camila.");
+      setPsePendingPayload(payload);
+      setPseStep("soporte");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Error al solicitar el pago PSE.");
+    } finally {
+      setIsRequestingToken(false);
+    }
+  }
+
+  async function finalizarPsePago() {
+    if (!psePendingPayload || !soporteFile || !pseCodigoRecibido) return;
+    setIsUploadingDoc(true);
+    setError(null);
+    try {
+      const uploadResp = await fetch("/api/storage", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          action: "uploadUrl",
+          consecutivo: tramiteConsecutivo,
+          categoria: "soporte-pse",
+          fileName: soporteFile.name,
+          contentType: soporteFile.type,
+          sizeBytes: soporteFile.size,
+        }),
+      });
+      if (!uploadResp.ok) {
+        const err = await uploadResp.json().catch(() => ({})) as Record<string, unknown>;
+        throw new Error(typeof err.error === "string" ? err.error : "Error al obtener URL de subida.");
+      }
+      const { uploadUrl } = await uploadResp.json() as { uploadUrl: { url: string; storageKey: string } };
+
+      const putResp = await fetch(uploadUrl.url, {
+        method: "PUT",
+        body: soporteFile,
+        headers: { "content-type": soporteFile.type },
+      });
+      if (!putResp.ok) throw new Error("Error al subir el documento.");
+
+      await submitPayload({ ...psePendingPayload, numSoporte: pseCodigoRecibido });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Error al finalizar el pago PSE.");
+    } finally {
+      setIsUploadingDoc(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
@@ -387,7 +472,6 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
     const formData = new FormData(e.currentTarget);
     const concepto = String(formData.get("concepto") ?? "").trim();
     const numSoporte = String(formData.get("numSoporte") ?? "").trim() || null;
-    const canalPago = String(formData.get("canalPago") ?? "") as CanalPago;
 
     const valorBig = parseBigIntInput(valorRaw);
     if (!valorBig || BigInt(valorBig) <= 0n) {
@@ -396,6 +480,12 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
     }
 
     const payload: PendingSubmit = { concepto, numSoporte, canalPago, valor: valorBig };
+
+    // Flujo PSE: notifica a María Camila y pasa directo a adjuntar soporte
+    if (canalPago === "PSE") {
+      await notificarCamilaPse(payload);
+      return;
+    }
 
     // Verificar desviación ±10% solo si hay facturas seleccionadas
     if (facturasSeleccionadas.size > 0 && sumaFacturas > 0n) {
@@ -411,12 +501,19 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
     await submitPayload(payload);
   }
 
+  const titleByStep: Record<PseStep, string> = {
+    form: "Agregar pago",
+    soporte: "Adjuntar soporte",
+  };
+
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
         <div className="w-full max-w-xl border border-slate-300 bg-white shadow-xl">
+
+          {/* Cabecera */}
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-            <h2 className="text-lg font-semibold text-slate-950">Agregar pago</h2>
+            <h2 className="text-lg font-semibold text-slate-950">{titleByStep[pseStep]}</h2>
             <button
               type="button"
               onClick={onClose}
@@ -427,132 +524,241 @@ export function NuevoPagoModal({ tramiteId, onClose, onCreated }: NuevoPagoModal
             </button>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
-            {/* Facturas de proveedor — multiselect */}
-            {!facturasLoadError && facturasDisponibles.length > 0 ? (
+          {/* Indicador de pasos — visible cuando el canal es PSE o ya avanzó */}
+          {(canalPago === "PSE" || pseStep !== "form") ? (
+            <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-5 py-2 text-xs">
+              {(["form", "soporte"] as PseStep[]).map((step, i) => {
+                const labels = ["1. Datos", "2. Soporte"];
+                const active = step === pseStep;
+                const done = step === "form" && pseStep === "soporte";
+                return (
+                  <span key={step} className="flex items-center gap-2">
+                    {i > 0 && <span className="text-slate-300">›</span>}
+                    <span className={active ? "font-semibold text-cyan-700" : done ? "text-slate-500" : "text-slate-300"}>
+                      {labels[i]}
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {/* Paso 1: formulario de datos del pago */}
+          {pseStep === "form" ? (
+            <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+              {/* Facturas de proveedor — multiselect (opcional) */}
               <div className="space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">
                   Facturas de proveedor a cubrir
+                  <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
                   {facturasSeleccionadas.size > 0 ? (
                     <span className="ml-2 font-normal text-slate-500">
-                      Total: {formatCOP(sumaFacturas.toString())}
+                      — Total: {formatCOP(sumaFacturas.toString())}
                     </span>
                   ) : null}
                 </span>
-                <div className="max-h-40 overflow-y-auto divide-y divide-slate-100 border border-slate-200">
-                  {facturasDisponibles.map((fp) => (
-                    <label
-                      key={fp.id}
-                      className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-slate-50"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={facturasSeleccionadas.has(fp.id)}
-                        onChange={() => toggleFactura(fp.id)}
-                        className="h-4 w-4 accent-cyan-600"
-                      />
-                      <span className="flex-1 text-sm text-slate-700">
-                        <span className="font-medium">{fp.numFactura}</span>
-                        <span className="mx-1 text-slate-400">—</span>
-                        {fp.proveedorNombre}
-                      </span>
-                      <span className="font-mono text-sm text-slate-600">{formatCOP(fp.valor)}</span>
-                    </label>
-                  ))}
-                </div>
+                {facturasLoadError ? (
+                  <p className="text-xs text-rose-600">No se pudieron cargar las facturas.</p>
+                ) : facturasDisponibles.length === 0 ? (
+                  <p className="rounded border border-slate-200 px-3 py-2 text-xs text-slate-400">
+                    Sin facturas de proveedor registradas para este trámite.
+                  </p>
+                ) : (
+                  <div className="max-h-40 overflow-y-auto divide-y divide-slate-100 border border-slate-200">
+                    {facturasDisponibles.map((fp) => (
+                      <label
+                        key={fp.id}
+                        className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-slate-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={facturasSeleccionadas.has(fp.id)}
+                          onChange={() => toggleFactura(fp.id)}
+                          className="h-4 w-4 accent-cyan-600"
+                        />
+                        <span className="flex-1 text-sm text-slate-700">
+                          <span className="font-medium">{fp.numFactura}</span>
+                          <span className="mx-1 text-slate-400">—</span>
+                          {fp.proveedorNombre}
+                        </span>
+                        <span className="font-mono text-sm text-slate-600">{formatCOP(fp.valor)}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
-            ) : null}
 
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Concepto *</span>
-              <input
-                name="concepto"
-                required
-                placeholder="Ej. Flete terrestre"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">Beneficiario</span>
-                <BeneficiarioCombobox value={beneficiarioSel} onChange={setBeneficiarioSel} />
-              </div>
               <label className="block space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">N° soporte</span>
+                <span className="text-sm font-medium text-slate-700">Concepto *</span>
                 <input
-                  name="numSoporte"
-                  placeholder="Ref. comprobante"
-                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-                />
-              </label>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
-                <input
-                  value={valorRaw}
-                  onChange={(ev) => setValorRaw(ev.target.value)}
-                  placeholder="1.000.000"
-                  inputMode="numeric"
-                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-                />
-              </label>
-              <label className="block space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">Canal de pago *</span>
-                <select
-                  name="canalPago"
+                  name="concepto"
                   required
-                  defaultValue="BANCOLOMBIA_TRANSFERENCIA"
-                  className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-                >
-                  {CANALES_PAGO.map((c) => (
-                    <option key={c.value} value={c.value}>{c.label}</option>
-                  ))}
-                </select>
+                  placeholder="Ej. Flete terrestre"
+                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                />
               </label>
-            </div>
 
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Fecha de pago</span>
-              <input
-                type="date"
-                value={fechaRealPago}
-                onChange={(ev) => setFechaRealPago(ev.target.value)}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-
-            {error ? (
-              <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                {error}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">Beneficiarios</span>
+                  <BeneficiarioCombobox
+                    mode="multi"
+                    value={beneficiariosSel}
+                    onChange={setBeneficiariosSel}
+                    placeholder="Buscar o crear beneficiario…"
+                  />
+                </div>
+                <label className="block space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">N° soporte</span>
+                  <input
+                    name="numSoporte"
+                    placeholder="Ref. comprobante"
+                    className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                  />
+                </label>
               </div>
-            ) : null}
 
-            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-              <button
-                type="button"
-                onClick={onClose}
-                className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
-              >
-                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-                Guardar pago
-              </button>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
+                  <input
+                    value={valorRaw}
+                    onChange={(ev) => setValorRaw(ev.target.value)}
+                    placeholder="1.000.000"
+                    inputMode="numeric"
+                    className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">Canal de pago *</span>
+                  <select
+                    name="canalPago"
+                    required
+                    value={canalPago}
+                    onChange={(ev) => setCanalPago(ev.target.value as CanalPago)}
+                    className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+                  >
+                    {CANALES_PAGO.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <label className="block space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Fecha de pago</span>
+                <input
+                  type="date"
+                  value={fechaRealPago}
+                  onChange={(ev) => setFechaRealPago(ev.target.value)}
+                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                />
+              </label>
+
+              {error ? (
+                <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  {error}
+                </div>
+              ) : null}
+
+              <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting || isRequestingToken}
+                  className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {isSubmitting || isRequestingToken ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : null}
+                  {canalPago === "PSE" ? "Solicitar pago PSE" : "Guardar pago"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          {/* Paso 2: esperar código PSE de María Camila + adjuntar soporte */}
+          {pseStep === "soporte" ? (
+            <div className="space-y-4 px-5 py-5">
+
+              {/* Estado del código */}
+              {!pseCodigoRecibido ? (
+                <div className="flex items-center gap-3 rounded border border-amber-200 bg-amber-50 px-4 py-3">
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-600" aria-hidden="true" />
+                  <div>
+                    <p className="text-sm font-medium text-amber-800">Esperando a María Camila…</p>
+                    <p className="text-xs text-amber-600">Se le envió el link para que ingrese el código PSE. Esta pantalla se actualiza automáticamente.</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 rounded border border-emerald-200 bg-emerald-50 px-4 py-3">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+                  <div>
+                    <p className="text-xs text-emerald-600">Código PSE recibido</p>
+                    <p className="text-lg font-bold tracking-widest text-emerald-800">{pseCodigoRecibido}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Soporte — solo habilitado cuando llegó el código */}
+              <label className="block space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Documento de soporte *</span>
+                <input
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  disabled={!pseCodigoRecibido}
+                  onChange={(e) => setSoporteFile(e.target.files?.[0] ?? null)}
+                  className="block w-full text-sm text-slate-600 file:mr-3 file:border file:border-slate-300 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-50 disabled:opacity-40"
+                />
+                {soporteFile ? (
+                  <p className="text-xs text-slate-500">
+                    Seleccionado: <span className="font-medium">{soporteFile.name}</span>
+                    {" "}({(soporteFile.size / 1024).toFixed(0)} KB)
+                  </p>
+                ) : null}
+              </label>
+
+              {error ? (
+                <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  {error}
+                </div>
+              ) : null}
+
+              <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void finalizarPsePago()}
+                  disabled={!pseCodigoRecibido || !soporteFile || isUploadingDoc || isSubmitting}
+                  className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {isUploadingDoc || isSubmitting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : null}
+                  Finalizar pago
+                </button>
+              </div>
             </div>
-          </form>
+          ) : null}
+
         </div>
       </div>
 
-      {/* Diálogo de confirmación por desviación ±10% */}
+      {/* Diálogo de confirmación por desviación ±10% (solo flujo no-PSE) */}
       {confirmPending ? (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 px-4">
           <div className="w-full max-w-sm border border-amber-300 bg-white p-5 shadow-2xl">
@@ -679,15 +885,15 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
     });
   }
 
-  function handleBeneficiarioChange(id: string, beneficiario: BeneficiarioSeleccion | null) {
+  function handleBeneficiariosChange(id: string, beneficiarios: BeneficiarioSeleccion[]) {
     setFilas((prev) =>
       prev.map((f) =>
         f.id === id
-          ? { ...f, editingBeneficiario: beneficiario, dirty: true, errorFila: null }
+          ? { ...f, editingBeneficiarios: beneficiarios, dirty: true, errorFila: null }
           : f,
       ),
     );
-    // Auto-save inmediato al cambiar beneficiario (es un cambio discreto, no texto libre)
+    // Auto-save inmediato al cambiar beneficiarios (cambio discreto, no texto libre)
     setTimeout(() => void commitFila(id), 0);
   }
 
@@ -722,7 +928,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
     try {
       const updated = await updatePago(tramiteId, id, {
         concepto: fila.editingConcepto,
-        beneficiarioId: fila.editingBeneficiario?.id ?? null,
+        beneficiarioIds: fila.editingBeneficiarios.map((b) => b.id),
         numSoporte: fila.editingNumSoporte || null,
         valor: valorBig ?? fila.valor,
         canalPago: fila.editingCanal,
@@ -737,7 +943,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
             ...updated,
             editingValor: updated.valor,
             editingConcepto: updated.concepto,
-            editingBeneficiario: updated.beneficiario ?? null,
+            editingBeneficiarios: updated.beneficiarios ?? [],
             editingNumSoporte: updated.numSoporte ?? "",
             editingCanal: updated.canalPago,
             editingFechaReal: isoToDateInput(updated.fechaRealPago) || todayInput(),
@@ -904,7 +1110,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
               <tr>
                 <th className="border-b border-slate-200 px-3 py-2 w-8">#</th>
                 <th className="border-b border-slate-200 px-3 py-2">Concepto</th>
-                <th className="border-b border-slate-200 px-3 py-2">Beneficiario</th>
+                <th className="border-b border-slate-200 px-3 py-2">Beneficiarios</th>
                 <th className="border-b border-slate-200 px-3 py-2">N° soporte</th>
                 <th className="border-b border-slate-200 px-3 py-2">Facturas / Vía</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Valor (COP)</th>
@@ -930,7 +1136,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
                   index={idx + 1}
                   isDeleting={deletingId === fila.id}
                   onChange={handleFieldChange}
-                  onBeneficiarioChange={handleBeneficiarioChange}
+                  onBeneficiariosChange={handleBeneficiariosChange}
                   onBlur={handleBlurField}
                   onDelete={handleDelete}
                 />
@@ -943,6 +1149,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
       {modalOpen ? (
         <NuevoPagoModal
           tramiteId={tramiteId}
+          tramiteConsecutivo={tramite.consecutivo}
           onClose={() => setModalOpen(false)}
           onCreated={handlePagoCreado}
         />
@@ -985,12 +1192,12 @@ type FilaPagoProps = {
     >,
     value: string,
   ) => void;
-  onBeneficiarioChange: (id: string, b: BeneficiarioSeleccion | null) => void;
+  onBeneficiariosChange: (id: string, b: BeneficiarioSeleccion[]) => void;
   onBlur: (id: string) => void;
   onDelete: (id: string) => void;
 };
 
-function FilaPago({ fila, index, isDeleting, onChange, onBeneficiarioChange, onBlur, onDelete }: FilaPagoProps) {
+function FilaPago({ fila, index, isDeleting, onChange, onBeneficiariosChange, onBlur, onDelete }: FilaPagoProps) {
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
@@ -1006,11 +1213,12 @@ function FilaPago({ fila, index, isDeleting, onChange, onBeneficiarioChange, onB
           />
         </td>
 
-        {/* Beneficiario */}
-        <td className="px-3 py-2 min-w-[180px]">
+        {/* Beneficiarios (multi) */}
+        <td className="px-3 py-2 min-w-[200px]">
           <BeneficiarioCombobox
-            value={fila.editingBeneficiario}
-            onChange={(b) => onBeneficiarioChange(fila.id, b)}
+            mode="multi"
+            value={fila.editingBeneficiarios}
+            onChange={(b) => onBeneficiariosChange(fila.id, b)}
             placeholder="—"
           />
         </td>

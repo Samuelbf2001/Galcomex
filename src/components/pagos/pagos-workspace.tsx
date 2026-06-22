@@ -59,7 +59,6 @@ function isoToDateInput(iso: string | null): string {
 
 type FilaPago = PagoGlobalRow & {
   editingConcepto: string;
-  editingBeneficiario: string;
   editingNumSoporte: string;
   editingValor: string;
   editingCanal: CanalPago;
@@ -73,7 +72,6 @@ function filaFromRow(row: PagoGlobalRow): FilaPago {
   return {
     ...row,
     editingConcepto: row.concepto,
-    editingBeneficiario: row.beneficiario ?? "",
     editingNumSoporte: row.numSoporte ?? "",
     editingValor: row.valor,
     editingCanal: row.canalPago,
@@ -99,7 +97,7 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [valorRaw, setValorRaw] = useState("");
-  const [beneficiarioSel, setBeneficiarioSel] = useState<BeneficiarioSeleccion | null>(null);
+  const [beneficiariosSel, setBeneficiariosSel] = useState<BeneficiarioSeleccion[]>([]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -127,7 +125,7 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
     try {
       await createPago(tramiteId, {
         concepto,
-        beneficiarioId: beneficiarioSel?.id ?? null,
+        beneficiarioIds: beneficiariosSel.map((b) => b.id),
         numSoporte,
         valor: valorBig,
         canalPago,
@@ -186,10 +184,12 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Beneficiario</span>
+              <span className="text-sm font-medium text-slate-700">Beneficiarios</span>
               <BeneficiarioCombobox
-                value={beneficiarioSel}
-                onChange={setBeneficiarioSel}
+                mode="multi"
+                value={beneficiariosSel}
+                onChange={setBeneficiariosSel}
+                placeholder="Buscar o crear beneficiario…"
               />
             </div>
             <label className="block space-y-1.5">
@@ -284,7 +284,6 @@ type FilaPagoProps = {
     field: keyof Pick<
       FilaPago,
       | "editingConcepto"
-      | "editingBeneficiario"
       | "editingNumSoporte"
       | "editingValor"
       | "editingCanal"
@@ -323,15 +322,9 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
           />
         </td>
 
-        {/* Beneficiario */}
-        <td className="px-3 py-2">
-          <input
-            value={fila.editingBeneficiario}
-            onChange={(e) => onChange(fila.id, "editingBeneficiario", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            placeholder="—"
-            className="h-8 w-full min-w-[120px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none placeholder:text-slate-300 focus:border-cyan-400 focus:bg-white"
-          />
+        {/* Beneficiarios (solo lectura en vista global) */}
+        <td className="px-3 py-2 text-sm text-slate-700">
+          {fila.beneficiarios || <span className="text-slate-300">—</span>}
         </td>
 
         {/* N° soporte */}
@@ -502,7 +495,7 @@ export function PagosWorkspace() {
     return filas.filter(
       (f) =>
         f.concepto.toLowerCase().includes(q) ||
-        (f.beneficiario ?? "").toLowerCase().includes(q) ||
+        (f.beneficiarios ?? "").toLowerCase().includes(q) ||
         (f.numSoporte ?? "").toLowerCase().includes(q) ||
         f.consecutivo.toLowerCase().includes(q),
     );
@@ -514,7 +507,6 @@ export function PagosWorkspace() {
     field: keyof Pick<
       FilaPago,
       | "editingConcepto"
-      | "editingBeneficiario"
       | "editingNumSoporte"
       | "editingValor"
       | "editingCanal"
@@ -561,14 +553,13 @@ export function PagosWorkspace() {
           return {
             ...f,
             concepto: updated.concepto,
-            beneficiario: updated.beneficiario?.nombre ?? null,
+            beneficiarios: updated.beneficiarios.map((b) => b.nombre).join(", "),
             numSoporte: updated.numSoporte,
             valor: updated.valor,
             canalPago: updated.canalPago,
             costoBancario: updated.costoBancario,
             fechaRealPago: updated.fechaRealPago,
             editingConcepto: updated.concepto,
-            editingBeneficiario: updated.beneficiario?.nombre ?? "",
             editingNumSoporte: updated.numSoporte ?? "",
             editingValor: updated.valor,
             editingCanal: updated.canalPago,
@@ -750,7 +741,7 @@ export function PagosWorkspace() {
                 <th className="border-b border-slate-200 px-3 py-2">DO</th>
                 <th className="border-b border-slate-200 px-3 py-2">Cliente</th>
                 <th className="border-b border-slate-200 px-3 py-2">Concepto</th>
-                <th className="border-b border-slate-200 px-3 py-2">Beneficiario</th>
+                <th className="border-b border-slate-200 px-3 py-2">Beneficiarios</th>
                 <th className="border-b border-slate-200 px-3 py-2">N° soporte</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Valor (COP)</th>
                 <th className="border-b border-slate-200 px-3 py-2">Canal</th>

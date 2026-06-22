@@ -4,7 +4,7 @@
  * Sprint 8: N↔N con FacturaProveedor (PagoTramiteFactura), EstadoMovimiento, sin fechaEsperadaPago.
  */
 
-import { type Beneficiario, CanalPago, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite } from "@prisma/client";
+import { type Beneficiario, CanalPago, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite, type PagoTramiteBeneficiario } from "@prisma/client";
 
 import { calcularSaldosIntermedios } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
@@ -16,7 +16,8 @@ import {
 type CrearPagoInput = {
   tramiteId: string;
   concepto: string;
-  beneficiarioId?: string | null;
+  /** IDs de beneficiarios a vincular (N↔N). */
+  beneficiarioIds?: string[];
   numSoporte?: string | null;
   documentoId?: string | null;
   valor: bigint;
@@ -46,9 +47,11 @@ type FacturaProveedorVinculada = {
   proveedorNombre: string;
 };
 
+type BeneficiarioMinimo = Pick<Beneficiario, "id" | "nombre" | "nit">;
+
 type PagoConRelaciones = PagoTramite & {
   facturasProveedor: { factura: FacturaProveedorVinculada }[];
-  beneficiario: Pick<Beneficiario, "id" | "nombre" | "nit"> | null;
+  beneficiarios: (PagoTramiteBeneficiario & { beneficiario: BeneficiarioMinimo })[];
 };
 
 type LibroPagosResult = {
@@ -76,6 +79,7 @@ export type PagoGlobalRow = PagoTramite & {
     estado: string;
     cliente: { id: string; nombre: string; nit: string };
   };
+  beneficiarios: (PagoTramiteBeneficiario & { beneficiario: BeneficiarioMinimo })[];
 };
 
 type ListarPagosResult = {
@@ -147,7 +151,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
   const {
     tramiteId,
     concepto,
-    beneficiarioId,
+    beneficiarioIds = [],
     numSoporte,
     documentoId,
     valor,
@@ -189,7 +193,6 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
       data: {
         tramiteId,
         concepto,
-        beneficiarioId,
         numSoporte,
         documentoId,
         valor,
@@ -199,6 +202,13 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
         fechaRealPago,
       },
     });
+
+    // Vincular beneficiarios (N↔N)
+    for (const bid of beneficiarioIds) {
+      await tx.pagoTramiteBeneficiario.create({
+        data: { pagoId: pago.id, beneficiarioId: bid },
+      });
+    }
 
     // Crear pivot records y marcar facturas como PAGADA
     for (const fpId of facturaProveedorIds) {
@@ -231,7 +241,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
         accion: "CREATE",
         usuarioId,
         tramiteId,
-        despues: normalizeSerializable({ ...pago, facturaProveedorIds }),
+        despues: normalizeSerializable({ ...pago, beneficiarioIds, facturaProveedorIds }),
       },
     });
 
@@ -249,7 +259,8 @@ export async function actualizarPago(
     canalPago?: CanalPago;
     valor?: bigint;
     concepto?: string;
-    beneficiarioId?: string | null;
+    /** Si se provee, reemplaza todos los beneficiarios vinculados. */
+    beneficiarioIds?: string[];
     numSoporte?: string | null;
     fechaRealPago?: Date | null;
   },
@@ -270,13 +281,25 @@ export async function actualizarPago(
         ? await resolverCostoBancario(canalEfectivo, tx)
         : actual.costoBancario;
 
+    const { beneficiarioIds, ...camposPago } = cambios;
+
     const updated = await tx.pagoTramite.update({
       where: { id: pagoId },
       data: {
-        ...cambios,
+        ...camposPago,
         costoBancario,
       },
     });
+
+    // Sincronizar pivot de beneficiarios si se enviaron
+    if (beneficiarioIds !== undefined) {
+      await tx.pagoTramiteBeneficiario.deleteMany({ where: { pagoId } });
+      for (const bid of beneficiarioIds) {
+        await tx.pagoTramiteBeneficiario.create({
+          data: { pagoId, beneficiarioId: bid },
+        });
+      }
+    }
 
     await tx.auditLog.create({
       data: {
@@ -286,7 +309,7 @@ export async function actualizarPago(
         usuarioId,
         tramiteId: actual.tramiteId,
         antes: normalizeSerializable(actual),
-        despues: normalizeSerializable(updated),
+        despues: normalizeSerializable({ ...updated, beneficiarioIds }),
       },
     });
 
@@ -388,7 +411,9 @@ export async function getPagoConBeneficiario(pagoId: string) {
   return prisma.pagoTramite.findUnique({
     where: { id: pagoId },
     include: {
-      beneficiario: { select: { id: true, nombre: true, nit: true } },
+      beneficiarios: {
+        include: { beneficiario: { select: { id: true, nombre: true, nit: true } } },
+      },
       facturasProveedor: {
         include: {
           factura: { select: { numFactura: true, proveedorNombre: true } },
@@ -412,7 +437,9 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
             factura: { select: { numFactura: true, proveedorNombre: true } },
           },
         },
-        beneficiario: { select: { id: true, nombre: true, nit: true } },
+        beneficiarios: {
+          include: { beneficiario: { select: { id: true, nombre: true, nit: true } } },
+        },
       },
     }),
     prisma.aplicacionAnticipo.findMany({
@@ -492,7 +519,9 @@ export async function listarPagosGlobal(
           cliente: { select: { id: true, nombre: true, nit: true } },
         },
       },
-      beneficiario: { select: { id: true, nombre: true, nit: true } },
+      beneficiarios: {
+        include: { beneficiario: { select: { id: true, nombre: true, nit: true } } },
+      },
     },
     orderBy: [
       { tramite: { consecutivo: "asc" } },

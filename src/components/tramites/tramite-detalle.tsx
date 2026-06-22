@@ -1275,6 +1275,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       {topAction === "pago" ? (
         <NuevoPagoModal
           tramiteId={tramite.id}
+          tramiteConsecutivo={tramite.consecutivo}
           onClose={() => setTopAction(null)}
           onCreated={() => {
             setTopAction(null);

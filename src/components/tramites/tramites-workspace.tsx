@@ -13,6 +13,8 @@ import {
   RotateCcw,
   Search,
   SlidersHorizontal,
+  Trash2,
+  Upload,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -180,6 +182,19 @@ function CreateTramiteDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [tipoCliente, setTipoCliente] = useState<ClienteTipo>("PROPIO");
   const [clienteId, setClienteId] = useState("");
+  const [stagedFiles, setStagedFiles] = useState<Record<string, File | null>>({});
+
+  const CATEGORIAS: { key: string; label: string }[] = [
+    { key: "FACTURA_COMERCIAL",  label: "Factura comercial" },
+    { key: "BL",                 label: "BL (Bill of Lading)" },
+    { key: "PACKING_LIST",       label: "Packing list" },
+    { key: "DECLARACION_DIAN",   label: "Declaración DIAN" },
+    { key: "SOPORTE_FACTURACION",label: "Soporte facturación" },
+    { key: "FOTO_RECONOCIMIENTO",label: "Foto reconocimiento" },
+    { key: "COMPROBANTE_BANCARIO",label: "Comprobante bancario" },
+    { key: "FACTURA_PROVEEDOR",  label: "Factura proveedor" },
+    { key: "OTRO",               label: "Otro" },
+  ];
 
   const clientesFiltrados = useMemo(
     () => clientes.filter((cliente) => cliente.tipo === tipoCliente),
@@ -253,16 +268,58 @@ function CreateTramiteDialog({
       doAgencia: optionalText(formData.get("doAgencia")),
       doCliente: optionalText(formData.get("doCliente")),
       eta: formatDateInputAsIso(formData.get("eta")),
-      comentarios: optionalText(formData.get("comentarios")),
     };
 
     try {
       const created = await createTramite(input);
-      setSuccess(`${created.doNumber} creado`);
+
+      // Subir archivos adjuntos al DO recién creado
+      const filePairs = Object.entries(stagedFiles).filter((e): e is [string, File] => e[1] !== null);
+      for (const [categoria, file] of filePairs) {
+        try {
+          const urlRes = await fetch(`/api/tramites/${created.id}/documentos`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              action: "uploadUrl",
+              categoria,
+              fileName: file.name,
+              contentType: file.type || "application/octet-stream",
+              sizeBytes: file.size,
+            }),
+          });
+          if (!urlRes.ok) continue;
+          const { uploadUrl } = (await urlRes.json()) as { uploadUrl: { url: string; key: string } };
+
+          await fetch(uploadUrl.url, {
+            method: "PUT",
+            body: file,
+            headers: { "content-type": file.type || "application/octet-stream" },
+          });
+
+          await fetch(`/api/tramites/${created.id}/documentos`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              action: "register",
+              categoria,
+              nombreArchivo: file.name,
+              storageKey: uploadUrl.key,
+              mimeType: file.type || "application/octet-stream",
+              tamanoBytes: file.size,
+            }),
+          });
+        } catch {
+          // No bloqueamos la creación del DO si falla un archivo
+        }
+      }
+
+      setSuccess(`${created.doNumber} creado${filePairs.length > 0 ? ` · ${filePairs.length} archivo(s) adjunto(s)` : ""}`);
       onCreated(created);
       form.reset();
       setClienteId("");
       setTipoCliente("PROPIO");
+      setStagedFiles({});
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No fue posible crear el tramite.");
     } finally {
@@ -440,14 +497,63 @@ function CreateTramiteDialog({
             </label>
           </div>
 
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Comentarios</span>
-            <textarea
-              name="comentarios"
-              rows={3}
-              className="w-full resize-none border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan-600"
-            />
-          </label>
+          {/* Zona de adjuntos — uno por categoría */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium text-slate-700">Documentos adjuntos</span>
+            <ul className="divide-y divide-slate-100 border border-slate-200 bg-white">
+              {CATEGORIAS.map(({ key, label }) => {
+                const file = stagedFiles[key] ?? null;
+                const inputId = `adjunto-${key}`;
+                return (
+                  <li key={key} className="flex items-center gap-3 px-3 py-2">
+                    <span className="w-44 shrink-0 text-sm text-slate-600">{label}</span>
+                    {file ? (
+                      <>
+                        <FileText className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                        <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{file.name}</span>
+                        <span className="shrink-0 text-xs text-slate-400">
+                          {file.size < 1024 * 1024
+                            ? `${(file.size / 1024).toFixed(0)} KB`
+                            : `${(file.size / 1024 / 1024).toFixed(1)} MB`}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setStagedFiles((prev) => ({ ...prev, [key]: null }))}
+                          className="shrink-0 p-1 text-slate-400 transition hover:text-red-500"
+                          aria-label={`Quitar ${label}`}
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => document.getElementById(inputId)?.click()}
+                          className="inline-flex items-center gap-1.5 border border-slate-300 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 transition hover:bg-slate-100"
+                        >
+                          <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+                          Seleccionar
+                        </button>
+                        <span className="text-xs text-slate-400">PDF, JPG, PNG, XLSX</span>
+                      </>
+                    )}
+                    <input
+                      id={inputId}
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png,.xlsx"
+                      className="sr-only"
+                      onChange={(e) => {
+                        const picked = e.target.files?.[0] ?? null;
+                        if (picked) setStagedFiles((prev) => ({ ...prev, [key]: picked }));
+                        e.target.value = "";
+                      }}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
 
           {error ? (
             <div className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">

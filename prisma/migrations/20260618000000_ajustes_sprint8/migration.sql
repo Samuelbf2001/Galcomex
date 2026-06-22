@@ -41,12 +41,12 @@ DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'pago_tramite' AND column_name = 'factura_proveedor_id'
+    WHERE table_name = 'pago_tramite' AND column_name = 'facturaProveedorId'
   ) THEN
     INSERT INTO "pago_tramite_factura" ("pago_id", "factura_id")
-    SELECT "id", "factura_proveedor_id"
+    SELECT "id", "facturaProveedorId"
     FROM   "pago_tramite"
-    WHERE  "factura_proveedor_id" IS NOT NULL;
+    WHERE  "facturaProveedorId" IS NOT NULL;
   END IF;
 END $$;
 
@@ -64,5 +64,5 @@ ALTER TABLE "pago_tramite_factura"
 
 -- ─── 7. Drop columna antigua (ya migrada al pivot) ───────────────────────────
 ALTER TABLE "pago_tramite"
-  DROP CONSTRAINT IF EXISTS "pago_tramite_factura_proveedor_id_fkey";
-ALTER TABLE "pago_tramite" DROP COLUMN IF EXISTS "factura_proveedor_id";
+  DROP CONSTRAINT IF EXISTS "pago_tramite_facturaProveedorId_fkey";
+ALTER TABLE "pago_tramite" DROP COLUMN IF EXISTS "facturaProveedorId";

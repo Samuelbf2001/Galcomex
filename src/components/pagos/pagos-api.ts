@@ -33,8 +33,8 @@ export type PagoRow = {
   id: string;
   tramiteId: string;
   concepto: string;
-  beneficiarioId: string | null;
-  beneficiario: BeneficiarioMinimo | null;
+  /** Lista de beneficiarios vinculados (N↔N). */
+  beneficiarios: BeneficiarioMinimo[];
   numSoporte: string | null;
   valor: string; // BigInt serializado
   canalPago: CanalPago;
@@ -89,7 +89,8 @@ export type TramiteDetail = {
 
 export type CreatePagoInput = {
   concepto: string;
-  beneficiarioId?: string | null;
+  /** IDs de beneficiarios (N↔N). */
+  beneficiarioIds?: string[];
   numSoporte?: string | null;
   valor: string; // BigInt as string
   canalPago: CanalPago;
@@ -154,7 +155,8 @@ export async function fetchFacturasProveedorTramite(
 
 export type UpdatePagoInput = {
   concepto?: string;
-  beneficiarioId?: string | null;
+  /** Si se provee, reemplaza todos los beneficiarios vinculados. */
+  beneficiarioIds?: string[];
   numSoporte?: string | null;
   valor?: string; // BigInt as string
   canalPago?: CanalPago;
@@ -235,16 +237,16 @@ function parsePagoRow(p: Record<string, unknown>): PagoRow {
     id: String(p.id ?? ""),
     tramiteId: String(p.tramiteId ?? ""),
     concepto: String(p.concepto ?? ""),
-    beneficiarioId: typeof p.beneficiarioId === "string" ? p.beneficiarioId : null,
-    beneficiario: (() => {
-      if (isRecord(p.beneficiario)) {
+    beneficiarios: (() => {
+      const raw = Array.isArray(p.beneficiarios) ? p.beneficiarios : [];
+      return raw.filter(isRecord).map((link) => {
+        const b = isRecord(link.beneficiario) ? link.beneficiario : link;
         return {
-          id: String(p.beneficiario.id ?? ""),
-          nombre: String(p.beneficiario.nombre ?? ""),
-          nit: typeof p.beneficiario.nit === "string" ? p.beneficiario.nit : null,
+          id: String(b.id ?? ""),
+          nombre: String(b.nombre ?? ""),
+          nit: typeof b.nit === "string" ? b.nit : null,
         };
-      }
-      return null;
+      });
     })(),
     numSoporte: typeof p.numSoporte === "string" ? p.numSoporte : null,
     valor: String(p.valor ?? "0"),
