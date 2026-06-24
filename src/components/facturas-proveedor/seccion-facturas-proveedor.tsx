@@ -672,11 +672,13 @@ type SeccionFacturasProveedorProps = {
   tramiteId: string;
   /** Si true el usuario puede crear/editar/eliminar/generar pagos */
   puedeEditar?: boolean;
+  onPagarFactura?: (factura: FacturaProveedorRow) => void;
 };
 
 export function SeccionFacturasProveedor({
   tramiteId,
   puedeEditar = true,
+  onPagarFactura,
 }: SeccionFacturasProveedorProps) {
   const [facturas, setFacturas] = useState<FacturaProveedorRow[]>([]);
   const [documentos, setDocumentos] = useState<Record<string, DocumentoRow>>({});
@@ -973,11 +975,18 @@ export function SeccionFacturasProveedor({
                     {puedeEditar ? (
                       <td className="px-3 py-2.5">
                         <div className="flex items-center justify-end gap-1">
-                          {/* Generar pago: solo si REGISTRADA */}
-                          {f.estado === "REGISTRADA" ? (
+                          {/* Generar pago: disponible mientras no esté facturada al cliente */}
+                          {f.estado !== "FACTURADA_CLIENTE" ? (
                             <button
                               type="button"
-                              onClick={() => setFacturaParaPago(f)}
+                              onClick={() => {
+                                if (onPagarFactura) {
+                                  onPagarFactura(f);
+                                  return;
+                                }
+
+                                setFacturaParaPago(f);
+                              }}
                               className="inline-flex h-7 items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
                               title="Generar pago"
                             >

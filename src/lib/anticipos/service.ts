@@ -274,6 +274,9 @@ export async function verificarAnticipo(
 
   return prisma.anticipo.update({
     where: { id: anticipoId },
-    data: { estado: nuevoEstado },
+    data: {
+      estado: nuevoEstado,
+      verificadoBanco: nuevoEstado === "VERIFICADO" ? true : anticipo.verificadoBanco,
+    },
   });
 }

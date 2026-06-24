@@ -106,7 +106,6 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
     const formData = new FormData(e.currentTarget);
     const tramiteId = String(formData.get("tramiteId") ?? "").trim();
     const concepto = String(formData.get("concepto") ?? "").trim();
-    const numSoporte = String(formData.get("numSoporte") ?? "").trim() || null;
     const canalPago = String(formData.get("canalPago") ?? "") as CanalPago;
     const fechaRealPago = String(formData.get("fechaRealPago") ?? "").trim() || null;
 
@@ -126,7 +125,7 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
       await createPago(tramiteId, {
         concepto,
         beneficiarioIds: beneficiariosSel.map((b) => b.id),
-        numSoporte,
+        numSoporte: null,
         valor: valorBig,
         canalPago,
         fechaRealPago,
@@ -182,24 +181,14 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
             />
           </label>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Beneficiarios</span>
-              <BeneficiarioCombobox
-                mode="multi"
-                value={beneficiariosSel}
-                onChange={setBeneficiariosSel}
-                placeholder="Buscar o crear beneficiario…"
-              />
-            </div>
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">N° soporte</span>
-              <input
-                name="numSoporte"
-                placeholder="Ref. comprobante"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
+          <div className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Beneficiarios</span>
+            <BeneficiarioCombobox
+              mode="multi"
+              value={beneficiariosSel}
+              onChange={setBeneficiariosSel}
+              placeholder="Buscar o crear beneficiario…"
+            />
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -230,7 +219,7 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
               <select
                 name="canalPago"
                 required
-                defaultValue="BANCOLOMBIA_TRANSFERENCIA"
+                defaultValue="TRANSF_BANCOLOMBIA"
                 className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
               >
                 {CANALES_PAGO.map((c) => (

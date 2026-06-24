@@ -83,7 +83,6 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
     const clienteId = String(formData.get("clienteId") ?? "").trim();
     const fecha = String(formData.get("fecha") ?? "").trim();
     const tipoRecaudo = String(formData.get("tipoRecaudo") ?? "") as TipoRecaudo;
-    const verificadoBanco = formData.get("verificadoBanco") === "on";
 
     if (!clienteId) { setError("Selecciona un cliente."); return; }
     if (!fecha) { setError("La fecha es obligatoria."); return; }
@@ -98,7 +97,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
         monto: montoBig,
         fecha: new Date(`${fecha}T00:00:00.000Z`).toISOString(),
         tipoRecaudo,
-        verificadoBanco,
+        verificadoBanco: false,
       });
       onCreated(anticipo);
     } catch (caught) {
@@ -186,15 +185,6 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
                 ))}
               </optgroup>
             </select>
-          </label>
-
-          <label className="flex items-center gap-2 text-sm text-slate-700">
-            <input
-              name="verificadoBanco"
-              type="checkbox"
-              className="h-4 w-4 rounded border-slate-300 accent-cyan-600"
-            />
-            Verificado banco
           </label>
 
           {error ? (
@@ -428,7 +418,7 @@ function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, onVerificar, 
 
         {/* Verificado */}
         <td className="px-3 py-2.5 text-center">
-          {anticipo.verificadoBanco ? (
+          {anticipo.estado === "VERIFICADO" ? (
             <CheckCircle2 className="inline h-4 w-4 text-emerald-600" aria-label="Verificado" />
           ) : (
             <span className="text-xs text-slate-400">—</span>
@@ -685,7 +675,15 @@ export function AnticiposWorkspace() {
         return;
       }
       setAnticipos((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, estado: "VERIFICADO" as EstadoMovimiento } : a)),
+        prev.map((a) =>
+          a.id === id
+            ? {
+                ...a,
+                estado: "VERIFICADO" as EstadoMovimiento,
+                verificadoBanco: true,
+              }
+            : a,
+        ),
       );
     } catch {
       setGlobalError("Error de red al verificar.");

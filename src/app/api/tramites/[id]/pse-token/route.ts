@@ -11,7 +11,6 @@ const WEBHOOK_PSE_URL =
   process.env.WEBHOOK_PSE_URL ??
   "https://n8n.sixteam.pro/webhook/b53a9bb0-5904-4a9a-9828-5eeb2243e4df";
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
 // El link expira en 30 minutos (tiempo estándar de vigencia PSE)
 const EXPIRY_MS = 30 * 60 * 1000;
@@ -24,7 +23,7 @@ export async function POST(_request: NextRequest, context: RouteContext) {
 
   const tramite = await db.tramiteDO.findUnique({
     where: { id },
-    select: { consecutivo: true },
+    select: { id: true },
   });
 
   if (!tramite) {
@@ -38,19 +37,14 @@ export async function POST(_request: NextRequest, context: RouteContext) {
     data: { tramiteId: id, token, solicitadoPor: session.user.id, expiresAt },
   });
 
-  const linkPse = `${APP_URL}/pse/${token}`;
+  const linkPse = `pse/${token}`;
 
   // Notifica a María Camila vía n8n con el link seguro (fire-and-forget)
   fetch(WEBHOOK_PSE_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      evento: "pago.pse_solicitado",
-      tramiteId: id,
-      consecutivo: tramite.consecutivo,
-      solicitadoPor: session.user.id,
-      linkPse,
-      timestamp: new Date().toISOString(),
+      url: linkPse,
     }),
   }).catch(() => {
     console.error("[PSE] No se pudo notificar a n8n para tramite", id);

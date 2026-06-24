@@ -2,10 +2,12 @@
 
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   Loader2,
   Plus,
   RotateCcw,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
@@ -29,6 +31,7 @@ import {
   fetchTramiteDetail,
   formatCOP,
   updatePago,
+  verificarMovimientoPago,
 } from "@/components/pagos/pagos-api";
 import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
 
@@ -307,6 +310,229 @@ function ResumenLibro({ libro }: { libro: LibroPagosData; filas: FilaLibro[] }) 
   );
 }
 
+type FacturasProveedorComboboxProps = {
+  facturas: FacturaProveedorOpcion[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  placeholder?: string;
+  disabled?: boolean;
+};
+
+function FacturasProveedorCombobox({
+  facturas,
+  selectedIds,
+  onChange,
+  placeholder = "Seleccionar facturas de proveedor…",
+  disabled = false,
+}: FacturasProveedorComboboxProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handleClickOutside(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = setTimeout(() => inputRef.current?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [open]);
+
+  const selectedFacturas = facturas.filter((factura) => selectedIds.includes(factura.id));
+  const filteredFacturas = facturas.filter((factura) => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+
+    return [
+      factura.numFactura,
+      factura.proveedorNombre,
+    ].some((value) => value.toLowerCase().includes(needle));
+  });
+
+  function toggleFactura(id: string) {
+    onChange(
+      selectedIds.includes(id)
+        ? selectedIds.filter((selectedId) => selectedId !== id)
+        : [...selectedIds, id],
+    );
+  }
+
+  function removeFactura(id: string, event: React.MouseEvent) {
+    event.stopPropagation();
+    onChange(selectedIds.filter((selectedId) => selectedId !== id));
+  }
+
+  function clearAll(event: React.MouseEvent) {
+    event.stopPropagation();
+    onChange([]);
+  }
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        className="flex min-h-10 w-full items-center justify-between border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-50"
+      >
+        <span className="flex flex-wrap gap-1.5 text-left">
+          {selectedFacturas.length === 0 ? (
+            <span className="text-slate-400">{placeholder}</span>
+          ) : (
+            selectedFacturas.map((factura) => (
+              <span
+                key={factura.id}
+                className="inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-xs text-cyan-800"
+              >
+                <span className="font-medium">{factura.numFactura}</span>
+                <span className="text-cyan-600">{formatCOP(factura.valor)}</span>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => removeFactura(factura.id, event)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      removeFactura(factura.id, event as unknown as React.MouseEvent);
+                    }
+                  }}
+                  className="text-cyan-500 hover:text-rose-600"
+                  aria-label={`Quitar factura ${factura.numFactura}`}
+                >
+                  <X className="h-3 w-3" />
+                </span>
+              </span>
+            ))
+          )}
+        </span>
+
+        <div className="ml-2 flex shrink-0 items-center gap-1">
+          {selectedFacturas.length > 0 ? (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={clearAll}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  clearAll(event as unknown as React.MouseEvent);
+                }
+              }}
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:text-slate-700"
+              aria-label="Limpiar facturas seleccionadas"
+            >
+              <X className="h-3.5 w-3.5" />
+            </span>
+          ) : null}
+          <Search className="h-3.5 w-3.5 text-slate-400" />
+        </div>
+      </button>
+
+      {open ? (
+        <div className="absolute z-50 mt-1 w-full border border-slate-200 bg-white shadow-lg">
+          <div className="border-b border-slate-100 px-2 py-2">
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setOpen(false);
+                  setQuery("");
+                }
+              }}
+              placeholder="Número o proveedor…"
+              className="h-8 w-full bg-slate-50 px-2 text-sm outline-none placeholder:text-slate-400"
+            />
+          </div>
+
+          <div className="max-h-52 overflow-y-auto">
+            {filteredFacturas.length === 0 ? (
+              <div className="px-3 py-3 text-sm text-slate-400">
+                {query.trim() ? "Sin resultados." : "No hay facturas disponibles."}
+              </div>
+            ) : (
+              filteredFacturas.map((factura) => {
+                const selected = selectedIds.includes(factura.id);
+                const disponible = factura.estado !== "FACTURADA_CLIENTE";
+                return (
+                  <button
+                    key={factura.id}
+                    type="button"
+                    onClick={() => {
+                      if (!disponible) return;
+                      toggleFactura(factura.id);
+                    }}
+                    disabled={!disponible}
+                    className={`flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm ${
+                      disponible ? "hover:bg-slate-50" : "cursor-not-allowed opacity-60"
+                    }`}
+                  >
+                    <span
+                      className={`flex h-4 w-4 shrink-0 items-center justify-center border ${
+                        selected
+                          ? "border-cyan-600 bg-cyan-600"
+                          : "border-slate-300 bg-white"
+                      }`}
+                    >
+                      {selected ? <Check className="h-3 w-3 text-white" /> : null}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-medium text-slate-800">{factura.numFactura}</span>
+                      <span className="block truncate text-xs text-slate-500">{factura.proveedorNombre}</span>
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <span
+                        className={`inline-flex items-center border px-1.5 py-0.5 text-[10px] font-semibold ${
+                          factura.estado === "REGISTRADA"
+                            ? "border-slate-200 bg-slate-50 text-slate-600"
+                            : factura.estado === "PAGADA"
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : "border-amber-200 bg-amber-50 text-amber-700"
+                        }`}
+                      >
+                        {factura.estado.replace("_", " ")}
+                      </span>
+                      <span className="font-mono text-sm text-slate-600">{formatCOP(factura.valor)}</span>
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          {selectedFacturas.length > 0 ? (
+            <div className="border-t border-slate-100 px-3 py-2 text-right">
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  setQuery("");
+                }}
+                className="text-xs font-semibold text-slate-700 hover:text-slate-900"
+              >
+                Listo ({selectedFacturas.length})
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Sub-componente: modal de nuevo pago
 // ---------------------------------------------------------------------------
@@ -317,21 +543,36 @@ type PendingSubmit = { concepto: string; numSoporte: string | null; canalPago: C
 type NuevoPagoModalProps = {
   tramiteId: string;
   tramiteConsecutivo: string;
+  initialConcepto?: string;
+  initialFacturaIds?: string[];
+  initialBeneficiarios?: BeneficiarioSeleccion[];
+  initialValor?: string;
   onClose: () => void;
   onCreated: (pago: PagoRow) => void;
 };
 
-export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreated }: NuevoPagoModalProps) {
+export function NuevoPagoModal({
+  tramiteId,
+  tramiteConsecutivo,
+  initialConcepto,
+  initialFacturaIds,
+  initialBeneficiarios,
+  initialValor,
+  onClose,
+  onCreated,
+}: NuevoPagoModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [valorRaw, setValorRaw] = useState("");
-  const [beneficiariosSel, setBeneficiariosSel] = useState<BeneficiarioSeleccion[]>([]);
+  const [valorRaw, setValorRaw] = useState(initialValor ?? "");
+  const [beneficiariosSel, setBeneficiariosSel] = useState<BeneficiarioSeleccion[]>(
+    initialBeneficiarios ?? [],
+  );
   const [fechaRealPago, setFechaRealPago] = useState(todayInput());
   const [canalPago, setCanalPago] = useState<CanalPago>(CANALES_PAGO[0]?.value ?? "TRANSF_BANCOLOMBIA");
 
   // Facturas de proveedor disponibles (multiselect)
   const [facturasDisponibles, setFacturasDisponibles] = useState<FacturaProveedorOpcion[]>([]);
-  const [facturasSeleccionadas, setFacturasSeleccionadas] = useState<Set<string>>(new Set());
+  const [facturasSeleccionadas, setFacturasSeleccionadas] = useState<string[]>(initialFacturaIds ?? []);
   const [facturasLoadError, setFacturasLoadError] = useState(false);
 
   // Diálogo de confirmación cuando el valor desvía ±10% del total de facturas seleccionadas
@@ -343,6 +584,7 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
   const [psePendingPayload, setPsePendingPayload] = useState<PendingSubmit | null>(null);
   const [isRequestingToken, setIsRequestingToken] = useState(false);
   const [pseCodigoRecibido, setPseCodigoRecibido] = useState<string | null>(null);
+  const [pseRetryRemaining, setPseRetryRemaining] = useState(0);
   const [soporteFile, setSoporteFile] = useState<File | null>(null);
   const [isUploadingDoc, setIsUploadingDoc] = useState(false);
 
@@ -364,9 +606,19 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
   }, [pseStep, pseCodigoRecibido, tramiteId]);
 
   useEffect(() => {
+    if (pseRetryRemaining <= 0) return;
+
+    const timeout = setTimeout(() => {
+      setPseRetryRemaining((current) => Math.max(current - 1, 0));
+    }, 1000);
+
+    return () => clearTimeout(timeout);
+  }, [pseRetryRemaining]);
+
+  useEffect(() => {
     const controller = new AbortController();
     fetchFacturasProveedorTramite(tramiteId, controller.signal)
-      .then((todas) => setFacturasDisponibles(todas.filter((fp) => fp.estado === "REGISTRADA")))
+      .then((todas) => setFacturasDisponibles(todas))
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
         setFacturasLoadError(true);
@@ -374,16 +626,8 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
     return () => controller.abort();
   }, [tramiteId]);
 
-  function toggleFactura(id: string) {
-    setFacturasSeleccionadas((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-
   const sumaFacturas: bigint = facturasDisponibles
-    .filter((fp) => facturasSeleccionadas.has(fp.id))
+    .filter((fp) => facturasSeleccionadas.includes(fp.id))
     .reduce((sum, fp) => {
       try { return sum + BigInt(fp.valor); } catch { return sum; }
     }, 0n);
@@ -399,7 +643,7 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
         valor: payload.valor,
         canalPago: payload.canalPago,
         fechaRealPago: fechaRealPago || null,
-        facturaProveedorIds: Array.from(facturasSeleccionadas),
+        facturaProveedorIds: facturasSeleccionadas,
       });
       onCreated(pago);
     } catch (caught) {
@@ -418,8 +662,10 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
         headers: { accept: "application/json" },
       });
       if (!resp.ok) throw new Error("No fue posible notificar a María Camila.");
+      setPseCodigoRecibido(null);
       setPsePendingPayload(payload);
       setPseStep("soporte");
+      setPseRetryRemaining(30);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Error al solicitar el pago PSE.");
     } finally {
@@ -471,7 +717,6 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
 
     const formData = new FormData(e.currentTarget);
     const concepto = String(formData.get("concepto") ?? "").trim();
-    const numSoporte = String(formData.get("numSoporte") ?? "").trim() || null;
 
     const valorBig = parseBigIntInput(valorRaw);
     if (!valorBig || BigInt(valorBig) <= 0n) {
@@ -479,7 +724,7 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
       return;
     }
 
-    const payload: PendingSubmit = { concepto, numSoporte, canalPago, valor: valorBig };
+    const payload: PendingSubmit = { concepto, numSoporte: null, canalPago, valor: valorBig };
 
     // Flujo PSE: notifica a María Camila y pasa directo a adjuntar soporte
     if (canalPago === "PSE") {
@@ -488,7 +733,7 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
     }
 
     // Verificar desviación ±10% solo si hay facturas seleccionadas
-    if (facturasSeleccionadas.size > 0 && sumaFacturas > 0n) {
+    if (facturasSeleccionadas.length > 0 && sumaFacturas > 0n) {
       const diff = BigInt(valorBig) - sumaFacturas;
       const pct = Number((diff * 1000n) / sumaFacturas) / 10;
       if (Math.abs(pct) > 10) {
@@ -551,39 +796,29 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
                 <span className="text-sm font-medium text-slate-700">
                   Facturas de proveedor a cubrir
                   <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
-                  {facturasSeleccionadas.size > 0 ? (
+                  {facturasSeleccionadas.length > 0 ? (
                     <span className="ml-2 font-normal text-slate-500">
-                      — Total: {formatCOP(sumaFacturas.toString())}
+                      — {facturasSeleccionadas.length} seleccionada{facturasSeleccionadas.length === 1 ? "" : "s"} · Total: {formatCOP(sumaFacturas.toString())}
                     </span>
                   ) : null}
                 </span>
                 {facturasLoadError ? (
                   <p className="text-xs text-rose-600">No se pudieron cargar las facturas.</p>
                 ) : facturasDisponibles.length === 0 ? (
-                  <p className="rounded border border-slate-200 px-3 py-2 text-xs text-slate-400">
-                    Sin facturas de proveedor registradas para este trámite.
-                  </p>
+                    <p className="rounded border border-slate-200 px-3 py-2 text-xs text-slate-400">
+                      Sin facturas de proveedor registradas para este trámite.
+                    </p>
                 ) : (
-                  <div className="max-h-40 overflow-y-auto divide-y divide-slate-100 border border-slate-200">
-                    {facturasDisponibles.map((fp) => (
-                      <label
-                        key={fp.id}
-                        className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-slate-50"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={facturasSeleccionadas.has(fp.id)}
-                          onChange={() => toggleFactura(fp.id)}
-                          className="h-4 w-4 accent-cyan-600"
-                        />
-                        <span className="flex-1 text-sm text-slate-700">
-                          <span className="font-medium">{fp.numFactura}</span>
-                          <span className="mx-1 text-slate-400">—</span>
-                          {fp.proveedorNombre}
-                        </span>
-                        <span className="font-mono text-sm text-slate-600">{formatCOP(fp.valor)}</span>
-                      </label>
-                    ))}
+                  <div className="space-y-2">
+                    <FacturasProveedorCombobox
+                    facturas={facturasDisponibles}
+                    selectedIds={facturasSeleccionadas}
+                    onChange={setFacturasSeleccionadas}
+                    placeholder="Buscar y seleccionar facturas…"
+                    />
+                    <p className="text-xs text-slate-500">
+                      Puedes volver a vincular facturas en estado PAGADA. Solo las facturas FACTURADA CLIENTE quedan bloqueadas.
+                    </p>
                   </div>
                 )}
               </div>
@@ -593,29 +828,20 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
                 <input
                   name="concepto"
                   required
+                  defaultValue={initialConcepto ?? ""}
                   placeholder="Ej. Flete terrestre"
                   className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
                 />
               </label>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <span className="text-sm font-medium text-slate-700">Beneficiarios</span>
-                  <BeneficiarioCombobox
-                    mode="multi"
-                    value={beneficiariosSel}
-                    onChange={setBeneficiariosSel}
-                    placeholder="Buscar o crear beneficiario…"
-                  />
-                </div>
-                <label className="block space-y-1.5">
-                  <span className="text-sm font-medium text-slate-700">N° soporte</span>
-                  <input
-                    name="numSoporte"
-                    placeholder="Ref. comprobante"
-                    className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-                  />
-                </label>
+              <div className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Beneficiarios</span>
+                <BeneficiarioCombobox
+                  mode="multi"
+                  value={beneficiariosSel}
+                  onChange={setBeneficiariosSel}
+                  placeholder="Buscar o crear beneficiario…"
+                />
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
@@ -690,19 +916,38 @@ export function NuevoPagoModal({ tramiteId, tramiteConsecutivo, onClose, onCreat
 
               {/* Estado del código */}
               {!pseCodigoRecibido ? (
-                <div className="flex items-center gap-3 rounded border border-amber-200 bg-amber-50 px-4 py-3">
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-600" aria-hidden="true" />
-                  <div>
-                    <p className="text-sm font-medium text-amber-800">Esperando a María Camila…</p>
-                    <p className="text-xs text-amber-600">Se le envió el link para que ingrese el código PSE. Esta pantalla se actualiza automáticamente.</p>
+                <div className="space-y-3 rounded border border-amber-200 bg-amber-50 px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-600" aria-hidden="true" />
+                    <div>
+                      <p className="text-sm font-medium text-amber-800">Esperando a María Camila…</p>
+                      <p className="text-xs text-amber-600">Se le envió el link para que ingrese el código PSE. Esta pantalla se actualiza automáticamente.</p>
+                    </div>
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center gap-3 rounded border border-emerald-200 bg-emerald-50 px-4 py-3">
-                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
-                  <div>
-                    <p className="text-xs text-emerald-600">Código PSE recibido</p>
-                    <p className="text-lg font-bold tracking-widest text-emerald-800">{pseCodigoRecibido}</p>
+                <div className="space-y-3 rounded border border-emerald-200 bg-emerald-50 px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+                    <div>
+                      <p className="text-xs text-emerald-600">Código PSE recibido</p>
+                      <p className="text-lg font-bold tracking-widest text-emerald-800">{pseCodigoRecibido}</p>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void (psePendingPayload ? notificarCamilaPse(psePendingPayload) : Promise.resolve())}
+                      disabled={isRequestingToken || pseRetryRemaining > 0 || !psePendingPayload}
+                      className="inline-flex h-8 items-center gap-2 border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isRequestingToken ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      ) : null}
+                      {pseRetryRemaining > 0
+                        ? `Nuevo código en ${pseRetryRemaining}s`
+                        : "Solicitar nuevo código"}
+                    </button>
                   </div>
                 </div>
               )}
@@ -815,6 +1060,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // --- Carga inicial ---
@@ -1021,6 +1267,36 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
     }
   }
 
+  async function handleVerificar(id: string) {
+    setVerifyingId(id);
+    setGlobalError(null);
+
+    try {
+      const updated = await verificarMovimientoPago(tramiteId, id, "VERIFICADO");
+      setFilas((prev) =>
+        prev.map((fila) =>
+          fila.id === id
+            ? {
+                ...fila,
+                estado: updated.estado,
+                dirty: false,
+                saving: false,
+                errorFila: null,
+              }
+            : fila,
+        ),
+      );
+    } catch (caught) {
+      setGlobalError(
+        caught instanceof PagosApiError
+          ? caught.message
+          : "No fue posible verificar el pago.",
+      );
+    } finally {
+      setVerifyingId(null);
+    }
+  }
+
   function handlePagoCreado() {
     setModalOpen(false);
     // Reload para asegurar saldo actualizado desde el backend
@@ -1139,6 +1415,8 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
                   onBeneficiariosChange={handleBeneficiariosChange}
                   onBlur={handleBlurField}
                   onDelete={handleDelete}
+                  onVerify={handleVerificar}
+                  isVerifying={verifyingId === fila.id}
                 />
               ))}
             </tbody>
@@ -1195,9 +1473,21 @@ type FilaPagoProps = {
   onBeneficiariosChange: (id: string, b: BeneficiarioSeleccion[]) => void;
   onBlur: (id: string) => void;
   onDelete: (id: string) => void;
+  onVerify: (id: string) => void;
+  isVerifying: boolean;
 };
 
-function FilaPago({ fila, index, isDeleting, onChange, onBeneficiariosChange, onBlur, onDelete }: FilaPagoProps) {
+function FilaPago({
+  fila,
+  index,
+  isDeleting,
+  onChange,
+  onBeneficiariosChange,
+  onBlur,
+  onDelete,
+  onVerify,
+  isVerifying,
+}: FilaPagoProps) {
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
@@ -1315,6 +1605,20 @@ function FilaPago({ fila, index, isDeleting, onChange, onBeneficiariosChange, on
         {/* Acciones */}
         <td className="px-3 py-2">
           <div className="flex items-center gap-1">
+            {fila.estado === "REALIZADO" ? (
+              <button
+                type="button"
+                onClick={() => onVerify(fila.id)}
+                disabled={isVerifying}
+                className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
+                title="Marcar como verificado"
+              >
+                {isVerifying ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : null}
+                Verificar
+              </button>
+            ) : null}
             {fila.saving ? (
               <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
             ) : fila.dirty ? (

@@ -23,6 +23,7 @@ import {
   SeccionAnticiposTramite,
   type AplicacionAnticipoEntry,
 } from "@/components/anticipos/seccion-anticipos-tramite";
+import type { BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
 import { SeccionDocumentos } from "@/components/documentos/seccion-documentos";
 import { EditorLineas } from "@/components/facturacion/editor-lineas";
 import {
@@ -38,6 +39,7 @@ import { LibroPagos, NuevoPagoModal } from "@/components/pagos/libro-pagos";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import {
   FacturasProveedorApiError,
+  type FacturaProveedorRow,
   solicitarFacturacion,
 } from "@/components/facturas-proveedor/facturas-proveedor-api";
 
@@ -1010,6 +1012,12 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   const [topAction, setTopAction] = useState<
     null | "anticipo" | "pago" | "factura"
   >(null);
+  const [pagoPrefill, setPagoPrefill] = useState<{
+    concepto?: string;
+    facturaIds?: string[];
+    beneficiarios?: BeneficiarioSeleccion[];
+    valor?: string;
+  } | null>(null);
 
   // Cargar rol del usuario actual
   useEffect(() => {
@@ -1082,6 +1090,26 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       setSolicitandoFacturacion(false);
     }
   }
+
+  const handlePagarFacturaProveedor = useCallback((factura: FacturaProveedorRow) => {
+    const beneficiarios: BeneficiarioSeleccion[] =
+      factura.beneficiarioId
+        ? [{
+            id: factura.beneficiarioId,
+            nombre: factura.proveedorNombre,
+            nit: factura.proveedorNit,
+          }]
+        : [];
+
+    setPagoPrefill({
+      concepto: factura.concepto?.trim() || `Pago factura ${factura.numFactura}`,
+      facturaIds: [factura.id],
+      beneficiarios,
+      valor: factura.valor,
+    });
+    setActiveTab("pagos");
+    setTopAction("pago");
+  }, []);
 
   if (loadState === "loading") {
     return (
@@ -1162,7 +1190,10 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
             {puedePago ? (
               <button
                 type="button"
-                onClick={() => setTopAction("pago")}
+                onClick={() => {
+                  setPagoPrefill(null);
+                  setTopAction("pago");
+                }}
                 className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
               >
                 <Banknote className="h-4 w-4" aria-hidden="true" />
@@ -1249,6 +1280,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
           <SeccionFacturasProveedor
             tramiteId={tramiteId}
             puedeEditar={userRol !== "REVISOR"}
+            onPagarFactura={handlePagarFacturaProveedor}
           />
         ) : null}
         {activeTab === "facturacion" ? (
@@ -1275,8 +1307,16 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
         <NuevoPagoModal
           tramiteId={tramite.id}
           tramiteConsecutivo={tramite.consecutivo}
-          onClose={() => setTopAction(null)}
+          initialConcepto={pagoPrefill?.concepto}
+          initialFacturaIds={pagoPrefill?.facturaIds}
+          initialBeneficiarios={pagoPrefill?.beneficiarios}
+          initialValor={pagoPrefill?.valor}
+          onClose={() => {
+            setPagoPrefill(null);
+            setTopAction(null);
+          }}
           onCreated={() => {
+            setPagoPrefill(null);
             setTopAction(null);
             reload();
           }}
