@@ -54,6 +54,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       numSoporte: payload.numSoporte,
       valor: payload.valor,
       observacion: payload.observacion,
+      seccion: payload.seccion,
       facturaIds: payload.facturaIds,
       usuarioId: session.user.id,
     });

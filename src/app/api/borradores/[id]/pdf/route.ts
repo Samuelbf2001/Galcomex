@@ -53,12 +53,20 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   }
 
   // ── Preparar DTO ─────────────────────────────────────────────────────────
-  const lineas: LineaPdfDto[] = borrador.lineasRevision.map((l) => ({
-    orden: l.orden,
-    concepto: l.concepto,
-    numSoporte: l.numSoporte ?? null,
-    valor: l.valor,
-  }));
+  // Agrupar TERCEROS antes que OPERACIONAL para que el PDF refleje el formato
+  // de factura (ingresos para terceros + costos operacionales).
+  const PESO_SECCION = { TERCEROS: 0, OPERACIONAL: 1 } as const;
+  const lineas: LineaPdfDto[] = [...borrador.lineasRevision]
+    .sort((a, b) => {
+      const peso = PESO_SECCION[a.seccion] - PESO_SECCION[b.seccion];
+      return peso !== 0 ? peso : a.orden - b.orden;
+    })
+    .map((l) => ({
+      orden: l.orden,
+      concepto: l.concepto,
+      numSoporte: l.numSoporte ?? null,
+      valor: l.valor,
+    }));
 
   const dto: BorradorPdfDto = {
     consecutivoDO: tramite.consecutivo,

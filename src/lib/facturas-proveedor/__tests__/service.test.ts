@@ -116,6 +116,16 @@ async function cleanupTestData() {
   await prisma.pagoTramite.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
   await prisma.facturaProveedor.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
   await prisma.checklistItem.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
+  // solicitarFacturacion ahora auto-crea borrador para PROPIO y SOCIO_LM,
+  // así que limpiamos primero el grafo del borrador antes del trámite.
+  const borradores = await prisma.borradorFactura.findMany({
+    where: { tramiteId: { in: tramiteIds } },
+    select: { id: true },
+  });
+  const borradorIds = borradores.map((b) => b.id);
+  await prisma.factura.deleteMany({ where: { borradorId: { in: borradorIds } } });
+  await prisma.lineaRevision.deleteMany({ where: { borradorId: { in: borradorIds } } });
+  await prisma.borradorFactura.deleteMany({ where: { id: { in: borradorIds } } });
   await prisma.tramiteDO.deleteMany({ where: { id: { in: tramiteIds } } });
   await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });

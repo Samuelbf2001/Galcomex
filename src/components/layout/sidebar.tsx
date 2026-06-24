@@ -79,7 +79,7 @@ export function Sidebar({ rol }: SidebarProps) {
   const visibleItems = navItems.filter((item) => item.roles.includes(rol));
 
   return (
-    <aside className="flex min-h-dvh w-64 flex-col border-r border-slate-200 bg-slate-950 text-slate-100">
+    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-slate-950 text-slate-100">
       <div className="flex h-16 items-center gap-3 border-b border-slate-800 px-5">
         <div className="flex h-9 w-9 items-center justify-center rounded-md bg-cyan-500 text-slate-950">
           <BriefcaseBusiness className="h-5 w-5" aria-hidden="true" />

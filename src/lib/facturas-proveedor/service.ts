@@ -10,6 +10,7 @@
 
 import { CanalPago, EstadoFacturaProveedor, EstadoTramite, Prisma } from "@prisma/client";
 
+import { ensureBorrador } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
 import { transitionTramite } from "@/lib/tramites/service";
 
@@ -415,6 +416,11 @@ export async function solicitarFacturacion(
     where: { id: tramiteId },
     data: { fechaEnviadoAFacturar: new Date() },
   });
+
+  // Auto-crear borrador idempotente para PROPIO y SOCIO_LM. Nace con líneas
+  // AUTO desde los pagos; el ADMIN (o Lucho, según el tipo de cliente) las
+  // edita a mano en el editor de líneas.
+  await ensureBorrador(tramiteId, usuarioId);
 
   return { ok: true };
 }

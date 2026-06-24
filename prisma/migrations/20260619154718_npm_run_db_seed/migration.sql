@@ -15,7 +15,7 @@
 ALTER TABLE "factura_proveedor" DROP CONSTRAINT "factura_proveedor_beneficiario_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "pago_tramite" DROP CONSTRAINT "pago_tramite_facturaProveedorId_fkey";
+ALTER TABLE "pago_tramite" DROP CONSTRAINT IF EXISTS "pago_tramite_facturaProveedorId_fkey";
 
 -- DropForeignKey
 ALTER TABLE "pago_tramite_factura" DROP CONSTRAINT "pago_tramite_factura_factura_id_fkey";
@@ -28,8 +28,8 @@ ALTER TABLE "factura_proveedor" DROP COLUMN "beneficiario_id",
 ADD COLUMN     "beneficiarioId" TEXT;
 
 -- AlterTable
-ALTER TABLE "pago_tramite" DROP COLUMN "facturaProveedorId",
-DROP COLUMN "fechaEsperadaPago";
+ALTER TABLE "pago_tramite" DROP COLUMN IF EXISTS "facturaProveedorId",
+DROP COLUMN IF EXISTS "fechaEsperadaPago";
 
 -- AlterTable
 ALTER TABLE "pago_tramite_factura" DROP CONSTRAINT "pago_tramite_factura_pkey",

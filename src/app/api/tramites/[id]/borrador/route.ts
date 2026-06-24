@@ -11,6 +11,7 @@ import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
 import {
   ConceptosOperacionalesInvalidosError,
   TramiteNoFacturableError,
+  ensureBorrador,
   generarBorrador,
   listarBorradores,
 } from "@/lib/borradores/service";
@@ -36,6 +37,10 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   if (permiso === "forbidden") {
     return NextResponse.json({ error: "No autorizado" }, { status: 403 });
   }
+
+  // Red de seguridad: si el trámite está en ENVIADO_A_FACTURAR sin borrador
+  // previo, lo creamos antes de listar. Idempotente; aplica a PROPIO y SOCIO_LM.
+  await ensureBorrador(tramiteId, session.user.id);
 
   const borradores = await listarBorradores(tramiteId);
 

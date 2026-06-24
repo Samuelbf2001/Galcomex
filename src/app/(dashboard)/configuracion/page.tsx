@@ -1,7 +1,19 @@
 import { prisma } from "@/lib/db/prisma";
+import { BeneficiariosConfig } from "@/components/configuracion/beneficiarios-config";
+import { SiigoParametros } from "@/components/configuracion/siigo-parametros";
+import { SiigoProductos } from "@/components/configuracion/siigo-productos";
 
 export default async function ConfiguracionPage() {
+  // Solo parámetros NO-Siigo: los Siigo se editan desde SiigoParametros.
   const parametros = await prisma.parametro.findMany({
+    where: { clave: { notIn: [
+      "SIIGO_TIPO_COMPROBANTE_ID",
+      "SIIGO_VENDEDOR_ID",
+      "SIIGO_PRODUCTO_COMISION_ID",
+      "SIIGO_FORMA_PAGO_DEFAULT_ID",
+      "SIIGO_PRODUCTO_4X1000_ID",
+      "SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID",
+    ] } },
     orderBy: { clave: "asc" },
   });
 
@@ -35,6 +47,9 @@ export default async function ConfiguracionPage() {
           </tbody>
         </table>
       </div>
+      <BeneficiariosConfig />
+      <SiigoProductos />
+      <SiigoParametros />
     </section>
   );
 }

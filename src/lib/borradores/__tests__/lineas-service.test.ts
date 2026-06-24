@@ -247,7 +247,7 @@ describe("lineas-service con Postgres local", () => {
     expect(logs.length).toBe(1);
   });
 
-  it("PROPIO: la línea manual actualiza totalFacturaLineas pero NO promueve totalFactura", async (ctx) => {
+  it("PROPIO: la línea manual también promueve totalFactura (líneas = fuente de verdad)", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramite(db, db.clientePropioId);
     const borrador = await generarBorrador({
@@ -256,7 +256,11 @@ describe("lineas-service con Postgres local", () => {
       ivaComision: 28_500n,
       usuarioId: db.userId,
     });
-    const totalMotor = borrador!.totalFactura;
+    // Tras generarBorrador, las líneas (AUTO + fijas) ya rigen totalFactura,
+    // así que el total inicial coincide con Σlíneas + comisión + IVA.
+    const totalAntes = borrador!.totalFactura;
+    const totalLineasAntes = borrador!.totalFacturaLineas;
+    expect(totalAntes).toBe(totalLineasAntes);
 
     const actualizado = await crearLineaManual({
       borradorId: borrador!.id,
@@ -265,10 +269,9 @@ describe("lineas-service con Postgres local", () => {
       usuarioId: db.userId,
     });
 
-    // totalFactura del motor se preserva en PROPIO
-    expect(actualizado!.totalFactura).toBe(totalMotor);
-    // totalFacturaLineas refleja Σlíneas + comisión + IVA − retenciones
-    expect(actualizado!.totalFacturaLineas).toBe(2_000_000n + 150_000n + 28_500n);
+    // totalFactura se promueve también en PROPIO: suma la línea nueva al total previo
+    expect(actualizado!.totalFactura).toBe(totalAntes + 2_000_000n);
+    expect(actualizado!.totalFacturaLineas).toBe(totalLineasAntes + 2_000_000n);
   });
 
   it("rechaza vincular una factura de otro trámite", async (ctx) => {

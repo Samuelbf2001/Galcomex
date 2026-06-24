@@ -864,7 +864,7 @@ function TabHistorial({ tramite }: { tramite: TramiteDetalleData }) {
   );
 }
 
-// ─── Editor de líneas manuales (portal del socio, solo SOCIO_LM) ──────────────
+// ─── Editor de líneas manuales (PROPIO + SOCIO_LM) ────────────────────────────
 
 const ESTADOS_BORRADOR_EDITABLE = ["BORRADOR", "EN_REVISION"];
 
@@ -941,7 +941,6 @@ function TabFacturacion({
   tramite: TramiteDetalleData;
   userRol: string;
 }) {
-  const esSocioLM = tramite.cliente.tipo === "SOCIO_LM";
   const esFacturable =
     tramite.estado === "ENVIADO_A_FACTURAR" ||
     tramite.estado === "FACTURADO" ||
@@ -980,7 +979,7 @@ function TabFacturacion({
           Enviado a facturar: {formatDate(tramite.fechaEnviadoAFacturar)}
         </p>
       ) : null}
-      {esSocioLM ? (
+      {esFacturable ? (
         <SeccionEditorFacturaVenta tramiteId={tramite.id} userRol={userRol} />
       ) : null}
     </div>

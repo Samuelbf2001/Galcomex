@@ -1,17 +1,18 @@
 /**
  * Servicio de líneas manuales del borrador de factura — Galcomex
- * Flujo del socio (Lucho): las líneas se escriben a mano y se vinculan N↔N a
- * facturas de proveedor. En trámites SOCIO_LM la suma de las líneas DEFINE el
- * total (se promueve a totalFactura + saldos); en PROPIO es solo referencia.
+ * Las líneas (AUTO de pagos + fijas 4x1000/costos bancarios + manuales) son la
+ * fuente de verdad para el total y los saldos del borrador, tanto para
+ * trámites PROPIO como SOCIO_LM (los gates por tipo de cliente quedan en
+ * permisos, no en la matemática).
  *
  * Patrón: $transaction + pg_advisory_xact_lock por borrador + AuditLog.
  */
 
-import { EstadoBorrador, Prisma, TipoCliente } from "@prisma/client";
+import { EstadoBorrador, Prisma, SeccionLinea } from "@prisma/client";
 
-import { calcularSaldosPorLineas } from "@/lib/calculations/total-lineas";
 import { prisma } from "@/lib/db/prisma";
 
+import { recalcularTotalBorrador } from "./recalculo";
 import { getBorrador } from "./service";
 
 // ─── Errores tipados ──────────────────────────────────────────────────────────
@@ -65,55 +66,6 @@ const ESTADOS_EDITABLES: EstadoBorrador[] = [
 
 type Tx = Prisma.TransactionClient;
 
-/**
- * Recalcula totalFacturaLineas para un borrador y, si el cliente es SOCIO_LM,
- * promueve la suma de líneas a totalFactura + saldos derivados.
- * Debe ejecutarse dentro de una transacción que ya tomó el advisory lock.
- */
-async function recalcularTotalBorrador(tx: Tx, borradorId: string): Promise<void> {
-  const borrador = await tx.borradorFactura.findUnique({
-    where: { id: borradorId },
-    select: {
-      comision: true,
-      ivaComision: true,
-      retenciones: true,
-      totalAnticipo: true,
-      saldoAFavorLM: true,
-      lineasRevision: { select: { valor: true } },
-      tramite: { select: { cliente: { select: { tipo: true } } } },
-    },
-  });
-
-  if (!borrador) {
-    throw new BorradorNoEncontradoError(borradorId);
-  }
-
-  const calc = calcularSaldosPorLineas({
-    lineas: borrador.lineasRevision,
-    comision: borrador.comision,
-    ivaComision: borrador.ivaComision,
-    retenciones: borrador.retenciones,
-    totalAnticipo: borrador.totalAnticipo,
-    montoLM: borrador.saldoAFavorLM,
-  });
-
-  const esSocioLM = borrador.tramite.cliente.tipo === TipoCliente.SOCIO_LM;
-
-  await tx.borradorFactura.update({
-    where: { id: borradorId },
-    data: esSocioLM
-      ? {
-          totalFacturaLineas: calc.totalFacturaLineas,
-          totalFactura: calc.totalFactura,
-          saldoAFavorCliente: calc.saldoAFavorCliente,
-          saldoACargoCliente: calc.saldoACargoCliente,
-          saldoAFavorLM: calc.saldoAFavorLM,
-          saldoACargoLM: calc.saldoACargoLM,
-        }
-      : { totalFacturaLineas: calc.totalFacturaLineas },
-  });
-}
-
 /** Carga el borrador con estado + tramiteId y valida que sea editable. */
 async function cargarBorradorEditable(tx: Tx, borradorId: string) {
   const borrador = await tx.borradorFactura.findUnique({
@@ -127,6 +79,28 @@ async function cargarBorradorEditable(tx: Tx, borradorId: string) {
     throw new BorradorNoEditableError(borrador.estado);
   }
   return borrador;
+}
+
+/**
+ * Deriva el N° de soporte a partir de las facturas de proveedor vinculadas,
+ * respetando el orden en que el usuario las seleccionó. Para la subsección
+ * TERCEROS el soporte SIEMPRE proviene de la(s) factura(s) asociadas, nunca
+ * se captura a mano. Devuelve null si no hay facturas con número válido.
+ */
+async function soporteDesdeFacturas(
+  tx: Tx,
+  facturaIds: string[],
+): Promise<string | null> {
+  if (facturaIds.length === 0) return null;
+  const facturas = await tx.facturaProveedor.findMany({
+    where: { id: { in: facturaIds } },
+    select: { id: true, numFactura: true },
+  });
+  const porId = new Map(facturas.map((f) => [f.id, f.numFactura]));
+  const numeros = facturaIds
+    .map((id) => porId.get(id))
+    .filter((n): n is string => typeof n === "string" && n.trim().length > 0);
+  return numeros.length > 0 ? numeros.join(" / ") : null;
 }
 
 /** Valida que cada facturaId pertenezca al trámite del borrador. */
@@ -156,13 +130,16 @@ type CrearLineaInput = {
   numSoporte?: string | null;
   valor: bigint;
   observacion?: string | null;
+  seccion?: SeccionLinea;
   facturaIds?: string[];
+  siigoProductoId?: string | null;
   usuarioId: string;
 };
 
 export async function crearLineaManual(input: CrearLineaInput) {
-  const { borradorId, concepto, numSoporte, valor, observacion, usuarioId } = input;
+  const { borradorId, concepto, numSoporte, valor, observacion, usuarioId, siigoProductoId } = input;
   const facturaIds = input.facturaIds ?? [];
+  const seccion = input.seccion ?? SeccionLinea.TERCEROS;
   const lockKey = `borrador_lineas:${borradorId}`;
 
   await prisma.$transaction(async (tx) => {
@@ -178,15 +155,23 @@ export async function crearLineaManual(input: CrearLineaInput) {
     });
     const orden = (ultima?.orden ?? 0) + 1;
 
+    // En TERCEROS el soporte se deriva del número de factura vinculada.
+    const numSoporteFinal =
+      seccion === SeccionLinea.TERCEROS
+        ? await soporteDesdeFacturas(tx, facturaIds)
+        : (numSoporte ?? null);
+
     const linea = await tx.lineaRevision.create({
       data: {
         borradorId,
         concepto,
-        numSoporte: numSoporte ?? undefined,
+        numSoporte: numSoporteFinal ?? undefined,
         valor,
         observacion: observacion ?? undefined,
         orden,
         origen: "MANUAL",
+        seccion,
+        siigoProductoId: siigoProductoId ?? undefined,
         facturas: { create: facturaIds.map((facturaId) => ({ facturaId })) },
       },
     });
@@ -214,7 +199,9 @@ type ActualizarLineaInput = {
   numSoporte?: string | null;
   valor?: bigint;
   observacion?: string | null;
+  seccion?: SeccionLinea;
   facturaIds?: string[];
+  siigoProductoId?: string | null;
   usuarioId: string;
 };
 
@@ -253,6 +240,25 @@ export async function actualizarLinea(input: ActualizarLineaInput) {
     if (input.numSoporte !== undefined) data.numSoporte = input.numSoporte;
     if (input.valor !== undefined) data.valor = input.valor;
     if (input.observacion !== undefined) data.observacion = input.observacion;
+    if (input.seccion !== undefined) data.seccion = input.seccion;
+    if (input.siigoProductoId !== undefined) {
+      data.siigoProducto =
+        input.siigoProductoId === null
+          ? { disconnect: true }
+          : { connect: { id: input.siigoProductoId } };
+    }
+
+    // En TERCEROS el soporte se mantiene sincronizado con las facturas vinculadas,
+    // recalculándolo cuando cambian las facturas o la sección de la línea.
+    const seccionEfectiva = input.seccion ?? antes?.seccion ?? SeccionLinea.TERCEROS;
+    if (
+      seccionEfectiva === SeccionLinea.TERCEROS &&
+      (input.facturaIds !== undefined || input.seccion !== undefined)
+    ) {
+      const facturasEfectivas =
+        input.facturaIds ?? antes?.facturas.map((f) => f.facturaId) ?? [];
+      data.numSoporte = await soporteDesdeFacturas(tx, facturasEfectivas);
+    }
 
     const actualizada = await tx.lineaRevision.update({ where: { id: lineaId }, data });
 

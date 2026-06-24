@@ -62,6 +62,33 @@ export async function fetchBeneficiarios(
   return (payload.beneficiarios as unknown[]).filter(isRecord).map(mapBeneficiario);
 }
 
+export async function updateBeneficiario(
+  id: string,
+  input: { nombre?: string; nit?: string | null; banco?: string | null; numCuenta?: string | null },
+): Promise<BeneficiarioRow> {
+  const response = await fetch(`/api/beneficiarios/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `No fue posible actualizar el beneficiario (${response.status}).`;
+    throw new BeneficiarioApiError(message, response.status);
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.beneficiario)) {
+    throw new BeneficiarioApiError("Respuesta de actualización no válida.");
+  }
+
+  return mapBeneficiario(payload.beneficiario);
+}
+
 export async function createBeneficiario(input: {
   nombre: string;
   nit?: string | null;

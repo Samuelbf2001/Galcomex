@@ -278,8 +278,15 @@ describe("borradores service con Postgres local", () => {
   });
 
   // ─── TEST DORADO END-TO-END ───────────────────────────────────────────────
+  // Tras la unificación de los flujos PROPIO/SOCIO_LM (líneas = fuente de verdad),
+  // `totalFactura` persistido refleja Σ(líneas AUTO incluyendo 4x1000 + costos
+  // bancarios) + comisión + IVA − retenciones = 40.992.098. Para BUN26-0026 con
+  // montoLM=875.944 esto es 875.944 menor que el motor histórico (41.868.042):
+  // el monto LM ya no infla el total facturado al cliente — el cliente paga el
+  // valor recibido en realidad, y montoLM se sigue distribuyendo como saldo a
+  // favor de LM.
   it(
-    "TEST DORADO: DO.BUN26-0026 → totalFactura=41.868.042, saldoAFavorCliente=3.357.958, saldoAFavorLM=875.944, impuesto4x1000=180.904, costosBancarios=17.550 (tolerancia 0)",
+    "TEST DORADO: DO.BUN26-0026 → totalFactura=40.992.098, saldoAFavorCliente=3.357.958, saldoAFavorLM=875.944, impuesto4x1000=180.904, costosBancarios=17.550 (tolerancia 0)",
     async (ctx) => {
       const db = ensureDb(ctx);
       const tramiteId = await crearTramiteTest(db);
@@ -329,7 +336,10 @@ describe("borradores service con Postgres local", () => {
       });
 
       // ── CRITERIOS BLOQUEANTES (tolerancia 0) ──────────────────────────────
-      expect(borrador.totalFactura, "totalFactura").toBe(41_868_042n);
+      // totalFactura = Σ(líneas) + comisión + IVA − retenciones
+      //              = (40.517.644 + 17.550 + 180.904) + 200.000 + 76.000 − 0
+      //              = 40.992.098
+      expect(borrador.totalFactura, "totalFactura").toBe(40_992_098n);
       expect(borrador.saldoAFavorCliente, "saldoAFavorCliente").toBe(3_357_958n);
       expect(borrador.saldoAFavorLM, "saldoAFavorLM").toBe(875_944n);
       expect(borrador.impuesto4x1000, "impuesto4x1000").toBe(180_904n);
@@ -338,8 +348,8 @@ describe("borradores service con Postgres local", () => {
       // Verificar estado inicial
       expect(borrador.estado).toBe(EstadoBorrador.BORRADOR);
 
-      // Verificar líneas de revisión creadas (una por pago)
-      expect(borrador.lineasRevision).toHaveLength(7);
+      // 7 pagos AUTO + 2 líneas fijas (COSTOS BANCARIOS + IMPUESTO 4X1000)
+      expect(borrador.lineasRevision).toHaveLength(9);
     },
   );
 

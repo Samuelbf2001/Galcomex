@@ -48,12 +48,18 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
             : null,
         }
       : null,
-    lineasRevision: borrador.lineasRevision.map((l) => ({
-      concepto: l.concepto,
-      numSoporte: l.numSoporte,
-      valor: l.valor,
-      orden: l.orden,
-    })),
+    lineasRevision: [...borrador.lineasRevision]
+      .sort((a, b) => {
+        const peso =
+          (a.seccion === "TERCEROS" ? 0 : 1) - (b.seccion === "TERCEROS" ? 0 : 1);
+        return peso !== 0 ? peso : a.orden - b.orden;
+      })
+      .map((l) => ({
+        concepto: l.concepto,
+        numSoporte: l.numSoporte,
+        valor: l.valor,
+        orden: l.orden,
+      })),
     comision: borrador.comision,
     ivaComision: borrador.ivaComision,
     impuesto4x1000: borrador.impuesto4x1000,

@@ -15,6 +15,8 @@ import { calcularTotalPorLineas } from "@/lib/calculations/total-lineas";
 import { prisma } from "@/lib/db/prisma";
 import { getParametrosSistema } from "@/lib/parametros/service";
 
+import { recalcularTotalBorrador } from "./recalculo";
+
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 /** Un concepto operacional con nombre y valor (para el desglose de la comisión). */
@@ -124,14 +126,83 @@ const TRANSITIONS: Record<EstadoBorrador, EstadoBorrador[]> = {
   [EstadoBorrador.FACTURADO]: [],
 };
 
+/**
+ * Lee el parámetro SIIGO_FORMA_PAGO_DEFAULT_ID y verifica que la forma de pago
+ * exista localmente. Devuelve null si no está configurado o si el FK no existe
+ * (evita romper el create por FK inválido — el admin lo asigna manualmente luego).
+ */
+async function resolveFormaPagoDefault(): Promise<number | null> {
+  const param = await prisma.parametro.findUnique({
+    where: { clave: "SIIGO_FORMA_PAGO_DEFAULT_ID" },
+    select: { valor: true },
+  });
+  if (!param?.valor) return null;
+  const id = Number(param.valor);
+  if (!Number.isFinite(id)) return null;
+  const existe = await prisma.siigoFormaPago.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  return existe ? id : null;
+}
+
+/**
+ * Lee los UUIDs de producto Siigo configurados para las líneas auto-fijas y
+ * verifica que existan en el catálogo local. Devuelve null para los que no
+ * estén configurados o no existan (las líneas se crean sin producto y el
+ * revisor las asigna a mano).
+ */
+async function resolveProductosLineasFijas(): Promise<{
+  productoCostosBancariosId: string | null;
+  producto4x1000Id: string | null;
+}> {
+  const claves = [
+    "SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID",
+    "SIIGO_PRODUCTO_4X1000_ID",
+  ];
+  const params = await prisma.parametro.findMany({
+    where: { clave: { in: claves } },
+    select: { clave: true, valor: true },
+  });
+  const map = Object.fromEntries(params.map((p) => [p.clave, p.valor]));
+
+  const ids = [map["SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID"], map["SIIGO_PRODUCTO_4X1000_ID"]]
+    .filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+
+  const existentes = await prisma.siigoProducto.findMany({
+    where: { id: { in: ids } },
+    select: { id: true },
+  });
+  const existentesSet = new Set(existentes.map((p) => p.id));
+
+  return {
+    productoCostosBancariosId:
+      map["SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID"] &&
+      existentesSet.has(map["SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID"])
+        ? map["SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID"]
+        : null,
+    producto4x1000Id:
+      map["SIIGO_PRODUCTO_4X1000_ID"] &&
+      existentesSet.has(map["SIIGO_PRODUCTO_4X1000_ID"])
+        ? map["SIIGO_PRODUCTO_4X1000_ID"]
+        : null,
+  };
+}
+
 async function getBorradorCompleto(borradorId: string) {
   return prisma.borradorFactura.findUnique({
     where: { id: borradorId },
     include: {
       lineasRevision: {
         orderBy: { orden: "asc" },
-        include: { facturas: { include: { factura: true } } },
+        include: {
+          facturas: { include: { factura: true } },
+          siigoProducto: {
+            select: { id: true, codigo: true, nombre: true, clasificacionIva: true },
+          },
+        },
       },
+      formaPago: { select: { id: true, nombre: true, tipo: true } },
       factura: true,
     },
   });
@@ -162,31 +233,34 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   }
 
   // ── Leer datos del trámite en paralelo ────────────────────────────────────
-  const [aplicaciones, pagos, params] = await Promise.all([
-    prisma.aplicacionAnticipo.findMany({
-      where: { tramiteId },
-      select: {
-        montoAplicado: true,
-        anticipo: {
-          select: {
-            id: true,
-            costoRecaudo: true,
+  const [aplicaciones, pagos, params, formaPagoDefault, productosFijos] =
+    await Promise.all([
+      prisma.aplicacionAnticipo.findMany({
+        where: { tramiteId },
+        select: {
+          montoAplicado: true,
+          anticipo: {
+            select: {
+              id: true,
+              costoRecaudo: true,
+            },
           },
         },
-      },
-    }),
-    prisma.pagoTramite.findMany({
-      where: { tramiteId },
-      orderBy: { orden: "asc" },
-      select: {
-        valor: true,
-        costoBancario: true,
-        concepto: true,
-        numSoporte: true,
-      },
-    }),
-    getParametrosSistema(),
-  ]);
+      }),
+      prisma.pagoTramite.findMany({
+        where: { tramiteId },
+        orderBy: { orden: "asc" },
+        select: {
+          valor: true,
+          costoBancario: true,
+          concepto: true,
+          numSoporte: true,
+        },
+      }),
+      getParametrosSistema(),
+      resolveFormaPagoDefault(),
+      resolveProductosLineasFijas(),
+    ]);
 
   // ── Armar DTO para el motor ───────────────────────────────────────────────
 
@@ -255,21 +329,55 @@ export async function generarBorrador(input: GenerarBorradorInput) {
         saldoACargoLM: resultado.saldoACargoLM,
         retenciones: resultado.retenciones,
         totalFacturaLineas,
+        formaPagoSiigoId: formaPagoDefault,
         conceptosOperacionales: conceptosOperacionales
           ? normalizeSerializable(conceptosOperacionales)
           : undefined,
         estado: EstadoBorrador.BORRADOR,
         lineasRevision: {
-          create: pagos.map((p, idx) => ({
-            concepto: p.concepto,
-            numSoporte: p.numSoporte ?? undefined,
-            valor: p.valor,
-            orden: idx + 1,
-          })),
+          create: [
+            ...pagos.map((p, idx) => ({
+              concepto: p.concepto,
+              numSoporte: p.numSoporte ?? undefined,
+              valor: p.valor,
+              orden: idx + 1,
+            })),
+            // Líneas fijas auto-generadas. Producto Siigo asignado desde
+            // parámetros (SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID, SIIGO_PRODUCTO_4X1000_ID);
+            // si no están configurados, queda null y el revisor lo asigna.
+            ...(resultado.costosBancarios > 0n
+              ? [
+                  {
+                    concepto: "COSTOS BANCARIOS",
+                    valor: resultado.costosBancarios,
+                    orden: 990,
+                    tipoFija: "COSTOS_BANCARIOS" as const,
+                    siigoProductoId: productosFijos.productoCostosBancariosId,
+                  },
+                ]
+              : []),
+            ...(resultado.impuesto4x1000 > 0n
+              ? [
+                  {
+                    concepto: "IMPUESTO 4X1000",
+                    valor: resultado.impuesto4x1000,
+                    orden: 995,
+                    tipoFija: "IMPUESTO_4X1000" as const,
+                    siigoProductoId: productosFijos.producto4x1000Id,
+                  },
+                ]
+              : []),
+          ],
         },
       },
       include: { lineasRevision: { orderBy: { orden: "asc" } } },
     });
+
+    // Las líneas creadas incluyen las fijas (4x1000 + costos bancarios), pero
+    // `totalFacturaLineas` se sembró solo con los pagos. Recalculamos para que
+    // totalFactura + saldos queden consistentes con la suma real de líneas
+    // desde el primer fetch (la promoción aplica para PROPIO y SOCIO_LM).
+    await recalcularTotalBorrador(tx, borrador.id);
 
     await tx.auditLog.create({
       data: {
@@ -282,7 +390,10 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       },
     });
 
-    return borrador;
+    return tx.borradorFactura.findUniqueOrThrow({
+      where: { id: borrador.id },
+      include: { lineasRevision: { orderBy: { orden: "asc" } } },
+    });
   });
 }
 
@@ -378,8 +489,14 @@ export async function transicionarBorrador(
       include: {
         lineasRevision: {
           orderBy: { orden: "asc" },
-          include: { facturas: { include: { factura: true } } },
+          include: {
+            facturas: { include: { factura: true } },
+            siigoProducto: {
+              select: { id: true, codigo: true, nombre: true, clasificacionIva: true },
+            },
+          },
         },
+        formaPago: { select: { id: true, nombre: true, tipo: true } },
         factura: true,
       },
     });
@@ -406,8 +523,14 @@ export async function transicionarBorrador(
         include: {
           lineasRevision: {
             orderBy: { orden: "asc" },
-            include: { facturas: { include: { factura: true } } },
+            include: {
+              facturas: { include: { factura: true } },
+              siigoProducto: {
+                select: { id: true, codigo: true, nombre: true, clasificacionIva: true },
+              },
+            },
           },
+          formaPago: { select: { id: true, nombre: true, tipo: true } },
           factura: true,
         },
       });
@@ -455,6 +578,63 @@ export async function transicionarBorrador(
 }
 
 /**
+ * Reemplaza los comentarios de cabecera de un borrador.
+ * Solo permitido en estados editables (BORRADOR, EN_REVISION).
+ */
+export async function actualizarComentariosCabecera(
+  borradorId: string,
+  comentarios: string[],
+  usuarioId: string,
+): Promise<{ ok: true; borrador: Awaited<ReturnType<typeof getBorradorCompleto>> } | { ok: false; status: number; message: string }> {
+  const actual = await prisma.borradorFactura.findUnique({
+    where: { id: borradorId },
+    select: { estado: true, tramiteId: true, comentariosCabecera: true },
+  });
+  if (!actual) {
+    return { ok: false, status: 404, message: `Borrador ${borradorId} no encontrado` };
+  }
+  if (
+    actual.estado !== EstadoBorrador.BORRADOR &&
+    actual.estado !== EstadoBorrador.EN_REVISION
+  ) {
+    return {
+      ok: false,
+      status: 422,
+      message: `No se pueden editar comentarios en estado ${actual.estado}`,
+    };
+  }
+
+  const limpios = comentarios
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+
+  await prisma.$transaction([
+    prisma.borradorFactura.update({
+      where: { id: borradorId },
+      data: {
+        // Siempre se almacena como array (vacío si no hay) para evitar la
+        // ambigüedad entre Prisma.JsonNull y Prisma.DbNull.
+        comentariosCabecera: normalizeSerializable(limpios),
+      },
+    }),
+    prisma.auditLog.create({
+      data: {
+        entidad: "BorradorFactura",
+        entidadId: borradorId,
+        accion: "UPDATE_COMENTARIOS",
+        usuarioId,
+        tramiteId: actual.tramiteId,
+        antes: normalizeSerializable({ comentariosCabecera: actual.comentariosCabecera }),
+        despues: normalizeSerializable({ comentariosCabecera: limpios }),
+      },
+    }),
+  ]);
+
+  const borrador = await getBorradorCompleto(borradorId);
+  return { ok: true as const, borrador };
+}
+
+/**
  * Lista todos los borradores de un trámite, ordenados del más reciente al más antiguo.
  */
 export async function listarBorradores(tramiteId: string) {
@@ -469,6 +649,40 @@ export async function listarBorradores(tramiteId: string) {
     },
     orderBy: { createdAt: "desc" },
   });
+}
+
+/**
+ * Asegura que un trámite en estado ENVIADO_A_FACTURAR tenga al menos un
+ * borrador de factura. Idempotente: no hace nada si ya existe uno o si el
+ * trámite no cumple las condiciones (estado previo o posterior, etc.).
+ * Sirve como red de seguridad para trámites que pasaron a ENVIADO_A_FACTURAR
+ * sin haber generado borrador todavía — aplica a PROPIO y SOCIO_LM por igual.
+ */
+export async function ensureBorrador(
+  tramiteId: string,
+  usuarioId: string,
+): Promise<void> {
+  const existente = await prisma.borradorFactura.findFirst({
+    where: { tramiteId },
+    select: { id: true },
+  });
+  if (existente) return;
+
+  const tramite = await prisma.tramiteDO.findUnique({
+    where: { id: tramiteId },
+    select: { estado: true },
+  });
+  if (!tramite) return;
+  // Solo creamos borrador en ENVIADO_A_FACTURAR. Para estados posteriores
+  // (FACTURADO/PAGADO/CERRADO) el borrador ya debió crearse en su momento.
+  if (tramite.estado !== "ENVIADO_A_FACTURAR") return;
+
+  try {
+    await generarBorrador({ tramiteId, usuarioId });
+  } catch {
+    // Falla silenciosa: si el motor o la BD rechazan, la UI seguirá mostrando
+    // el estado "sin borrador" y el ADMIN podrá generarlo manualmente.
+  }
 }
 
 /**

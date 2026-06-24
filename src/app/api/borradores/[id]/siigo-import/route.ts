@@ -59,19 +59,41 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Borrador no encontrado" }, { status: 404 });
   }
 
-  // Líneas de la factura: los conceptos del borrador + comisión (con IVA) + 4x1000 + costos.
+  // Líneas de la factura: los conceptos del borrador agrupados por sección
+  // (TERCEROS primero, OPERACIONAL después) + comisión (con IVA) + 4x1000 + costos.
+  const PESO_SECCION = { TERCEROS: 0, OPERACIONAL: 1 } as const;
+  const lineasOrdenadas = [...borrador.lineasRevision].sort((a, b) => {
+    const peso = PESO_SECCION[a.seccion] - PESO_SECCION[b.seccion];
+    return peso !== 0 ? peso : a.orden - b.orden;
+  });
+
   const lineas: SiigoLineaDto[] = [
-    ...borrador.lineasRevision.map((l) => ({ concepto: l.concepto, valor: l.valor })),
+    ...lineasOrdenadas.map((l) => ({ concepto: l.concepto, valor: l.valor })),
     { concepto: "COMISION GALCOMEX", valor: borrador.comision, esComision: true },
     { concepto: "IVA COMISION", valor: borrador.ivaComision },
     { concepto: "IMPUESTO 4X1000", valor: borrador.impuesto4x1000 },
     { concepto: "COSTOS BANCARIOS", valor: borrador.costosBancarios },
   ].filter((l) => l.valor > 0n);
 
+  // Observaciones SIIGO (col AE): comentarios de cabecera unidos con saltos de
+  // línea. Si el borrador no tiene comentarios, fallback al DO consecutivo.
+  const comentarios = Array.isArray(borrador.comentariosCabecera)
+    ? (borrador.comentariosCabecera as unknown[]).filter(
+        (c): c is string => typeof c === "string" && c.trim().length > 0,
+      )
+    : [];
+
+  const observaciones =
+    comentarios.length > 0
+      ? comentarios.join("\n")
+      : borrador.tramite
+        ? `DO ${borrador.tramite.consecutivo}`
+        : null;
+
   const dto: SiigoFacturaImportDto = {
     identificacionTercero: borrador.tramite?.cliente?.nit ?? "",
     fecha: borrador.factura?.fecha ?? borrador.fechaFactura ?? new Date(),
-    observaciones: borrador.tramite ? `DO ${borrador.tramite.consecutivo}` : null,
+    observaciones,
     lineas,
     totalFormaPago: borrador.totalFactura,
   };

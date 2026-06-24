@@ -2,7 +2,7 @@
  * Esquemas Zod para endpoints de borradores y facturas — Galcomex
  */
 
-import { EstadoBorrador } from "@prisma/client";
+import { EstadoBorrador, SeccionLinea } from "@prisma/client";
 import { z } from "zod";
 
 // ── Generar borrador ──────────────────────────────────────────────────────────
@@ -37,8 +37,12 @@ export const crearLineaPayloadSchema = z.object({
   numSoporte: z.string().trim().min(1).optional(),
   valor: z.coerce.bigint().positive(),
   observacion: z.string().trim().min(1).optional(),
+  /** Subsección de la factura: TERCEROS (default) u OPERACIONAL. */
+  seccion: z.nativeEnum(SeccionLinea).default(SeccionLinea.TERCEROS),
   /** Facturas de proveedor que respaldan esta línea (N↔N). */
   facturaIds: z.array(z.string().min(1)).default([]),
+  /** Producto del catálogo Siigo vinculado a esta línea. */
+  siigoProductoId: z.string().min(1).optional(),
 });
 
 export type CrearLineaPayload = z.infer<typeof crearLineaPayloadSchema>;
@@ -49,7 +53,9 @@ export const actualizarLineaPayloadSchema = z
     numSoporte: z.string().trim().min(1).nullable().optional(),
     valor: z.coerce.bigint().positive().optional(),
     observacion: z.string().trim().min(1).nullable().optional(),
+    seccion: z.nativeEnum(SeccionLinea).optional(),
     facturaIds: z.array(z.string().min(1)).optional(),
+    siigoProductoId: z.string().min(1).nullable().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, {
     message: "Debe enviarse al menos un campo a actualizar",

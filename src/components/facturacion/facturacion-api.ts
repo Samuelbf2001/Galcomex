@@ -8,6 +8,8 @@
 
 export type EstadoBorrador = "BORRADOR" | "EN_REVISION" | "APROBADO" | "FACTURADO";
 
+export type SeccionLinea = "TERCEROS" | "OPERACIONAL";
+
 export type LineaRevisionRow = {
   id: string;
   borradorId: string;
@@ -17,8 +19,22 @@ export type LineaRevisionRow = {
   orden: number;
   observacion: string | null;
   origen: "AUTO" | "MANUAL";
+  seccion: SeccionLinea;
+  /** "IMPUESTO_4X1000" | "COSTOS_BANCARIOS" | null para líneas auto-generadas fijas. */
+  tipoFija: string | null;
   /** IDs de facturas de proveedor vinculadas (pivot N↔N). */
   facturasVinculadas: string[];
+  /** Producto Siigo vinculado (opcional). */
+  siigoProductoId: string | null;
+  siigoProductoCodigo: string | null;
+  siigoProductoNombre: string | null;
+  siigoClasificacionIva: string | null;
+};
+
+export type SiigoFormaPagoRow = {
+  id: number;
+  nombre: string;
+  tipo: string | null;
 };
 
 /** Un concepto operacional: nombre + valor (BigInt como string) */
@@ -47,10 +63,23 @@ export type BorradorRow = {
   totalFacturaLineas: string; // BigInt
   /** Desglose de conceptos operacionales de la comisión. Null si no aplica. */
   conceptosOperacionales: ConceptoOperacionalRow[] | null;
+  /** Comentarios de cabecera (formato Lucho). Cada string es una fila descriptiva. */
+  comentariosCabecera: string[];
   estado: EstadoBorrador;
   numFacturaSiigo: string | null;
   fechaFactura: string | null;
   fechaAprobacion: string | null;
+  /** Id del borrador (draft) creado en SIIGO, null si nunca se envió. */
+  siigoDraftId: string | null;
+  /** Timestamp del último envío exitoso a SIIGO como borrador, ISO. */
+  enviadoASiigoEn: string | null;
+  /** Mensaje del último error al enviar a SIIGO; null si el último intento fue exitoso. */
+  ultimoErrorSiigo: string | null;
+  /** Timestamp del último intento (éxito o fallo), ISO. */
+  ultimoIntentoSiigo: string | null;
+  /** Forma de pago Siigo seleccionada para este borrador. */
+  formaPagoSiigoId: number | null;
+  formaPago: SiigoFormaPagoRow | null;
   createdAt: string;
   lineasRevision: LineaRevisionRow[];
   factura: FacturaRow | null;
@@ -114,6 +143,8 @@ function normalizeLinea(raw: Record<string, unknown>): LineaRevisionRow {
         .filter((id) => id !== "")
     : [];
 
+  const siigoProd = isRecord(raw.siigoProducto) ? raw.siigoProducto : null;
+
   return {
     id: String(raw.id ?? ""),
     borradorId: String(raw.borradorId ?? ""),
@@ -123,7 +154,13 @@ function normalizeLinea(raw: Record<string, unknown>): LineaRevisionRow {
     orden: typeof raw.orden === "number" ? raw.orden : 0,
     observacion: typeof raw.observacion === "string" ? raw.observacion : null,
     origen: raw.origen === "MANUAL" ? "MANUAL" : "AUTO",
+    seccion: raw.seccion === "OPERACIONAL" ? "OPERACIONAL" : "TERCEROS",
+    tipoFija: typeof raw.tipoFija === "string" ? raw.tipoFija : null,
     facturasVinculadas,
+    siigoProductoId: typeof raw.siigoProductoId === "string" ? raw.siigoProductoId : null,
+    siigoProductoCodigo: siigoProd && typeof siigoProd.codigo === "string" ? siigoProd.codigo : null,
+    siigoProductoNombre: siigoProd && typeof siigoProd.nombre === "string" ? siigoProd.nombre : null,
+    siigoClasificacionIva: siigoProd && typeof siigoProd.clasificacionIva === "string" ? siigoProd.clasificacionIva : null,
   };
 }
 
@@ -172,10 +209,26 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
     retenciones: String(raw.retenciones ?? "0"),
     totalFacturaLineas: String(raw.totalFacturaLineas ?? "0"),
     conceptosOperacionales: normalizeConceptos(raw.conceptosOperacionales),
+    comentariosCabecera: Array.isArray(raw.comentariosCabecera)
+      ? (raw.comentariosCabecera as unknown[])
+          .filter((v): v is string => typeof v === "string")
+      : [],
     estado: (raw.estado as EstadoBorrador) ?? "BORRADOR",
     numFacturaSiigo: typeof raw.numFacturaSiigo === "string" ? raw.numFacturaSiigo : null,
     fechaFactura: typeof raw.fechaFactura === "string" ? raw.fechaFactura : null,
     fechaAprobacion: typeof raw.fechaAprobacion === "string" ? raw.fechaAprobacion : null,
+    siigoDraftId: typeof raw.siigoDraftId === "string" ? raw.siigoDraftId : null,
+    enviadoASiigoEn: typeof raw.enviadoASiigoEn === "string" ? raw.enviadoASiigoEn : null,
+    ultimoErrorSiigo: typeof raw.ultimoErrorSiigo === "string" ? raw.ultimoErrorSiigo : null,
+    ultimoIntentoSiigo: typeof raw.ultimoIntentoSiigo === "string" ? raw.ultimoIntentoSiigo : null,
+    formaPagoSiigoId: typeof raw.formaPagoSiigoId === "number" ? raw.formaPagoSiigoId : null,
+    formaPago: isRecord(raw.formaPago)
+      ? {
+          id: Number(raw.formaPago.id),
+          nombre: String(raw.formaPago.nombre ?? ""),
+          tipo: typeof raw.formaPago.tipo === "string" ? raw.formaPago.tipo : null,
+        }
+      : null,
     createdAt: String(raw.createdAt ?? ""),
     lineasRevision: lineas,
     factura,
@@ -356,7 +409,9 @@ export type CrearLineaInput = {
   numSoporte?: string;
   valor: string; // BigInt como string
   observacion?: string;
+  seccion?: SeccionLinea;
   facturaIds?: string[];
+  siigoProductoId?: string;
 };
 
 export type ActualizarLineaInput = {
@@ -364,7 +419,9 @@ export type ActualizarLineaInput = {
   numSoporte?: string | null;
   valor?: string;
   observacion?: string | null;
+  seccion?: SeccionLinea;
   facturaIds?: string[];
+  siigoProductoId?: string | null;
 };
 
 async function parseBorradorResponse(response: Response): Promise<BorradorRow> {
@@ -407,6 +464,18 @@ export async function actualizarLinea(
   return parseBorradorResponse(response);
 }
 
+export async function actualizarComentariosCabecera(
+  borradorId: string,
+  comentarios: string[],
+): Promise<BorradorRow> {
+  const response = await fetch(`/api/borradores/${borradorId}/comentarios`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ comentarios }),
+  });
+  return parseBorradorResponse(response);
+}
+
 export async function eliminarLinea(
   borradorId: string,
   lineaId: string,
@@ -437,6 +506,138 @@ export function descargarSiigoImport(borradorId: string): void {
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+/**
+ * Resultado de sincronizar un borrador con Siigo.
+ * - facturada=true: Siigo ya devolvió consecutivo y la BD se actualizó.
+ * - facturada=false: La factura aún no está estampada por el superior.
+ */
+export type SiigoSincronizarResult = {
+  facturada: boolean;
+  numFacturaSiigo: string | null;
+  fechaFactura: string | null;
+  stampStatus: string | null;
+  mensaje: string;
+};
+
+/**
+ * Consulta Siigo por el siigoDraftId del borrador. Si el superior ya validó y
+ * estampó la factura en el portal, marca el borrador como FACTURADO y devuelve
+ * el consecutivo + fecha. Si todavía está pendiente, devuelve facturada=false.
+ */
+export async function sincronizarFacturaDesdeSiigo(
+  borradorId: string,
+): Promise<SiigoSincronizarResult> {
+  const response = await fetch(
+    `/api/borradores/${borradorId}/siigo-sincronizar`,
+    { method: "POST", headers: { accept: "application/json" } },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error sincronizando con SIIGO (${response.status}).`;
+    throw new FacturacionApiError(message, response.status);
+  }
+  if (!isRecord(payload)) {
+    throw new FacturacionApiError("Respuesta de SIIGO no válida.");
+  }
+  return {
+    facturada: payload.facturada === true,
+    numFacturaSiigo:
+      typeof payload.numFacturaSiigo === "string"
+        ? payload.numFacturaSiigo
+        : null,
+    fechaFactura:
+      typeof payload.fechaFactura === "string" ? payload.fechaFactura : null,
+    stampStatus:
+      typeof payload.stampStatus === "string" ? payload.stampStatus : null,
+    mensaje:
+      typeof payload.mensaje === "string" ? payload.mensaje : "Sincronizado.",
+  };
+}
+
+/**
+ * Envía un borrador APROBADO a la API de SIIGO como BORRADOR (DRAFT). La
+ * factura queda en Siigo a la espera de que un usuario superior la valide y
+ * la estampe manualmente desde el portal Siigo. El borrador en Galcomex se
+ * mantiene en estado APROBADO; cuando llegue el consecutivo definitivo, el
+ * ADMIN lo marca como FACTURADO con el flujo manual existente.
+ *
+ * Si SIIGO falla, lanza FacturacionApiError con el detalle para reintentar.
+ */
+export async function enviarBorradorASiigo(
+  borradorId: string,
+): Promise<{ siigoDraftId: string; enviadoEn: string }> {
+  const response = await fetch(`/api/borradores/${borradorId}/siigo-enviar`, {
+    method: "POST",
+    headers: { accept: "application/json" },
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error enviando a SIIGO (${response.status}).`;
+    throw new FacturacionApiError(message, response.status);
+  }
+  if (
+    !isRecord(payload) ||
+    typeof payload.siigoDraftId !== "string" ||
+    typeof payload.enviadoEn !== "string"
+  ) {
+    throw new FacturacionApiError("Respuesta de SIIGO no válida.");
+  }
+  return { siigoDraftId: payload.siigoDraftId, enviadoEn: payload.enviadoEn };
+}
+
+// ─── Formas de pago Siigo ────────────────────────────────────────────────────
+
+export async function fetchFormasPagoSiigo(): Promise<SiigoFormaPagoRow[]> {
+  const response = await fetch("/api/configuracion/siigo/formas-pago", {
+    cache: "no-store",
+    headers: { accept: "application/json" },
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error cargando formas de pago (${response.status}).`;
+    throw new FacturacionApiError(message, response.status);
+  }
+  const lista = isRecord(payload) && Array.isArray(payload.formasPago)
+    ? payload.formasPago
+    : [];
+  return (lista as unknown[])
+    .filter(isRecord)
+    .filter((fp) => fp.activo !== false)
+    .map((fp) => ({
+      id: Number(fp.id),
+      nombre: String(fp.nombre ?? ""),
+      tipo: typeof fp.tipo === "string" ? fp.tipo : null,
+    }));
+}
+
+export async function actualizarFormaPago(
+  borradorId: string,
+  formaPagoSiigoId: number | null,
+): Promise<void> {
+  const response = await fetch(`/api/borradores/${borradorId}/forma-pago`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ formaPagoSiigoId }),
+  });
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error actualizando forma de pago (${response.status}).`;
+    throw new FacturacionApiError(message, response.status);
+  }
 }
 
 // ─── Formateo ─────────────────────────────────────────────────────────────────

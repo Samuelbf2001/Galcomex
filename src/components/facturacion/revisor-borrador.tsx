@@ -7,6 +7,8 @@ import {
   Download,
   FileText,
   Loader2,
+  RefreshCw,
+  Send,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -15,13 +17,18 @@ import {
   type BorradorRow,
   type EstadoBorrador,
   type LineaRevisionRow,
+  type SiigoFormaPagoRow,
   type TramiteParaFacturacion,
   FacturacionApiError,
   ESTADO_BORRADOR_LABEL,
+  actualizarFormaPago,
   descargarSiigoImport,
+  enviarBorradorASiigo,
   estadoBorradorColorClass,
+  fetchFormasPagoSiigo,
   formatCOP,
   formatDate,
+  sincronizarFacturaDesdeSiigo,
   transicionarBorrador,
 } from "@/components/facturacion/facturacion-api";
 import {
@@ -284,6 +291,11 @@ export function RevisorBorrador({
   const [transicionando, setTransicionando] = useState(false);
   const [errorTransicion, setErrorTransicion] = useState<string | null>(null);
   const [modalFacturar, setModalFacturar] = useState(false);
+  const [enviandoSiigo, setEnviandoSiigo] = useState(false);
+  const [formasPago, setFormasPago] = useState<SiigoFormaPagoRow[]>([]);
+  const [guardandoFormaPago, setGuardandoFormaPago] = useState(false);
+  const [sincronizandoSiigo, setSincronizandoSiigo] = useState(false);
+  const [mensajeSincronizacion, setMensajeSincronizacion] = useState<string | null>(null);
 
   // Facturas de proveedor: indexadas por numFactura para cruzar con numSoporte
   const [facturasByNumFactura, setFacturasByNumFactura] = useState<
@@ -297,6 +309,12 @@ export function RevisorBorrador({
   const [downloadUrlByDocId, setDownloadUrlByDocId] = useState<Map<string, string>>(
     new Map(),
   );
+
+  useEffect(() => {
+    if (puedeFacturar) {
+      fetchFormasPagoSiigo().then(setFormasPago).catch(() => {});
+    }
+  }, [puedeFacturar]);
 
   useEffect(() => {
     let cancelled = false;
@@ -415,6 +433,89 @@ export function RevisorBorrador({
     onBorradorActualizado(updated);
   }
 
+  async function handleSincronizarSiigo() {
+    if (sincronizandoSiigo) return;
+    setSincronizandoSiigo(true);
+    setMensajeSincronizacion(null);
+    setErrorTransicion(null);
+    try {
+      const result = await sincronizarFacturaDesdeSiigo(borradorActual.id);
+      setMensajeSincronizacion(result.mensaje);
+      if (result.facturada && result.numFacturaSiigo && result.fechaFactura) {
+        const updated: BorradorRow = {
+          ...borradorActual,
+          estado: "FACTURADO",
+          numFacturaSiigo: result.numFacturaSiigo,
+          fechaFactura: result.fechaFactura,
+        };
+        setBorradorActual(updated);
+        onBorradorActualizado(updated);
+      }
+    } catch (caught) {
+      setErrorTransicion(
+        caught instanceof FacturacionApiError
+          ? caught.message
+          : "Error al sincronizar con SIIGO.",
+      );
+    } finally {
+      setSincronizandoSiigo(false);
+    }
+  }
+
+  async function handleFormaPagoChange(id: number | null) {
+    setGuardandoFormaPago(true);
+    try {
+      await actualizarFormaPago(borradorActual.id, id);
+      const fp = id !== null ? formasPago.find((f) => f.id === id) ?? null : null;
+      setBorradorActual((prev) => ({
+        ...prev,
+        formaPagoSiigoId: id,
+        formaPago: fp,
+      }));
+    } catch (caught) {
+      setErrorTransicion(
+        caught instanceof FacturacionApiError ? caught.message : "Error guardando forma de pago.",
+      );
+    } finally {
+      setGuardandoFormaPago(false);
+    }
+  }
+
+  async function handleEnviarSiigo() {
+    if (enviandoSiigo) return;
+    const confirmar = window.confirm(
+      "Se enviará la factura a SIIGO como borrador. Un usuario superior debe validarla y estamparla desde SIIGO. ¿Continuar?",
+    );
+    if (!confirmar) return;
+    setEnviandoSiigo(true);
+    setErrorTransicion(null);
+    try {
+      const { siigoDraftId, enviadoEn } = await enviarBorradorASiigo(borradorActual.id);
+      const updated: BorradorRow = {
+        ...borradorActual,
+        siigoDraftId,
+        enviadoASiigoEn: enviadoEn,
+        ultimoErrorSiigo: null,
+        ultimoIntentoSiigo: enviadoEn,
+      };
+      setBorradorActual(updated);
+      onBorradorActualizado(updated);
+    } catch (caught) {
+      const mensaje =
+        caught instanceof FacturacionApiError
+          ? caught.message
+          : "Error al enviar a SIIGO.";
+      setErrorTransicion(mensaje);
+      setBorradorActual((prev) => ({
+        ...prev,
+        ultimoErrorSiigo: mensaje,
+        ultimoIntentoSiigo: new Date().toISOString(),
+      }));
+    } finally {
+      setEnviandoSiigo(false);
+    }
+  }
+
   const estadoLabel = ESTADO_BORRADOR_LABEL[estado];
   const estadoColor = estadoBorradorColorClass(estado);
 
@@ -514,6 +615,110 @@ export function RevisorBorrador({
           {estado === "FACTURADO" && borradorActual.fechaFactura ? (
             <span className="text-xs text-slate-500 border border-slate-200 bg-slate-50 px-2 py-1">
               Facturado {formatDate(borradorActual.fechaFactura)}
+            </span>
+          ) : null}
+
+          {/* Selector de forma de pago Siigo — ADMIN, antes de facturar.
+              Por defecto se setea "Contado/Efectivo" al generar el borrador
+              (parámetro SIIGO_FORMA_PAGO_DEFAULT_ID); el admin la edita antes
+              de enviar a SIIGO o marcar como facturado. */}
+          {estado !== "FACTURADO" && puedeFacturar && formasPago.length > 0 ? (
+            <div className="flex items-center gap-1.5">
+              <label className="text-xs text-slate-500 whitespace-nowrap">Forma de pago:</label>
+              <select
+                className="h-9 border border-slate-300 bg-white px-2 text-sm text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-400 disabled:opacity-60"
+                value={borradorActual.formaPagoSiigoId ?? ""}
+                disabled={guardandoFormaPago}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  void handleFormaPagoChange(val ? Number(val) : null);
+                }}
+              >
+                <option value="">— seleccionar —</option>
+                {formasPago.map((fp) => (
+                  <option key={fp.id} value={fp.id}>
+                    {fp.nombre}
+                  </option>
+                ))}
+              </select>
+              {guardandoFormaPago ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-hidden="true" />
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Enviar a SIIGO como BORRADOR — solo ADMIN, con borrador APROBADO. La
+              factura queda en SIIGO esperando que un superior la valide y la estampe. */}
+          {estado === "APROBADO" && puedeFacturar ? (
+            <button
+              type="button"
+              onClick={handleEnviarSiigo}
+              disabled={enviandoSiigo}
+              title={
+                borradorActual.siigoDraftId
+                  ? `Ya enviado a SIIGO${borradorActual.enviadoASiigoEn ? ` (${formatDate(borradorActual.enviadoASiigoEn)})` : ""}. Reenviar lo recreará en SIIGO.`
+                  : "Enviar a SIIGO como borrador (pendiente de validar por un superior)"
+              }
+              className="inline-flex h-9 items-center gap-2 border border-cyan-300 bg-cyan-50 px-3 text-sm font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
+            >
+              {enviandoSiigo ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Send className="h-4 w-4" aria-hidden="true" />
+              )}
+              {borradorActual.siigoDraftId ? "Reenviar a SIIGO" : "Enviar a SIIGO"}
+            </button>
+          ) : null}
+
+          {/* Estado del envío a SIIGO (chip informativo) */}
+          {estado === "APROBADO" && borradorActual.siigoDraftId ? (
+            <span
+              className="text-xs text-cyan-700 border border-cyan-200 bg-cyan-50 px-2 py-1"
+              title={`Draft Siigo: ${borradorActual.siigoDraftId}`}
+            >
+              Borrador en SIIGO
+              {borradorActual.enviadoASiigoEn
+                ? ` · ${formatDate(borradorActual.enviadoASiigoEn)}`
+                : ""}
+            </span>
+          ) : null}
+
+          {/* Sincronizar desde SIIGO — consulta el consecutivo definitivo y la
+              fecha cuando un superior ya validó/estampó la factura. */}
+          {estado === "APROBADO" && borradorActual.siigoDraftId && puedeFacturar ? (
+            <button
+              type="button"
+              onClick={handleSincronizarSiigo}
+              disabled={sincronizandoSiigo}
+              title="Consultar a SIIGO si la factura ya tiene consecutivo definitivo (BAQ-XXXXX) y fecha. Si sí, marca el borrador como FACTURADO automáticamente."
+              className="inline-flex h-9 items-center gap-2 border border-cyan-300 bg-white px-3 text-sm font-semibold text-cyan-700 transition hover:bg-cyan-50 disabled:opacity-60"
+            >
+              {sincronizandoSiigo ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              )}
+              Sincronizar desde SIIGO
+            </button>
+          ) : null}
+
+          {/* Mensaje informativo del último intento de sincronización */}
+          {mensajeSincronizacion ? (
+            <span
+              className="max-w-xs text-xs text-slate-700 border border-slate-200 bg-slate-50 px-2 py-1 truncate"
+              title={mensajeSincronizacion}
+            >
+              {mensajeSincronizacion}
+            </span>
+          ) : null}
+          {estado === "APROBADO" &&
+          borradorActual.ultimoErrorSiigo &&
+          !borradorActual.siigoDraftId ? (
+            <span
+              className="max-w-xs text-xs text-rose-700 border border-rose-200 bg-rose-50 px-2 py-1 truncate"
+              title={borradorActual.ultimoErrorSiigo}
+            >
+              SIIGO: {borradorActual.ultimoErrorSiigo}
             </span>
           ) : null}
 
