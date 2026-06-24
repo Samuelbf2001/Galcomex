@@ -18,6 +18,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { KanbanTramites } from "@/components/tramites/kanban-tramites";
@@ -594,6 +595,7 @@ type ViewMode = "tabla" | "kanban";
 
 export function TramitesWorkspace() {
   const { error, reload, rows, state } = useTramites();
+  const router = useRouter();
   const [createOpen, setCreateOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [estado, setEstado] = useState(allFilter);
@@ -692,8 +694,9 @@ export function TramitesWorkspace() {
       <CreateTramiteDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
+        onCreated={(tramite) => {
           reload();
+          router.push(`/tramites/${tramite.id}`);
         }}
       />
 

@@ -30,6 +30,8 @@
 
 import { EstadoBorrador, Prisma } from "@prisma/client";
 
+import { ensureLineasFijas } from "@/lib/borradores/lineas-fijas";
+import { recalcularTotalBorrador } from "@/lib/borradores/recalculo";
 import { prisma } from "@/lib/db/prisma";
 
 import {
@@ -130,18 +132,17 @@ function observacionesDesdeBorrador(
 interface ConfigSiigo {
   tipoComprobanteId: number;
   idVendedor: number;
-  productoComisionId: string;
   /** NIT de la DIAN para enviar como tercero en la línea auto-fija de 4x1000. */
   nitDian: string | null;
 }
 
 async function leerConfigSiigo(): Promise<ConfigSiigo | { error: string }> {
-  const clavesObligatorias = [
-    "SIIGO_TIPO_COMPROBANTE_ID",
-    "SIIGO_VENDEDOR_ID",
-    "SIIGO_PRODUCTO_COMISION_ID",
-  ];
+  const clavesObligatorias = ["SIIGO_TIPO_COMPROBANTE_ID", "SIIGO_VENDEDOR_ID"];
   // SIIGO_NIT_DIAN es opcional; si no está, la línea 4x1000 sale sin tercero.
+  // SIIGO_PRODUCTO_COMISION_ID / SIIGO_PRODUCTO_IVA_COMISION_ID /
+  // SIIGO_PRODUCTO_4X1000_ID / SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID se validan
+  // indirectamente cuando una línea fija queda sin `siigoProducto` asignado
+  // (ver paso 4 — "Líneas sin producto SIIGO asignado").
   const clavesOpcionales = ["SIIGO_NIT_DIAN"];
 
   const params = await prisma.parametro.findMany({
@@ -170,9 +171,57 @@ async function leerConfigSiigo(): Promise<ConfigSiigo | { error: string }> {
   return {
     tipoComprobanteId: tipoNum,
     idVendedor: vendedorNum,
-    productoComisionId: map["SIIGO_PRODUCTO_COMISION_ID"]!,
     nitDian: map["SIIGO_NIT_DIAN"]?.trim() || null,
   };
+}
+
+// ─── Tercero del 4x1000 ───────────────────────────────────────────────────────
+
+type PagoParaNit4x1000 = {
+  canalPago: string;
+  valor: bigint;
+  bancoBeneficiario: { nit: string | null; nombre: string | null } | null;
+};
+
+/**
+ * Decide el NIT que va como tercero en la línea 4x1000.
+ *
+ * Política:
+ *  1. Si TODOS los pagos del trámite son TRANSF_BANCOLOMBIA → usa el NIT del
+ *     Beneficiario Bancolombia asociado al primer pago (auto-fill al crear).
+ *  2. Si hay algún pago con canal distinto → usa el NIT del banco del primer
+ *     pago non-Bancolombia que tenga banco asignado.
+ *  3. Fallback: el NIT DIAN configurado (compatibilidad con datos previos).
+ */
+export function resolverNit4x1000(
+  pagos: PagoParaNit4x1000[],
+  nitDianFallback: string | null,
+): string | null {
+  if (pagos.length === 0) return nitDianFallback;
+
+  const todosBancolombia = pagos.every(
+    (p) => p.canalPago === "TRANSF_BANCOLOMBIA",
+  );
+
+  if (todosBancolombia) {
+    const conNit = pagos.find((p) => p.bancoBeneficiario?.nit?.trim());
+    if (conNit?.bancoBeneficiario?.nit) {
+      return conNit.bancoBeneficiario.nit.trim();
+    }
+    return nitDianFallback;
+  }
+
+  // Mixto u otros bancos: tomamos el primer non-Bancolombia con NIT.
+  const otroBanco = pagos.find(
+    (p) =>
+      p.canalPago !== "TRANSF_BANCOLOMBIA" &&
+      p.bancoBeneficiario?.nit?.trim(),
+  );
+  if (otroBanco?.bancoBeneficiario?.nit) {
+    return otroBanco.bancoBeneficiario.nit.trim();
+  }
+
+  return nitDianFallback;
 }
 
 // ─── API pública ──────────────────────────────────────────────────────────────
@@ -181,6 +230,28 @@ export async function enviarBorradorASiigo(
   borradorId: string,
   usuarioId: string,
 ): Promise<EnvioSiigoResult> {
+  // ── 0. Backfill líneas fijas (idempotente, también para borradores APROBADO) ──
+  // Borradores generados antes del modelo "4 conceptos = LineaRevision" pueden
+  // no tener las líneas COMISION / IVA_COMISION / COSTOS_BANCARIOS /
+  // IMPUESTO_4X1000. Se crean a partir de los campos `borrador.comision` /
+  // `ivaComision` / `costosBancarios` / `impuesto4x1000` para que `Σ items =
+  // totalFactura`. La operación no altera totales (recalcular espeja los mismos
+  // valores) ni reabre el snapshot del borrador.
+  try {
+    await prisma.$transaction(async (tx) => {
+      await ensureLineasFijas(tx, borradorId);
+      await recalcularTotalBorrador(tx, borradorId);
+    });
+  } catch (err) {
+    // Si el borrador no existe, lo manejamos abajo con findUnique. Otros errores
+    // del backfill se propagan al persistirErrorSiigo.
+    if (
+      !(err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025")
+    ) {
+      throw err;
+    }
+  }
+
   // ── 1. Cargar borrador con todo lo necesario ────────────────────────────────
   const borrador = await prisma.borradorFactura.findUnique({
     where: { id: borradorId },
@@ -190,6 +261,17 @@ export async function enviarBorradorASiigo(
           id: true,
           consecutivo: true,
           cliente: { select: { nit: true, nombre: true } },
+          // Pagos del trámite para resolver el tercero del 4x1000:
+          // Bancolombia (todos los pagos con TRANSF_BANCOLOMBIA) → NIT
+          // Bancolombia; cualquier otro canal → NIT del banco asociado al pago.
+          pagos: {
+            orderBy: { orden: "asc" },
+            select: {
+              canalPago: true,
+              valor: true,
+              bancoBeneficiario: { select: { nit: true, nombre: true } },
+            },
+          },
         },
       },
       formaPago: true,
@@ -256,38 +338,20 @@ export async function enviarBorradorASiigo(
     return { ok: false, tipo: "config", error: config.error };
   }
 
-  // ── 3. Cargar producto de comisión y sus impuestos ──────────────────────────
-  const productoComision = await prisma.siigoProducto.findUnique({
-    where: { id: config.productoComisionId },
-    select: {
-      codigo: true,
-      impuestos: {
-        include: { impuesto: { select: { id: true, tipo: true } } },
-      },
-    },
-  });
-
-  if (!productoComision) {
-    return {
-      ok: false,
-      tipo: "config",
-      error: `El producto de comisión configurado (${config.productoComisionId}) no existe en el catálogo Siigo local.`,
-    };
-  }
-
-  const taxesComision = productoComision.impuestos
-    .filter((pi) => pi.impuesto.tipo === "IVA")
-    .map((pi) => ({ id: pi.impuesto.id }));
-
   // ── 4. Validar líneas de revisión ───────────────────────────────────────────
-  const lineasNormales = borrador.lineasRevision.filter((l) => !l.tipoFija);
-  // Nota: lineaCostos NO se envía a Siigo (ver paso 5), pero se sigue creando
-  // en el borrador local. No la incluimos en la validación de producto.
-  const linea4x1000 = borrador.lineasRevision.find(
-    (l) => l.tipoFija === "IMPUESTO_4X1000",
-  );
+  // Las 4 conceptos fijos (COMISION, IVA_COMISION, COSTOS_BANCARIOS,
+  // IMPUESTO_4X1000) son LineaRevision con `tipoFija`. Junto con las líneas
+  // manuales TERCEROS / OPERACIONAL forman la totalidad de los items que se
+  // envían a Siigo. La invariante crítica es:
+  //
+  //   Σ items.price = totalFactura − retenciones
+  //
+  // Por eso TODAS las líneas con valor > 0 deben tener `siigoProducto.codigo`
+  // y los items se mandan SIN `taxes` auto (el IVA va como su propia línea
+  // IVA_COMISION para que Siigo no recalcule por encima).
+  const lineasFacturables = borrador.lineasRevision.filter((l) => l.valor > 0n);
 
-  const lineasSinProducto = lineasNormales
+  const lineasSinProducto = lineasFacturables
     .filter((l) => !l.siigoProducto?.codigo)
     .map((l) => `#${l.orden} "${l.concepto}"`);
 
@@ -295,21 +359,15 @@ export async function enviarBorradorASiigo(
     return {
       ok: false,
       tipo: "validacion",
-      error: `Líneas sin producto SIIGO asignado: ${lineasSinProducto.join(", ")}`,
+      error: `Líneas sin producto SIIGO asignado: ${lineasSinProducto.join(", ")}. Configura los parámetros SIIGO_PRODUCTO_* o asigna el producto en el editor.`,
     };
   }
 
-  if (linea4x1000 && !linea4x1000.siigoProducto?.codigo) {
-    return {
-      ok: false,
-      tipo: "validacion",
-      error: `La línea "IMPUESTO 4X1000" no tiene producto SIIGO asignado. Asígnalo en el revisor antes de enviar.`,
-    };
-  }
-
-  // Validar que líneas TERCEROS tengan NIT de proveedor
-  const lineasTercerosSinNit = lineasNormales
-    .filter((l) => l.seccion === "TERCEROS")
+  // Validar que líneas TERCEROS manuales (sin tipoFija) tengan NIT de proveedor.
+  // Las fijas IMPUESTO_4X1000 y COSTOS_BANCARIOS resuelven su tercero aparte
+  // (4x1000 → banco GMF; costos → no requiere tercero específico).
+  const lineasTercerosSinNit = lineasFacturables
+    .filter((l) => l.seccion === "TERCEROS" && !l.tipoFija)
     .filter((l) => {
       const primeraFactura = l.facturas[0]?.factura ?? null;
       const nit =
@@ -332,22 +390,28 @@ export async function enviarBorradorASiigo(
   }
 
   // ── 5. Construir items para SIIGO ───────────────────────────────────────────
-  // Orden: TERCEROS → OPERACIONAL → comisión (OPERACIONAL) con IVA.
-  // 4x1000 y costos bancarios son LineaRevision en TERCEROS (orden 990/995).
+  // Orden: TERCEROS primero, OPERACIONAL después; dentro de cada sección por
+  // `orden`. Las fijas TERCEROS (COSTOS_BANCARIOS=990, IMPUESTO_4X1000=995) van
+  // al final del bloque de terceros y las fijas OPERACIONAL (COMISION=991,
+  // IVA_COMISION=992) al final del bloque operacional.
   const PESO_SECCION = { TERCEROS: 0, OPERACIONAL: 1 } as const;
-  const lineasOrdenadas = [...lineasNormales].sort((a, b) => {
+  const lineasOrdenadas = [...lineasFacturables].sort((a, b) => {
     const peso =
       PESO_SECCION[a.seccion as keyof typeof PESO_SECCION] -
       PESO_SECCION[b.seccion as keyof typeof PESO_SECCION];
     return peso !== 0 ? peso : a.orden - b.orden;
   });
 
-  const items: SiigoFacturaItemDto[] = [];
+  // NIT del banco GMF: lo calculamos una sola vez y se aplica solo a la línea
+  // IMPUESTO_4X1000.
+  const nit4x1000 = resolverNit4x1000(borrador.tramite.pagos, config.nitDian);
 
-  // Helper: extrae el NIT del proveedor real de una línea (para "Id. Tercero").
-  // Para TERCEROS preferimos el NIT del beneficiario (más confiable que el del
-  // proveedor que escribió quien capturó la factura). Devuelve null si no hay.
-  function nitTerceroDe(l: (typeof lineasNormales)[number]): string | null {
+  // Helper: NIT del proveedor real de una línea TERCEROS manual (para "Id.
+  // Tercero" en el PDF). Para TERCEROS preferimos el NIT del beneficiario
+  // (más confiable que el del proveedor que escribió quien capturó la factura).
+  function nitTerceroDe(
+    l: (typeof lineasFacturables)[number],
+  ): string | null {
     const factura = l.facturas[0]?.factura ?? null;
     return (
       factura?.beneficiario?.nit?.trim() ||
@@ -356,65 +420,31 @@ export async function enviarBorradorASiigo(
     );
   }
 
-  // Líneas normales (TERCEROS y OPERACIONAL)
+  const items: SiigoFacturaItemDto[] = [];
+
   for (const l of lineasOrdenadas) {
-    if (l.valor <= 0n) continue;
-    const taxesLinea = (l.siigoProducto?.impuestos ?? [])
-      .filter((pi) => pi.impuesto.tipo === "IVA")
-      .map((pi) => ({ id: pi.impuesto.id }));
-    // Solo TERCEROS llevan customer por línea (las OPERACIONAL son ingresos propios).
-    // El campo `customer.identification` es lo que Siigo necesita para "Ingresos
-    // recibidos para terceros" — aparece como "Id. Tercero" en el PDF.
-    const nitTercero = l.seccion === "TERCEROS" ? nitTerceroDe(l) : null;
+    // Determinar el customer (tercero) según el tipo de línea:
+    //   - IMPUESTO_4X1000 → banco que retuvo el GMF (resolverNit4x1000).
+    //   - TERCEROS manual → NIT del proveedor de la factura vinculada.
+    //   - Resto (COMISION / IVA_COMISION / COSTOS_BANCARIOS / OPERACIONAL) →
+    //     sin customer; son ingresos / costos propios del prestador.
+    let customerNit: string | null = null;
+    if (l.tipoFija === "IMPUESTO_4X1000") {
+      customerNit = nit4x1000;
+    } else if (l.seccion === "TERCEROS" && !l.tipoFija) {
+      customerNit = nitTerceroDe(l);
+    }
+
     items.push({
       code: l.siigoProducto!.codigo,
       description: l.concepto,
       quantity: 1,
       price: bigintToPrice(l.valor),
-      ...(taxesLinea.length > 0 ? { taxes: taxesLinea } : {}),
-      ...(nitTercero
-        ? { customer: { identification: nitTercero, branch_office: 0 } }
+      // Crítico: NO enviamos `taxes` para que Siigo no aplique IVA por encima
+      // del price. El IVA va como su propia línea IVA_COMISION.
+      ...(customerNit
+        ? { customer: { identification: customerNit, branch_office: 0 } }
         : {}),
-    });
-  }
-
-  // Costos bancarios NO se envían a Siigo: son un costo operativo interno de
-  // Galcomex (descuentos de bancos por canal de pago) que afecta el saldo del
-  // cliente pero no es un servicio facturable. Se mantiene como campo del
-  // borrador (visible en el PDF interno y en cartera).
-
-  // 4x1000 (LineaRevision tipoFija, sección TERCEROS).
-  // Tercero contable: DIAN — se envía con el NIT configurado en SIIGO_NIT_DIAN.
-  if (linea4x1000 && linea4x1000.valor > 0n) {
-    items.push({
-      code: linea4x1000.siigoProducto!.codigo,
-      description: linea4x1000.concepto,
-      quantity: 1,
-      price: bigintToPrice(linea4x1000.valor),
-      ...(config.nitDian
-        ? { customer: { identification: config.nitDian, branch_office: 0 } }
-        : {}),
-    });
-  }
-
-  // Comisión Galcomex (campo del borrador) — con IVA desde SiigoProductoImpuesto
-  if (borrador.comision > 0n) {
-    items.push({
-      code: productoComision.codigo,
-      description: "COMISION GALCOMEX",
-      quantity: 1,
-      price: bigintToPrice(borrador.comision),
-      ...(taxesComision.length > 0 ? { taxes: taxesComision } : {}),
-    });
-  }
-
-  // IVA de comisión como línea separada solo si el producto no tiene IVA asociado
-  if (borrador.ivaComision > 0n && taxesComision.length === 0) {
-    items.push({
-      code: productoComision.codigo,
-      description: "IVA COMISION",
-      quantity: 1,
-      price: bigintToPrice(borrador.ivaComision),
     });
   }
 

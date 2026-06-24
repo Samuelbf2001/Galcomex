@@ -388,6 +388,9 @@ model Beneficiario {
 
   pagos             PagoTramiteBeneficiario[]
   facturasProveedor FacturaProveedor[]
+  // Banco asociado a pagos cuando el canal es OTROS_BANCOS / PSE.
+  // Se usa como tercero del 4x1000 en la factura de venta.
+  pagosBanco        PagoTramite[]             @relation("PagoTramiteBancoBeneficiario")
 
   @@map("beneficiario")
 }
@@ -404,6 +407,11 @@ model PagoTramite {
   valor         BigInt // COP sin decimales
   canalPago     CanalPago
   costoBancario BigInt           @default(0) // Tomado de MatrizRecaudoPago
+  // Banco usado como tercero del 4x1000 en la factura de venta.
+  // Bancolombia se auto-resuelve desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID;
+  // otros bancos / PSE → lo elige el operario en el modal "Agregar pago".
+  bancoBeneficiarioId String?
+  bancoBeneficiario   Beneficiario? @relation("PagoTramiteBancoBeneficiario", fields: [bancoBeneficiarioId], references: [id], onDelete: SetNull)
   orden         Int              @default(0)
   fechaRealPago DateTime?
   viaSocio      Boolean          @default(false)

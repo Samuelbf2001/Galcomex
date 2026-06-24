@@ -87,6 +87,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       observacion: payload.observacion,
       seccion: payload.seccion,
       facturaIds: payload.facturaIds,
+      siigoProductoId: payload.siigoProductoId,
       usuarioId: session.user.id,
     });
 

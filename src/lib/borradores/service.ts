@@ -11,10 +11,15 @@
 import { EstadoBorrador, Prisma } from "@prisma/client";
 
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
-import { calcularTotalPorLineas } from "@/lib/calculations/total-lineas";
 import { prisma } from "@/lib/db/prisma";
 import { getParametrosSistema } from "@/lib/parametros/service";
 
+import {
+  actualizarLineasComision,
+  definirLineasFijasParaCreate,
+  ensureLineasFijas,
+  resolverProductosLineasFijas,
+} from "./lineas-fijas";
 import { recalcularTotalBorrador } from "./recalculo";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -146,49 +151,6 @@ async function resolveFormaPagoDefault(): Promise<number | null> {
   return existe ? id : null;
 }
 
-/**
- * Lee los UUIDs de producto Siigo configurados para las líneas auto-fijas y
- * verifica que existan en el catálogo local. Devuelve null para los que no
- * estén configurados o no existan (las líneas se crean sin producto y el
- * revisor las asigna a mano).
- */
-async function resolveProductosLineasFijas(): Promise<{
-  productoCostosBancariosId: string | null;
-  producto4x1000Id: string | null;
-}> {
-  const claves = [
-    "SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID",
-    "SIIGO_PRODUCTO_4X1000_ID",
-  ];
-  const params = await prisma.parametro.findMany({
-    where: { clave: { in: claves } },
-    select: { clave: true, valor: true },
-  });
-  const map = Object.fromEntries(params.map((p) => [p.clave, p.valor]));
-
-  const ids = [map["SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID"], map["SIIGO_PRODUCTO_4X1000_ID"]]
-    .filter((v): v is string => typeof v === "string" && v.trim().length > 0);
-
-  const existentes = await prisma.siigoProducto.findMany({
-    where: { id: { in: ids } },
-    select: { id: true },
-  });
-  const existentesSet = new Set(existentes.map((p) => p.id));
-
-  return {
-    productoCostosBancariosId:
-      map["SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID"] &&
-      existentesSet.has(map["SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID"])
-        ? map["SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID"]
-        : null,
-    producto4x1000Id:
-      map["SIIGO_PRODUCTO_4X1000_ID"] &&
-      existentesSet.has(map["SIIGO_PRODUCTO_4X1000_ID"])
-        ? map["SIIGO_PRODUCTO_4X1000_ID"]
-        : null,
-  };
-}
-
 async function getBorradorCompleto(borradorId: string) {
   return prisma.borradorFactura.findUnique({
     where: { id: borradorId },
@@ -259,7 +221,7 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       }),
       getParametrosSistema(),
       resolveFormaPagoDefault(),
-      resolveProductosLineasFijas(),
+      resolverProductosLineasFijas(),
     ]);
 
   // ── Armar DTO para el motor ───────────────────────────────────────────────
@@ -302,20 +264,27 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   // ── Calcular ──────────────────────────────────────────────────────────────
   const resultado = calcularBorrador(dto);
 
-  // Total de referencia por líneas (las líneas AUTO = los pagos). Para PROPIO es
-  // solo referencia; en SOCIO_LM se promueve a totalFactura al editar manualmente.
-  const totalFacturaLineas = calcularTotalPorLineas({
-    lineas: pagos.map((p) => ({ valor: p.valor })),
-    comision: resultado.comision,
-    ivaComision: resultado.ivaComision,
-    retenciones: resultado.retenciones,
-  });
+  // El borrador nace con las 4 líneas fijas (COMISION, IVA_COMISION,
+  // COSTOS_BANCARIOS, IMPUESTO_4X1000) sembradas desde los outputs del motor.
+  // Cada una lleva su `siigoProductoId` resuelto desde parámetros; si falta el
+  // FK, queda en null y el revisor lo asigna en el editor.
+  const lineasFijasCreate = definirLineasFijasParaCreate(
+    {
+      comision: resultado.comision,
+      ivaComision: resultado.ivaComision,
+      costosBancarios: resultado.costosBancarios,
+      impuesto4x1000: resultado.impuesto4x1000,
+    },
+    productosFijos,
+  );
 
   // ── Persistir en transacción ──────────────────────────────────────────────
   return prisma.$transaction(async (tx) => {
     const borrador = await tx.borradorFactura.create({
       data: {
         tramiteId,
+        // Estos campos se espejan desde las líneas fijas en `recalcularTotalBorrador`;
+        // los inicializamos aquí para que el primer audit log refleje el motor.
         comision: resultado.comision,
         ivaComision: resultado.ivaComision,
         impuesto4x1000: resultado.impuesto4x1000,
@@ -328,55 +297,22 @@ export async function generarBorrador(input: GenerarBorradorInput) {
         saldoAFavorLM: resultado.saldoAFavorLM,
         saldoACargoLM: resultado.saldoACargoLM,
         retenciones: resultado.retenciones,
-        totalFacturaLineas,
+        totalFacturaLineas: 0n,
         formaPagoSiigoId: formaPagoDefault,
         conceptosOperacionales: conceptosOperacionales
           ? normalizeSerializable(conceptosOperacionales)
           : undefined,
         estado: EstadoBorrador.BORRADOR,
         lineasRevision: {
-          create: [
-            ...pagos.map((p, idx) => ({
-              concepto: p.concepto,
-              numSoporte: p.numSoporte ?? undefined,
-              valor: p.valor,
-              orden: idx + 1,
-            })),
-            // Líneas fijas auto-generadas. Producto Siigo asignado desde
-            // parámetros (SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID, SIIGO_PRODUCTO_4X1000_ID);
-            // si no están configurados, queda null y el revisor lo asigna.
-            ...(resultado.costosBancarios > 0n
-              ? [
-                  {
-                    concepto: "COSTOS BANCARIOS",
-                    valor: resultado.costosBancarios,
-                    orden: 990,
-                    tipoFija: "COSTOS_BANCARIOS" as const,
-                    siigoProductoId: productosFijos.productoCostosBancariosId,
-                  },
-                ]
-              : []),
-            ...(resultado.impuesto4x1000 > 0n
-              ? [
-                  {
-                    concepto: "IMPUESTO 4X1000",
-                    valor: resultado.impuesto4x1000,
-                    orden: 995,
-                    tipoFija: "IMPUESTO_4X1000" as const,
-                    siigoProductoId: productosFijos.producto4x1000Id,
-                  },
-                ]
-              : []),
-          ],
+          create: lineasFijasCreate,
         },
       },
       include: { lineasRevision: { orderBy: { orden: "asc" } } },
     });
 
-    // Las líneas creadas incluyen las fijas (4x1000 + costos bancarios), pero
-    // `totalFacturaLineas` se sembró solo con los pagos. Recalculamos para que
-    // totalFactura + saldos queden consistentes con la suma real de líneas
-    // desde el primer fetch (la promoción aplica para PROPIO y SOCIO_LM).
+    // Recalcular: con las 4 líneas fijas ya creadas, `totalFacturaLineas` queda
+    // igual al motor (con retenciones=0n y montoLM=0n) o consistente con líneas
+    // manuales si las hay (caso SOCIO_LM, agregadas después).
     await recalcularTotalBorrador(tx, borrador.id);
 
     await tx.auditLog.create({
@@ -629,6 +565,88 @@ export async function actualizarComentariosCabecera(
       },
     }),
   ]);
+
+  const borrador = await getBorradorCompleto(borradorId);
+  return { ok: true as const, borrador };
+}
+
+/**
+ * Actualiza la comisión del borrador y recalcula IVA + total + saldos.
+ * IVA = comision × tasaIva / 100 (truncado, mismo cálculo que el motor).
+ * Solo permitido en estados editables (BORRADOR, EN_REVISION).
+ */
+export async function actualizarComisionBorrador(
+  borradorId: string,
+  nuevaComision: bigint,
+  usuarioId: string,
+): Promise<
+  | { ok: true; borrador: Awaited<ReturnType<typeof getBorradorCompleto>> }
+  | { ok: false; status: number; message: string }
+> {
+  const lockKey = `borrador_lineas:${borradorId}`;
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+
+    const actual = await tx.borradorFactura.findUnique({
+      where: { id: borradorId },
+      select: {
+        estado: true,
+        tramiteId: true,
+        comision: true,
+        ivaComision: true,
+      },
+    });
+    if (!actual) {
+      return {
+        ok: false as const,
+        status: 404,
+        message: `Borrador ${borradorId} no encontrado`,
+      };
+    }
+    if (
+      actual.estado !== EstadoBorrador.BORRADOR &&
+      actual.estado !== EstadoBorrador.EN_REVISION
+    ) {
+      return {
+        ok: false as const,
+        status: 422,
+        message: `No se puede editar la comisión en estado ${actual.estado}`,
+      };
+    }
+
+    const params = await getParametrosSistema();
+    const nuevoIva = (nuevaComision * params.tasaIva) / 100n;
+
+    // La comisión + IVA viven como LineaRevision (tipoFija COMISION /
+    // IVA_COMISION). Si el borrador es heredado y aún no las tiene, se crean.
+    await actualizarLineasComision(tx, borradorId, nuevaComision, params.tasaIva);
+
+    // El recálculo espeja `borrador.comision`/`ivaComision` desde las líneas.
+    await recalcularTotalBorrador(tx, borradorId);
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "BorradorFactura",
+        entidadId: borradorId,
+        accion: "UPDATE_COMISION",
+        usuarioId,
+        tramiteId: actual.tramiteId,
+        antes: normalizeSerializable({
+          comision: actual.comision,
+          ivaComision: actual.ivaComision,
+        }),
+        despues: normalizeSerializable({
+          comision: nuevaComision,
+          ivaComision: nuevoIva,
+        }),
+      },
+    });
+
+    return { ok: true as const };
+  });
+
+  if (!result.ok) return result;
 
   const borrador = await getBorradorCompleto(borradorId);
   return { ok: true as const, borrador };

@@ -284,28 +284,85 @@ function SeccionAnticipos({
 // ---------------------------------------------------------------------------
 
 function ResumenLibro({ libro }: { libro: LibroPagosData; filas: FilaLibro[] }) {
+  const cruce = libro.cruceFactura;
+  // Cruce con cliente: usa SIEMPRE el saldo del borrador (derivado de Σ líneas
+  // + comisión + IVA − retenciones). NO se rederiva contra Σ pagos.
+  // Ver memoria `project_cruce_factura.md`.
+  let cruceSaldoStr: string | null = null;
+  let cruceLabel = "";
+  if (cruce) {
+    try {
+      const aFavor = BigInt(cruce.saldoAFavorCliente);
+      const aCargo = BigInt(cruce.saldoACargoCliente);
+      if (aFavor > 0n) {
+        cruceSaldoStr = aFavor.toString();
+        cruceLabel = "Saldo a favor del cliente";
+      } else if (aCargo > 0n) {
+        cruceSaldoStr = (-aCargo).toString();
+        cruceLabel = "Saldo a cargo del cliente";
+      } else {
+        cruceSaldoStr = "0";
+        cruceLabel = "Cruce equilibrado";
+      }
+    } catch {
+      cruceSaldoStr = null;
+    }
+  }
+
   return (
-    <div className="flex flex-wrap gap-6 border border-slate-200 bg-slate-50 px-5 py-3 text-sm">
-      <div>
-        <span className="text-slate-500">Anticipo aplicado: </span>
-        <span className="font-semibold text-slate-900">
-          {formatCOP(libro.totalAnticipoAplicado)}
-        </span>
+    <div className="flex flex-col gap-2 border border-slate-200 bg-slate-50 px-5 py-3 text-sm">
+      <div className="flex flex-wrap gap-6">
+        <div>
+          <span className="text-slate-500">Anticipo aplicado: </span>
+          <span className="font-semibold text-slate-900">
+            {formatCOP(libro.totalAnticipoAplicado)}
+          </span>
+        </div>
+        <div>
+          <span className="text-slate-500">Total pagos: </span>
+          <span className="font-semibold text-slate-900">{formatCOP(libro.totalPagos)}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">Costos bancarios: </span>
+          <span className="font-semibold text-slate-900">{formatCOP(libro.costosBancarios)}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">
+            Saldo operativo (vs. pagos):{" "}
+          </span>
+          <span className={`text-base ${saldoColorClass(libro.saldoFinal)}`}>
+            {formatCOP(libro.saldoFinal)}
+          </span>
+          <span className="ml-2 text-[11px] text-slate-400">
+            no incluye comisión, IVA, 4x1000 ni costos
+          </span>
+        </div>
       </div>
-      <div>
-        <span className="text-slate-500">Total pagos: </span>
-        <span className="font-semibold text-slate-900">{formatCOP(libro.totalPagos)}</span>
-      </div>
-      <div>
-        <span className="text-slate-500">Costos bancarios: </span>
-        <span className="font-semibold text-slate-900">{formatCOP(libro.costosBancarios)}</span>
-      </div>
-      <div>
-        <span className="text-slate-500">Saldo final: </span>
-        <span className={`text-base ${saldoColorClass(libro.saldoFinal)}`}>
-          {formatCOP(libro.saldoFinal)}
-        </span>
-      </div>
+      {cruce && cruceSaldoStr !== null ? (
+        <div className="flex flex-wrap items-baseline gap-3 border-t border-slate-200 pt-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+            Cruce con factura de venta
+          </span>
+          <span className="text-slate-700">
+            {cruce.numSiigo ? (
+              <span className="font-mono">{cruce.numSiigo}</span>
+            ) : (
+              <span className="italic text-slate-500">
+                Borrador APROBADO (pendiente de estampar)
+              </span>
+            )}
+          </span>
+          <span className="text-slate-500">
+            Total factura: <span className="font-semibold text-slate-800">{formatCOP(cruce.totalFactura)}</span>
+          </span>
+          <span>
+            <span className="text-slate-500">{cruceLabel}: </span>
+            <span className={`text-base font-semibold ${saldoColorClass(cruceSaldoStr)}`}>
+              {formatCOP(cruceSaldoStr)}
+            </span>
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -569,6 +626,10 @@ export function NuevoPagoModal({
   );
   const [fechaRealPago, setFechaRealPago] = useState(todayInput());
   const [canalPago, setCanalPago] = useState<CanalPago>(CANALES_PAGO[0]?.value ?? "TRANSF_BANCOLOMBIA");
+  // Banco (Beneficiario) usado como tercero del 4x1000. Solo se captura cuando
+  // el canal NO es Bancolombia — para Bancolombia el backend auto-resuelve
+  // desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID.
+  const [bancoSel, setBancoSel] = useState<BeneficiarioSeleccion | null>(null);
 
   // Facturas de proveedor disponibles (multiselect)
   const [facturasDisponibles, setFacturasDisponibles] = useState<FacturaProveedorOpcion[]>([]);
@@ -626,6 +687,25 @@ export function NuevoPagoModal({
     return () => controller.abort();
   }, [tramiteId]);
 
+  // Auto-completar beneficiarios al seleccionar facturas
+  useEffect(() => {
+    if (facturasSeleccionadas.length === 0) return;
+    const nuevos: BeneficiarioSeleccion[] = [];
+    for (const id of facturasSeleccionadas) {
+      const fp = facturasDisponibles.find((f) => f.id === id);
+      if (!fp?.beneficiarioId) continue;
+      const yaPresente = beneficiariosSel.some((b) => b.id === fp.beneficiarioId) ||
+        nuevos.some((b) => b.id === fp.beneficiarioId);
+      if (!yaPresente) {
+        nuevos.push({ id: fp.beneficiarioId, nombre: fp.proveedorNombre, nit: fp.beneficiarioNit });
+      }
+    }
+    if (nuevos.length > 0) {
+      setBeneficiariosSel((prev) => [...prev, ...nuevos]);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [facturasSeleccionadas, facturasDisponibles]);
+
   const sumaFacturas: bigint = facturasDisponibles
     .filter((fp) => facturasSeleccionadas.includes(fp.id))
     .reduce((sum, fp) => {
@@ -644,6 +724,12 @@ export function NuevoPagoModal({
         canalPago: payload.canalPago,
         fechaRealPago: fechaRealPago || null,
         facturaProveedorIds: facturasSeleccionadas,
+        // Solo mando el banco para canales != Bancolombia; el backend
+        // auto-resuelve Bancolombia desde el parámetro de configuración.
+        bancoBeneficiarioId:
+          payload.canalPago !== "TRANSF_BANCOLOMBIA" && bancoSel
+            ? bancoSel.id
+            : null,
       });
       onCreated(pago);
     } catch (caught) {
@@ -870,6 +956,26 @@ export function NuevoPagoModal({
                   </select>
                 </label>
               </div>
+
+              {/* Banco (4x1000) — solo cuando el canal NO es Bancolombia.
+                  Bancolombia se auto-resuelve desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID. */}
+              {canalPago !== "TRANSF_BANCOLOMBIA" ? (
+                <div className="space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">
+                    Banco (tercero del 4x1000)
+                    <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                  </span>
+                  <BeneficiarioCombobox
+                    mode="single"
+                    value={bancoSel}
+                    onChange={setBancoSel}
+                    placeholder="Seleccionar o crear banco…"
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    Se usa como tercero de la línea 4x1000 al enviar la factura a Siigo. Si dejás vacío, Galcomex elegirá un default al enviar.
+                  </p>
+                </div>
+              ) : null}
 
               <label className="block space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">Fecha de pago</span>
@@ -1393,7 +1499,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
                 <th className="border-b border-slate-200 px-3 py-2">Canal de pago</th>
                 <th className="border-b border-slate-200 px-3 py-2">Fecha de pago</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Costo bancario</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-right">Saldo corriente</th>
+                <th className="border-b border-slate-200 px-3 py-2 text-right">Saldo operativo</th>
                 <th className="border-b border-slate-200 px-3 py-2 w-12"></th>
               </tr>
             </thead>

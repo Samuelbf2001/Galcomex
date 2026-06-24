@@ -278,15 +278,13 @@ describe("borradores service con Postgres local", () => {
   });
 
   // ─── TEST DORADO END-TO-END ───────────────────────────────────────────────
-  // Tras la unificación de los flujos PROPIO/SOCIO_LM (líneas = fuente de verdad),
-  // `totalFactura` persistido refleja Σ(líneas AUTO incluyendo 4x1000 + costos
-  // bancarios) + comisión + IVA − retenciones = 40.992.098. Para BUN26-0026 con
-  // montoLM=875.944 esto es 875.944 menor que el motor histórico (41.868.042):
-  // el monto LM ya no infla el total facturado al cliente — el cliente paga el
-  // valor recibido en realidad, y montoLM se sigue distribuyendo como saldo a
-  // favor de LM.
+  // Los pagos ya no se auto-generan como líneas del borrador: el usuario las crea
+  // manualmente en el editor asignando producto Siigo a cada una. El borrador nace
+  // únicamente con las dos líneas fijas (4x1000 y costos bancarios) que sí tienen
+  // producto Siigo configurado en parámetros del sistema. Por eso totalFactura,
+  // saldoAFavorCliente y conteo de líneas se calculan ahora sin incluir los pagos.
   it(
-    "TEST DORADO: DO.BUN26-0026 → totalFactura=40.992.098, saldoAFavorCliente=3.357.958, saldoAFavorLM=875.944, impuesto4x1000=180.904, costosBancarios=17.550 (tolerancia 0)",
+    "TEST DORADO: DO.BUN26-0026 → impuesto4x1000=180.904, costosBancarios=17.550 (tolerancia 0). Los pagos NO se auto-generan como líneas: el usuario los crea manualmente con producto Siigo.",
     async (ctx) => {
       const db = ensureDb(ctx);
       const tramiteId = await crearTramiteTest(db);
@@ -336,11 +334,17 @@ describe("borradores service con Postgres local", () => {
       });
 
       // ── CRITERIOS BLOQUEANTES (tolerancia 0) ──────────────────────────────
-      // totalFactura = Σ(líneas) + comisión + IVA − retenciones
-      //              = (40.517.644 + 17.550 + 180.904) + 200.000 + 76.000 − 0
-      //              = 40.992.098
-      expect(borrador.totalFactura, "totalFactura").toBe(40_992_098n);
-      expect(borrador.saldoAFavorCliente, "saldoAFavorCliente").toBe(3_357_958n);
+      // Los pagos no se siembran como líneas; el usuario los crea manualmente
+      // asignándoles producto Siigo. El borrador nace con las CUATRO líneas
+      // fijas: COMISION, IVA_COMISION, COSTOS_BANCARIOS, IMPUESTO_4X1000.
+      //
+      // totalFactura = Σ(4 líneas fijas) − retenciones
+      //              = 17.550 + 180.904 + 200.000 + 76.000 − 0
+      //              = 474.454
+      // saldoFinal   = totalAnticipo − totalFactura = 45.226.000 − 474.454 = 44.751.546
+      // saldoAFavorCliente = saldoFinal − montoLM   = 44.751.546 − 875.944 = 43.875.602
+      expect(borrador.totalFactura, "totalFactura").toBe(474_454n);
+      expect(borrador.saldoAFavorCliente, "saldoAFavorCliente").toBe(43_875_602n);
       expect(borrador.saldoAFavorLM, "saldoAFavorLM").toBe(875_944n);
       expect(borrador.impuesto4x1000, "impuesto4x1000").toBe(180_904n);
       expect(borrador.costosBancarios, "costosBancarios").toBe(17_550n);
@@ -348,8 +352,15 @@ describe("borradores service con Postgres local", () => {
       // Verificar estado inicial
       expect(borrador.estado).toBe(EstadoBorrador.BORRADOR);
 
-      // 7 pagos AUTO + 2 líneas fijas (COSTOS BANCARIOS + IMPUESTO 4X1000)
-      expect(borrador.lineasRevision).toHaveLength(9);
+      // Las 4 líneas fijas: COSTOS_BANCARIOS, COMISION, IVA_COMISION, IMPUESTO_4X1000.
+      expect(borrador.lineasRevision).toHaveLength(4);
+      const tiposFijos = borrador.lineasRevision
+        .map((l) => l.tipoFija)
+        .filter((t): t is string => t !== null)
+        .sort();
+      expect(tiposFijos).toEqual(
+        ["COMISION", "COSTOS_BANCARIOS", "IMPUESTO_4X1000", "IVA_COMISION"],
+      );
     },
   );
 

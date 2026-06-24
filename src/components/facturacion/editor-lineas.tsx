@@ -21,6 +21,7 @@ import {
 
 import {
   actualizarComentariosCabecera as apiActualizarComentarios,
+  actualizarComisionBorrador as apiActualizarComision,
   actualizarLinea as apiActualizarLinea,
   crearLineaManual as apiCrearLinea,
   eliminarLinea as apiEliminarLinea,
@@ -35,6 +36,31 @@ const ETIQUETA_SECCION: Record<SeccionLinea, string> = {
   TERCEROS: "Ingresos recibidos para terceros",
   OPERACIONAL: "Ingresos operacionales",
 };
+
+// Refleja la asociación real producto↔impuesto (tabla SiigoProductoImpuesto).
+// `clasificacionIva` viene de Siigo y es solo descriptivo: "Taxed" significa
+// que el producto está sujeto a impuesto, pero el impuesto solo se aplica al
+// enviar la factura si está asociado manualmente desde Configuración.
+function badgeImpuestoProducto(producto: SiigoProductoRow | null): {
+  label: string;
+  className: string;
+} {
+  if (!producto) return { label: "", className: "" };
+  const ivas = producto.impuestos.filter((i) => i.tipo === "IVA");
+  if (ivas.length > 0) {
+    return {
+      label: `IVA ${ivas[0]!.porcentaje}%`,
+      className: "bg-amber-100 text-amber-700",
+    };
+  }
+  if (producto.clasificacionIva === "Taxed") {
+    return {
+      label: "Sin impuesto asociado",
+      className: "bg-rose-100 text-rose-700",
+    };
+  }
+  return { label: "Excluido IVA", className: "bg-slate-100 text-slate-600" };
+}
 
 // ─── Multi-select desplegable de facturas de proveedor ─────────────────────────
 
@@ -138,6 +164,148 @@ function FacturasMultiSelect({
               </button>
             );
           })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ─── Selector buscable de producto Siigo ─────────────────────────────────────
+
+type SiigoProductoSelectProps = {
+  productos: SiigoProductoRow[];
+  value: string;
+  onSelect: (producto: SiigoProductoRow | null) => void;
+  disabled?: boolean;
+  placeholder?: string;
+};
+
+function SiigoProductoSelect({
+  productos,
+  value,
+  onSelect,
+  disabled = false,
+  placeholder = "— Seleccionar —",
+}: SiigoProductoSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  function cerrar() {
+    setOpen(false);
+    setQuery("");
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    function onClickOutside(e: MouseEvent) {
+      if (!containerRef.current?.contains(e.target as Node)) {
+        cerrar();
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") cerrar();
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onKey);
+    // foco al abrir
+    requestAnimationFrame(() => searchRef.current?.focus());
+    return () => {
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const seleccionado = productos.find((p) => p.id === value) ?? null;
+
+  const filtrados = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q === "") return productos;
+    return productos.filter(
+      (p) =>
+        p.codigo.toLowerCase().includes(q) ||
+        p.nombre.toLowerCase().includes(q),
+    );
+  }, [productos, query]);
+
+  return (
+    <div ref={containerRef} className="relative inline-block w-64">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        className={`mt-1 flex h-[34px] w-full items-center justify-between gap-2 border border-slate-300 bg-white px-2 py-1 text-left text-sm transition ${
+          disabled ? "cursor-default opacity-70" : "hover:border-slate-400"
+        }`}
+      >
+        <span
+          className={`truncate ${seleccionado ? "text-slate-700" : "text-slate-400"}`}
+        >
+          {seleccionado
+            ? `${seleccionado.codigo} — ${seleccionado.nombre}`
+            : placeholder}
+        </span>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`}
+          aria-hidden="true"
+        />
+      </button>
+
+      {open && !disabled ? (
+        <div className="absolute z-30 mt-1 max-h-96 w-96 overflow-hidden border border-slate-200 bg-white shadow-lg">
+          <div className="border-b border-slate-200 p-2">
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Buscar por código o nombre…"
+              className="w-full border border-slate-300 px-2 py-1 text-sm focus:border-slate-400 focus:outline-none"
+            />
+          </div>
+          <div className="max-h-80 overflow-auto">
+            {value !== "" ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onSelect(null);
+                  cerrar();
+                }}
+                className="block w-full border-b border-slate-100 px-3 py-2 text-left text-sm text-slate-500 italic hover:bg-slate-50"
+              >
+                Quitar selección
+              </button>
+            ) : null}
+            {filtrados.length === 0 ? (
+              <p className="px-3 py-3 text-center text-xs text-slate-400">
+                Sin resultados.
+              </p>
+            ) : (
+              filtrados.map((p) => {
+                const activo = p.id === value;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => {
+                      onSelect(p);
+                      cerrar();
+                    }}
+                    className={`block w-full border-b border-slate-100 px-3 py-2 text-left text-sm last:border-b-0 transition ${
+                      activo ? "bg-cyan-50" : "hover:bg-slate-50"
+                    }`}
+                  >
+                    <span className="block font-medium text-slate-800">
+                      {p.codigo} — {p.nombre}
+                    </span>
+                    <span className="block text-[11px] text-slate-500">
+                      {badgeImpuestoProducto(p).label}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
       ) : null}
     </div>
@@ -283,6 +451,64 @@ function ComentariosCabecera({
   );
 }
 
+// ─── Comisión editable ───────────────────────────────────────────────────────
+
+type ComisionEditableProps = {
+  borrador: BorradorRow;
+  puedeEditar: boolean;
+  guardando: boolean;
+  ejecutar: (accion: () => Promise<BorradorRow>) => Promise<void>;
+};
+
+function ComisionEditable({
+  borrador,
+  puedeEditar,
+  guardando,
+  ejecutar,
+}: ComisionEditableProps) {
+  if (!puedeEditar) {
+    return (
+      <div className="flex w-full max-w-md justify-between">
+        <span className="text-slate-500">+ Comisión</span>
+        <span className="text-slate-800">{formatCOP(borrador.comision)}</span>
+      </div>
+    );
+  }
+
+  async function commit(input: HTMLInputElement) {
+    const parsed = parseBigIntInput(input.value);
+    if (parsed === null) {
+      input.value = borrador.comision;
+      return;
+    }
+    if (parsed === borrador.comision) return;
+    await ejecutar(() => apiActualizarComision(borrador.id, parsed));
+  }
+
+  return (
+    <div className="flex w-full max-w-md items-center justify-between gap-2">
+      <span className="text-slate-500">+ Comisión</span>
+      <input
+        // El `key` fuerza remount cuando cambia el valor del servidor — evita
+        // setState-en-effect para resincronizar y mantiene el input ligero.
+        key={borrador.comision}
+        defaultValue={borrador.comision}
+        onBlur={(e) => void commit(e.currentTarget)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") {
+            e.currentTarget.value = borrador.comision;
+            e.currentTarget.blur();
+          }
+        }}
+        disabled={guardando}
+        inputMode="numeric"
+        className="w-36 border border-slate-300 px-2 py-1 text-right text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
+      />
+    </div>
+  );
+}
+
 type EditorLineasProps = {
   borrador: BorradorRow;
   tramiteId: string;
@@ -409,11 +635,20 @@ function SubseccionLineas({
               <td className="px-2 py-2 text-slate-400">{linea.orden}</td>
               <td className="px-2 py-2">
                 <span className="font-medium text-slate-800">{linea.concepto}</span>
+                {linea.tipoFija ? (
+                  <span className="ml-1.5 inline-block rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                    Fija
+                  </span>
+                ) : null}
                 {linea.siigoProductoId ? (
                   <span className="ml-1 text-[10px] text-slate-400">
                     {linea.siigoProductoCodigo}
                     {" · "}
-                    {linea.siigoClasificacionIva === "Taxed" ? "IVA 19%" : "Excluido"}
+                    {
+                      badgeImpuestoProducto(
+                        productos.find((p) => p.id === linea.siigoProductoId) ?? null,
+                      ).label
+                    }
                   </span>
                 ) : null}
               </td>
@@ -448,16 +683,20 @@ function SubseccionLineas({
               ) : null}
               {puedeEditar ? (
                 <td className="px-2 py-2 text-right">
-                  <button
-                    type="button"
-                    disabled={guardando}
-                    onClick={() =>
-                      ejecutar(() => apiEliminarLinea(borradorId, linea.id))
-                    }
-                    className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50"
-                  >
-                    Eliminar
-                  </button>
+                  {linea.tipoFija ? (
+                    <span className="text-xs text-slate-400">—</span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={guardando}
+                      onClick={() =>
+                        ejecutar(() => apiEliminarLinea(borradorId, linea.id))
+                      }
+                      className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      Eliminar
+                    </button>
+                  )}
                 </td>
               ) : null}
             </tr>
@@ -523,23 +762,15 @@ function SubseccionLineas({
           <div className="flex flex-wrap items-end gap-2">
             <label className="flex flex-col text-xs text-slate-600">
               Producto Siigo
-              <select
+              <SiigoProductoSelect
+                productos={productos}
                 value={nuevoSiigoProductoId}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  setNuevoSiigoProductoId(id);
-                  const prod = productos.find((p) => p.id === id);
+                onSelect={(prod) => {
+                  setNuevoSiigoProductoId(prod?.id ?? "");
                   if (prod) setNuevoConcepto(prod.nombre);
                 }}
-                className="mt-1 w-64 border border-slate-300 bg-white px-2 py-1 text-sm"
-              >
-                <option value="">— Seleccionar —</option>
-                {productos.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.codigo} — {p.nombre}
-                  </option>
-                ))}
-              </select>
+                disabled={guardando}
+              />
             </label>
             <label className="flex flex-col text-xs text-slate-600">
               Concepto en factura
@@ -554,17 +785,16 @@ function SubseccionLineas({
                 }
               />
             </label>
-            {productoSeleccionado ? (
-              <span
-                className={`mb-1 self-end rounded px-2 py-0.5 text-xs font-medium ${
-                  productoSeleccionado.clasificacionIva === "Taxed"
-                    ? "bg-amber-100 text-amber-700"
-                    : "bg-slate-100 text-slate-600"
-                }`}
-              >
-                {productoSeleccionado.clasificacionIva === "Taxed" ? "IVA 19%" : "Excluido IVA"}
-              </span>
-            ) : null}
+            {productoSeleccionado ? (() => {
+              const badge = badgeImpuestoProducto(productoSeleccionado);
+              return (
+                <span
+                  className={`mb-1 self-end rounded px-2 py-0.5 text-xs font-medium ${badge.className}`}
+                >
+                  {badge.label}
+                </span>
+              );
+            })() : null}
             <label className="flex flex-col text-xs text-slate-600">
               Valor (COP)
               <input
@@ -656,25 +886,16 @@ export function EditorLineas({
     [lineasOperacional],
   );
 
+  // COMISION e IVA_COMISION ya viven como LineaRevision en OPERACIONAL
+  // (`subtotalOperacional` las incluye). No sumamos borrador.comision /
+  // ivaComision aparte para evitar doble cuenta.
   const totalLineasVivo = useMemo(() => {
     try {
-      return (
-        subtotalTerceros +
-        subtotalOperacional +
-        BigInt(borrador.comision) +
-        BigInt(borrador.ivaComision) -
-        BigInt(borrador.retenciones)
-      );
+      return subtotalTerceros + subtotalOperacional - BigInt(borrador.retenciones);
     } catch {
       return 0n;
     }
-  }, [
-    subtotalTerceros,
-    subtotalOperacional,
-    borrador.comision,
-    borrador.ivaComision,
-    borrador.retenciones,
-  ]);
+  }, [subtotalTerceros, subtotalOperacional, borrador.retenciones]);
 
   const totalMotor = (() => {
     try {
@@ -749,27 +970,24 @@ export function EditorLineas({
             {formatCOP(subtotalTerceros.toString())}
           </span>
         </div>
-        <div className="flex w-full max-w-md justify-between">
+        <div className="flex w-full max-w-md justify-between border-b border-slate-200 pb-1">
           <span className="text-slate-600">Σ Ingresos operacionales</span>
           <span className="text-slate-800">
             {formatCOP(subtotalOperacional.toString())}
           </span>
         </div>
-        <div className="flex w-full max-w-md justify-between border-b border-slate-200 pb-1">
-          <span className="text-slate-500">+ IVA operacional (19%)</span>
-          <span className="text-slate-800">
-            {formatCOP((subtotalOperacional * 19n / 100n).toString())}
-          </span>
-        </div>
-        <div className="flex w-full max-w-md justify-between">
-          <span className="text-slate-500">+ Comisión</span>
-          <span className="text-slate-800">{formatCOP(borrador.comision)}</span>
-        </div>
-        <div className="flex w-full max-w-md justify-between">
-          <span className="text-slate-500">+ IVA comisión</span>
-          <span className="text-slate-800">
-            {formatCOP(borrador.ivaComision)}
-          </span>
+        {/* Comisión Galcomex e IVA comisión ya viven como líneas fijas dentro
+            de OPERACIONAL — los mostramos como atajo editable, pero ya están
+            sumados en `subtotalOperacional`. */}
+        <ComisionEditable
+          borrador={borrador}
+          puedeEditar={puedeEditar}
+          guardando={guardando}
+          ejecutar={ejecutar}
+        />
+        <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
+          <span>↳ IVA comisión (incluido en operacional)</span>
+          <span>{formatCOP(borrador.ivaComision)}</span>
         </div>
         {(() => {
           try {
@@ -792,7 +1010,7 @@ export function EditorLineas({
           </span>
         </div>
         <div className="mt-1 flex w-full max-w-md justify-between text-xs">
-          <span className="text-slate-400">Total motor (referencia)</span>
+          <span className="text-slate-400">Total guardado (BD)</span>
           <span className="text-slate-500">
             {formatCOP(totalMotor.toString())}
           </span>
@@ -800,7 +1018,7 @@ export function EditorLineas({
         {desviacion !== 0n ? (
           <div className="flex w-full max-w-md justify-between border border-amber-200 bg-amber-50 px-2 py-1">
             <span className="font-medium text-amber-700">
-              Desviación vs. motor
+              Pendiente de guardar
             </span>
             <span className="font-bold text-amber-700">
               {formatCOP(desviacion.toString())}

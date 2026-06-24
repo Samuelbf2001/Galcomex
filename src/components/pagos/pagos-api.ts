@@ -46,6 +46,8 @@ export type PagoRow = {
   facturasProveedor: FacturaPagoLink[];
   /** Si true, el pago fue hecho en efectivo a través del socio Lucho/LM */
   viaSocio: boolean;
+  /** Banco usado como tercero del 4x1000 (null = sin banco asignado). */
+  bancoBeneficiario: BeneficiarioMinimo | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -64,6 +66,20 @@ export type AplicacionRow = {
   };
 };
 
+/**
+ * Cruce real con el cliente, derivado del borrador APROBADO/FACTURADO más
+ * reciente. El cruce siempre se calcula contra el TOTAL de la factura de venta
+ * (Σ líneas + comisión + IVA − retenciones), nunca contra Σ pagos.
+ * Ver memoria `project_cruce_factura.md`.
+ */
+export type CruceFacturaRow = {
+  estado: "APROBADO" | "FACTURADO";
+  numSiigo: string | null;
+  totalFactura: string; // BigInt as string
+  saldoAFavorCliente: string;
+  saldoACargoCliente: string;
+};
+
 export type LibroPagosData = {
   pagos: PagoRow[];
   aplicaciones: AplicacionRow[];
@@ -73,6 +89,7 @@ export type LibroPagosData = {
   totalAnticipoAplicado: string;
   saldos: string[];
   saldoFinal: string;
+  cruceFactura: CruceFacturaRow | null;
 };
 
 export type TramiteDetail = {
@@ -97,6 +114,8 @@ export type CreatePagoInput = {
   fechaRealPago?: string | null;
   /** IDs de facturas de proveedor a vincular (N↔N). */
   facturaProveedorIds?: string[];
+  /** Banco (Beneficiario) usado como tercero del 4x1000. null/omitido = auto. */
+  bancoBeneficiarioId?: string | null;
 };
 
 /**
@@ -109,6 +128,8 @@ export type FacturaProveedorOpcion = {
   proveedorNombre: string;
   valor: string;  // BigInt serializado
   estado: string; // "REGISTRADA" | "PAGADA" | "FACTURADA_CLIENTE"
+  beneficiarioId: string | null;
+  beneficiarioNit: string | null;
 };
 
 /**
@@ -143,13 +164,18 @@ export async function fetchFacturasProveedorTramite(
   }
 
   return (payload.facturas as unknown[]).filter(isRecord).map(
-    (f): FacturaProveedorOpcion => ({
-      id: String(f.id ?? ""),
-      numFactura: String(f.numFactura ?? ""),
-      proveedorNombre: String(f.proveedorNombre ?? ""),
-      valor: String(f.valor ?? "0"),
-      estado: String(f.estado ?? ""),
-    }),
+    (f): FacturaProveedorOpcion => {
+      const ben = isRecord(f.beneficiario) ? f.beneficiario : null;
+      return {
+        id: String(f.id ?? ""),
+        numFactura: String(f.numFactura ?? ""),
+        proveedorNombre: String(f.proveedorNombre ?? ""),
+        valor: String(f.valor ?? "0"),
+        estado: String(f.estado ?? ""),
+        beneficiarioId: ben && typeof ben.id === "string" ? ben.id : (typeof f.beneficiarioId === "string" ? f.beneficiarioId : null),
+        beneficiarioNit: ben && typeof ben.nit === "string" ? ben.nit : null,
+      };
+    },
   );
 }
 
@@ -161,6 +187,8 @@ export type UpdatePagoInput = {
   valor?: string; // BigInt as string
   canalPago?: CanalPago;
   fechaRealPago?: string | null;
+  /** Banco para 4x1000. null limpia, undefined deja como está. */
+  bancoBeneficiarioId?: string | null;
 };
 
 export class PagosApiError extends Error {
@@ -271,6 +299,15 @@ function parsePagoRow(p: Record<string, unknown>): PagoRow {
       });
     })(),
     viaSocio: p.viaSocio === true,
+    bancoBeneficiario: (() => {
+      if (!isRecord(p.bancoBeneficiario)) return null;
+      const b = p.bancoBeneficiario;
+      return {
+        id: String(b.id ?? ""),
+        nombre: String(b.nombre ?? ""),
+        nit: typeof b.nit === "string" ? b.nit : null,
+      };
+    })(),
     createdAt: String(p.createdAt ?? ""),
     updatedAt: String(p.updatedAt ?? ""),
   };
@@ -328,6 +365,17 @@ export async function fetchLibroPagos(
     },
   );
 
+  const cruceRaw = payload.cruceFactura;
+  const cruceFactura: CruceFacturaRow | null = isRecord(cruceRaw)
+    ? {
+        estado: cruceRaw.estado === "FACTURADO" ? "FACTURADO" : "APROBADO",
+        numSiigo: typeof cruceRaw.numSiigo === "string" ? cruceRaw.numSiigo : null,
+        totalFactura: String(cruceRaw.totalFactura ?? "0"),
+        saldoAFavorCliente: String(cruceRaw.saldoAFavorCliente ?? "0"),
+        saldoACargoCliente: String(cruceRaw.saldoACargoCliente ?? "0"),
+      }
+    : null;
+
   return {
     pagos,
     aplicaciones,
@@ -337,6 +385,7 @@ export async function fetchLibroPagos(
     totalAnticipoAplicado: String(payload.totalAnticipoAplicado ?? "0"),
     saldos: Array.isArray(payload.saldos) ? payload.saldos.map(String) : [],
     saldoFinal: String(payload.saldoFinal ?? "0"),
+    cruceFactura,
   };
 }
 

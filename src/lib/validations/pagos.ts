@@ -14,6 +14,12 @@ export const crearPagoSchema = z.object({
   fechaRealPago: z.coerce.date().optional().nullable(),
   /** IDs de facturas de proveedor a vincular (N↔N). Vacío = pago manual sin vinculación. */
   facturaProveedorIds: z.array(z.string().min(1)).optional().default([]),
+  /**
+   * Banco (Beneficiario) usado como tercero del 4x1000.
+   * Bancolombia se auto-resuelve desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID;
+   * para otros canales, lo elige el operario en el modal.
+   */
+  bancoBeneficiarioId: z.string().min(1).optional().nullable(),
 });
 
 export const listarPagosQuerySchema = z.object({
@@ -37,6 +43,8 @@ export const actualizarPagoSchema = z.object({
   beneficiarioIds: z.array(z.string().min(1)).optional(),
   numSoporte: z.string().trim().min(1).optional().nullable(),
   fechaRealPago: z.coerce.date().optional().nullable(),
+  /** Banco (Beneficiario) usado como tercero del 4x1000. Null = limpia. */
+  bancoBeneficiarioId: z.string().min(1).optional().nullable(),
 });
 
 export const verificarMovimientoSchema = z.object({

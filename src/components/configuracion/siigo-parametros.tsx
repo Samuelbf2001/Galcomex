@@ -20,6 +20,10 @@ import {
   type SiigoTipoComprobanteRow,
   type SiigoVendedorRow,
 } from "@/components/configuracion/siigo-productos-api";
+import {
+  fetchBeneficiarios,
+  type BeneficiarioRow,
+} from "@/components/beneficiarios/beneficiario-api";
 
 type LoadState = "loading" | "ready" | "error";
 type SaveState = "idle" | "saving" | "success" | "error";
@@ -29,7 +33,12 @@ type SaveState = "idle" | "saving" | "success" | "error";
 // Cada campo describe cómo se renderiza el select y de qué fuente saca las
 // opciones. Mantener este array sincronizado con CLAVES_SIIGO del endpoint.
 
-type FuenteCampo = "tipoComprobante" | "vendedor" | "formaPago" | "producto";
+type FuenteCampo =
+  | "tipoComprobante"
+  | "vendedor"
+  | "formaPago"
+  | "producto"
+  | "beneficiario";
 
 interface DefCampo {
   clave: ClaveSiigo;
@@ -78,6 +87,13 @@ const CAMPOS: DefCampo[] = [
       "Producto Siigo asignado por defecto a la línea auto-fija de costos bancarios.",
     fuente: "producto",
   },
+  {
+    clave: "SIIGO_BENEFICIARIO_BANCOLOMBIA_ID",
+    label: "Banco · Bancolombia (4x1000)",
+    ayuda:
+      "Beneficiario que representa a Bancolombia. Se auto-asigna como tercero del 4x1000 a los pagos con canal Bancolombia.",
+    fuente: "beneficiario",
+  },
 ];
 
 // ─── Helpers de renderizado de opciones por fuente ───────────────────────────
@@ -88,6 +104,7 @@ function renderOpciones(
   vendedores: SiigoVendedorRow[],
   productos: SiigoProductoRow[],
   formasPago: SiigoFormaPagoRow[],
+  beneficiarios: BeneficiarioRow[],
 ): { value: string; label: string }[] {
   switch (fuente) {
     case "tipoComprobante":
@@ -118,6 +135,11 @@ function renderOpciones(
           value: p.id,
           label: `${p.codigo} · ${p.nombre}`,
         }));
+    case "beneficiario":
+      return beneficiarios.map((b) => ({
+        value: b.id,
+        label: b.nit ? `${b.nombre} · NIT ${b.nit}` : b.nombre,
+      }));
   }
 }
 
@@ -144,6 +166,7 @@ export function SiigoParametros() {
   const [formasPago, setFormasPago] = useState<SiigoFormaPagoRow[]>([]);
   const [tiposComprobante, setTiposComprobante] = useState<SiigoTipoComprobanteRow[]>([]);
   const [vendedores, setVendedores] = useState<SiigoVendedorRow[]>([]);
+  const [beneficiarios, setBeneficiarios] = useState<BeneficiarioRow[]>([]);
 
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -154,12 +177,13 @@ export function SiigoParametros() {
     setLoadError(null);
     try {
       // Todo desde BD local — Siigo nunca se consulta aquí.
-      const [params, prods, fps, tipos, vends] = await Promise.all([
+      const [params, prods, fps, tipos, vends, benefs] = await Promise.all([
         fetchParametrosSiigo(),
         fetchSiigoProductos(),
         fetchSiigoFormasPago(),
         fetchSiigoTiposComprobante(),
         fetchSiigoVendedores(),
+        fetchBeneficiarios(),
       ]);
 
       const nuevosValores = Object.fromEntries(
@@ -178,6 +202,7 @@ export function SiigoParametros() {
       setFormasPago(fps.formasPago);
       setTiposComprobante(tipos.tiposComprobante);
       setVendedores(vends.vendedores);
+      setBeneficiarios(benefs);
       setLoadState("ready");
     } catch (caught) {
       setLoadError(
@@ -277,6 +302,7 @@ export function SiigoParametros() {
               vendedores,
               productos,
               formasPago,
+              beneficiarios,
             );
             const valorActual = valores[campo.clave];
             const valorPresenteEnOpciones =

@@ -8,9 +8,10 @@
  *   - SIIGO_FORMA_PAGO_DEFAULT_ID
  *   - SIIGO_PRODUCTO_4X1000_ID
  *   - SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID
+ *   - SIIGO_BENEFICIARIO_BANCOLOMBIA_ID
  *
  * GET → devuelve los valores actuales (null si no están configurados).
- * PUT → upsert atómico de los 6 (omitir uno = no cambiarlo).
+ * PUT → upsert atómico (omitir una = no cambiarla).
  *
  * Roles: ADMIN (mutación) · ADMIN/REVISOR (lectura).
  */
@@ -30,6 +31,7 @@ const CLAVES_SIIGO = [
   "SIIGO_FORMA_PAGO_DEFAULT_ID",
   "SIIGO_PRODUCTO_4X1000_ID",
   "SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID",
+  "SIIGO_BENEFICIARIO_BANCOLOMBIA_ID",
 ] as const;
 
 const putSchema = z.object({

@@ -81,3 +81,78 @@ describe("calcularTotalPorLineas — casos dorados Lucho", () => {
     expect(saldos.saldoAFavorLM).toBe(500_000n);
   });
 });
+
+/**
+ * Casos dorados extraídos de la hoja `RELACION FACT 2026` del Excel
+ * `GRUPO E PAPIS 2026.xlsm`. Cada trámite se modela como una sola línea
+ * agregada de TERCEROS (la suma efectiva incluye 4x1000 y costos bancarios)
+ * + la comisión y el IVA propio del borrador. El cruce con el cliente sale de
+ * `anticipo − TOTAL FACTURA`, NO de Σ pagos.
+ *
+ * Tolerancia 0 pesos.
+ */
+describe("calcularSaldosPorLineas — cruce real contra trámites Galcomex 2026", () => {
+  it("DO.BUN26-0026 (BAQ-18288): saldo a favor 3.357.958", () => {
+    // Σ líneas = 41.868.042 − 200.000 (comisión) − 76.000 (IVA override Excel)
+    const input = {
+      lineas: [{ valor: 41_592_042n }],
+      comision: 200_000n,
+      ivaComision: 76_000n,
+      retenciones: 0n,
+      totalAnticipo: 45_226_000n,
+    };
+
+    const saldos = calcularSaldosPorLineas(input);
+    expect(saldos.totalFactura).toBe(41_868_042n);
+    expect(saldos.saldoAFavorCliente).toBe(3_357_958n);
+    expect(saldos.saldoACargoCliente).toBe(0n);
+  });
+
+  it("DO.CTG26-0090 (BAQ-18413): saldo a cargo 2.196.953", () => {
+    // Σ líneas = 34.119.133 − 150.000 − 76.000
+    const input = {
+      lineas: [{ valor: 33_893_133n }],
+      comision: 150_000n,
+      ivaComision: 76_000n,
+      retenciones: 0n,
+      totalAnticipo: 31_922_180n,
+    };
+
+    const saldos = calcularSaldosPorLineas(input);
+    expect(saldos.totalFactura).toBe(34_119_133n);
+    expect(saldos.saldoACargoCliente).toBe(2_196_953n);
+    expect(saldos.saldoAFavorCliente).toBe(0n);
+  });
+
+  it("DO.CTG26-0063 (BAQ-18358): saldo a cargo 2.956.282", () => {
+    // Σ líneas = 30.722.282 − 150.000 − 76.000
+    const input = {
+      lineas: [{ valor: 30_496_282n }],
+      comision: 150_000n,
+      ivaComision: 76_000n,
+      retenciones: 0n,
+      totalAnticipo: 27_766_000n,
+    };
+
+    const saldos = calcularSaldosPorLineas(input);
+    expect(saldos.totalFactura).toBe(30_722_282n);
+    expect(saldos.saldoACargoCliente).toBe(2_956_282n);
+    expect(saldos.saldoAFavorCliente).toBe(0n);
+  });
+
+  it("DO.CTG26-0118 (BAQ-18453): cruce GRUPO E PAPIS coincide con flujo socio", () => {
+    // Mismo total/saldo que el caso BAQ-18453 del flujo Lucho, validando que
+    // la fórmula del cruce es independiente del split comisión vs líneas.
+    const input = {
+      lineas: [{ valor: 32_902_000n }],
+      comision: 150_000n,
+      ivaComision: 76_000n,
+      retenciones: 0n,
+      totalAnticipo: 35_074_500n,
+    };
+
+    const saldos = calcularSaldosPorLineas(input);
+    expect(saldos.totalFactura).toBe(33_128_000n);
+    expect(saldos.saldoAFavorCliente).toBe(1_946_500n);
+  });
+});

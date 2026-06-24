@@ -4,7 +4,7 @@
  * Sprint 8: N↔N con FacturaProveedor (PagoTramiteFactura), EstadoMovimiento, sin fechaEsperadaPago.
  */
 
-import { type Beneficiario, CanalPago, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite, type PagoTramiteBeneficiario } from "@prisma/client";
+import { type Beneficiario, CanalPago, EstadoBorrador, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite, type PagoTramiteBeneficiario } from "@prisma/client";
 
 import { calcularSaldosIntermedios } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
@@ -25,6 +25,12 @@ type CrearPagoInput = {
   fechaRealPago?: Date | null;
   /** IDs de facturas de proveedor a vincular (N↔N). Vacío = pago manual. */
   facturaProveedorIds?: string[];
+  /**
+   * Banco usado como tercero del 4x1000 (FK a Beneficiario).
+   * Si no se envía y canalPago == TRANSF_BANCOLOMBIA → auto-fill desde
+   * SIIGO_BENEFICIARIO_BANCOLOMBIA_ID. Para otros canales puede quedar null.
+   */
+  bancoBeneficiarioId?: string | null;
   usuarioId: string;
 };
 
@@ -52,6 +58,24 @@ type BeneficiarioMinimo = Pick<Beneficiario, "id" | "nombre" | "nit">;
 type PagoConRelaciones = PagoTramite & {
   facturasProveedor: { factura: FacturaProveedorVinculada }[];
   beneficiarios: (PagoTramiteBeneficiario & { beneficiario: BeneficiarioMinimo })[];
+  bancoBeneficiario: BeneficiarioMinimo | null;
+};
+
+/**
+ * Cruce real con el cliente: sale del BorradorFactura cuando está APROBADO o
+ * FACTURADO. El cruce siempre se evalúa contra el TOTAL de la factura de venta
+ * (Σ líneas + comisión + IVA − retenciones), no contra Σ pagos del trámite.
+ * Ver memoria `project_cruce_factura.md` y `lib/calculations/total-lineas.ts`.
+ *
+ * - estado: "APROBADO" → borrador aprobado pero aún sin estampar en Siigo.
+ * - estado: "FACTURADO" → ya tiene `numSiigo`.
+ */
+type CruceFactura = {
+  estado: "APROBADO" | "FACTURADO";
+  numSiigo: string | null;
+  totalFactura: bigint;
+  saldoAFavorCliente: bigint;
+  saldoACargoCliente: bigint;
 };
 
 type LibroPagosResult = {
@@ -63,6 +87,7 @@ type LibroPagosResult = {
   totalAnticipoAplicado: bigint;
   saldos: bigint[];
   saldoFinal: bigint;
+  cruceFactura: CruceFactura | null;
 };
 
 type ListarPagosFiltros = {
@@ -114,6 +139,28 @@ async function resolverCostoBancario(
   return entrada.costoFijo;
 }
 
+/**
+ * Resuelve el Beneficiario configurado como Bancolombia
+ * (SIIGO_BENEFICIARIO_BANCOLOMBIA_ID). Devuelve null si no está configurado o
+ * si el FK ya no existe; el caller decide si tratar la ausencia como warning.
+ */
+async function resolverBancoBancolombiaId(
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<string | null> {
+  const db = tx ?? prisma;
+  const param = await db.parametro.findUnique({
+    where: { clave: "SIIGO_BENEFICIARIO_BANCOLOMBIA_ID" },
+    select: { valor: true },
+  });
+  const id = param?.valor?.trim();
+  if (!id) return null;
+  const benef = await db.beneficiario.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  return benef?.id ?? null;
+}
+
 export class MatrizCanalNoEncontradoError extends Error {
   public readonly canal: CanalPago;
   public readonly status = 400;
@@ -158,11 +205,22 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
     canalPago,
     fechaRealPago,
     facturaProveedorIds = [],
+    bancoBeneficiarioId,
     usuarioId,
   } = input;
 
   return prisma.$transaction(async (tx) => {
     const costoBancario = await resolverCostoBancario(canalPago, tx);
+
+    // Banco asociado al pago (tercero del 4x1000).
+    // - TRANSF_BANCOLOMBIA: si el operario no envió banco explícito, se
+    //   auto-resuelve desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID. Si el operario
+    //   pasó uno (override), se respeta.
+    // - Otros canales: lo elige el operario en el modal; puede quedar null.
+    let bancoFinal: string | null = bancoBeneficiarioId ?? null;
+    if (bancoFinal === null && canalPago === "TRANSF_BANCOLOMBIA") {
+      bancoFinal = await resolverBancoBancolombiaId(tx);
+    }
 
     const ultimoPago = await tx.pagoTramite.findFirst({
       where: { tramiteId },
@@ -200,6 +258,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
         costoBancario,
         orden,
         fechaRealPago,
+        bancoBeneficiarioId: bancoFinal,
       },
     });
 
@@ -263,6 +322,8 @@ export async function actualizarPago(
     beneficiarioIds?: string[];
     numSoporte?: string | null;
     fechaRealPago?: Date | null;
+    /** Banco (Beneficiario) para el 4x1000. null = limpiar. */
+    bancoBeneficiarioId?: string | null;
   },
   usuarioId: string,
 ): Promise<PagoTramite> {
@@ -282,6 +343,16 @@ export async function actualizarPago(
         : actual.costoBancario;
 
     const { beneficiarioIds, ...camposPago } = cambios;
+
+    // Si el canal cambia a TRANSF_BANCOLOMBIA y no se envió banco explícito,
+    // auto-resolver al Beneficiario configurado en SIIGO_BENEFICIARIO_BANCOLOMBIA_ID.
+    if (
+      cambios.canalPago === "TRANSF_BANCOLOMBIA" &&
+      camposPago.bancoBeneficiarioId === undefined
+    ) {
+      const auto = await resolverBancoBancolombiaId(tx);
+      if (auto) camposPago.bancoBeneficiarioId = auto;
+    }
 
     const updated = await tx.pagoTramite.update({
       where: { id: pagoId },
@@ -430,6 +501,7 @@ export async function getPagoConBeneficiario(pagoId: string) {
           factura: { select: { numFactura: true, proveedorNombre: true } },
         },
       },
+      bancoBeneficiario: { select: { id: true, nombre: true, nit: true } },
     },
   });
 }
@@ -438,7 +510,7 @@ export async function getPagoConBeneficiario(pagoId: string) {
  * Retorna el libro de pagos del trámite con saldo corriente línea a línea.
  */
 export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult> {
-  const [pagos, rawAplicaciones] = await Promise.all([
+  const [pagos, rawAplicaciones, borradorCruce] = await Promise.all([
     prisma.pagoTramite.findMany({
       where: { tramiteId },
       orderBy: { orden: "asc" },
@@ -451,6 +523,7 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
         beneficiarios: {
           include: { beneficiario: { select: { id: true, nombre: true, nit: true } } },
         },
+        bancoBeneficiario: { select: { id: true, nombre: true, nit: true } },
       },
     }),
     prisma.aplicacionAnticipo.findMany({
@@ -461,6 +534,24 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
         },
       },
       orderBy: { anticipo: { fecha: "asc" } },
+    }),
+    // El cruce con el cliente sale del borrador aprobado o facturado más
+    // reciente. `totalFactura`, `saldoAFavorCliente` y `saldoACargoCliente` ya
+    // están promovidos desde Σ líneas vía `recalcularTotalBorrador`, por eso
+    // sirven directamente como cruce real (no se rederiva).
+    prisma.borradorFactura.findFirst({
+      where: {
+        tramiteId,
+        estado: { in: [EstadoBorrador.APROBADO, EstadoBorrador.FACTURADO] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        estado: true,
+        numFacturaSiigo: true,
+        totalFactura: true,
+        saldoAFavorCliente: true,
+        saldoACargoCliente: true,
+      },
     }),
   ]);
 
@@ -494,6 +585,16 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
   const saldoFinal =
     saldos.length > 0 ? saldos[saldos.length - 1] : totalAnticipoAplicado;
 
+  const cruceFactura: CruceFactura | null = borradorCruce
+    ? {
+        estado: borradorCruce.estado as "APROBADO" | "FACTURADO",
+        numSiigo: borradorCruce.numFacturaSiigo,
+        totalFactura: borradorCruce.totalFactura,
+        saldoAFavorCliente: borradorCruce.saldoAFavorCliente,
+        saldoACargoCliente: borradorCruce.saldoACargoCliente,
+      }
+    : null;
+
   return {
     pagos: pagos as PagoConRelaciones[],
     aplicaciones,
@@ -503,6 +604,7 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
     totalAnticipoAplicado,
     saldos,
     saldoFinal,
+    cruceFactura,
   };
 }
 

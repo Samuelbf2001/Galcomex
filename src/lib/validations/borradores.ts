@@ -63,6 +63,15 @@ export const actualizarLineaPayloadSchema = z
 
 export type ActualizarLineaPayload = z.infer<typeof actualizarLineaPayloadSchema>;
 
+// ── Actualizar comisión ──────────────────────────────────────────────────────
+
+export const actualizarComisionPayloadSchema = z.object({
+  /** Nueva comisión (COP, BigInt). El IVA se recalcula desde tasaIva. */
+  comision: z.coerce.bigint().nonnegative(),
+});
+
+export type ActualizarComisionPayload = z.infer<typeof actualizarComisionPayloadSchema>;
+
 // ── Transición de estado ──────────────────────────────────────────────────────
 
 export const transicionBorradorPayloadSchema = z

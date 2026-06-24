@@ -1,6 +1,8 @@
 /**
- * POST /api/borradores/[id]/lineas — Crear línea manual de la factura de venta.
- * Roles ADMIN y SOCIO (SOCIO restringido a trámites de clientes SOCIO_LM).
+ * PATCH /api/borradores/[id]/comision — Actualiza la comisión del borrador.
+ * IVA se recalcula desde tasaIva; total y saldos se propagan vía recalculo.
+ *
+ * Roles: ADMIN, SOCIO (mismo gate que las líneas manuales del borrador).
  */
 
 import { NextResponse, type NextRequest } from "next/server";
@@ -8,20 +10,15 @@ import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
-import {
-  BorradorNoEditableError,
-  BorradorNoEncontradoError,
-  FacturaDeOtroTramiteError,
-  crearLineaManual,
-} from "@/lib/borradores/lineas-service";
+import { actualizarComisionBorrador } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import { crearLineaPayloadSchema } from "@/lib/validations/borradores";
+import { actualizarComisionPayloadSchema } from "@/lib/validations/borradores";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
-export async function POST(request: NextRequest, { params }: RouteParams) {
+export async function PATCH(request: NextRequest, { params }: RouteParams) {
   const session = await requireRole(["ADMIN", "SOCIO"]);
   if (session instanceof NextResponse) {
     return session;
@@ -45,32 +42,27 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "No autorizado" }, { status: 403 });
   }
 
+  let body: unknown;
   try {
-    const payload = crearLineaPayloadSchema.parse(await request.json());
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "JSON inválido" }, { status: 400 });
+  }
 
-    const actualizado = await crearLineaManual({
+  try {
+    const payload = actualizarComisionPayloadSchema.parse(body);
+    const result = await actualizarComisionBorrador(
       borradorId,
-      concepto: payload.concepto,
-      numSoporte: payload.numSoporte,
-      valor: payload.valor,
-      observacion: payload.observacion,
-      seccion: payload.seccion,
-      facturaIds: payload.facturaIds,
-      siigoProductoId: payload.siigoProductoId,
-      usuarioId: session.user.id,
-    });
-
-    return jsonResponse({ borrador: actualizado }, { status: 201 });
+      payload.comision,
+      session.user.id,
+    );
+    if (!result.ok) {
+      return NextResponse.json({ error: result.message }, { status: result.status });
+    }
+    return jsonResponse({ borrador: result.borrador });
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);
-    }
-    if (
-      error instanceof BorradorNoEncontradoError ||
-      error instanceof BorradorNoEditableError ||
-      error instanceof FacturaDeOtroTramiteError
-    ) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
     }
     throw error;
   }

@@ -476,6 +476,18 @@ export async function actualizarComentariosCabecera(
   return parseBorradorResponse(response);
 }
 
+export async function actualizarComisionBorrador(
+  borradorId: string,
+  comision: string,
+): Promise<BorradorRow> {
+  const response = await fetch(`/api/borradores/${borradorId}/comision`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ comision }),
+  });
+  return parseBorradorResponse(response);
+}
+
 export async function eliminarLinea(
   borradorId: string,
   lineaId: string,
