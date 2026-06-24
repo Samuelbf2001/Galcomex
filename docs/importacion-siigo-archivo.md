@@ -1,5 +1,7 @@
 # Archivo de importación de facturas a SIIGO
 
+> ℹ️ **Respaldo manual (2026-06-24).** El camino principal hoy es la **integración por API** (`docs/flujo-siigo-api.md`): el sistema envía la factura como borrador a Siigo sin Excel. Este archivo XLSX se mantiene como **plan B** (importación manual desde el portal Siigo) cuando la API no esté disponible.
+
 Genera un archivo **XLSX en el formato oficial de importación de facturas de venta de SIIGO Nube**
 ("Subir desde Excel – Facturas de venta", columnas A–AE) a partir de un borrador del sistema.
 

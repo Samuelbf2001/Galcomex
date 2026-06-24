@@ -176,5 +176,7 @@ docker compose up --build               # Stack completo
 
 Ver `.claude/SPRINT.md` para el estado actual de tareas por agente.
 
+**Integración Siigo (vigente):** la factura de venta se crea directamente en Siigo como borrador vía API (`POST /v1/invoices`, `stamp.send=false`), un superior la estampa en el portal y el sistema sincroniza el consecutivo. Flujo completo en `docs/flujo-siigo-api.md`. El export Excel queda como respaldo manual.
+
 **Fuente de verdad del plan:** `../galcomex-sistema-requerimientos.md` (en raíz de `/Galcomex`)
 **Excels de referencia:** `../GRUPO E PAPIS 2026 (1).xlsm` y `../MODELO RELACION SIXTEAM (1).xlsm`

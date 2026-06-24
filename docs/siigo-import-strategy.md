@@ -1,5 +1,7 @@
 # Estrategia puente SIIGO sin API
 
+> ⚠️ **SUPERADO (2026-06-24).** Esta era la estrategia puente *mientras Siigo no entregara credenciales API*. La **integración por API ya está en producción** (Sprint 10): el sistema crea la factura directamente como borrador en Siigo vía `POST /v1/invoices`. El flujo vigente está documentado en **`docs/flujo-siigo-api.md`**. Este documento se conserva como histórico/contingencia: el export Excel (`/api/borradores/[id]/siigo-import`) sigue disponible como respaldo manual.
+
 Fecha: 2026-06-12
 
 ## Decision
