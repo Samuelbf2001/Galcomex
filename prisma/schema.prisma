@@ -662,7 +662,7 @@ model SiigoProducto {
   grupoContableId     Int
   grupoContableNombre String
   clasificacionIva    String
-  sincronizadoEn      DateTime @updatedAt
+  sincronizadoEn      DateTime @default(now()) @updatedAt
 
   lineasRevision LineaRevision[]
   impuestos      SiigoProductoImpuesto[]
@@ -677,7 +677,7 @@ model SiigoImpuesto {
   tipo           String                    // "IVA" | "ReteIVA" | "ReteICA" | "Retefuente" | etc.
   porcentaje     String                    // Decimal como string para preservar precisión ("19.00")
   activo         Boolean  @default(true)
-  sincronizadoEn DateTime @updatedAt
+  sincronizadoEn DateTime @default(now()) @updatedAt
 
   productos SiigoProductoImpuesto[]
 
@@ -706,7 +706,7 @@ model SiigoTipoComprobante {
   nombre         String                // "Factura Electrónica de Venta"
   tipo           String?               // "FV"
   activo         Boolean  @default(true)
-  sincronizadoEn DateTime @updatedAt
+  sincronizadoEn DateTime @default(now()) @updatedAt
 
   @@map("siigo_tipo_comprobante")
 }
@@ -720,7 +720,7 @@ model SiigoVendedor {
   nombre         String?               // first_name + last_name concatenados
   email          String?
   activo         Boolean  @default(true)
-  sincronizadoEn DateTime @updatedAt
+  sincronizadoEn DateTime @default(now()) @updatedAt
 
   @@map("siigo_vendedor")
 }
@@ -733,7 +733,7 @@ model SiigoFormaPago {
   nombre         String                // "Contado", "Crédito 30 días", etc.
   tipo           String?               // Clasificación interna de Siigo
   activo         Boolean  @default(true)
-  sincronizadoEn DateTime @updatedAt
+  sincronizadoEn DateTime @default(now()) @updatedAt
 
   borradores BorradorFactura[]
 

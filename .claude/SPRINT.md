@@ -106,6 +106,10 @@
 - [x] **Dos tipos de factura de venta** — `TipoCliente` PROPIO (Galcomex, motor `motor-factura.ts` con 4x1000 condicional) vs SOCIO_LM (socio "Lucho", `total-lineas.ts` que replica su Excel: Σ líneas terceros + comisión + IVA − retenciones, con reparto de saldo cliente/LM). Ambos comparten el mismo canal de envío a Siigo (las líneas).
 - Deuda Sprint 10: (1) el envío a Siigo no distingue PROPIO/SOCIO_LM (envía las líneas tal cual; la diferencia está solo en cómo se calcula el borrador). (2) Costos bancarios no se facturan en Siigo (costo operativo interno). (3) El estampado/validación final sigue siendo manual en el portal Siigo (`stamp.send=false`); no hay webhook de Siigo → la sincronización es por pull manual.
 
+### Mantenimiento de migraciones (2026-06-24)
+- [x] **Drift de `sincronizadoEn` resuelto:** los catálogos `siigo_forma_pago`/`tipo_comprobante`/`vendedor` tenían `DEFAULT CURRENT_TIMESTAMP` en BD pero `siigo_producto`/`siigo_impuesto` no, y el schema no lo declaraba. Se añadió `@default(now())` a los 5 modelos + migración `20260624141109_siigo_sincronizado_default` (ALTER en producto e impuesto). `migrate diff` schema↔BD limpio.
+- [x] **Checksums realineados:** `20260618000000_ajustes_sprint8` y `20260619154718_npm_run_db_seed` se habían editado tras aplicarse (checksum desfasado en `_prisma_migrations`, bloqueaba `migrate dev` con petición de reset). Verificado que la BD ya reflejaba el contenido actual de los archivos → checksums actualizados sin reset ni pérdida de datos. **Lección: no editar migraciones ya aplicadas.**
+
 ## Lógica financiera real (decodificada del Excel BUN26-0026 — fuente de verdad)
 Fórmulas verificadas celda por celda (ver `motor-factura.ts`):
 - `costosBancarios = costoRecaudoAnticipo + Σ(costo pagos)` = 1.950 + 4×3.900 = **17.550** (Excel `SUM(F23:F37)+D18`).
