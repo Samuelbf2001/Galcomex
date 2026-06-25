@@ -14,7 +14,7 @@ COPY . .
 RUN npx prisma generate
 
 # Variable pública bakeada en el bundle
-ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
+ARG NEXT_PUBLIC_APP_URL=https://galcomex.sixteam.pro
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 
