@@ -87,42 +87,55 @@ async function main() {
     },
   });
 
-  // Usuario administrador inicial
+  // Usuarios iniciales (5 fijos para single-tenant). Contraseña común a cambiar al primer login.
   const passwordHash = await hashPassword("Galcomex2026!");
 
-  await prisma.user.upsert({
-    where: { email: "camila@galcomex.com" },
-    update: {
-      name: "Camila",
-      emailVerified: true,
-      rol: Rol.ADMIN,
-      accounts: {
-        deleteMany: {
-          providerId: "credential",
-        },
-        create: {
-          accountId: "camila@galcomex.com",
-          providerId: "credential",
-          password: passwordHash,
-        },
-      },
-    },
-    create: {
-      email: "camila@galcomex.com",
-      name: "Camila",
-      emailVerified: true,
-      rol: Rol.ADMIN,
-      accounts: {
-        create: {
-          accountId: "camila@galcomex.com",
-          providerId: "credential",
-          password: passwordHash,
-        },
-      },
-    },
-  });
+  const usuarios: { email: string; name: string; rol: Rol }[] = [
+    { email: "camila@galcomex.com",       name: "Camila",         rol: Rol.ADMIN },
+    { email: "papa@galcomex.com",         name: "Papá",           rol: Rol.REVISOR },
+    { email: "karina@galcomex.com",       name: "Karina",         rol: Rol.OPERATIVO },
+    { email: "lucho@galcomex.com",        name: "Sr. Lucho",      rol: Rol.OPERATIVO },
+    { email: "luismartinez@galcomex.com", name: "Luis Martínez",  rol: Rol.SOCIO },
+  ];
 
-  console.log("✓ Seed completado: matriz de pagos, parámetros, checklist y usuario admin");
+  for (const u of usuarios) {
+    // Idempotente: el upsert solo refresca name/rol. La cuenta credencial
+    // (contraseña) se siembra SOLO si el usuario aún no tiene una, para no
+    // pisar contraseñas cambiadas por el usuario o restablecidas por el admin
+    // cuando el seed corre de nuevo en cada arranque del contenedor.
+    const user = await prisma.user.upsert({
+      where: { email: u.email },
+      update: {
+        name: u.name,
+        emailVerified: true,
+        rol: u.rol,
+      },
+      create: {
+        email: u.email,
+        name: u.name,
+        emailVerified: true,
+        rol: u.rol,
+      },
+    });
+
+    const tieneCredencial = await prisma.account.findFirst({
+      where: { userId: user.id, providerId: "credential" },
+      select: { id: true },
+    });
+
+    if (!tieneCredencial) {
+      await prisma.account.create({
+        data: {
+          userId: user.id,
+          accountId: u.email,
+          providerId: "credential",
+          password: passwordHash,
+        },
+      });
+    }
+  }
+
+  console.log(`✓ Seed completado: matriz de pagos, parámetros, checklist y ${usuarios.length} usuarios`);
 }
 
 main()

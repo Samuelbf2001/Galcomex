@@ -1,3 +1,5 @@
+import { KeyRound } from "lucide-react";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { LogoutButton } from "@/components/layout/logout-button";
@@ -25,7 +27,17 @@ export default async function DashboardLayout({
             <p className="text-sm font-semibold">{session.user.name}</p>
             <p className="text-xs text-slate-500">{session.user.email}</p>
           </div>
-          <LogoutButton />
+          <div className="flex items-center gap-2">
+            <Link
+              href="/cambiar-password"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-300 text-slate-600 transition hover:bg-slate-100"
+              title="Cambiar contraseña"
+              aria-label="Cambiar contraseña"
+            >
+              <KeyRound className="h-4 w-4" aria-hidden="true" />
+            </Link>
+            <LogoutButton />
+          </div>
         </header>
         <main className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</main>
       </div>

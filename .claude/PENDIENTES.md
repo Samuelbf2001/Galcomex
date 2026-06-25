@@ -6,11 +6,11 @@
 
 ## A. Cierre de Sprint 11 — pasos manuales (no-código)
 
-### A1. Crear usuario Lucho en BD de producción
-**Acción:** ejecutar `npx tsx scripts/crear-usuario-socio.ts` contra la BD de producción durante el deploy a EasyPanel.
-**Credenciales acordadas:** `lucho@galcomex.com` / `Galcomex2026!`, rol `SOCIO`.
-**Estado:** ya está creado en local; falta replicar en prod.
-**Responsable:** quien ejecute el deploy.
+### A1. Usuarios en BD de producción — automático vía seed
+**Estado (2026-06-25):** ya NO requiere script manual. `docker-entrypoint.sh` corre `prisma migrate deploy` + `prisma/seed.ts` en cada arranque, y el seed provisiona los 5 usuarios fijos con contraseña `Galcomex2026!`:
+`camila` (ADMIN), `papa` (REVISOR), `karina` (OPERATIVO), `lucho` (OPERATIVO), `luismartinez` (SOCIO).
+**Idempotencia:** el seed solo crea la cuenta credencial si el usuario NO tiene una; nunca pisa contraseñas ya cambiadas. Reiniciar el contenedor es seguro.
+**Ojo (naming):** el único socio es `luismartinez@galcomex.com` (rol SOCIO). Existe además `lucho@galcomex.com` como OPERATIVO — confirmar con Camila si "Lucho" y "Luis Martínez" son la misma persona o dos cuentas distintas a propósito. `scripts/crear-usuario-socio.ts` queda como respaldo, ya no es necesario en el flujo normal.
 
 ### A2. Push a EasyPanel
 **Acción:** build Docker + push a EasyPanel/Hostinger VPS. Verificación previa: `docker compose up --build` localmente pasa.
@@ -84,3 +84,17 @@ Confirmado con `git stash` contra HEAD `be74724` que estas dos fallas **NO** fue
 ## E. Reconciliación documentada (informativa)
 
 El plan 24-jun reportaba para BAQ-18453: `restanteInterno = 1.766.766` y `saldoLM = −179.734`. **El Excel real muestra `restanteInterno = 1.516.766` y `saldoLM = −429.734`**. Delta = 250.000 = diferencia entre la comisión default (`COMISION_LM = 150.000`) y la comisión real del DO (400.000, ver `Hoja1` C40/I40 del .xls). Los tests dorados y el motor reflejan los valores del Excel (fuente de verdad). Sin acción técnica — confirmar con Camila para que no haya sorpresa al revisar el cruce LM en el revisor.
+
+---
+
+## F. Roles y autorización
+
+### F1. Scoping de SOCIO por `userId` (no por tipo de cliente)
+**Estado:** funciona correctamente HOY, se vuelve bug con un segundo socio.
+**Detalle:** el rol SOCIO filtra trámites por `cliente.tipo === SOCIO_LM` (ver filtro en `/api/tramites`), no por el usuario dueño. Con un único socio (Luis Martínez / Lucho) el conjunto "clientes SOCIO_LM" === "clientes de Lucho", así que se comporta bien. El día que entre un segundo socio, ambos verían los trámites del otro.
+**Siguiente acción (cuando aparezca el 2º socio):** agregar relación `User.clientes Cliente[]` (o `Cliente.socioId`) en el schema y cambiar los filtros de `tipo: SOCIO_LM` a `socioId: session.user.id` en el handler de trámites (y cualquier otro endpoint que liste por SOCIO).
+**Origen:** revisión de roles 2026-06-25.
+
+### F2. Reset de contraseña por email (autoservicio)
+**Estado:** fuera de scope. Requeriría SMTP configurado. Para single-tenant interno con 5 usuarios sobra.
+**Mitigación ya implementada (2026-06-25):** cualquier usuario cambia su propia contraseña en `/cambiar-password` (ícono en el header) y el ADMIN restablece la de cualquier usuario desde Configuración → Usuarios (`POST /api/usuarios/[id]/reset-password`, audita `RESET_PASSWORD` y cierra sesiones).

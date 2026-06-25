@@ -2,8 +2,14 @@ import { prisma } from "@/lib/db/prisma";
 import { BeneficiariosConfig } from "@/components/configuracion/beneficiarios-config";
 import { SiigoParametros } from "@/components/configuracion/siigo-parametros";
 import { SiigoProductos } from "@/components/configuracion/siigo-productos";
+import { UsuariosConfig } from "@/components/configuracion/usuarios-config";
+import { getCurrentSession } from "@/lib/auth/session";
+import { listarUsuarios } from "@/lib/usuarios/service";
 
 export default async function ConfiguracionPage() {
+  const session = await getCurrentSession();
+  const esAdmin = session?.user.rol === "ADMIN";
+  const usuarios = esAdmin ? await listarUsuarios() : [];
   // Solo parámetros NO-Siigo: los Siigo se editan desde SiigoParametros.
   const parametros = await prisma.parametro.findMany({
     where: { clave: { notIn: [
@@ -50,6 +56,7 @@ export default async function ConfiguracionPage() {
       <BeneficiariosConfig />
       <SiigoProductos />
       <SiigoParametros />
+      {esAdmin ? <UsuariosConfig usuarios={usuarios} /> : null}
     </section>
   );
 }
