@@ -1,6 +1,8 @@
 # Galcomex — Estado del Sprint
 
-> **Actualizado 2026-06-24** — reconstrucción de los Sprints 8–10 (PSE, beneficiarios N↔N, líneas manuales e **integración Siigo por API**) a partir de migraciones, código y git log. Los gates de cada uno de estos sprints (tsc/lint/test/build) no se re-ejecutaron en esta actualización documental; verificar antes de go-live.
+> **Actualizado 2026-06-25** — Sprint 11 (entrega final: ajustes flujo Lucho/SOCIO_LM tras reunión 24-jun) cerrado con gates verdes. Pendientes residuales (no-código) registrados en `.claude/PENDIENTES.md`.
+>
+> Actualizado 2026-06-24 — reconstrucción de los Sprints 8–10 (PSE, beneficiarios N↔N, líneas manuales e **integración Siigo por API**) a partir de migraciones, código y git log. Los gates de cada uno de estos sprints (tsc/lint/test/build) no se re-ejecutaron en esta actualización documental; verificar antes de go-live.
 >
 > Actualizado 2026-06-11 por el agente coordinador tras validación + Sprint 3 (backend).
 > **Gates de calidad al cierre:** `tsc` limpio · `lint` limpio · **56/56 tests** (incl. concurrencia, test dorado de motor y end-to-end de borrador contra Postgres real) · `npm run build` exit 0 · migración aplicada y reproducible · stack Docker completo arriba (app:3003, postgres:5433, minio:9000).
@@ -109,6 +111,48 @@
 ### Mantenimiento de migraciones (2026-06-24)
 - [x] **Drift de `sincronizadoEn` resuelto:** los catálogos `siigo_forma_pago`/`tipo_comprobante`/`vendedor` tenían `DEFAULT CURRENT_TIMESTAMP` en BD pero `siigo_producto`/`siigo_impuesto` no, y el schema no lo declaraba. Se añadió `@default(now())` a los 5 modelos + migración `20260624141109_siigo_sincronizado_default` (ALTER en producto e impuesto). `migrate diff` schema↔BD limpio.
 - [x] **Checksums realineados:** `20260618000000_ajustes_sprint8` y `20260619154718_npm_run_db_seed` se habían editado tras aplicarse (checksum desfasado en `_prisma_migrations`, bloqueaba `migrate dev` con petición de reset). Verificado que la BD ya reflejaba el contenido actual de los archivos → checksums actualizados sin reset ni pérdida de datos. **Lección: no editar migraciones ya aplicadas.**
+
+## Sprint 11 — Entrega final: ajustes flujo Lucho/SOCIO_LM (2026-06-25) ✅
+> Origen: reunión 24-jun (Camila + Jefferson) + notas adicionales. Orquestado con 4 subagentes Sonnet (Bloques A→B/C en paralelo→D) + validación inline. Excels de referencia en `documentos referencia /`. Migraciones `20260625135235_add_agencia_ar_logisty`, `20260625135753_add_socio_lm_motor_fields`, `20260625135904_add_factura_proveedor_siigo_producto`.
+> **Gates al cierre: 229/231 tests verdes (2 fallas pre-existentes confirmadas con `git stash` al HEAD original: `borrador-lucho.test.ts` con ruta Windows hardcoded + `crearPago FP PAGADA` por regla cambiada en commit `788d65a` antes del sprint) · tsc limpio · lint idéntico al baseline (10 err/13 warn pre-existentes, cero nuevos) · 27 migraciones aplicadas, BD up to date.**
+
+### Bloque A — Catálogos y formulario DO ✅
+- [x] `enum AgenciaAduanas.AR_LOGISTY` añadido + replicado en `tramites-workspace.tsx`, `solicitar-do/solicitud-form.tsx`.
+- [x] Botón "Nuevo cliente" en `clientes-workspace.tsx` oculto si rol ≠ ADMIN (lee `/api/auth/get-session`).
+- [x] Campo "Proveedor cliente" eliminado del form de creación y del display del detalle (columna sigue en BD, nullable).
+- [x] Campo ETA oculto en `CreateTramiteDialog` si `cliente.tipo === SOCIO_LM`.
+- [x] `doAgencia` editable inline en `tramite-detalle.tsx` (componente `InlineTextField`, roles ADMIN/REVISOR/OPERATIVO).
+- [x] Para clientes SOCIO_LM: adjuntos BL/Guía + Factura Comercial obligatorios al crear DO (bloquea submit + mensaje).
+
+### Bloque B — Pagos y anticipos ✅
+- [x] **Concepto de FacturaProveedor → combobox SIIGO**: `SiigoProductoCombobox` en `seccion-facturas-proveedor.tsx` (búsqueda por nombre/código, edición libre tras seleccionar). Endpoint nuevo `GET /api/siigo-productos` (roles ADMIN/REVISOR/OPERATIVO). FK opcional `FacturaProveedor.siigoProductoId` + migración.
+- [x] **Anticipo no verificado se permite**: `verificarAnticipo` envuelto en `$transaction` con `AuditLog` snapshot. Badge "Pendiente verificar" en `seccion-anticipos-tramite.tsx` cuando `verificadoBanco === false`.
+- [x] **Regla "sin anticipo, no hay pago"**: `crearPago` (`src/lib/pagos/service.ts`) lanza `SinAnticipoAplicadoError` (status 422) si el trámite no tiene `AplicacionAnticipo` (cualquier estado del anticipo). Botón "Nuevo pago" deshabilitado con tooltip en `libro-pagos.tsx`. 2 tests nuevos (sin anticipo→422; con anticipo no verificado→OK); 7 tests existentes actualizados para incluir anticipo previo.
+
+### Bloque C — Motor SOCIO_LM (núcleo, mayor riesgo) ✅
+- [x] **Líneas fijas filtradas por `tipoCliente`** — `definirLineasFijasParaCreate` y `ensureLineasFijas` aceptan `tipoCliente`; para SOCIO_LM las líneas `COMISION` y `COSTOS_BANCARIOS` NO se materializan en `LineaRevision` (deducciones internas únicamente). `IVA_COMISION` sí (ingreso operacional). `actualizarLineasComision` saltea COMISION para SOCIO_LM.
+- [x] **4x1000 de factura vs interno** — para SOCIO_LM, la línea fija `IMPUESTO_4X1000` se calcula con base = Σ líneas TERCEROS (excluyendo costos bancarios y el propio 4x1000), fórmula `(base × 4 + 500) / 1000` (BigInt round-half-up; el Excel reporta 130.088 vs 130.087.65 truncado). El 4x1000 interno (base = anticipo) sigue calculándose en `calcularBorrador` para el cruce LM. Para PROPIO, comportamiento intacto.
+- [x] **Tercero del 4x1000 fijo = Banco de Occidente (NIT 890300279)** — `resolverNit4x1000` (`src/lib/siigo/envio-factura-service.ts`) simplificado a retornar siempre `NIT_BANCO_OCCIDENTE`. Parámetro `NIT_BANCO_4X1000 = '890300279'` y Beneficiario "Banco de Occidente S.A." sembrados en `prisma/seed.ts`.
+- [x] **Campos nuevos en `BorradorFactura`**: `impuesto4x1000Factura BigInt @default(0)` y `saldoLMInterno BigInt @default(0)` (migración `add_socio_lm_motor_fields`).
+- [x] **Observación de cabecera "NO PRACTICAR RETEFUENTE NI RETEICA"** — `service.ts` siembra automáticamente `comentariosCabecera: ["NO PRACTICAR RETEFUENTE NI RETEICA"]` al generar borrador SOCIO_LM (col AE del export Siigo y `observations` del envío API).
+- [x] **Botón "Enviar a revisión" desde detalle** — `tramite-detalle.tsx` expone la transición `BORRADOR→EN_REVISION` (usa `transicionarBorrador`) para roles ADMIN/REVISOR/OPERATIVO, sin ir al módulo Facturación.
+- [x] **Test dorado nuevo BAQ-18453** — `motor-factura.lucho.test.ts` con 18 casos verdes (función 4x1000 factura, pagos y costos internos, cruce factura cliente al peso, integración con `calcularTotalPorLineas`/`calcularSaldosPorLineas`, cruce interno LM, invariantes BigInt). Tolerancia 0. Dorados existentes BUN26-0026, BAQ-18460, BAQ-18512 siguen verdes.
+
+### Bloque D — Alerta cruce pagos ↔ factura por proveedor ✅
+- [x] Helper puro `src/lib/borradores/cruce-facturas.ts` (`calcularCruceFacturas`, BigInt, sin BD).
+- [x] Endpoint `GET /api/borradores/[id]/cruce-facturas` (roles ADMIN/REVISOR). Devuelve por cada `FacturaProveedor`: `{ id, proveedorNombre, numFactura, valor, montoPagado, montoFacturado, diferencia }`.
+- [x] Panel colapsable "Cruce pagos vs factura" en `revisor-borrador.tsx` (columna derecha, bajo el desglose): verde "Cuadra" si diferencia = 0, ámbar "Desfase" con cifras si difiere. Informativo, NO bloquea aprobación.
+- [x] 5 tests unitarios del helper, todos verdes. Verificado contra BAQ-18453: DIAN, CONTECAR, HAPAG, NAVEMAR cuadran al peso.
+
+### Reconciliación typo del plan vs Excel (importante)
+El plan 24-jun reportaba `restanteInterno = 1.766.766` y `saldoLM = −179.734` para BAQ-18453. Esos números arrastraban la comisión default `COMISION_LM = 150.000`. **El Excel real (`Hoja1` C40, I40) muestra comisión = 400.000** (línea "LOGISTICA COMERCIO EXTERIOR GALCOMEX SAS") con IVA 76.000 (consistente con 19% × 400.000). Cifras correctas reflejadas en los tests:
+- `restanteInterno = 35.074.500 − 32.931.686 − 400.000 − 76.000 − 140.298 − 9.750 = 1.516.766`
+- `saldoLM = 1.516.766 − 1.946.500 = −429.734` (Lucho debe 429.734 a Galcomex)
+
+Delta vs plan = exactamente 400.000 − 150.000 = 250.000. La fuente de verdad es el Excel.
+
+### Pendientes residuales (no-código)
+Ver `.claude/PENDIENTES.md` — incluye Bloque E (ejecutar `scripts/crear-usuario-socio.ts` en BD de producción + push EasyPanel), alcance OUT diferido del plan 24-jun (selector tipo importación, cuestionario inteligente, decisión D1 Lucho/Galcomex DOs, infraestructura correo/nube, verificación devolución Sprint 7), y dos tests pre-existentes a sanear.
 
 ## Lógica financiera real (decodificada del Excel BUN26-0026 — fuente de verdad)
 Fórmulas verificadas celda por celda (ver `motor-factura.ts`):

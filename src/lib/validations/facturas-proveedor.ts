@@ -7,6 +7,7 @@ export const crearFacturaProveedorSchema = z.object({
   /** ID del Beneficiario unificado (reemplaza proveedorNombre/NIT en el flujo nuevo) */
   beneficiarioId: z.string().min(1).optional().nullable(),
   concepto: z.string().trim().min(1).optional().nullable(),
+  siigoProductoId: z.string().min(1).optional().nullable(),
   numFactura: z.string().trim().min(1, "El número de factura es obligatorio"),
   valor: z.coerce
     .bigint()
@@ -21,6 +22,7 @@ export const actualizarFacturaProveedorSchema = z.object({
   proveedorNit: z.string().trim().min(1).optional().nullable(),
   beneficiarioId: z.string().min(1).optional().nullable(),
   concepto: z.string().trim().min(1).optional().nullable(),
+  siigoProductoId: z.string().min(1).optional().nullable(),
   numFactura: z.string().trim().min(1).optional(),
   valor: z.coerce
     .bigint()

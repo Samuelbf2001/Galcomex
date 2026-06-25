@@ -43,6 +43,8 @@ export const crearLineaPayloadSchema = z.object({
   facturaIds: z.array(z.string().min(1)).default([]),
   /** Producto del catálogo Siigo vinculado a esta línea. */
   siigoProductoId: z.string().min(1).optional(),
+  /** NIT del tercero ("Id. Tercero" en Siigo) si la línea no vincula factura. */
+  nitTercero: z.string().trim().min(1).optional(),
 });
 
 export type CrearLineaPayload = z.infer<typeof crearLineaPayloadSchema>;
@@ -56,6 +58,8 @@ export const actualizarLineaPayloadSchema = z
     seccion: z.nativeEnum(SeccionLinea).optional(),
     facturaIds: z.array(z.string().min(1)).optional(),
     siigoProductoId: z.string().min(1).nullable().optional(),
+    /** NIT del tercero (null limpia el campo). */
+    nitTercero: z.string().trim().min(1).nullable().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, {
     message: "Debe enviarse al menos un campo a actualizar",

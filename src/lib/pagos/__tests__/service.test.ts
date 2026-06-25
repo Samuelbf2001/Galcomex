@@ -17,6 +17,7 @@ import { FacturaProveedorNoModificableError } from "@/lib/facturas-proveedor/ser
 import {
   MatrizCanalNoEncontradoError,
   PagoFacturaDeOtroTramiteError,
+  SinAnticipoAplicadoError,
   actualizarPago,
   crearPago,
   eliminarPago,
@@ -386,6 +387,7 @@ describe("pagos service con Postgres local", () => {
   it("canal inexistente en la matriz → lanza MatrizCanalNoEncontradoError (status 400)", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 200);
+    await aplicarAnticipoTest(db, tramiteId, 2_000_000n);
 
     /**
      * CanalPago es un enum de Prisma que refleja los valores del schema.
@@ -490,6 +492,7 @@ describe("pagos service con Postgres local", () => {
   it("crearPago asigna costoBancario correcto desde la matriz", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 500);
+    await aplicarAnticipoTest(db, tramiteId, 2_000_000n);
 
     const pago = await crearPago({
       tramiteId,
@@ -530,6 +533,7 @@ describe("pagos service con Postgres local", () => {
   it("crearPago vinculado a una FacturaProveedor REGISTRADA la marca como PAGADA y guarda el vínculo", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 700);
+    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
 
     const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-700-001", 2_000_000n);
 
@@ -556,6 +560,7 @@ describe("pagos service con Postgres local", () => {
   it("crearPago con facturaProveedorId de una FP ya PAGADA lanza FacturaProveedorNoModificableError y no crea el pago", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 800);
+    await aplicarAnticipoTest(db, tramiteId, 10_000_000n);
 
     const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-800-001", 3_000_000n);
 
@@ -590,6 +595,7 @@ describe("pagos service con Postgres local", () => {
     const db = ensureDb(ctx);
     const tramiteId1 = await crearTramiteTest(db, 900);
     const tramiteId2 = await crearTramiteTest(db, 901);
+    await aplicarAnticipoTest(db, tramiteId2, 5_000_000n);
 
     // FP pertenece al trámite 1
     const fpId = await crearFacturaProveedorTest(db, tramiteId1, "FP-900-001", 1_500_000n);
@@ -614,6 +620,7 @@ describe("pagos service con Postgres local", () => {
   it("eliminarPago de un pago vinculado revierte la FacturaProveedor a REGISTRADA", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1000);
+    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
 
     const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-1000-001", 2_500_000n);
 
@@ -660,6 +667,59 @@ describe("pagos service con Postgres local", () => {
     });
     expect(vinculos).toHaveLength(0);
 
+    const libro = await getLibroPagos(tramiteId);
+    expect(libro.pagos).toHaveLength(1);
+    expect(libro.saldoFinal).toBe(4_000_000n);
+  });
+
+  // ─── B3: sin anticipo → SinAnticipoAplicadoError ─────────────────────────
+
+  it("crearPago sin anticipo aplicado lanza SinAnticipoAplicadoError (status 422)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1200);
+
+    await expect(
+      crearPago({
+        tramiteId,
+        concepto: "Pago sin anticipo",
+        valor: 1_000_000n,
+        canalPago: CanalPago.PSE,
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow(SinAnticipoAplicadoError);
+
+    const pagos = await prisma.pagoTramite.findMany({ where: { tramiteId } });
+    expect(pagos).toHaveLength(0);
+  });
+
+  it("crearPago con anticipo no verificado (REALIZADO) se permite sin error", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1300);
+
+    const anticipo = await prisma.anticipo.create({
+      data: {
+        clienteId: db.clienteId,
+        monto: 5_000_000n,
+        fecha: new Date("3002-01-10"),
+        tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+        costoRecaudo: 1_950n,
+        verificadoBanco: false,
+        estado: "REALIZADO",
+      },
+    });
+    await prisma.aplicacionAnticipo.create({
+      data: { anticipoId: anticipo.id, tramiteId, montoAplicado: 5_000_000n },
+    });
+
+    const pago = await crearPago({
+      tramiteId,
+      concepto: "Pago con anticipo no verificado",
+      valor: 1_000_000n,
+      canalPago: CanalPago.PSE,
+      usuarioId: db.userId,
+    });
+
+    expect(pago.id).toBeTruthy();
     const libro = await getLibroPagos(tramiteId);
     expect(libro.pagos).toHaveLength(1);
     expect(libro.saldoFinal).toBe(4_000_000n);

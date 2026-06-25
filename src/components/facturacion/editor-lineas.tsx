@@ -103,6 +103,17 @@ function FacturasMultiSelect({
   const seleccionadas = facturas.filter((f) => selectedIds.includes(f.id));
   const nombres = seleccionadas.map((f) => f.proveedorNombre);
 
+  // Clave de proveedor: usamos beneficiarioId si está, sino proveedorNit. Una
+  // misma línea solo puede vincular facturas con la misma clave (regla del
+  // backend `validarFacturasMismoBeneficiario`). Si ya hay facturas
+  // seleccionadas, las opciones de otra clave se deshabilitan.
+  function claveProveedor(f: FacturaProveedorRow): string {
+    if (f.beneficiarioId) return `b:${f.beneficiarioId}`;
+    return `n:${(f.proveedorNit ?? "").trim().toLowerCase()}`;
+  }
+  const clavesSeleccionadas = new Set(seleccionadas.map(claveProveedor));
+  const hayBloqueo = clavesSeleccionadas.size > 0;
+
   if (facturas.length === 0) {
     return (
       <span className="text-sm text-slate-400">Sin facturas en el trámite</span>
@@ -134,16 +145,33 @@ function FacturasMultiSelect({
 
       {open && !disabled ? (
         <div className="absolute z-20 mt-1 max-h-96 w-96 overflow-auto border border-slate-200 bg-white shadow-lg">
+          {hayBloqueo ? (
+            <p className="border-b border-slate-100 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700">
+              Solo facturas del mismo proveedor pueden compartir una línea.
+            </p>
+          ) : null}
           {facturas.map((f) => {
             const activa = selectedIds.includes(f.id);
+            const otraClave =
+              hayBloqueo && !activa && !clavesSeleccionadas.has(claveProveedor(f));
             return (
               <button
                 key={f.id}
                 type="button"
+                disabled={otraClave}
                 onClick={() => onToggle(f.id)}
                 className={`flex w-full items-start gap-3 border-b border-slate-100 px-3 py-3 text-left text-base last:border-b-0 transition ${
-                  activa ? "bg-cyan-50" : "hover:bg-slate-50"
+                  activa
+                    ? "bg-cyan-50"
+                    : otraClave
+                      ? "cursor-not-allowed bg-slate-50 text-slate-400"
+                      : "hover:bg-slate-50"
                 }`}
+                title={
+                  otraClave
+                    ? "Esta factura es de otro proveedor. Crea una línea aparte."
+                    : undefined
+                }
               >
                 <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center border border-slate-300 bg-white">
                   {activa ? (
@@ -154,10 +182,18 @@ function FacturasMultiSelect({
                   ) : null}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-slate-800">
+                  <span
+                    className={`block truncate font-medium ${
+                      otraClave ? "text-slate-400" : "text-slate-800"
+                    }`}
+                  >
                     {f.proveedorNombre}
                   </span>
-                  <span className="block truncate text-sm text-slate-500">
+                  <span
+                    className={`block truncate text-sm ${
+                      otraClave ? "text-slate-400" : "text-slate-500"
+                    }`}
+                  >
                     {f.numFactura} · {formatCOP(f.valor)}
                   </span>
                 </span>
@@ -562,6 +598,9 @@ function SubseccionLineas({
   const [nuevoValor, setNuevoValor] = useState("");
   const [nuevasFacturas, setNuevasFacturas] = useState<string[]>([]);
   const [nuevoSiigoProductoId, setNuevoSiigoProductoId] = useState("");
+  // NIT del tercero a usar cuando la línea TERCEROS no tiene factura vinculada
+  // (alternativa a `factura.beneficiario.nit`).
+  const [nuevoNitTercero, setNuevoNitTercero] = useState("");
 
   const productoSeleccionado = productos.find((p) => p.id === nuevoSiigoProductoId) ?? null;
 
@@ -573,19 +612,39 @@ function SubseccionLineas({
     }
     // En TERCEROS el N° de soporte se deriva de la factura vinculada (server-side),
     // por eso no se envía numSoporte desde el formulario.
+    const facturaIds = compacto ? [] : nuevasFacturas;
+    const nitTrimmed = nuevoNitTercero.trim();
     await ejecutar(() =>
       apiCrearLinea(borradorId, {
         concepto: nuevoConcepto.trim(),
         valor,
         seccion,
-        facturaIds: compacto ? [] : nuevasFacturas,
+        facturaIds,
         siigoProductoId: nuevoSiigoProductoId || undefined,
+        // El NIT manual solo aplica a TERCEROS sin factura — en otros casos el
+        // NIT real lo provee la factura del proveedor.
+        nitTercero:
+          !compacto && facturaIds.length === 0 && nitTrimmed.length > 0
+            ? nitTrimmed
+            : undefined,
       }),
     );
     setNuevoConcepto("");
     setNuevoValor("");
     setNuevasFacturas([]);
     setNuevoSiigoProductoId("");
+    setNuevoNitTercero("");
+  }
+
+  async function commitNitTerceroLinea(linea: LineaRevisionRow, valor: string) {
+    const limpio = valor.trim();
+    const antes = linea.nitTercero ?? "";
+    if (limpio === antes) return;
+    await ejecutar(() =>
+      apiActualizarLinea(borradorId, linea.id, {
+        nitTercero: limpio.length === 0 ? null : limpio,
+      }),
+    );
   }
 
   function toggleNuevaFactura(id: string) {
@@ -679,6 +738,42 @@ function SubseccionLineas({
                         .join(", ")}
                     </span>
                   )}
+                  {/* NIT del tercero manual — solo si no hay factura vinculada
+                      y la línea es TERCEROS no-fija. Cuando hay factura, el NIT
+                      lo provee `factura.beneficiario.nit`. */}
+                  {seccion === "TERCEROS" &&
+                  !linea.tipoFija &&
+                  linea.facturasVinculadas.length === 0 ? (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                        Id. Tercero
+                      </span>
+                      {puedeEditar ? (
+                        <input
+                          key={`nit-${linea.id}-${linea.nitTercero ?? ""}`}
+                          defaultValue={linea.nitTercero ?? ""}
+                          placeholder="NIT sin guiones"
+                          onBlur={(e) =>
+                            void commitNitTerceroLinea(linea, e.currentTarget.value)
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.currentTarget.blur();
+                            if (e.key === "Escape") {
+                              e.currentTarget.value = linea.nitTercero ?? "";
+                              e.currentTarget.blur();
+                            }
+                          }}
+                          disabled={guardando}
+                          inputMode="numeric"
+                          className="h-7 w-36 border border-slate-300 px-2 text-xs text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
+                        />
+                      ) : (
+                        <span className="font-mono text-xs text-slate-700">
+                          {linea.nitTercero ?? "—"}
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
                 </td>
               ) : null}
               {puedeEditar ? (
@@ -826,6 +921,26 @@ function SubseccionLineas({
               </div>
               <span className="text-[11px] text-slate-400">
                 El N° de soporte se toma del número de la factura vinculada.
+              </span>
+            </div>
+          ) : null}
+          {/* Captura del NIT del tercero cuando la nueva línea TERCEROS no va
+              a vincular factura. Si después se vincula una factura, el NIT del
+              beneficiario tendrá prioridad sobre este campo manual. */}
+          {!compacto && nuevasFacturas.length === 0 ? (
+            <div className="mt-2 flex items-center gap-2">
+              <label className="text-xs text-slate-500">
+                Id. Tercero (sin factura):
+              </label>
+              <input
+                value={nuevoNitTercero}
+                onChange={(e) => setNuevoNitTercero(e.target.value)}
+                placeholder="NIT del proveedor / beneficiario"
+                className="h-7 w-56 border border-slate-300 px-2 text-xs text-slate-800 focus:border-slate-400 focus:outline-none"
+                inputMode="numeric"
+              />
+              <span className="text-[11px] text-slate-400">
+                Solo si la línea no tiene factura vinculada.
               </span>
             </div>
           ) : null}

@@ -28,6 +28,7 @@ import { SeccionDocumentos } from "@/components/documentos/seccion-documentos";
 import { EditorLineas } from "@/components/facturacion/editor-lineas";
 import {
   fetchBorradoresDeTramite,
+  transicionarBorrador,
   type BorradorRow,
 } from "@/components/facturacion/facturacion-api";
 import {
@@ -419,6 +420,126 @@ function InlineDateField({ label, fieldKey, value, tramiteId, onSaved }: InlineD
   );
 }
 
+// ─── Campo de texto editable inline ─────────────────────────────────────────
+
+type InlineTextFieldProps = {
+  label: string;
+  fieldKey: "doAgencia" | "doCliente" | "comentarios";
+  value: string | null;
+  tramiteId: string;
+  onSaved: (updated: TramiteDetalleData) => void;
+};
+
+function InlineTextField({ label, fieldKey, value, tramiteId, onSaved }: InlineTextFieldProps) {
+  const [editing, setEditing] = useState(false);
+  const [inputValue, setInputValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function openEdit() {
+    setInputValue(value ?? "");
+    setError(null);
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    const newValue = inputValue.trim() || null;
+    try {
+      const res = await fetch(`/api/tramites/${tramiteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ [fieldKey]: newValue }),
+      });
+      if (!res.ok) {
+        const payload: unknown = await res.json().catch(() => ({}));
+        const msg =
+          typeof payload === "object" && payload !== null && "error" in payload && typeof (payload as Record<string, unknown>).error === "string"
+            ? (payload as Record<string, unknown>).error as string
+            : `Error ${res.status}`;
+        throw new Error(msg);
+      }
+      const payload: unknown = await res.json();
+      if (
+        typeof payload === "object" &&
+        payload !== null &&
+        "tramite" in payload &&
+        typeof (payload as Record<string, unknown>).tramite === "object"
+      ) {
+        onSaved((payload as Record<string, unknown>).tramite as TramiteDetalleData);
+      }
+      setEditing(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No se pudo guardar.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleCancel() {
+    setEditing(false);
+    setError(null);
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+      {editing ? (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              className="h-8 border border-cyan-500 px-2 text-sm text-slate-950 outline-none focus:ring-2 focus:ring-cyan-100"
+              disabled={saving}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleSave();
+                if (e.key === "Escape") handleCancel();
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={saving}
+              className="inline-flex h-8 items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
+            >
+              {saving ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
+              Guardar
+            </button>
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={saving}
+              className="inline-flex h-8 items-center border border-slate-300 bg-white px-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
+            >
+              Cancelar
+            </button>
+          </div>
+          {error ? (
+            <p className="flex items-center gap-1 text-xs text-rose-600">
+              <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+              {error}
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={openEdit}
+          className="group inline-flex items-center gap-1.5 text-sm text-slate-800 hover:text-cyan-700"
+          title={`Editar ${label}`}
+        >
+          <span className="group-hover:underline">{value ?? "—"}</span>
+          <Calendar className="h-3.5 w-3.5 text-slate-400 group-hover:text-cyan-600" aria-hidden="true" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Botón cambio de estado ───────────────────────────────────────────────────
 
 function CambioEstadoButton({
@@ -606,12 +727,14 @@ function TabResumen({
   tramite,
   onDateSaved,
   onEstadoChanged,
+  onFieldSaved,
   puedeEditar,
   onRefresh,
 }: {
   tramite: TramiteDetalleData;
   onDateSaved: (key: DateFieldKey, newIso: string | null, updated: TramiteDetalleData) => void;
   onEstadoChanged: (updated: TramiteDetalleData) => void;
+  onFieldSaved: (updated: TramiteDetalleData) => void;
   puedeEditar: boolean;
   onRefresh: () => void;
 }) {
@@ -627,12 +750,22 @@ function TabResumen({
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Consecutivo Galcomex</p>
           <p className="mt-0.5 text-lg font-bold text-slate-950">{tramite.consecutivo}</p>
         </div>
-        {tramite.doAgencia ? (
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Agencia</p>
-            <p className="mt-0.5 font-semibold text-slate-800">{tramite.doAgencia}</p>
-          </div>
-        ) : null}
+        <div>
+          {puedeEditar ? (
+            <InlineTextField
+              label="DO Agencia"
+              fieldKey="doAgencia"
+              value={tramite.doAgencia}
+              tramiteId={tramite.id}
+              onSaved={onFieldSaved}
+            />
+          ) : tramite.doAgencia ? (
+            <>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Agencia</p>
+              <p className="mt-0.5 font-semibold text-slate-800">{tramite.doAgencia}</p>
+            </>
+          ) : null}
+        </div>
         {tramite.doCliente ? (
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Cliente</p>
@@ -660,12 +793,6 @@ function TabResumen({
           </Link>
           <p className="text-xs text-slate-500">{tramite.cliente.nit}</p>
         </div>
-        {tramite.proveedorCliente ? (
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Proveedor</p>
-            <p className="mt-0.5 text-sm text-slate-700">{tramite.proveedorCliente}</p>
-          </div>
-        ) : null}
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Ciudad</p>
           <p className="mt-0.5 text-sm text-slate-700">{tramite.ciudad}</p>
@@ -869,6 +996,8 @@ function TabHistorial({ tramite }: { tramite: TramiteDetalleData }) {
 // ─── Editor de líneas manuales (PROPIO + SOCIO_LM) ────────────────────────────
 
 const ESTADOS_BORRADOR_EDITABLE = ["BORRADOR", "EN_REVISION"];
+/** Roles que pueden transicionar un borrador a EN_REVISION. */
+const ROLES_PUEDE_ENVIAR_REVISION = ["ADMIN", "REVISOR", "OPERATIVO"];
 
 function SeccionEditorFacturaVenta({
   tramiteId,
@@ -879,6 +1008,8 @@ function SeccionEditorFacturaVenta({
 }) {
   const [borradores, setBorradores] = useState<BorradorRow[]>([]);
   const [estado, setEstado] = useState<"loading" | "ready" | "error">("loading");
+  const [enviandoRevision, setEnviandoRevision] = useState(false);
+  const [errorRevision, setErrorRevision] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -912,14 +1043,62 @@ function SeccionEditorFacturaVenta({
     ESTADOS_BORRADOR_EDITABLE.includes(borrador.estado) &&
     (userRol === "ADMIN" || userRol === "SOCIO");
 
+  // El botón "Enviar a revisión" aparece cuando el borrador está en BORRADOR
+  // y el rol puede hacer la transición. No se muestra para SOCIO (solo lectura).
+  const puedeEnviarRevision =
+    borrador.estado === "BORRADOR" &&
+    ROLES_PUEDE_ENVIAR_REVISION.includes(userRol);
+
+  async function handleEnviarRevision() {
+    if (!puedeEnviarRevision || enviandoRevision) return;
+    setEnviandoRevision(true);
+    setErrorRevision(null);
+    try {
+      const actualizado = await transicionarBorrador(borrador.id, {
+        nuevoEstado: "EN_REVISION",
+      });
+      setBorradores((prev) =>
+        prev.map((b) => (b.id === actualizado.id ? actualizado : b)),
+      );
+    } catch (err) {
+      setErrorRevision(
+        err instanceof Error ? err.message : "Error al enviar a revisión.",
+      );
+    } finally {
+      setEnviandoRevision(false);
+    }
+  }
+
   return (
     <div className="mt-5 border border-slate-200 bg-white p-5">
-      <h3 className="mb-1 text-sm font-semibold text-slate-900">
-        Líneas de la factura de venta
-      </h3>
-      <p className="mb-4 text-xs text-slate-500">
-        Escribe los ítems a mano y vincúlalos a las facturas de proveedor. La suma define el total.
-      </p>
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h3 className="mb-1 text-sm font-semibold text-slate-900">
+            Líneas de la factura de venta
+          </h3>
+          <p className="text-xs text-slate-500">
+            Escribe los ítems a mano y vincúlalos a las facturas de proveedor. La suma define el total.
+          </p>
+        </div>
+        {puedeEnviarRevision && (
+          <button
+            type="button"
+            onClick={() => { void handleEnviarRevision(); }}
+            disabled={enviandoRevision}
+            className="inline-flex h-9 items-center gap-2 border border-amber-300 bg-amber-50 px-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {enviandoRevision ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+            )}
+            Enviar a revisión
+          </button>
+        )}
+      </div>
+      {errorRevision && (
+        <p className="mb-3 text-sm text-red-600">{errorRevision}</p>
+      )}
       <EditorLineas
         borrador={borrador}
         tramiteId={tramiteId}
@@ -1069,6 +1248,10 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   );
 
   const handleEstadoChanged = useCallback((updated: TramiteDetalleData) => {
+    setTramite(updated);
+  }, []);
+
+  const handleFieldSaved = useCallback((updated: TramiteDetalleData) => {
     setTramite(updated);
   }, []);
 
@@ -1266,7 +1449,8 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
             tramite={tramite}
             onDateSaved={handleDateSaved}
             onEstadoChanged={handleEstadoChanged}
-            puedeEditar={userRol === "ADMIN"}
+            onFieldSaved={handleFieldSaved}
+            puedeEditar={userRol === "ADMIN" || userRol === "REVISOR" || userRol === "OPERATIVO"}
             onRefresh={() => setReloadKey((k) => k + 1)}
           />
         ) : null}

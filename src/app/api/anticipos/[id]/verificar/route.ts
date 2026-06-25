@@ -23,7 +23,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const { id } = await context.params;
     const payload = verificarMovimientoSchema.parse(await request.json());
 
-    const anticipo = await verificarAnticipo(id, payload.estado, session.user.rol);
+    const anticipo = await verificarAnticipo(id, payload.estado, session.user.rol, session.user.id);
     return jsonResponse({ anticipo });
   } catch (error) {
     if (error instanceof ZodError) return validationError(error);

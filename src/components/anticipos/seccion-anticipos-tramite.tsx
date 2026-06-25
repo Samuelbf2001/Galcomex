@@ -601,7 +601,9 @@ export function SeccionAnticiposTramite({
                         aria-hidden="true"
                       />
                     ) : (
-                      <span className="text-xs text-slate-400">Pendiente</span>
+                      <span className="inline-flex items-center border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                        Pendiente verificar
+                      </span>
                     )}
                   </td>
                 </tr>

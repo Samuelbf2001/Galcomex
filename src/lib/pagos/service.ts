@@ -188,6 +188,14 @@ export class VerificarMovimientoPermisoError extends Error {
   }
 }
 
+export class SinAnticipoAplicadoError extends Error {
+  public readonly status = 422;
+  constructor(tramiteId: string) {
+    super(`No se puede registrar un pago sin anticipo aplicado al trámite (${tramiteId})`);
+    this.name = "SinAnticipoAplicadoError";
+  }
+}
+
 /**
  * Crea un pago en el libro del trámite.
  * - Resuelve costoBancario automáticamente desde MatrizPago según canalPago.
@@ -210,6 +218,14 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
   } = input;
 
   return prisma.$transaction(async (tx) => {
+    const anticipo = await tx.aplicacionAnticipo.findFirst({
+      where: { tramiteId },
+      select: { id: true },
+    });
+    if (!anticipo) {
+      throw new SinAnticipoAplicadoError(tramiteId);
+    }
+
     const costoBancario = await resolverCostoBancario(canalPago, tx);
 
     // Banco asociado al pago (tercero del 4x1000).

@@ -12,6 +12,7 @@ import {
   BorradorNoEditableError,
   BorradorNoEncontradoError,
   FacturaDeOtroTramiteError,
+  FacturasDeBeneficiariosDistintosError,
   crearLineaManual,
 } from "@/lib/borradores/lineas-service";
 import { prisma } from "@/lib/db/prisma";
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       seccion: payload.seccion,
       facturaIds: payload.facturaIds,
       siigoProductoId: payload.siigoProductoId,
+      nitTercero: payload.nitTercero,
       usuarioId: session.user.id,
     });
 
@@ -68,7 +70,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (
       error instanceof BorradorNoEncontradoError ||
       error instanceof BorradorNoEditableError ||
-      error instanceof FacturaDeOtroTramiteError
+      error instanceof FacturaDeOtroTramiteError ||
+      error instanceof FacturasDeBeneficiariosDistintosError
     ) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }

@@ -184,44 +184,28 @@ type PagoParaNit4x1000 = {
 };
 
 /**
- * Decide el NIT que va como tercero en la línea 4x1000.
+ * NIT fijo del Banco de Occidente S.A. — beneficiario del GMF (impuesto 4x1000).
+ * La DIAN recauda el gravamen a través de los bancos; para Galcomex el banco
+ * donde se concentran los movimientos del socio LM es Banco de Occidente.
+ * Se usa SIEMPRE, independientemente del canal de pago del trámite.
  *
- * Política:
- *  1. Si TODOS los pagos del trámite son TRANSF_BANCOLOMBIA → usa el NIT del
- *     Beneficiario Bancolombia asociado al primer pago (auto-fill al crear).
- *  2. Si hay algún pago con canal distinto → usa el NIT del banco del primer
- *     pago non-Bancolombia que tenga banco asignado.
- *  3. Fallback: el NIT DIAN configurado (compatibilidad con datos previos).
+ * Política actualizada (C3): siempre Banco de Occidente (890300279).
+ * La lógica condicional previa (Bancolombia vs otro banco) fue eliminada.
+ */
+export const NIT_BANCO_OCCIDENTE = "890300279";
+
+/**
+ * Devuelve el NIT del tercero para la línea 4x1000 del borrador.
+ * SIEMPRE retorna el NIT del Banco de Occidente (890300279).
+ * Los parámetros se mantienen en la firma para compatibilidad de call-sites existentes.
  */
 export function resolverNit4x1000(
-  pagos: PagoParaNit4x1000[],
-  nitDianFallback: string | null,
-): string | null {
-  if (pagos.length === 0) return nitDianFallback;
-
-  const todosBancolombia = pagos.every(
-    (p) => p.canalPago === "TRANSF_BANCOLOMBIA",
-  );
-
-  if (todosBancolombia) {
-    const conNit = pagos.find((p) => p.bancoBeneficiario?.nit?.trim());
-    if (conNit?.bancoBeneficiario?.nit) {
-      return conNit.bancoBeneficiario.nit.trim();
-    }
-    return nitDianFallback;
-  }
-
-  // Mixto u otros bancos: tomamos el primer non-Bancolombia con NIT.
-  const otroBanco = pagos.find(
-    (p) =>
-      p.canalPago !== "TRANSF_BANCOLOMBIA" &&
-      p.bancoBeneficiario?.nit?.trim(),
-  );
-  if (otroBanco?.bancoBeneficiario?.nit) {
-    return otroBanco.bancoBeneficiario.nit.trim();
-  }
-
-  return nitDianFallback;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _pagos: PagoParaNit4x1000[],
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _nitFallback: string | null,
+): string {
+  return NIT_BANCO_OCCIDENTE;
 }
 
 // ─── API pública ──────────────────────────────────────────────────────────────
@@ -363,12 +347,17 @@ export async function enviarBorradorASiigo(
     };
   }
 
-  // Validar que líneas TERCEROS manuales (sin tipoFija) tengan NIT de proveedor.
+  // Validar que líneas TERCEROS manuales (sin tipoFija) tengan NIT de tercero.
+  // El NIT puede venir de tres fuentes (en orden de preferencia):
+  //   1. `linea.nitTercero` — capturado a mano en el editor cuando no hay factura.
+  //   2. `factura.beneficiario.nit` — para líneas con factura de proveedor vinculada.
+  //   3. `factura.proveedorNit` — fallback histórico del legacy.
   // Las fijas IMPUESTO_4X1000 y COSTOS_BANCARIOS resuelven su tercero aparte
   // (4x1000 → banco GMF; costos → no requiere tercero específico).
   const lineasTercerosSinNit = lineasFacturables
     .filter((l) => l.seccion === "TERCEROS" && !l.tipoFija)
     .filter((l) => {
+      if (l.nitTercero?.trim()) return false;
       const primeraFactura = l.facturas[0]?.factura ?? null;
       const nit =
         primeraFactura?.beneficiario?.nit?.trim() ||
@@ -378,14 +367,14 @@ export async function enviarBorradorASiigo(
     })
     .map((l) => {
       const sinFactura = l.facturas.length === 0;
-      return `#${l.orden} "${l.concepto}"${sinFactura ? " (sin factura proveedor)" : " (proveedor sin NIT)"}`;
+      return `#${l.orden} "${l.concepto}"${sinFactura ? " (sin factura ni NIT manual)" : " (proveedor sin NIT)"}`;
     });
 
   if (lineasTercerosSinNit.length > 0) {
     return {
       ok: false,
       tipo: "validacion",
-      error: `Líneas TERCEROS sin NIT de proveedor: ${lineasTercerosSinNit.join(", ")}. Registra el NIT en Configuración → Beneficiarios.`,
+      error: `Líneas TERCEROS sin NIT de tercero: ${lineasTercerosSinNit.join(", ")}. Captura un NIT manualmente o vincula una factura con beneficiario.`,
     };
   }
 
@@ -406,12 +395,15 @@ export async function enviarBorradorASiigo(
   // IMPUESTO_4X1000.
   const nit4x1000 = resolverNit4x1000(borrador.tramite.pagos, config.nitDian);
 
-  // Helper: NIT del proveedor real de una línea TERCEROS manual (para "Id.
-  // Tercero" en el PDF). Para TERCEROS preferimos el NIT del beneficiario
-  // (más confiable que el del proveedor que escribió quien capturó la factura).
+  // Helper: NIT del tercero para una línea TERCEROS manual (para "Id. Tercero"
+  // en el PDF). Orden de preferencia:
+  //   1. `linea.nitTercero` — capturado a mano (líneas sin factura).
+  //   2. `factura.beneficiario.nit` — más confiable que el proveedor.
+  //   3. `factura.proveedorNit` — fallback histórico.
   function nitTerceroDe(
     l: (typeof lineasFacturables)[number],
   ): string | null {
+    if (l.nitTercero?.trim()) return l.nitTercero.trim();
     const factura = l.facturas[0]?.factura ?? null;
     return (
       factura?.beneficiario?.nit?.trim() ||

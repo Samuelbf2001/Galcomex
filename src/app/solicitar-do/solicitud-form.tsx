@@ -15,6 +15,7 @@ const ciudadOpciones = [
 const agenciaOpciones = [
   { value: "MOVIADUANAS", label: "Moviaduanas" },
   { value: "COLDEX", label: "Coldex" },
+  { value: "AR_LOGISTY", label: "AR Logisty" },
 ];
 
 export function SolicitudForm() {

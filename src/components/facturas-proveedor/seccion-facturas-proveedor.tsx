@@ -10,6 +10,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
@@ -45,6 +46,129 @@ import {
   generarPagoDesdeFactura,
   parseBigIntInput,
 } from "@/components/facturas-proveedor/facturas-proveedor-api";
+
+// ─── Siigo producto combobox ──────────────────────────────────────────────────
+
+type SiigoProductoOpcion = { id: string; codigo: string; nombre: string };
+
+type SiigoProductoComboboxProps = {
+  valor: string;
+  onChange: (texto: string, productoId?: string) => void;
+  placeholder?: string;
+};
+
+function SiigoProductoCombobox({ valor, onChange, placeholder = "Opcional" }: SiigoProductoComboboxProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [productos, setProductos] = useState<SiigoProductoOpcion[]>([]);
+  const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+
+    function isRec(v: unknown): v is Record<string, unknown> {
+      return typeof v === "object" && v !== null && !Array.isArray(v);
+    }
+
+    async function load() {
+      setLoadState("loading");
+      const url = query.length >= 1 ? `/api/siigo-productos?q=${encodeURIComponent(query)}` : "/api/siigo-productos";
+      try {
+        const r = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal });
+        const payload: unknown = await r.json();
+        const list: SiigoProductoOpcion[] = isRec(payload) && Array.isArray(payload.productos)
+          ? (payload.productos as unknown[]).filter(isRec).map((p) => ({
+              id: String(p.id ?? ""),
+              codigo: String(p.codigo ?? ""),
+              nombre: String(p.nombre ?? ""),
+            })).filter((p) => p.id)
+          : [];
+        setProductos(list);
+        setLoadState("ready");
+      } catch (e: unknown) {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        setLoadState("error");
+      }
+    }
+
+    void load();
+    return () => controller.abort();
+  }, [open, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const v = e.target.value;
+    onChange(v, undefined);
+    setQuery(v);
+    if (!open) setOpen(true);
+  }
+
+  function handleSelect(producto: SiigoProductoOpcion) {
+    onChange(producto.nombre, producto.id);
+    setOpen(false);
+    setQuery("");
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+        <input
+          ref={inputRef}
+          value={valor}
+          onChange={handleInputChange}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          className="h-10 w-full border border-slate-300 pl-8 pr-3 text-sm outline-none focus:border-cyan-600"
+        />
+      </div>
+      {open ? (
+        <div className="absolute z-40 mt-1 w-full border border-slate-200 bg-white shadow-lg">
+          {loadState === "loading" ? (
+            <div className="flex items-center gap-2 px-3 py-3 text-xs text-slate-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              Buscando…
+            </div>
+          ) : loadState === "error" ? (
+            <p className="px-3 py-3 text-xs text-rose-600">No se pudieron cargar los productos.</p>
+          ) : productos.length === 0 ? (
+            <p className="px-3 py-3 text-xs text-slate-500">
+              {query ? "Sin resultados. Puedes escribir el concepto libremente." : "Sin productos activos."}
+            </p>
+          ) : (
+            <ul className="max-h-52 overflow-y-auto divide-y divide-slate-100">
+              {productos.map((p) => (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => { e.preventDefault(); handleSelect(p); }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
+                  >
+                    <span className="font-medium text-slate-900">{p.nombre}</span>
+                    <span className="ml-1.5 text-xs text-slate-400">{p.codigo}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -273,6 +397,7 @@ export function ModalFacturaProveedor({
     initialBeneficiario,
   );
   const [concepto, setConcepto] = useState(facturaExistente?.concepto ?? "");
+  const [siigoProductoId, setSiigoProductoId] = useState<string | undefined>(undefined);
   const [numFactura, setNumFactura] = useState(
     facturaExistente?.numFactura ?? "",
   );
@@ -328,6 +453,7 @@ export function ModalFacturaProveedor({
         const input: UpdateFacturaProveedorInput = {
           beneficiarioId: beneficiario.id,
           concepto: concepto.trim() || null,
+          siigoProductoId: siigoProductoId ?? null,
           // backward compatibility: send legacy fields only when they were already set
           ...(facturaExistente.proveedorNombre
             ? { proveedorNombre: beneficiario.nombre }
@@ -380,6 +506,7 @@ export function ModalFacturaProveedor({
         const input: CreateFacturaProveedorInput = {
           beneficiarioId: beneficiario.id,
           concepto: concepto.trim() || null,
+          siigoProductoId: siigoProductoId ?? null,
           proveedorNombre: beneficiario.nombre,
           proveedorNit: beneficiario.nit,
           numFactura: numFactura.trim(),
@@ -432,11 +559,12 @@ export function ModalFacturaProveedor({
 
             <div className="block space-y-1.5 sm:col-span-2">
               <span className="text-sm font-medium text-slate-700">Concepto</span>
-              <input
-                value={concepto}
-                onChange={(e) => setConcepto(e.target.value)}
-                placeholder="Opcional"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+              <SiigoProductoCombobox
+                valor={concepto}
+                onChange={(texto, productoId) => {
+                  setConcepto(texto);
+                  setSiigoProductoId(productoId);
+                }}
               />
             </div>
 

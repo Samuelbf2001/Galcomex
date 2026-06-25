@@ -254,6 +254,7 @@ export async function verificarAnticipo(
   anticipoId: string,
   nuevoEstado: EstadoMovimiento,
   usuarioRol: Rol,
+  usuarioId?: string,
 ) {
   const anticipo = await prisma.anticipo.findUnique({
     where: { id: anticipoId },
@@ -272,11 +273,31 @@ export async function verificarAnticipo(
     throw new VerificarAnticipoPermisoError();
   }
 
-  return prisma.anticipo.update({
-    where: { id: anticipoId },
-    data: {
-      estado: nuevoEstado,
-      verificadoBanco: nuevoEstado === "VERIFICADO" ? true : anticipo.verificadoBanco,
-    },
+  const estadoAntes = anticipo.estado;
+  const verificadoBancoAntes = anticipo.verificadoBanco;
+
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.anticipo.update({
+      where: { id: anticipoId },
+      data: {
+        estado: nuevoEstado,
+        verificadoBanco: nuevoEstado === "VERIFICADO" ? true : anticipo.verificadoBanco,
+      },
+    });
+
+    if (usuarioId) {
+      await tx.auditLog.create({
+        data: {
+          entidad: "Anticipo",
+          entidadId: anticipoId,
+          accion: "VERIFICAR",
+          usuarioId,
+          antes: { estado: estadoAntes, verificadoBanco: verificadoBancoAntes } as import("@prisma/client").Prisma.InputJsonValue,
+          despues: { estado: nuevoEstado, verificadoBanco: updated.verificadoBanco } as import("@prisma/client").Prisma.InputJsonValue,
+        },
+      });
+    }
+
+    return updated;
   });
 }

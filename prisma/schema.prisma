@@ -133,6 +133,7 @@ enum Ciudad {
 enum AgenciaAduanas {
   MOVIADUANAS
   COLDEX
+  AR_LOGISTY
 }
 
 enum EstadoTramite {
@@ -358,6 +359,8 @@ model FacturaProveedor {
   beneficiarioId  String?
   beneficiario    Beneficiario?          @relation(fields: [beneficiarioId], references: [id], onDelete: SetNull)
   concepto        String?
+  siigoProductoId String?
+  siigoProducto   SiigoProducto?         @relation("FacturaProveedorProducto", fields: [siigoProductoId], references: [id], onDelete: SetNull)
   numFactura      String
   valor           BigInt // COP sin decimales
   fecha           DateTime
@@ -478,6 +481,13 @@ model BorradorFactura {
   // Suma de las líneas (+ comisión + IVA − retenciones). Siempre se calcula.
   // En trámites SOCIO_LM se promueve a totalFactura; en PROPIO es solo referencia.
   totalFacturaLineas     BigInt @default(0)
+  // 4x1000 calculado sobre la base de ingresos de terceros (SOCIO_LM únicamente).
+  // Distinto del impuesto4x1000 interno (base anticipo). Para PROPIO queda en 0.
+  impuesto4x1000Factura  BigInt @default(0)
+  // Saldo interno de Galcomex con el socio LM:
+  //   saldoLMInterno = anticipo − Σpagos − comision − ivaComision − 4x1000interno − costosBancarios
+  // Positivo → Galcomex le debe devolver a LM. Negativo → LM le debe a Galcomex.
+  saldoLMInterno         BigInt @default(0)
 
   // Comentarios de cabecera (formato Lucho). Array de strings; cada uno es una
   // fila descriptiva (factura comercial, DO+contenedor+BL, mercancía+puerto).
@@ -551,8 +561,14 @@ model LineaRevision {
   siigoProducto   SiigoProducto? @relation(fields: [siigoProductoId], references: [id], onDelete: SetNull)
 
   // Identifica líneas auto-generadas de conceptos fijos del borrador.
-  // "IMPUESTO_4X1000" | "COSTOS_BANCARIOS" | null
+  // "IMPUESTO_4X1000" | "COSTOS_BANCARIOS" | "COMISION" | "IVA_COMISION" | null
   tipoFija String?
+
+  // NIT del tercero ("Id. Tercero" en Siigo) cuando la línea TERCEROS no tiene
+  // factura de proveedor vinculada. Si hay factura, el NIT se prefiere desde
+  // `factura.beneficiario.nit` (ver `nitTerceroDe` en envio-factura-service).
+  // Sin uso para líneas OPERACIONAL o fijas (que resuelven su tercero aparte).
+  nitTercero String?
 
   facturas LineaRevisionFactura[]
 
@@ -672,8 +688,9 @@ model SiigoProducto {
   clasificacionIva    String
   sincronizadoEn      DateTime @default(now()) @updatedAt
 
-  lineasRevision LineaRevision[]
-  impuestos      SiigoProductoImpuesto[]
+  lineasRevision    LineaRevision[]
+  impuestos         SiigoProductoImpuesto[]
+  facturasProveedor FacturaProveedor[]      @relation("FacturaProveedorProducto")
 
   @@map("siigo_producto")
 }

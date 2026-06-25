@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 
 import {
   type BorradorRow,
+  type CruceFacturaRow,
   type EstadoBorrador,
   type LineaRevisionRow,
   type SiigoFormaPagoRow,
@@ -25,6 +26,7 @@ import {
   descargarSiigoImport,
   enviarBorradorASiigo,
   estadoBorradorColorClass,
+  fetchCruceFacturas,
   fetchFormasPagoSiigo,
   formatCOP,
   formatDate,
@@ -297,6 +299,11 @@ export function RevisorBorrador({
   const [sincronizandoSiigo, setSincronizandoSiigo] = useState(false);
   const [mensajeSincronizacion, setMensajeSincronizacion] = useState<string | null>(null);
 
+  // Cruce pagos vs líneas de factura de venta por FacturaProveedor
+  const [cruce, setCruce] = useState<CruceFacturaRow[]>([]);
+  const [cargandoCruce, setCargandoCruce] = useState(false);
+  const [cruceCerrado, setCruceCerrado] = useState(false);
+
   // Facturas de proveedor: indexadas por numFactura para cruzar con numSoporte
   const [facturasByNumFactura, setFacturasByNumFactura] = useState<
     Map<string, FacturaProveedorRow>
@@ -384,6 +391,25 @@ export function RevisorBorrador({
       cancelled = true;
     };
   }, [tramite.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function cargarCruce() {
+      setCargandoCruce(true);
+      try {
+        const rows = await fetchCruceFacturas(borradorActual.id);
+        if (!cancelled) setCruce(rows);
+      } catch {
+        // Non-critical; panel degrades gracefully
+      } finally {
+        if (!cancelled) setCargandoCruce(false);
+      }
+    }
+    void cargarCruce();
+    return () => {
+      cancelled = true;
+    };
+  }, [borradorActual.id]);
 
   const estado = borradorActual.estado;
 
@@ -986,6 +1012,96 @@ export function RevisorBorrador({
               </p>
             ) : null}
           </div>
+
+          {/* Cruce pagos vs factura de venta por FacturaProveedor */}
+          {cruce.length > 0 || cargandoCruce ? (
+            <div className="border-t border-slate-200 px-4 py-4">
+              <button
+                type="button"
+                onClick={() => setCruceCerrado((v) => !v)}
+                className="mb-3 flex w-full items-center justify-between text-xs font-medium uppercase tracking-wide text-slate-500 hover:text-slate-700"
+              >
+                <span>Cruce pagos vs factura ({cruce.length})</span>
+                <span className="text-slate-400">{cruceCerrado ? "+" : "−"}</span>
+              </button>
+
+              {!cruceCerrado ? (
+                cargandoCruce ? (
+                  <p className="text-xs text-slate-400">Cargando cruce...</p>
+                ) : (
+                  <div className="space-y-2">
+                    {cruce.map((fp) => {
+                      const dif = globalThis.BigInt(fp.diferencia);
+                      const cuadra = dif === 0n;
+                      return (
+                        <div
+                          key={fp.id}
+                          className={`border px-3 py-2.5 text-sm ${
+                            cuadra
+                              ? "border-emerald-200 bg-emerald-50"
+                              : "border-amber-200 bg-amber-50"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="font-semibold text-slate-900 block truncate">
+                                {fp.proveedorNombre}
+                              </span>
+                              <span className="text-xs font-mono text-slate-500">
+                                {fp.numFactura}
+                              </span>
+                            </div>
+                            <span
+                              className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 border ${
+                                cuadra
+                                  ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                                  : "border-amber-300 bg-amber-100 text-amber-700"
+                              }`}
+                            >
+                              {cuadra ? "Cuadra" : "Desfase"}
+                            </span>
+                          </div>
+
+                          <dl className="mt-2 grid grid-cols-3 gap-x-3 text-xs">
+                            <div>
+                              <dt className="text-slate-500">Pagado</dt>
+                              <dd className="font-semibold text-slate-800">
+                                {formatCOP(fp.montoPagado)}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-slate-500">Facturado</dt>
+                              <dd className="font-semibold text-slate-800">
+                                {formatCOP(fp.montoFacturado)}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-slate-500">Diferencia</dt>
+                              <dd
+                                className={`font-bold ${
+                                  cuadra
+                                    ? "text-emerald-700"
+                                    : dif > 0n
+                                      ? "text-amber-700"
+                                      : "text-rose-700"
+                                }`}
+                              >
+                                {cuadra
+                                  ? formatCOP("0")
+                                  : dif > 0n
+                                    ? `+${formatCOP(fp.diferencia)}`
+                                    : formatCOP(fp.diferencia)}
+                              </dd>
+                            </div>
+                          </dl>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 

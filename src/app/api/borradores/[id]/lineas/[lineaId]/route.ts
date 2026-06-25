@@ -13,6 +13,7 @@ import {
   BorradorNoEditableError,
   BorradorNoEncontradoError,
   FacturaDeOtroTramiteError,
+  FacturasDeBeneficiariosDistintosError,
   LineaNoEncontradaError,
   actualizarLinea,
   eliminarLinea,
@@ -56,6 +57,7 @@ function mapError(error: unknown): NextResponse | null {
     error instanceof BorradorNoEncontradoError ||
     error instanceof BorradorNoEditableError ||
     error instanceof FacturaDeOtroTramiteError ||
+    error instanceof FacturasDeBeneficiariosDistintosError ||
     error instanceof LineaNoEncontradaError
   ) {
     return NextResponse.json({ error: error.message }, { status: error.status });
@@ -88,6 +90,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       seccion: payload.seccion,
       facturaIds: payload.facturaIds,
       siigoProductoId: payload.siigoProductoId,
+      nitTercero: payload.nitTercero,
       usuarioId: session.user.id,
     });
 

@@ -1,7 +1,17 @@
 # HANDOFF — Galcomex Sistema de Gestión Operativa
-**Fecha:** 2026-06-11 (actualizado tras validación + Sprint 3 backend)
+
+> **⚠️ Este HANDOFF está congelado al cierre de Sprint 3 (2026-06-11) y conservado como contexto histórico.** Para el estado actual del proyecto, leer en orden:
+> 1. `.claude/SPRINT.md` — Sprints 1–11 con detalle por bloque (entrega final 2026-06-25, flujo Lucho/SOCIO_LM).
+> 2. `.claude/PENDIENTES.md` — alcance OUT diferido, pasos de deploy manual y tests pre-existentes a sanear.
+> 3. `CLAUDE.md` — arquitectura, invariantes, parámetros (incluye Banco de Occidente NIT 890300279 fijo para 4x1000) y casos dorados (BUN26-0026 PROPIO, BAQ-18453 SOCIO_LM).
+>
+> El cuerpo histórico de este HANDOFF (abajo) describe el estado en Sprint 3 y NO refleja todo lo construido después (entidad `FacturaProveedor`, `PagoFactura` con devoluciones, integración Siigo API, flujo SOCIO_LM, etc.).
+
+---
+
+**Fecha:** 2026-06-11 (snapshot histórico)
 **Sprint:** 1 y 2 completados; Sprint 3 con backend completo, UI pendiente
-**Para:** Próximo agente IA que retome este proyecto
+**Para:** Próximo agente IA que retome este proyecto (ver bloque de redirección arriba antes de leer lo demás)
 
 > **Gates de calidad verificados al cierre de esta sesión:** `npx tsc --noEmit` limpio · `npm run lint` limpio · **25/25 tests** verdes (incluyen concurrencia de 20 trámites y test dorado de saldo, ambos contra Postgres real en :5433) · `npm run build` exit 0 · migración aplicada y al día.
 

@@ -42,6 +42,11 @@ async function main() {
     { clave: "IVA_COMISION",   valor: "0.19",    descripcion: "IVA sobre la comisión (19%)" },
     { clave: "TASA_4X1000",    valor: "0.004",   descripcion: "Impuesto 4x1000 (0,4%)" },
     { clave: "DIAS_SLA_FACTURA", valor: "3",     descripcion: "Días máximos para facturar desde despacho" },
+    {
+      clave: "NIT_BANCO_4X1000",
+      valor: "890300279",
+      descripcion: "NIT del Banco de Occidente S.A. — beneficiario GMF (impuesto 4x1000) en todas las facturas",
+    },
   ];
 
   for (const p of params) {
@@ -51,6 +56,17 @@ async function main() {
       create: { clave: p.clave, valor: p.valor, descripcion: p.descripcion },
     });
   }
+
+  // Beneficiario Banco de Occidente (tercero del GMF en todas las facturas)
+  await prisma.beneficiario.upsert({
+    where: { id: "beneficiario-banco-occidente" },
+    update: { nombre: "Banco de Occidente S.A.", nit: "890300279" },
+    create: {
+      id: "beneficiario-banco-occidente",
+      nombre: "Banco de Occidente S.A.",
+      nit: "890300279",
+    },
+  });
 
   // Plantilla de checklist estándar de apertura
   await prisma.plantillaChecklist.upsert({

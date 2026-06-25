@@ -94,10 +94,19 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 | OTRO | 1.950 |
 
 ### Parámetros del sistema (tabla `Parametro`)
-- `COMISION_LM` = 150.000 COP (editable por factura)
+- `COMISION_LM` = 150.000 COP (editable por factura — en DOs concretos se ha visto 400.000, p.ej. BAQ-18453)
 - `IVA_COMISION` = 0.19 (19%)
 - `TASA_4X1000` = 0.004
 - `DIAS_SLA_FACTURA` = 3 días (alerta roja en dashboard)
+- `NIT_BANCO_4X1000` = `890300279` (Banco de Occidente — tercero fijo del 4x1000 en facturas Siigo, Sprint 11)
+
+### Flujo SOCIO_LM (cliente Lucho) — diferencias clave vs PROPIO
+- Las líneas fijas **COMISION** y **COSTOS_BANCARIOS** NO se materializan como `LineaRevision` (deducciones internas únicamente; se reflejan en el cruce LM). `IVA_COMISION` sí (ingreso operacional).
+- Dos cálculos de 4x1000: el **interno** (base = anticipo, para cruce LM) sigue en `motor-factura.ts`; el **de factura** (base = Σ líneas TERCEROS, round-half-up `(base×4+500)/1000`) materializa la línea `IMPUESTO_4X1000` que se envía a Siigo.
+- Tercero del 4x1000 SIEMPRE Banco de Occidente (NIT `890300279`) — `resolverNit4x1000` lo retorna de forma incondicional.
+- Observación de cabecera "NO PRACTICAR RETEFUENTE NI RETEICA" se siembra automáticamente en `comentariosCabecera` al generar borrador SOCIO_LM (sale en col AE del export Excel y en `observations` del envío Siigo).
+- BL/Guía + Factura Comercial son obligatorios al crear el DO para clientes SOCIO_LM.
+- Detalle implementado en `src/lib/borradores/lineas-fijas.ts`, `src/lib/calculations/total-lineas.ts` y `src/lib/siigo/envio-factura-service.ts`.
 
 ## Invariantes de código — NUNCA violar
 
@@ -147,12 +156,15 @@ Ruta: `tramites/{consecutivo}/{categoria}/{uuid}.{ext}`
 
 Los tests del archivo real están en `src/lib/calculations/__tests__/`.
 
-**DO.BUN26-0026 (datos reales del Excel 2026):**
-- Anticipo: 45.226.000
-- 7 pagos totales (ver test file)
-- Comisión: 200.000
-- 4x1000 = 180.904
-- Saldo a favor cliente: 3.357.958
+**DO.BUN26-0026 (PROPIO, fuente: GRUPO E PAPIS 2026):**
+- Anticipo: 45.226.000 · 7 pagos · Comisión: 200.000 · 4x1000 = 180.904 · Saldo a favor cliente: 3.357.958
+
+**DO.CTG26-0118 / BAQ-18453 (SOCIO_LM, fuente: `documentos referencia /BAQ-18453 ... .xls`):**
+- Anticipo: 35.074.500 · Σ pagos: 32.931.686 · Comisión: 400.000 + IVA 76.000
+- 4x1000 factura: 130.088 (base Σ terceros 32.521.912, round-half-up)
+- 4x1000 interno: 140.298 (base anticipo)
+- Total factura: 33.128.000 · Saldo a favor cliente: 1.946.500
+- Restante interno: 1.516.766 · **Saldo LM: −429.734** (Lucho debe a Galcomex)
 
 CI falla si estos tests no pasan. Tolerancia = 0 pesos.
 
@@ -179,4 +191,6 @@ Ver `.claude/SPRINT.md` para el estado actual de tareas por agente.
 **Integración Siigo (vigente):** la factura de venta se crea directamente en Siigo como borrador vía API (`POST /v1/invoices`, `stamp.send=false`), un superior la estampa en el portal y el sistema sincroniza el consecutivo. Flujo completo en `docs/flujo-siigo-api.md`. El export Excel queda como respaldo manual.
 
 **Fuente de verdad del plan:** `../galcomex-sistema-requerimientos.md` (en raíz de `/Galcomex`)
-**Excels de referencia:** `../GRUPO E PAPIS 2026 (1).xlsm` y `../MODELO RELACION SIXTEAM (1).xlsm`
+**Excels de referencia:** `../GRUPO E PAPIS 2026 (1).xlsm` y `../MODELO RELACION SIXTEAM (1).xlsm`. Para el caso SOCIO_LM Lucho (Sprint 11): `documentos referencia /BAQ-18453 ... .xls` y `documentos referencia /GRUPO E PAPIS 2026.xlsm`.
+
+**Pendientes/diferidos:** ver `.claude/PENDIENTES.md` (alcance OUT, pasos de deploy manual, tests pre-existentes a sanear).

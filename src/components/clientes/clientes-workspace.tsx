@@ -4,6 +4,27 @@ import { CheckCircle2, Loader2, Plus, RotateCcw, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function useUserRol(): string {
+  const [rol, setRol] = useState<string>("OPERATIVO");
+
+  useEffect(() => {
+    fetch("/api/auth/get-session", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (isRecord(data) && isRecord(data.user) && typeof data.user.rol === "string") {
+          setRol(data.user.rol);
+        }
+      })
+      .catch(() => {/* silencioso */});
+  }, []);
+
+  return rol;
+}
+
 import { ModuleState } from "@/components/layout/module-state";
 import {
   ClientesApiError,
@@ -21,6 +42,7 @@ function optionalText(value: FormDataEntryValue | null): string | null {
 }
 
 export function ClientesWorkspace() {
+  const userRol = useUserRol();
   const [clientes, setClientes] = useState<ClienteRow[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -68,14 +90,16 @@ export function ClientesWorkspace() {
             <RotateCcw className="h-4 w-4" aria-hidden="true" />
             Refrescar
           </button>
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Nuevo cliente
-          </button>
+          {userRol === "ADMIN" ? (
+            <button
+              type="button"
+              onClick={() => setModalOpen(true)}
+              className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Nuevo cliente
+            </button>
+          ) : null}
         </div>
       </div>
 

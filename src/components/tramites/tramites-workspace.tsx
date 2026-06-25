@@ -251,10 +251,21 @@ function CreateTramiteDialog({
     return null;
   }
 
+  const isSocioLM = clienteSeleccionado?.tipo === "SOCIO_LM";
+  const missingRequiredDocs =
+    isSocioLM &&
+    (stagedFiles["BL"] === null || stagedFiles["BL"] === undefined || stagedFiles["FACTURA_COMERCIAL"] === null || stagedFiles["FACTURA_COMERCIAL"] === undefined);
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setSuccess(null);
+
+    if (missingRequiredDocs) {
+      setError("Adjunta BL y Factura Comercial para clientes SOCIO_LM.");
+      return;
+    }
+
     setIsSubmitting(true);
 
     const form = event.currentTarget;
@@ -264,11 +275,10 @@ function CreateTramiteDialog({
       ciudad: String(formData.get("ciudad") ?? ""),
       anio: rawAnio ? Number(rawAnio) : undefined,
       clienteId: String(formData.get("clienteId") ?? ""),
-      proveedorCliente: optionalText(formData.get("proveedorCliente")),
       agenciaAduanas: String(formData.get("agenciaAduanas") ?? ""),
       doAgencia: optionalText(formData.get("doAgencia")),
       doCliente: optionalText(formData.get("doCliente")),
-      eta: formatDateInputAsIso(formData.get("eta")),
+      eta: clienteSeleccionado?.tipo !== "SOCIO_LM" ? formatDateInputAsIso(formData.get("eta")) : undefined,
     };
 
     try {
@@ -461,6 +471,7 @@ function CreateTramiteDialog({
               >
                 <option value="COLDEX">Coldex</option>
                 <option value="MOVIADUANAS">Moviaduanas</option>
+                <option value="AR_LOGISTY">AR Logisty</option>
               </select>
             </label>
             <label className="space-y-1.5">
@@ -480,14 +491,7 @@ function CreateTramiteDialog({
             </label>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Proveedor cliente</span>
-              <input
-                name="proveedorCliente"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
+          {clienteSeleccionado?.tipo !== "SOCIO_LM" ? (
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">ETA</span>
               <input
@@ -496,7 +500,71 @@ function CreateTramiteDialog({
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
-          </div>
+          ) : null}
+
+          {/* Documentos obligatorios para SOCIO_LM */}
+          {isSocioLM ? (
+            <div className="space-y-2">
+              <span className="text-sm font-medium text-slate-700">
+                Documentos obligatorios{" "}
+                <span className="text-xs font-normal text-rose-600">(requeridos para SOCIO_LM)</span>
+              </span>
+              <ul className="divide-y divide-slate-100 border border-rose-200 bg-rose-50">
+                {(["BL", "FACTURA_COMERCIAL"] as const).map((key) => {
+                  const label = key === "BL" ? "BL / Guía" : "Factura Comercial";
+                  const file = stagedFiles[key] ?? null;
+                  const inputId = `req-adjunto-${key}`;
+                  return (
+                    <li key={key} className="flex items-center gap-3 px-3 py-2">
+                      <span className="w-44 shrink-0 text-sm font-medium text-rose-700">{label} *</span>
+                      {file ? (
+                        <>
+                          <FileText className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{file.name}</span>
+                          <span className="shrink-0 text-xs text-slate-400">
+                            {file.size < 1024 * 1024
+                              ? `${(file.size / 1024).toFixed(0)} KB`
+                              : `${(file.size / 1024 / 1024).toFixed(1)} MB`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setStagedFiles((prev) => ({ ...prev, [key]: null }))}
+                            className="shrink-0 p-1 text-slate-400 transition hover:text-red-500"
+                            aria-label={`Quitar ${label}`}
+                          >
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => document.getElementById(inputId)?.click()}
+                            className="inline-flex items-center gap-1.5 border border-rose-300 bg-white px-2.5 py-1 text-xs text-rose-700 transition hover:bg-rose-50"
+                          >
+                            <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+                            Seleccionar
+                          </button>
+                          <span className="text-xs text-rose-500">Obligatorio</span>
+                        </>
+                      )}
+                      <input
+                        id={inputId}
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png,.xlsx"
+                        className="sr-only"
+                        onChange={(e) => {
+                          const picked = e.target.files?.[0] ?? null;
+                          if (picked) setStagedFiles((prev) => ({ ...prev, [key]: picked }));
+                          e.target.value = "";
+                        }}
+                      />
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
 
           {/* Zona de adjuntos — uno por categoría */}
           <div className="space-y-2">
@@ -578,7 +646,7 @@ function CreateTramiteDialog({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || loadingClientes}
+              disabled={isSubmitting || loadingClientes || missingRequiredDocs}
               className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
             >
               {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}

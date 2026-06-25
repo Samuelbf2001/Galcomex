@@ -12,6 +12,7 @@ import {
 import {
   MatrizCanalNoEncontradoError,
   PagoFacturaDeOtroTramiteError,
+  SinAnticipoAplicadoError,
   crearPago,
   getLibroPagos,
   getPagoConBeneficiario,
@@ -81,6 +82,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
 
     if (error instanceof PagoFacturaDeOtroTramiteError) {
+      return NextResponse.json({ error: error.message }, { status: 422 });
+    }
+
+    if (error instanceof SinAnticipoAplicadoError) {
       return NextResponse.json({ error: error.message }, { status: 422 });
     }
 

@@ -20,10 +20,16 @@ export type LineaRevisionRow = {
   observacion: string | null;
   origen: "AUTO" | "MANUAL";
   seccion: SeccionLinea;
-  /** "IMPUESTO_4X1000" | "COSTOS_BANCARIOS" | null para líneas auto-generadas fijas. */
+  /** "IMPUESTO_4X1000" | "COSTOS_BANCARIOS" | "COMISION" | "IVA_COMISION" | null para líneas auto-generadas fijas. */
   tipoFija: string | null;
   /** IDs de facturas de proveedor vinculadas (pivot N↔N). */
   facturasVinculadas: string[];
+  /**
+   * NIT del tercero ("Id. Tercero" en Siigo) usado en líneas TERCEROS que no
+   * tienen factura vinculada. Si hay factura, el NIT se toma de
+   * `factura.beneficiario.nit` y este campo se ignora.
+   */
+  nitTercero: string | null;
   /** Producto Siigo vinculado (opcional). */
   siigoProductoId: string | null;
   siigoProductoCodigo: string | null;
@@ -93,6 +99,16 @@ export type FacturaRow = {
   totalFactura: string; // BigInt
 };
 
+export type CruceFacturaRow = {
+  id: string;
+  proveedorNombre: string;
+  numFactura: string;
+  valor: string; // BigInt serializado
+  montoPagado: string; // BigInt serializado
+  montoFacturado: string; // BigInt serializado
+  diferencia: string; // BigInt serializado (montoFacturado − montoPagado)
+};
+
 export type TramiteParaFacturacion = {
   id: string;
   consecutivo: string;
@@ -157,6 +173,7 @@ function normalizeLinea(raw: Record<string, unknown>): LineaRevisionRow {
     seccion: raw.seccion === "OPERACIONAL" ? "OPERACIONAL" : "TERCEROS",
     tipoFija: typeof raw.tipoFija === "string" ? raw.tipoFija : null,
     facturasVinculadas,
+    nitTercero: typeof raw.nitTercero === "string" ? raw.nitTercero : null,
     siigoProductoId: typeof raw.siigoProductoId === "string" ? raw.siigoProductoId : null,
     siigoProductoCodigo: siigoProd && typeof siigoProd.codigo === "string" ? siigoProd.codigo : null,
     siigoProductoNombre: siigoProd && typeof siigoProd.nombre === "string" ? siigoProd.nombre : null,
@@ -412,6 +429,8 @@ export type CrearLineaInput = {
   seccion?: SeccionLinea;
   facturaIds?: string[];
   siigoProductoId?: string;
+  /** NIT del tercero a usar cuando la línea TERCEROS no vincula factura. */
+  nitTercero?: string;
 };
 
 export type ActualizarLineaInput = {
@@ -422,6 +441,8 @@ export type ActualizarLineaInput = {
   seccion?: SeccionLinea;
   facturaIds?: string[];
   siigoProductoId?: string | null;
+  /** NIT del tercero (null limpia). */
+  nitTercero?: string | null;
 };
 
 async function parseBorradorResponse(response: Response): Promise<BorradorRow> {
@@ -650,6 +671,42 @@ export async function actualizarFormaPago(
         : `Error actualizando forma de pago (${response.status}).`;
     throw new FacturacionApiError(message, response.status);
   }
+}
+
+// ─── Cruce pagos vs facturas de venta ────────────────────────────────────────
+
+export async function fetchCruceFacturas(borradorId: string): Promise<CruceFacturaRow[]> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/borradores/${borradorId}/cruce-facturas`, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    throw new FacturacionApiError("No fue posible conectar con la API de cruce.");
+  }
+
+  if (!response.ok) {
+    const msg = await parseErrorMessage(response);
+    throw new FacturacionApiError(msg, response.status);
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!isRecord(payload) || !Array.isArray(payload.cruce)) {
+    throw new FacturacionApiError("Respuesta de cruce no válida.");
+  }
+
+  return (payload.cruce as unknown[]).filter(isRecord).map(
+    (r): CruceFacturaRow => ({
+      id: String(r.id ?? ""),
+      proveedorNombre: String(r.proveedorNombre ?? ""),
+      numFactura: String(r.numFactura ?? ""),
+      valor: String(r.valor ?? "0"),
+      montoPagado: String(r.montoPagado ?? "0"),
+      montoFacturado: String(r.montoFacturado ?? "0"),
+      diferencia: String(r.diferencia ?? "0"),
+    }),
+  );
 }
 
 // ─── Formateo ─────────────────────────────────────────────────────────────────

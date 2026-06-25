@@ -17,7 +17,7 @@
  * Las líneas existentes nunca se sobreescriben (preserva ediciones previas).
  */
 
-import { type Prisma, SeccionLinea } from "@prisma/client";
+import { type Prisma, SeccionLinea, TipoCliente } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 
@@ -156,12 +156,26 @@ function valorPara(tipo: TipoFija, valores: ValoresLineasFijas): bigint {
 }
 
 /**
+ * Tipos de líneas fijas que NO van a la factura del cliente en SOCIO_LM.
+ * COMISION y COSTOS_BANCARIOS son deducciones internas del socio; no se facturan
+ * al cliente externo. Se mantienen en campos del borrador para el cruce LM.
+ * IVA_COMISION e IMPUESTO_4X1000 SÍ van a la factura (son ingresos / impuestos
+ * que el cliente paga directamente).
+ */
+const TIPOS_SOLO_PROPIO: TipoFija[] = ["COMISION", "COSTOS_BANCARIOS"];
+
+/**
  * Lista de inputs Prisma listos para `lineasRevision.create` en `generarBorrador`.
  * Solo incluye conceptos con `valor > 0n` (Siigo rechaza items con price 0).
+ *
+ * Para SOCIO_LM: excluye COMISION y COSTOS_BANCARIOS — son deducciones internas
+ * que no aparecen en la factura del cliente (se registran en los campos del borrador).
+ * Para PROPIO: todas las 4 líneas fijas se incluyen (comportamiento previo).
  */
 export function definirLineasFijasParaCreate(
   valores: ValoresLineasFijas,
   productos: ProductosLineasFijas,
+  tipoCliente?: TipoCliente,
 ): Array<{
   concepto: string;
   valor: bigint;
@@ -170,14 +184,20 @@ export function definirLineasFijasParaCreate(
   tipoFija: TipoFija;
   siigoProductoId: string | null;
 }> {
-  return DEFS.filter((def) => valorPara(def.tipoFija, valores) > 0n).map((def) => ({
-    concepto: def.concepto,
-    valor: valorPara(def.tipoFija, valores),
-    orden: def.orden,
-    seccion: def.seccion,
-    tipoFija: def.tipoFija,
-    siigoProductoId: productoFijoIdPara(def.tipoFija, productos),
-  }));
+  const esSocioLM = tipoCliente === TipoCliente.SOCIO_LM;
+  return DEFS
+    .filter((def) => {
+      if (esSocioLM && TIPOS_SOLO_PROPIO.includes(def.tipoFija)) return false;
+      return valorPara(def.tipoFija, valores) > 0n;
+    })
+    .map((def) => ({
+      concepto: def.concepto,
+      valor: valorPara(def.tipoFija, valores),
+      orden: def.orden,
+      seccion: def.seccion,
+      tipoFija: def.tipoFija,
+      siigoProductoId: productoFijoIdPara(def.tipoFija, productos),
+    }));
 }
 
 /**
@@ -192,6 +212,7 @@ export function definirLineasFijasParaCreate(
  *   - Borrador nuevo — `generarBorrador` ya las sembró; no-op.
  *
  * No actualiza valores existentes ni crea líneas para conceptos con valor 0.
+ * Para SOCIO_LM se respeta el filtro: COMISION y COSTOS_BANCARIOS no se crean.
  */
 export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<void> {
   const borrador = await tx.borradorFactura.findUniqueOrThrow({
@@ -201,12 +222,16 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
       ivaComision: true,
       costosBancarios: true,
       impuesto4x1000: true,
+      tramite: { select: { cliente: { select: { tipo: true } } } },
       lineasRevision: {
         where: { tipoFija: { not: null } },
         select: { tipoFija: true },
       },
     },
   });
+
+  const tipoCliente = borrador.tramite.cliente.tipo;
+  const esSocioLM = tipoCliente === TipoCliente.SOCIO_LM;
 
   const presentes = new Set(
     borrador.lineasRevision
@@ -224,6 +249,7 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
 
   const aCrear = DEFS.filter((def) => {
     if (presentes.has(def.tipoFija)) return false;
+    if (esSocioLM && TIPOS_SOLO_PROPIO.includes(def.tipoFija)) return false;
     return valorPara(def.tipoFija, valores) > 0n;
   });
 
@@ -249,6 +275,10 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
  *
  * El IVA se calcula como `comision * tasaIva / 100n` (BigInt, truncado), idéntico
  * al cálculo del motor histórico.
+ *
+ * Para SOCIO_LM: solo actualiza/crea IVA_COMISION (la COMISION no va a la factura
+ * del cliente — es deducción interna). El campo `comision` del borrador se actualiza
+ * por separado en `actualizarComisionBorrador`.
  */
 export async function actualizarLineasComision(
   tx: Tx,
@@ -256,10 +286,18 @@ export async function actualizarLineasComision(
   nuevaComision: bigint,
   tasaIva: bigint,
 ): Promise<void> {
+  // Determinar si el trámite es SOCIO_LM para filtrar la línea COMISION.
+  const borrador = await tx.borradorFactura.findUniqueOrThrow({
+    where: { id: borradorId },
+    select: { tramite: { select: { cliente: { select: { tipo: true } } } } },
+  });
+  const esSocioLM = borrador.tramite.cliente.tipo === TipoCliente.SOCIO_LM;
   const nuevoIva = (nuevaComision * tasaIva) / 100n;
   const productos = await resolverProductosLineasFijas(tx);
 
   for (const tipo of ["COMISION", "IVA_COMISION"] as const) {
+    // Para SOCIO_LM la línea COMISION no va a la factura del cliente.
+    if (esSocioLM && tipo === "COMISION") continue;
     const def = DEFS.find((d) => d.tipoFija === tipo)!;
     const valor = tipo === "COMISION" ? nuevaComision : nuevoIva;
 

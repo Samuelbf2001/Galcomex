@@ -22,6 +22,7 @@ export type CrearFacturaProveedorInput = {
   proveedorNit?: string | null;
   beneficiarioId?: string | null;
   concepto?: string | null;
+  siigoProductoId?: string | null;
   numFactura: string;
   valor: bigint;
   fecha: Date;
@@ -36,6 +37,7 @@ export type ActualizarFacturaProveedorInput = {
   proveedorNit?: string | null;
   beneficiarioId?: string | null;
   concepto?: string | null;
+  siigoProductoId?: string | null;
   numFactura?: string;
   valor?: bigint;
   fecha?: Date;
@@ -138,7 +140,7 @@ async function resolverCostoBancario(canal: CanalPago): Promise<bigint> {
  * Valida unicidad (tramiteId, numFactura).
  */
 export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
-  const { tramiteId, proveedorNombre, proveedorNit, beneficiarioId, concepto, numFactura, valor, fecha, documentoId, subidaPorId } =
+  const { tramiteId, proveedorNombre, proveedorNit, beneficiarioId, concepto, siigoProductoId, numFactura, valor, fecha, documentoId, subidaPorId } =
     input;
 
   return prisma.$transaction(async (tx) => {
@@ -157,6 +159,7 @@ export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
         proveedorNit,
         beneficiarioId: beneficiarioId ?? null,
         concepto: concepto ?? null,
+        siigoProductoId: siigoProductoId ?? null,
         numFactura,
         valor,
         fecha,

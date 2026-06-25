@@ -8,7 +8,7 @@
  * - listarBorradores: lista borradores de un trámite
  */
 
-import { EstadoBorrador, Prisma } from "@prisma/client";
+import { EstadoBorrador, Prisma, TipoCliente } from "@prisma/client";
 
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
@@ -185,7 +185,7 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   // ── Verificar que el trámite está en estado facturable ────────────────────
   const tramiteEstado = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
-    select: { estado: true },
+    select: { estado: true, cliente: { select: { tipo: true } } },
   });
   if (!tramiteEstado) {
     throw new TramiteNoFacturableError("no encontrado");
@@ -193,6 +193,7 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   if (!(ESTADOS_FACTURABLES as readonly string[]).includes(tramiteEstado.estado)) {
     throw new TramiteNoFacturableError(tramiteEstado.estado);
   }
+  const tipoCliente = tramiteEstado.cliente.tipo;
 
   // ── Leer datos del trámite en paralelo ────────────────────────────────────
   const [aplicaciones, pagos, params, formaPagoDefault, productosFijos] =
@@ -276,7 +277,14 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       impuesto4x1000: resultado.impuesto4x1000,
     },
     productosFijos,
+    tipoCliente,
   );
+
+  // Para SOCIO_LM: observación de cabecera obligatoria que indica al receptor de
+  // la factura Siigo que NO se deben practicar retenciones en la fuente ni de ICA.
+  const OBSERVACION_NO_RETENCIONES = "NO PRACTICAR RETEFUENTE NI RETEICA";
+  const comentariosCabeceraInicial: string[] =
+    tipoCliente === TipoCliente.SOCIO_LM ? [OBSERVACION_NO_RETENCIONES] : [];
 
   // ── Persistir en transacción ──────────────────────────────────────────────
   return prisma.$transaction(async (tx) => {
@@ -302,6 +310,11 @@ export async function generarBorrador(input: GenerarBorradorInput) {
         conceptosOperacionales: conceptosOperacionales
           ? normalizeSerializable(conceptosOperacionales)
           : undefined,
+        // Para SOCIO_LM: observación de no retenciones sembrada automáticamente.
+        comentariosCabecera:
+          comentariosCabeceraInicial.length > 0
+            ? normalizeSerializable(comentariosCabeceraInicial)
+            : undefined,
         estado: EstadoBorrador.BORRADOR,
         lineasRevision: {
           create: lineasFijasCreate,

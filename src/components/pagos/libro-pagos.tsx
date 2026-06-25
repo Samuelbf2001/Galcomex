@@ -1476,14 +1476,24 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
           <p className="text-sm font-semibold text-slate-900">
             Pagos ({filas.length})
           </p>
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Nuevo pago
-          </button>
+          {libro.aplicaciones.length === 0 ? (
+            <span
+              title="Se necesita al menos un anticipo aplicado para registrar pagos"
+              className="inline-flex h-9 cursor-not-allowed items-center gap-2 bg-slate-300 px-3 text-sm font-semibold text-slate-500"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Nuevo pago
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setModalOpen(true)}
+              className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Nuevo pago
+            </button>
+          )}
         </div>
 
         <div className="overflow-x-auto">

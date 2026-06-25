@@ -51,6 +51,22 @@ export class FacturaDeOtroTramiteError extends Error {
   }
 }
 
+/**
+ * Se lanza cuando un mismo `LineaRevision` intenta vincular facturas de
+ * proveedor con beneficiarios (o NITs) distintos. Cada línea TERCEROS debe
+ * mapear a un único "Id. Tercero" en Siigo; si necesitas dos terceros, abre
+ * dos líneas separadas.
+ */
+export class FacturasDeBeneficiariosDistintosError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super(
+      "Una línea solo puede vincular facturas del mismo proveedor/beneficiario. Crea una línea aparte para cada tercero.",
+    );
+    this.name = "FacturasDeBeneficiariosDistintosError";
+  }
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
@@ -122,6 +138,37 @@ async function validarFacturasDelTramite(
   }
 }
 
+/**
+ * Valida que todas las facturas vinculadas a una línea apunten al mismo
+ * tercero (beneficiarioId si está presente; en su defecto el NIT del
+ * proveedor). Una línea con facturas de proveedores distintos no se puede
+ * mapear unívocamente a un `customer.identification` en Siigo.
+ *
+ * Permite que una factura sin `beneficiarioId` y sin `proveedorNit` pase
+ * (queda como clave "sin nit") — la validación de envío exige que el revisor
+ * complete el NIT en otra capa.
+ */
+async function validarFacturasMismoBeneficiario(
+  tx: Tx,
+  facturaIds: string[],
+): Promise<void> {
+  if (facturaIds.length < 2) return;
+  const facturas = await tx.facturaProveedor.findMany({
+    where: { id: { in: facturaIds } },
+    select: { id: true, beneficiarioId: true, proveedorNit: true },
+  });
+  const claves = new Set(
+    facturas.map((f) =>
+      f.beneficiarioId
+        ? `b:${f.beneficiarioId}`
+        : `n:${(f.proveedorNit ?? "").trim().toLowerCase()}`,
+    ),
+  );
+  if (claves.size > 1) {
+    throw new FacturasDeBeneficiariosDistintosError();
+  }
+}
+
 // ─── API pública ──────────────────────────────────────────────────────────────
 
 type CrearLineaInput = {
@@ -133,11 +180,13 @@ type CrearLineaInput = {
   seccion?: SeccionLinea;
   facturaIds?: string[];
   siigoProductoId?: string | null;
+  /** NIT del tercero a usar cuando la línea no vincula factura. */
+  nitTercero?: string | null;
   usuarioId: string;
 };
 
 export async function crearLineaManual(input: CrearLineaInput) {
-  const { borradorId, concepto, numSoporte, valor, observacion, usuarioId, siigoProductoId } = input;
+  const { borradorId, concepto, numSoporte, valor, observacion, usuarioId, siigoProductoId, nitTercero } = input;
   const facturaIds = input.facturaIds ?? [];
   const seccion = input.seccion ?? SeccionLinea.TERCEROS;
   const lockKey = `borrador_lineas:${borradorId}`;
@@ -147,6 +196,7 @@ export async function crearLineaManual(input: CrearLineaInput) {
 
     const borrador = await cargarBorradorEditable(tx, borradorId);
     await validarFacturasDelTramite(tx, borrador.tramiteId, facturaIds);
+    await validarFacturasMismoBeneficiario(tx, facturaIds);
 
     const ultima = await tx.lineaRevision.findFirst({
       where: { borradorId },
@@ -172,6 +222,7 @@ export async function crearLineaManual(input: CrearLineaInput) {
         origen: "MANUAL",
         seccion,
         siigoProductoId: siigoProductoId ?? undefined,
+        nitTercero: nitTercero ?? undefined,
         facturas: { create: facturaIds.map((facturaId) => ({ facturaId })) },
       },
     });
@@ -202,6 +253,8 @@ type ActualizarLineaInput = {
   seccion?: SeccionLinea;
   facturaIds?: string[];
   siigoProductoId?: string | null;
+  /** NIT del tercero (null limpia el campo). */
+  nitTercero?: string | null;
   usuarioId: string;
 };
 
@@ -229,6 +282,7 @@ export async function actualizarLinea(input: ActualizarLineaInput) {
 
     if (input.facturaIds !== undefined) {
       await validarFacturasDelTramite(tx, borrador.tramiteId, input.facturaIds);
+      await validarFacturasMismoBeneficiario(tx, input.facturaIds);
       await tx.lineaRevisionFactura.deleteMany({ where: { lineaId } });
       await tx.lineaRevisionFactura.createMany({
         data: input.facturaIds.map((facturaId) => ({ lineaId, facturaId })),
@@ -247,6 +301,7 @@ export async function actualizarLinea(input: ActualizarLineaInput) {
           ? { disconnect: true }
           : { connect: { id: input.siigoProductoId } };
     }
+    if (input.nitTercero !== undefined) data.nitTercero = input.nitTercero;
 
     // En TERCEROS el soporte se mantiene sincronizado con las facturas vinculadas,
     // recalculándolo cuando cambian las facturas o la sección de la línea.

@@ -43,6 +43,7 @@ export type CreateFacturaProveedorInput = {
   proveedorNit?: string | null;
   beneficiarioId?: string | null;
   concepto?: string | null;
+  siigoProductoId?: string | null;
   numFactura: string;
   valor: string; // BigInt as string
   fecha: string; // ISO string
@@ -54,6 +55,7 @@ export type UpdateFacturaProveedorInput = {
   proveedorNit?: string | null;
   beneficiarioId?: string | null;
   concepto?: string | null;
+  siigoProductoId?: string | null;
   numFactura?: string;
   valor?: string;
   fecha?: string;
