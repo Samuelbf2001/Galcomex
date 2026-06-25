@@ -165,6 +165,110 @@ function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps)
   );
 }
 
+// ─── Modal: Confirmar envío a SIIGO ───────────────────────────────────────────
+
+type ConfirmarEnvioSiigoModalProps = {
+  tramiteConsecutivo: string;
+  clienteNombre: string;
+  esReenvio: boolean;
+  enviadoASiigoEn: string | null;
+  enviando: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+};
+
+function ConfirmarEnvioSiigoModal({
+  tramiteConsecutivo,
+  clienteNombre,
+  esReenvio,
+  enviadoASiigoEn,
+  enviando,
+  onConfirm,
+  onClose,
+}: ConfirmarEnvioSiigoModalProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
+      <div className="w-full max-w-md border border-slate-300 bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div className="flex items-center gap-2">
+            <Send className="h-4 w-4 text-cyan-700" aria-hidden="true" />
+            <h2 className="text-lg font-semibold text-slate-950">
+              {esReenvio ? "Reenviar factura a SIIGO" : "Enviar factura a SIIGO"}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={enviando}
+            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
+            aria-label="Cerrar"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-5">
+          <div className="border border-slate-200 bg-slate-50 px-3 py-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Trámite
+            </p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-900">
+              {tramiteConsecutivo}
+            </p>
+            <p className="text-xs text-slate-600">{clienteNombre}</p>
+          </div>
+
+          <p className="text-sm text-slate-700">
+            La factura se creará en SIIGO como{" "}
+            <span className="font-semibold">borrador (draft)</span>. Un usuario
+            superior debe validarla y estamparla desde el portal de SIIGO.
+          </p>
+
+          {esReenvio ? (
+            <div className="flex items-start gap-2 border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <div>
+                <p className="font-semibold">Ya hay un borrador enviado</p>
+                <p className="text-xs">
+                  {enviadoASiigoEn
+                    ? `Último envío: ${formatDate(enviadoASiigoEn)}. `
+                    : null}
+                  Reenviar creará un nuevo borrador en SIIGO. El anterior debe
+                  descartarse manualmente desde el portal si aún no se estampó.
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={enviando}
+            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={enviando}
+            className="inline-flex h-10 items-center gap-2 bg-cyan-700 px-4 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:opacity-60"
+          >
+            {enviando ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Send className="h-4 w-4" aria-hidden="true" />
+            )}
+            {esReenvio ? "Reenviar" : "Enviar a SIIGO"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Panel izquierdo: visor de soporte ────────────────────────────────────────
 
 type VisorSoporteProps = {
@@ -294,6 +398,7 @@ export function RevisorBorrador({
   const [errorTransicion, setErrorTransicion] = useState<string | null>(null);
   const [modalFacturar, setModalFacturar] = useState(false);
   const [enviandoSiigo, setEnviandoSiigo] = useState(false);
+  const [mostrarConfirmEnvioSiigo, setMostrarConfirmEnvioSiigo] = useState(false);
   const [formasPago, setFormasPago] = useState<SiigoFormaPagoRow[]>([]);
   const [guardandoFormaPago, setGuardandoFormaPago] = useState(false);
   const [sincronizandoSiigo, setSincronizandoSiigo] = useState(false);
@@ -509,10 +614,6 @@ export function RevisorBorrador({
 
   async function handleEnviarSiigo() {
     if (enviandoSiigo) return;
-    const confirmar = window.confirm(
-      "Se enviará la factura a SIIGO como borrador. Un usuario superior debe validarla y estamparla desde SIIGO. ¿Continuar?",
-    );
-    if (!confirmar) return;
     setEnviandoSiigo(true);
     setErrorTransicion(null);
     try {
@@ -526,6 +627,7 @@ export function RevisorBorrador({
       };
       setBorradorActual(updated);
       onBorradorActualizado(updated);
+      setMostrarConfirmEnvioSiigo(false);
     } catch (caught) {
       const mensaje =
         caught instanceof FacturacionApiError
@@ -537,6 +639,7 @@ export function RevisorBorrador({
         ultimoErrorSiigo: mensaje,
         ultimoIntentoSiigo: new Date().toISOString(),
       }));
+      setMostrarConfirmEnvioSiigo(false);
     } finally {
       setEnviandoSiigo(false);
     }
@@ -678,7 +781,7 @@ export function RevisorBorrador({
           {estado === "APROBADO" && puedeFacturar ? (
             <button
               type="button"
-              onClick={handleEnviarSiigo}
+              onClick={() => setMostrarConfirmEnvioSiigo(true)}
               disabled={enviandoSiigo}
               title={
                 borradorActual.siigoDraftId
@@ -1110,6 +1213,18 @@ export function RevisorBorrador({
           borradorId={borradorActual.id}
           onClose={() => setModalFacturar(false)}
           onFacturado={handleFacturado}
+        />
+      ) : null}
+
+      {mostrarConfirmEnvioSiigo ? (
+        <ConfirmarEnvioSiigoModal
+          tramiteConsecutivo={tramite.consecutivo}
+          clienteNombre={tramite.cliente.nombre}
+          esReenvio={Boolean(borradorActual.siigoDraftId)}
+          enviadoASiigoEn={borradorActual.enviadoASiigoEn}
+          enviando={enviandoSiigo}
+          onConfirm={handleEnviarSiigo}
+          onClose={() => setMostrarConfirmEnvioSiigo(false)}
         />
       ) : null}
     </div>
