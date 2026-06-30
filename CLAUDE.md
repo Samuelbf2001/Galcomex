@@ -101,6 +101,10 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 - `NIT_BANCO_4X1000` = `890300279` (Banco de Occidente — tercero fijo del 4x1000 en facturas Siigo, Sprint 11)
 
 ### Flujo SOCIO_LM (cliente Lucho) — diferencias clave vs PROPIO
+- **Dos comisiones distintas (NO confundir):**
+  - **Comisión de factura** = lo que el cliente paga (ej. 400.000). Va en la factura vía `LineaRevision`/`total-lineas` y manda el saldo a favor del cliente (`Anticipo − Total factura`). Es line-driven y NO se toca desde el cruce.
+  - **Comisión interna Galcomex→Lucho** = la mínima del acuerdo (ej. 150.000, default `COMISION_LM`). Dato propio editable, solo afecta el **cruce interno** con Lucho. Campo `BorradorFactura.comisionInternaLM`, editable en la pestaña Cruce de la Hoja (ADMIN/REVISOR) vía `PATCH /api/borradores/[id]/comision-interna-lm`. La diferencia (400k−150k) es el margen de Lucho — por eso las dos comisiones NO se cancelan en el saldo LM.
+  - Cruce: `saldoLMInterno = anticipo − Σpagos − comisiónInternaLM − IVA − 4x1000interno − costos`; `saldoLM = saldoLMInterno − saldoAFavorCliente` (negativo ⇒ Lucho debe a Galcomex). Helper puro en `src/lib/calculations/cruce-lm.ts`. Caso dorado BAQ-18453 con comisión interna 150k ⇒ `saldoLMInterno = 1.766.766`, `saldoLM = −179.734`.
 - Las líneas fijas **COMISION** y **COSTOS_BANCARIOS** NO se materializan como `LineaRevision` (deducciones internas únicamente; se reflejan en el cruce LM). `IVA_COMISION` sí (ingreso operacional).
 - Dos cálculos de 4x1000: el **interno** (base = anticipo, para cruce LM) sigue en `motor-factura.ts`; el **de factura** (base = Σ líneas TERCEROS, round-half-up `(base×4+500)/1000`) materializa la línea `IMPUESTO_4X1000` que se envía a Siigo.
 - Tercero del 4x1000 SIEMPRE Banco de Occidente (NIT `890300279`) — `resolverNit4x1000` lo retorna de forma incondicional.
@@ -164,7 +168,7 @@ Los tests del archivo real están en `src/lib/calculations/__tests__/`.
 - 4x1000 factura: 130.088 (base Σ terceros 32.521.912, round-half-up)
 - 4x1000 interno: 140.298 (base anticipo)
 - Total factura: 33.128.000 · Saldo a favor cliente: 1.946.500
-- Restante interno: 1.516.766 · **Saldo LM: −429.734** (Lucho debe a Galcomex)
+- **Cruce LM (comisión interna 150.000, `cruce-lm.test.ts`):** `saldoLMInterno = 1.766.766` · **Saldo LM: −179.734** (Lucho debe a Galcomex). Con el modelo viejo de comisión única (400k) daba −429.734; ya no aplica.
 
 CI falla si estos tests no pasan. Tolerancia = 0 pesos.
 

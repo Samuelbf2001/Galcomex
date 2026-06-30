@@ -38,10 +38,20 @@ type AnticipoAplicado = {
 };
 
 type BorradorHoja = {
+  id: string;
   estado: string;
   numFacturaSiigo: string | null;
   fechaFactura: string | null;
   comision: string;
+  /** Comisión interna Galcomex→Lucho (manual). Solo cruce, no factura. SOCIO_LM. */
+  comisionInternaLM: string;
+  /** Tipo de pago de la comisión interna LM. Exactamente uno set cuando aplica. */
+  tipoRecaudoComisionInternaLM: string | null;
+  canalPagoComisionInternaLM: string | null;
+  /** Costo bancario snapshot del tipo de pago de la comisión interna LM. */
+  costoComisionInternaLM: string;
+  /** Saldo de la cuenta interna con LM (persistido por el servidor). */
+  saldoLMInterno: string;
   ivaComision: string;
   impuesto4x1000: string;
   costosBancarios: string;
@@ -63,7 +73,7 @@ type HojaData = {
   estado: string;
   doCliente: string | null;
   doAgencia: string | null;
-  cliente: { nombre: string; nit: string };
+  cliente: { nombre: string; nit: string; tipo: string };
   aplicacionesAnticipo: AnticipoAplicado[];
   borrador: BorradorHoja | null;
 };
@@ -195,6 +205,7 @@ async function fetchHojaData(tramiteId: string, signal?: AbortSignal): Promise<H
 
   const borrador: BorradorHoja | null = b
     ? {
+        id: str(b.id, ""),
         estado: str(b.estado, "BORRADOR"),
         numFacturaSiigo:
           typeof b.numFacturaSiigo === "string"
@@ -204,6 +215,17 @@ async function fetchHojaData(tramiteId: string, signal?: AbortSignal): Promise<H
               : null,
         fechaFactura: typeof b.fechaFactura === "string" ? b.fechaFactura : null,
         comision: str(b.comision),
+        comisionInternaLM: str(b.comisionInternaLM),
+        tipoRecaudoComisionInternaLM:
+          typeof b.tipoRecaudoComisionInternaLM === "string"
+            ? b.tipoRecaudoComisionInternaLM
+            : null,
+        canalPagoComisionInternaLM:
+          typeof b.canalPagoComisionInternaLM === "string"
+            ? b.canalPagoComisionInternaLM
+            : null,
+        costoComisionInternaLM: str(b.costoComisionInternaLM),
+        saldoLMInterno: str(b.saldoLMInterno),
         ivaComision: str(b.ivaComision),
         impuesto4x1000: str(b.impuesto4x1000),
         costosBancarios: str(b.costosBancarios),
@@ -223,7 +245,11 @@ async function fetchHojaData(tramiteId: string, signal?: AbortSignal): Promise<H
     estado: str(t.estado, ""),
     doCliente: typeof t.doCliente === "string" ? t.doCliente : null,
     doAgencia: typeof t.doAgencia === "string" ? t.doAgencia : null,
-    cliente: { nombre: str(cliente.nombre, ""), nit: str(cliente.nit, "") },
+    cliente: {
+      nombre: str(cliente.nombre, ""),
+      nit: str(cliente.nit, ""),
+      tipo: str(cliente.tipo, "PROPIO"),
+    },
     aplicacionesAnticipo: aplicaciones,
     borrador,
   };
@@ -231,7 +257,13 @@ async function fetchHojaData(tramiteId: string, signal?: AbortSignal): Promise<H
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 
-export function HojaTramite({ tramiteId }: { tramiteId: string }) {
+export function HojaTramite({
+  tramiteId,
+  userRol = "OPERATIVO",
+}: {
+  tramiteId: string;
+  userRol?: string;
+}) {
   const [hoja, setHoja] = useState<HojaData | null>(null);
   const [libro, setLibro] = useState<LibroPagosData | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -305,27 +337,65 @@ export function HojaTramite({ tramiteId }: { tramiteId: string }) {
     bigOrZero(libro.costosBancarios) + bigOrZero(libro.costosBancariosAnticipo)
   ).toString();
 
-  // Totales dinámicos para el footer: replica la lógica de ColaFactura usando
-  // datos en vivo para que reflejen todos los pagos actuales.
+  // Totales del cliente: autoritativos de la FACTURA (mismo origen que cartera).
+  // `b.totalFactura`/`b.saldoAFavorCliente`/`b.saldoACargoCliente` ya prefieren los
+  // valores de la factura cuando existe (ver fetchHojaData). NO re-derivar en vivo:
+  // el recálculo anterior restaba `saldoAFavorLM` y desviaba el saldo del cliente
+  // (mostraba 2.096.500 en vez de 1.946.500 en CTG26-0118).
   const totalesDinamicos = (() => {
     if (!hoja.borrador) return null;
     const b = hoja.borrador;
-    let sf =
-      bigOrZero(saldoTrasPagos) -
-      bigOrZero(b.comision) -
-      bigOrZero(b.ivaComision) -
-      bigOrZero(b.impuesto4x1000) -
-      bigOrZero(costosBancariosTotalLive);
-    const ret = bigOrZero(b.retenciones);
-    if (ret > 0n) sf += ret;
-    const montoLM = bigOrZero(b.saldoAFavorLM);
-    const favor = sf > 0n ? sf - montoLM : 0n;
-    const cargo = sf <= 0n ? -sf : 0n;
-    const totalFactura = bigOrZero(libro.totalAnticipoAplicado) - favor;
     return {
-      saldoAFavorCliente: favor.toString(),
-      saldoACargoCliente: cargo.toString(),
-      totalFactura: totalFactura.toString(),
+      saldoAFavorCliente: b.saldoAFavorCliente,
+      saldoACargoCliente: b.saldoACargoCliente,
+      totalFactura: b.totalFactura,
+    };
+  })();
+
+  // Detalle del cruce Cliente / Luis Martínez (solo SOCIO_LM).
+  // Dos niveles (modelo del Excel GRUPO E PAPIS):
+  //   Cara al cliente:  saldoAFavorCliente = anticipo − total factura (line-driven).
+  //   Cuenta interna LM: saldoLMInterno = anticipo − Σpagos − comisiónInternaLM
+  //                       − IVA − 4x1000 interno (base anticipo) − costos.
+  //   Cruce final:      saldoLM = saldoLMInterno − saldoAFavorCliente
+  //                     (negativo ⇒ LM debe a Galcomex; positivo ⇒ Galcomex debe a LM).
+  // La comisión interna es DISTINTA de la de factura: solo afecta este cruce.
+  const cruceLM = (() => {
+    if (hoja.cliente.tipo !== "SOCIO_LM" || !hoja.borrador) return null;
+    const b = hoja.borrador;
+    const anticipo = bigOrZero(libro.totalAnticipoAplicado);
+    const totalPagos = anticipo - bigOrZero(saldoTrasPagos);
+    const comisionInternaLM = bigOrZero(b.comisionInternaLM);
+    const iva = bigOrZero(b.ivaComision);
+    // 4x1000 interno: base = anticipo (GMF 0.4% fijo). Igual que el motor.
+    const cuatroXMilInterno = (anticipo * 4n) / 1000n;
+    // Costos = pagos a terceros + recaudo anticipo + costo bancario del tipo de
+    // pago de la comisión interna LM (snapshot persistido en el borrador, se
+    // suma al `costosBancarios` del servicio para que cuadre con el saldo
+    // persistido en la BD — ver service.ts:actualizarComisionInternaLM).
+    const costoComisionLM = bigOrZero(b.costoComisionInternaLM);
+    const costos = bigOrZero(costosBancariosTotalLive) + costoComisionLM;
+    const saldoLMInterno =
+      bigOrZero(saldoTrasPagos) - comisionInternaLM - iva - cuatroXMilInterno - costos;
+    // Lado cliente: autoritativo de la FACTURA (igual que cartera). `b.saldoAFavorCliente`
+    // y `b.totalFactura` ya vienen del factura cuando existe (ver fetchHojaData).
+    // NO usar el recálculo live (totalesDinamicos): difiere del facturado.
+    const saldoAFavorCliente = bigOrZero(b.saldoAFavorCliente);
+    const saldoLM = saldoLMInterno - saldoAFavorCliente;
+    return {
+      anticipo: anticipo.toString(),
+      totalPagos: totalPagos.toString(),
+      comisionInternaLM: comisionInternaLM.toString(),
+      tipoRecaudoComisionInternaLM: b.tipoRecaudoComisionInternaLM,
+      canalPagoComisionInternaLM: b.canalPagoComisionInternaLM,
+      costoComisionInternaLM: costoComisionLM.toString(),
+      iva: iva.toString(),
+      cuatroXMil: cuatroXMilInterno.toString(),
+      costos: costos.toString(),
+      saldoLMInterno: saldoLMInterno.toString(),
+      saldoAFavorCliente: b.saldoAFavorCliente,
+      totalFactura: b.totalFactura,
+      saldoLM: saldoLM.toString(),
     };
   })();
 
@@ -417,6 +487,23 @@ export function HojaTramite({ tramiteId }: { tramiteId: string }) {
           </table>
         )}
       </div>
+
+      {/* ── Comisión interna Galcomex→Lucho (solo SOCIO_LM) ──────────────── */}
+      {hoja.cliente.tipo === "SOCIO_LM" && hoja.borrador ? (
+        <ComisionInternaBlock
+          borradorId={hoja.borrador.id}
+          comisionInternaLM={hoja.borrador.comisionInternaLM}
+          tipoRecaudoComisionInternaLM={hoja.borrador.tipoRecaudoComisionInternaLM}
+          canalPagoComisionInternaLM={hoja.borrador.canalPagoComisionInternaLM}
+          costoComisionInternaLM={hoja.borrador.costoComisionInternaLM}
+          editable={
+            (userRol === "ADMIN" || userRol === "REVISOR") &&
+            (hoja.borrador.estado === "BORRADOR" ||
+              hoja.borrador.estado === "EN_REVISION")
+          }
+          onUpdated={() => setReloadKey((k) => k + 1)}
+        />
+      ) : null}
 
       {/* ── Pagos + cola de factura, con saldo corriente ────────────────── */}
       <div className="overflow-hidden border border-slate-300 bg-white">
@@ -510,7 +597,25 @@ export function HojaTramite({ tramiteId }: { tramiteId: string }) {
 
       {/* ── Totales finales ─────────────────────────────────────────────── */}
       {hoja.borrador && totalesDinamicos ? (
-        <TotalesFactura borrador={hoja.borrador} totales={totalesDinamicos} />
+        <TotalesFactura
+          borrador={hoja.borrador}
+          totales={totalesDinamicos}
+          saldoLM={cruceLM?.saldoLM ?? null}
+        />
+      ) : null}
+
+      {/* ── Detalle del cruce con Luis Martínez (solo SOCIO_LM) ─────────── */}
+      {cruceLM && hoja.borrador ? (
+        <CruceLM
+          cruce={cruceLM}
+          borradorId={hoja.borrador.id}
+          editable={
+            (userRol === "ADMIN" || userRol === "REVISOR") &&
+            (hoja.borrador.estado === "BORRADOR" ||
+              hoja.borrador.estado === "EN_REVISION")
+          }
+          onUpdated={() => setReloadKey((k) => k + 1)}
+        />
       ) : null}
 
       <p className="text-xs text-slate-400">
@@ -625,10 +730,19 @@ function SaldoChip({
 function TotalesFactura({
   borrador,
   totales,
+  saldoLM,
 }: {
   borrador: BorradorHoja;
   totales: { saldoAFavorCliente: string; saldoACargoCliente: string; totalFactura: string };
+  // Saldo LM del cruce (negativo ⇒ LM debe a Galcomex). Si null, usa los campos
+  // legacy del borrador (PROPIO no tiene cruce LM).
+  saldoLM: string | null;
 }) {
+  // El cruce expresa el saldo LM con signo: <0 ⇒ a cargo de LM, >0 ⇒ a favor de LM.
+  const lmFavor =
+    saldoLM !== null ? (bigOrZero(saldoLM) > 0n ? saldoLM : "0") : borrador.saldoAFavorLM;
+  const lmCargo =
+    saldoLM !== null ? (bigOrZero(saldoLM) < 0n ? (-bigOrZero(saldoLM)).toString() : "0") : borrador.saldoACargoLM;
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <div className="border border-slate-300 bg-slate-900 px-4 py-3">
@@ -642,11 +756,538 @@ function TotalesFactura({
         favor={totales.saldoAFavorCliente}
         cargo={totales.saldoACargoCliente}
       />
-      <SaldoChip label="Saldo LM" favor={borrador.saldoAFavorLM} cargo={borrador.saldoACargoLM} />
+      <SaldoChip label="Saldo LM" favor={lmFavor} cargo={lmCargo} />
       <div className="border border-slate-200 bg-white px-4 py-3">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Estado factura</p>
         <p className="mt-0.5 text-sm font-semibold text-slate-800">{borrador.estado}</p>
       </div>
+    </div>
+  );
+}
+
+// ─── Detalle del cruce Cliente / Luis Martínez (SOCIO_LM) ───────────────────────
+
+type CruceData = {
+  anticipo: string;
+  totalPagos: string;
+  comisionInternaLM: string;
+  tipoRecaudoComisionInternaLM: string | null;
+  canalPagoComisionInternaLM: string | null;
+  costoComisionInternaLM: string;
+  iva: string;
+  cuatroXMil: string;
+  costos: string;
+  saldoLMInterno: string;
+  saldoAFavorCliente: string;
+  totalFactura: string;
+  saldoLM: string;
+};
+
+function CruceRow({
+  label,
+  valor,
+  sign,
+  emphasis,
+}: {
+  label: string;
+  valor: string;
+  sign?: "plus" | "minus";
+  emphasis?: boolean;
+}) {
+  const prefijo = sign === "minus" ? "−" : sign === "plus" ? "+" : "";
+  return (
+    <div
+      className={`flex items-center justify-between px-3 py-1.5 ${emphasis ? "border-t-2 border-t-slate-300 bg-slate-50 font-semibold" : "border-t border-slate-100"}`}
+    >
+      <span className={`text-xs ${emphasis ? "uppercase tracking-wide text-slate-700" : "text-slate-600"}`}>
+        {label}
+      </span>
+      <span className={`font-mono text-sm ${sign === "minus" ? "text-rose-600" : "text-slate-800"}`}>
+        {prefijo}
+        {formatCOP(valor)}
+      </span>
+    </div>
+  );
+}
+
+function CruceLM({
+  cruce,
+  borradorId,
+  editable,
+  onUpdated,
+}: {
+  cruce: CruceData;
+  borradorId: string;
+  editable: boolean;
+  onUpdated: () => void;
+}) {
+  const saldoLM = bigOrZero(cruce.saldoLM);
+  // saldoLM = saldoLMInterno − saldoAFavorCliente.
+  // > 0 ⇒ Galcomex debe a LM · < 0 ⇒ LM debe a Galcomex · = 0 ⇒ saldado.
+  const lmTexto =
+    saldoLM > 0n
+      ? "Galcomex debe a Luis Martínez"
+      : saldoLM < 0n
+        ? "Luis Martínez debe a Galcomex"
+        : "Cuenta saldada";
+  const lmClase = saldoLM > 0n ? "text-emerald-700" : saldoLM < 0n ? "text-rose-600" : "text-slate-600";
+  const saldoLMAbs = (saldoLM < 0n ? -saldoLM : saldoLM).toString();
+
+  return (
+    <div className="border border-slate-300 bg-white">
+      <div className="border-b border-slate-200 bg-slate-100 px-4 py-2">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+          Cruce con Luis Martínez (socio)
+        </p>
+        <p className="text-xs text-slate-500">
+          Cuenta interna de Lucho frente a lo facturado al cliente. La comisión
+          interna es independiente de la comisión de la factura.
+        </p>
+      </div>
+      <div className="grid gap-px bg-slate-200 sm:grid-cols-2">
+        {/* Cuenta interna de LM */}
+        <div className="bg-white">
+          <p className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Cuenta interna Lucho
+          </p>
+          <CruceRow label="Anticipo LM" valor={cruce.anticipo} />
+          <CruceRow label="Pagos a terceros" valor={cruce.totalPagos} sign="minus" />
+          <ComisionInternaRow
+            valor={cruce.comisionInternaLM}
+            tipoRecaudo={cruce.tipoRecaudoComisionInternaLM}
+            canalPago={cruce.canalPagoComisionInternaLM}
+            costoBancario={cruce.costoComisionInternaLM}
+            borradorId={borradorId}
+            editable={editable}
+            onUpdated={onUpdated}
+          />
+          <CruceRow label="IVA comisión" valor={cruce.iva} sign="minus" />
+          <CruceRow label="Impuesto 4x1000 (interno)" valor={cruce.cuatroXMil} sign="minus" />
+          <CruceRow label="Costos bancarios" valor={cruce.costos} sign="minus" />
+          <CruceRow label="Saldo interno LM" valor={cruce.saldoLMInterno} emphasis />
+        </div>
+        {/* Cruce final */}
+        <div className="bg-white">
+          <p className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Cruce final
+          </p>
+          <CruceRow label="Total factura (cliente)" valor={cruce.totalFactura} />
+          <CruceRow label="Saldo a favor cliente" valor={cruce.saldoAFavorCliente} sign="minus" />
+          <CruceRow label="Saldo interno LM" valor={cruce.saldoLMInterno} />
+          <div className="flex items-center justify-between border-t-2 border-t-slate-300 bg-slate-50 px-3 py-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-700">Saldo LM</span>
+            <span className={`font-mono text-sm font-bold ${lmClase}`}>
+              {saldoLM > 0n ? "+" : saldoLM < 0n ? "−" : ""}
+              {formatCOP(saldoLMAbs)}
+            </span>
+          </div>
+          <p className={`px-3 py-1.5 text-xs font-medium ${lmClase}`}>{lmTexto}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Mismo catálogo que cartera-api.OPCIONES_RECAUDO_PAGO, redeclarado local
+ *  para evitar acoplar este componente al módulo de cartera. Costos en COP
+ *  enteros (referencia estática; el servidor resuelve el costo definitivo
+ *  desde matriz_recaudo / matriz_pago al persistir). */
+type OpcionTipoPago =
+  | { grupo: "RECAUDO"; value: string; label: string; costo: number }
+  | { grupo: "PAGO"; value: string; label: string; costo: number };
+
+const OPCIONES_TIPO_PAGO_COMISION_LM: OpcionTipoPago[] = [
+  { grupo: "RECAUDO", value: "BANCOLOMBIA", label: "Bancolombia (digital)", costo: 1950 },
+  { grupo: "RECAUDO", value: "OTROS_BANCOS", label: "Otros bancos (digital)", costo: 2200 },
+  { grupo: "RECAUDO", value: "SUCURSAL", label: "Sucursal (físico)", costo: 11290 },
+  { grupo: "RECAUDO", value: "CORRESPONSAL", label: "Corresponsal (físico)", costo: 6190 },
+  { grupo: "RECAUDO", value: "CAJERO", label: "Cajero (físico)", costo: 5200 },
+  { grupo: "PAGO", value: "TRANSF_BANCOLOMBIA", label: "Transf. Bancolombia", costo: 3900 },
+  { grupo: "PAGO", value: "PSE", label: "PSE", costo: 0 },
+  { grupo: "PAGO", value: "TRANSF_OTROS_BANCOS", label: "Transf. Otros Bancos", costo: 7300 },
+];
+
+function opcionKey(o: { grupo: string; value: string }): string {
+  return `${o.grupo}:${o.value}`;
+}
+
+const COMISION_INTERNA_LM_MINIMO_COP = 150_000n;
+
+/**
+ * Fila de la comisión interna Galcomex→Lucho. Solo lectura por defecto; con
+ * `editable` muestra un botón "Editar" que abre un modal con monto + tipo
+ * de pago (cuyo costo bancario se suma al cruce LM).
+ */
+function ComisionInternaRow({
+  valor,
+  tipoRecaudo,
+  canalPago,
+  costoBancario,
+  borradorId,
+  editable,
+  onUpdated,
+}: {
+  valor: string;
+  tipoRecaudo: string | null;
+  canalPago: string | null;
+  costoBancario: string;
+  borradorId: string;
+  editable: boolean;
+  onUpdated: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const opcionPersistida =
+    OPCIONES_TIPO_PAGO_COMISION_LM.find(
+      (o) =>
+        (o.grupo === "RECAUDO" && o.value === tipoRecaudo) ||
+        (o.grupo === "PAGO" && o.value === canalPago),
+    ) ?? null;
+
+  const canalLabel = opcionPersistida
+    ? `${opcionPersistida.label} · costo ${formatCOP(costoBancario)}`
+    : "Sin tipo de pago configurado";
+  const canalClase = opcionPersistida ? "text-slate-500" : "text-amber-700";
+
+  const detalle = (
+    <div className="border-t border-slate-100 px-3 py-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-col">
+          <span className="text-xs text-slate-600">Comisión interna Galcomex</span>
+          <span className={`text-[11px] ${canalClase}`}>{canalLabel}</span>
+        </div>
+        <span className="flex items-center gap-2">
+          <span className="font-mono text-sm text-rose-600">−{formatCOP(valor)}</span>
+          {editable ? (
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className="text-[11px] font-medium text-sky-700 underline-offset-2 hover:underline"
+            >
+              Editar
+            </button>
+          ) : null}
+        </span>
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      {detalle}
+      {open ? (
+        <ComisionInternaModal
+          borradorId={borradorId}
+          valorInicial={valor}
+          opcionInicial={opcionPersistida}
+          onClose={() => setOpen(false)}
+          onSaved={() => {
+            setOpen(false);
+            onUpdated();
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function ComisionInternaModal({
+  borradorId,
+  valorInicial,
+  opcionInicial,
+  onClose,
+  onSaved,
+}: {
+  borradorId: string;
+  valorInicial: string;
+  opcionInicial: OpcionTipoPago | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [monto, setMonto] = useState(valorInicial);
+  const [opcionKeySel, setOpcionKeySel] = useState<string>(
+    opcionInicial ? opcionKey(opcionInicial) : "",
+  );
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const opcion = OPCIONES_TIPO_PAGO_COMISION_LM.find((o) => opcionKey(o) === opcionKeySel);
+  const montoLimpio = monto.replace(/\D/g, "");
+  const montoBig = (() => {
+    if (montoLimpio.length === 0) return null;
+    try {
+      return BigInt(montoLimpio);
+    } catch {
+      return null;
+    }
+  })();
+  const montoValido = montoBig !== null && montoBig >= COMISION_INTERNA_LM_MINIMO_COP;
+  const opcionValida = opcion !== undefined;
+  const puedeGuardar = montoValido && opcionValida && !guardando;
+
+  async function guardar() {
+    if (!montoBig || !opcion) return;
+    setGuardando(true);
+    setError(null);
+    try {
+      const body =
+        opcion.grupo === "RECAUDO"
+          ? { comisionInternaLM: montoBig.toString(), tipoRecaudoComisionInternaLM: opcion.value }
+          : { comisionInternaLM: montoBig.toString(), canalPagoComisionInternaLM: opcion.value };
+      const res = await fetch(`/api/borradores/${borradorId}/comision-interna-lm`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        let msg = `Error ${res.status}`;
+        try {
+          const payload: unknown = await res.json();
+          if (isRecord(payload) && typeof payload.error === "string") msg = payload.error;
+        } catch {
+          /* noop */
+        }
+        throw new Error(msg);
+      }
+      onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No se pudo guardar");
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/40 px-4 py-8">
+      <div className="w-full max-w-md border border-slate-300 bg-white shadow-xl">
+        <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">
+              Comisión interna Galcomex→Lucho
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Mínimo {formatCOP(COMISION_INTERNA_LM_MINIMO_COP.toString())}. El costo
+              bancario del tipo de pago se suma al cruce LM.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={guardando}
+            className="ml-2 inline-flex h-8 w-8 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
+            aria-label="Cerrar"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-5">
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">
+              Comisión (COP) *
+            </span>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={monto}
+              onChange={(e) => setMonto(e.target.value)}
+              disabled={guardando}
+              placeholder="150.000"
+              className="h-10 w-full border border-slate-300 px-3 text-right font-mono text-sm outline-none focus:border-sky-500"
+            />
+            {montoBig !== null ? (
+              <p
+                className={`text-xs ${montoValido ? "text-slate-500" : "text-rose-600"}`}
+              >
+                {formatCOP(montoBig.toString())}
+                {!montoValido
+                  ? ` · debe ser ≥ ${formatCOP(COMISION_INTERNA_LM_MINIMO_COP.toString())}`
+                  : ""}
+              </p>
+            ) : null}
+          </label>
+
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Tipo de pago *</span>
+            <select
+              value={opcionKeySel}
+              onChange={(e) => setOpcionKeySel(e.target.value)}
+              disabled={guardando}
+              className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-sky-500"
+            >
+              <option value="" disabled>
+                Selecciona un tipo de pago…
+              </option>
+              <optgroup label="Recaudo (entra plata)">
+                {OPCIONES_TIPO_PAGO_COMISION_LM.filter((o) => o.grupo === "RECAUDO").map(
+                  (o) => (
+                    <option key={opcionKey(o)} value={opcionKey(o)}>
+                      {o.label} — ${o.costo.toLocaleString("es-CO")}
+                    </option>
+                  ),
+                )}
+              </optgroup>
+              <optgroup label="Pago (sale plata)">
+                {OPCIONES_TIPO_PAGO_COMISION_LM.filter((o) => o.grupo === "PAGO").map(
+                  (o) => (
+                    <option key={opcionKey(o)} value={opcionKey(o)}>
+                      {o.label} — ${o.costo.toLocaleString("es-CO")}
+                    </option>
+                  ),
+                )}
+              </optgroup>
+            </select>
+            {opcion ? (
+              <p className="text-xs text-slate-500">
+                Costo bancario:{" "}
+                <span className="font-medium text-slate-700">
+                  {formatCOP(String(opcion.costo))}
+                </span>
+              </p>
+            ) : null}
+          </label>
+
+          {error ? (
+            <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={guardando}
+              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => void guardar()}
+              disabled={!puedeGuardar}
+              className="inline-flex h-10 items-center gap-2 bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:opacity-60"
+            >
+              {guardando ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              Guardar
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Bloque Comisión interna (debajo del Anticipo, solo SOCIO_LM) ─────────────
+
+/**
+ * Visualiza y dispara la configuración de la comisión interna Galcomex→Lucho
+ * desde la cabecera de la Hoja. Reutiliza `ComisionInternaModal` (el mismo que
+ * se usa en la pestaña Cruce con Luis Martínez), así que monto + tipo de pago
+ * + costo bancario se persisten en el mismo endpoint
+ * (`PATCH /api/borradores/[id]/comision-interna-lm`).
+ */
+function ComisionInternaBlock({
+  borradorId,
+  comisionInternaLM,
+  tipoRecaudoComisionInternaLM,
+  canalPagoComisionInternaLM,
+  costoComisionInternaLM,
+  editable,
+  onUpdated,
+}: {
+  borradorId: string;
+  comisionInternaLM: string;
+  tipoRecaudoComisionInternaLM: string | null;
+  canalPagoComisionInternaLM: string | null;
+  costoComisionInternaLM: string;
+  editable: boolean;
+  onUpdated: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const opcionPersistida =
+    OPCIONES_TIPO_PAGO_COMISION_LM.find(
+      (o) =>
+        (o.grupo === "RECAUDO" && o.value === tipoRecaudoComisionInternaLM) ||
+        (o.grupo === "PAGO" && o.value === canalPagoComisionInternaLM),
+    ) ?? null;
+
+  const sinCanal = opcionPersistida === null;
+
+  return (
+    <div className="overflow-hidden border border-slate-300 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-violet-100 px-4 py-2">
+        <p className="text-sm font-bold uppercase tracking-wide text-violet-900">
+          Comisión interna Galcomex→Lucho
+        </p>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          disabled={!editable}
+          title={!editable ? "Solo ADMIN/REVISOR mientras el borrador esté en BORRADOR o EN_REVISION" : undefined}
+          className="inline-flex h-9 items-center gap-1.5 border border-violet-700 bg-white px-3 text-xs font-semibold text-violet-700 transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Configurar comisión
+        </button>
+      </div>
+      <div className="grid gap-px bg-slate-200 sm:grid-cols-3">
+        <div className="bg-white px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Monto
+          </p>
+          <p className="mt-0.5 font-mono text-base font-semibold text-slate-900">
+            {formatCOP(comisionInternaLM)}
+          </p>
+          <p className="text-[11px] text-slate-500">
+            Mínimo {formatCOP(COMISION_INTERNA_LM_MINIMO_COP.toString())}
+          </p>
+        </div>
+        <div className="bg-white px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Tipo de pago
+          </p>
+          <p
+            className={`mt-0.5 text-sm font-medium ${sinCanal ? "text-amber-700" : "text-slate-900"}`}
+          >
+            {opcionPersistida ? opcionPersistida.label : "Sin configurar"}
+          </p>
+          {opcionPersistida ? (
+            <p className="text-[11px] text-slate-500">
+              {opcionPersistida.grupo === "RECAUDO"
+                ? "Recaudo (entra plata)"
+                : "Pago (sale plata)"}
+            </p>
+          ) : null}
+        </div>
+        <div className="bg-white px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Costo bancario
+          </p>
+          <p className="mt-0.5 font-mono text-sm font-semibold text-rose-600">
+            {bigOrZero(costoComisionInternaLM) > 0n
+              ? `−${formatCOP(costoComisionInternaLM)}`
+              : "—"}
+          </p>
+          <p className="text-[11px] text-slate-500">Se suma al cruce LM</p>
+        </div>
+      </div>
+
+      {open ? (
+        <ComisionInternaModal
+          borradorId={borradorId}
+          valorInicial={comisionInternaLM}
+          opcionInicial={opcionPersistida}
+          onClose={() => setOpen(false)}
+          onSaved={() => {
+            setOpen(false);
+            onUpdated();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

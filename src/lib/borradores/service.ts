@@ -8,9 +8,12 @@
  * - listarBorradores: lista borradores de un trámite
  */
 
-import { EstadoBorrador, Prisma, TipoCliente } from "@prisma/client";
+import { CanalPago, EstadoBorrador, Prisma, TipoCliente, TipoRecaudo } from "@prisma/client";
+
+import { COMISION_INTERNA_LM_MINIMO } from "@/lib/validations/borradores";
 
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
+import { calcularSaldoLMInterno } from "@/lib/calculations/cruce-lm";
 import { prisma } from "@/lib/db/prisma";
 import { getParametrosSistema } from "@/lib/parametros/service";
 
@@ -265,6 +268,24 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   // ── Calcular ──────────────────────────────────────────────────────────────
   const resultado = calcularBorrador(dto);
 
+  // ── Cruce interno con Lucho (solo SOCIO_LM) ───────────────────────────────
+  // La comisión interna (mínima, ej. 150.000) es DISTINTA de la comisión de
+  // factura: solo afecta este cruce, no el saldo a favor del cliente. Se calcula
+  // con los outputs CRUDOS del motor (costosBancarios real, incl. recaudo $1.950),
+  // antes de que el espejo de líneas fijas ponga costos/comisión en 0 para SOCIO_LM.
+  const esSocioLM = tipoCliente === TipoCliente.SOCIO_LM;
+  const comisionInternaLM = esSocioLM ? params.comisionDefault : 0n;
+  const saldoLMInterno = esSocioLM
+    ? calcularSaldoLMInterno({
+        totalAnticipo: totalAnticipoAplicado,
+        totalPagos: resultado.totalPagos,
+        comisionInternaLM,
+        ivaComision: resultado.ivaComision,
+        costosBancarios: resultado.costosBancarios,
+        tasa4x1000: params.tasa4x1000,
+      }).saldoLMInterno
+    : 0n;
+
   // El borrador nace con las 4 líneas fijas (COMISION, IVA_COMISION,
   // COSTOS_BANCARIOS, IMPUESTO_4X1000) sembradas desde los outputs del motor.
   // Cada una lleva su `siigoProductoId` resuelto desde parámetros; si falta el
@@ -304,6 +325,8 @@ export async function generarBorrador(input: GenerarBorradorInput) {
         saldoACargoCliente: resultado.saldoACargoCliente,
         saldoAFavorLM: resultado.saldoAFavorLM,
         saldoACargoLM: resultado.saldoACargoLM,
+        comisionInternaLM,
+        saldoLMInterno,
         retenciones: resultado.retenciones,
         totalFacturaLineas: 0n,
         formaPagoSiigoId: formaPagoDefault,
@@ -652,6 +675,206 @@ export async function actualizarComisionBorrador(
         despues: normalizeSerializable({
           comision: nuevaComision,
           ivaComision: nuevoIva,
+        }),
+      },
+    });
+
+    return { ok: true as const };
+  });
+
+  if (!result.ok) return result;
+
+  const borrador = await getBorradorCompleto(borradorId);
+  return { ok: true as const, borrador };
+}
+
+/**
+ * Actualiza la comisión interna Galcomex→Lucho y recalcula `saldoLMInterno`.
+ * SOLO afecta el cruce interno; NO toca el saldo a favor del cliente.
+ *
+ * Los costos bancarios reales (incl. recaudo $1.950) se recomputan desde
+ * pagos + anticipos porque `borrador.costosBancarios` queda en 0 para SOCIO_LM
+ * (la línea COSTOS_BANCARIOS no se materializa en ese flujo).
+ *
+ * Solo permitido para trámites SOCIO_LM en estados editables (BORRADOR, EN_REVISION).
+ */
+export type ActualizarComisionInternaLMInput = {
+  comisionInternaLM: bigint;
+  /** Exactamente uno debe estar set; el otro debe ser null. */
+  tipoRecaudoComisionInternaLM: TipoRecaudo | null;
+  canalPagoComisionInternaLM: CanalPago | null;
+};
+
+export async function actualizarComisionInternaLM(
+  borradorId: string,
+  input: ActualizarComisionInternaLMInput,
+  usuarioId: string,
+): Promise<
+  | { ok: true; borrador: Awaited<ReturnType<typeof getBorradorCompleto>> }
+  | { ok: false; status: number; message: string }
+> {
+  const lockKey = `borrador_lineas:${borradorId}`;
+
+  // Defensa en profundidad: el schema Zod ya valida el mínimo, pero el servicio
+  // también lo aplica para callers internos que no pasen por la validación HTTP.
+  if (input.comisionInternaLM < COMISION_INTERNA_LM_MINIMO) {
+    return {
+      ok: false as const,
+      status: 422,
+      message: `La comisión interna LM no puede ser menor a ${COMISION_INTERNA_LM_MINIMO} COP`,
+    };
+  }
+
+  const tieneRecaudo = input.tipoRecaudoComisionInternaLM !== null;
+  const tieneCanal = input.canalPagoComisionInternaLM !== null;
+  if (tieneRecaudo === tieneCanal) {
+    return {
+      ok: false as const,
+      status: 422,
+      message:
+        "Debe especificarse exactamente uno de tipoRecaudoComisionInternaLM o canalPagoComisionInternaLM",
+    };
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+
+    const actual = await tx.borradorFactura.findUnique({
+      where: { id: borradorId },
+      select: {
+        estado: true,
+        tramiteId: true,
+        comisionInternaLM: true,
+        tipoRecaudoComisionInternaLM: true,
+        canalPagoComisionInternaLM: true,
+        costoComisionInternaLM: true,
+        saldoLMInterno: true,
+        totalAnticipo: true,
+        totalPagos: true,
+        ivaComision: true,
+        tramite: { select: { cliente: { select: { tipo: true } } } },
+      },
+    });
+    if (!actual) {
+      return {
+        ok: false as const,
+        status: 404,
+        message: `Borrador ${borradorId} no encontrado`,
+      };
+    }
+    if (actual.tramite.cliente.tipo !== TipoCliente.SOCIO_LM) {
+      return {
+        ok: false as const,
+        status: 422,
+        message: "La comisión interna LM solo aplica a trámites SOCIO_LM",
+      };
+    }
+    if (
+      actual.estado !== EstadoBorrador.BORRADOR &&
+      actual.estado !== EstadoBorrador.EN_REVISION
+    ) {
+      return {
+        ok: false as const,
+        status: 422,
+        message: `No se puede editar la comisión interna en estado ${actual.estado}`,
+      };
+    }
+
+    // Resolver el costo bancario del tipo de pago elegido para la comisión LM
+    // contra matriz_recaudo (Lucho paga a Galcomex = entra plata) o matriz_pago
+    // (Galcomex paga = sale plata). Falla si la matriz no tiene el canal.
+    let costoComisionInternaLM = 0n;
+    if (input.tipoRecaudoComisionInternaLM !== null) {
+      const m = await tx.matrizRecaudo.findUnique({
+        where: { tipoRecaudo: input.tipoRecaudoComisionInternaLM },
+        select: { costoFijo: true },
+      });
+      if (!m) {
+        return {
+          ok: false as const,
+          status: 422,
+          message: `Tipo de recaudo ${input.tipoRecaudoComisionInternaLM} no está en la matriz`,
+        };
+      }
+      costoComisionInternaLM = m.costoFijo;
+    } else if (input.canalPagoComisionInternaLM !== null) {
+      const m = await tx.matrizPago.findUnique({
+        where: { canalPago: input.canalPagoComisionInternaLM },
+        select: { costoFijo: true },
+      });
+      if (!m) {
+        return {
+          ok: false as const,
+          status: 422,
+          message: `Canal de pago ${input.canalPagoComisionInternaLM} no está en la matriz`,
+        };
+      }
+      costoComisionInternaLM = m.costoFijo;
+    }
+
+    // Costos bancarios reales: Σ costos de pagos + Σ costoRecaudo de anticipos
+    // distintos + costo del tipo de pago de la comisión interna LM.
+    const [pagos, aplicaciones, params] = await Promise.all([
+      tx.pagoTramite.findMany({
+        where: { tramiteId: actual.tramiteId },
+        select: { costoBancario: true },
+      }),
+      tx.aplicacionAnticipo.findMany({
+        where: { tramiteId: actual.tramiteId },
+        select: { anticipo: { select: { id: true, costoRecaudo: true } } },
+      }),
+      getParametrosSistema(),
+    ]);
+
+    const costosPagos = pagos.reduce((sum, p) => sum + p.costoBancario, 0n);
+    const costoRecaudoAnticipo = aplicaciones
+      .filter(
+        (a, idx, arr) =>
+          arr.findIndex((b) => b.anticipo.id === a.anticipo.id) === idx,
+      )
+      .reduce((sum, a) => sum + a.anticipo.costoRecaudo, 0n);
+    const costosBancarios = costosPagos + costoRecaudoAnticipo + costoComisionInternaLM;
+
+    const { saldoLMInterno } = calcularSaldoLMInterno({
+      totalAnticipo: actual.totalAnticipo,
+      totalPagos: actual.totalPagos,
+      comisionInternaLM: input.comisionInternaLM,
+      ivaComision: actual.ivaComision,
+      costosBancarios,
+      tasa4x1000: params.tasa4x1000,
+    });
+
+    await tx.borradorFactura.update({
+      where: { id: borradorId },
+      data: {
+        comisionInternaLM: input.comisionInternaLM,
+        tipoRecaudoComisionInternaLM: input.tipoRecaudoComisionInternaLM,
+        canalPagoComisionInternaLM: input.canalPagoComisionInternaLM,
+        costoComisionInternaLM,
+        saldoLMInterno,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "BorradorFactura",
+        entidadId: borradorId,
+        accion: "UPDATE_COMISION_INTERNA_LM",
+        usuarioId,
+        tramiteId: actual.tramiteId,
+        antes: normalizeSerializable({
+          comisionInternaLM: actual.comisionInternaLM,
+          tipoRecaudoComisionInternaLM: actual.tipoRecaudoComisionInternaLM,
+          canalPagoComisionInternaLM: actual.canalPagoComisionInternaLM,
+          costoComisionInternaLM: actual.costoComisionInternaLM,
+          saldoLMInterno: actual.saldoLMInterno,
+        }),
+        despues: normalizeSerializable({
+          comisionInternaLM: input.comisionInternaLM,
+          tipoRecaudoComisionInternaLM: input.tipoRecaudoComisionInternaLM,
+          canalPagoComisionInternaLM: input.canalPagoComisionInternaLM,
+          costoComisionInternaLM,
+          saldoLMInterno,
         }),
       },
     });

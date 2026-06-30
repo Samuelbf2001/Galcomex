@@ -484,8 +484,22 @@ model BorradorFactura {
   // 4x1000 calculado sobre la base de ingresos de terceros (SOCIO_LM únicamente).
   // Distinto del impuesto4x1000 interno (base anticipo). Para PROPIO queda en 0.
   impuesto4x1000Factura  BigInt @default(0)
+  // Comisión interna Galcomex→Lucho (la mínima, ej. 150.000). Manual, editable
+  // en el módulo de Cruce. SOLO afecta el cruce interno; NO toca el saldo a favor
+  // del cliente (line-driven). Distinta de `comision` (la de la factura). Para
+  // PROPIO queda en 0 (no aplica cruce).
+  comisionInternaLM      BigInt @default(0)
+  // Tipo de pago con que Lucho liquida la comisión interna. Exactamente uno de
+  // (tipoRecaudoComisionInternaLM, canalPagoComisionInternaLM) debe estar set
+  // cuando comisionInternaLM > 0 (validado en código). Para PROPIO ambos null.
+  tipoRecaudoComisionInternaLM TipoRecaudo?
+  canalPagoComisionInternaLM   CanalPago?
+  // Snapshot del costo bancario (matriz_recaudo / matriz_pago) al momento del
+  // PATCH, igual que PagoFactura.costoBancario. Se SUMA a `costosBancarios` en
+  // el cálculo del saldoLMInterno (ver service.ts:actualizarComisionInternaLM).
+  costoComisionInternaLM       BigInt       @default(0)
   // Saldo interno de Galcomex con el socio LM:
-  //   saldoLMInterno = anticipo − Σpagos − comision − ivaComision − 4x1000interno − costosBancarios
+  //   saldoLMInterno = anticipo − Σpagos − comisionInternaLM − ivaComision − 4x1000interno − costosBancarios
   // Positivo → Galcomex le debe devolver a LM. Negativo → LM le debe a Galcomex.
   saldoLMInterno         BigInt @default(0)
 

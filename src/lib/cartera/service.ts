@@ -39,9 +39,38 @@ type RegistrarPagoFacturaInput = {
   usuarioId: string;
 };
 
+// ─── Conciliación batch (lote de facturas) ───────────────────────────────────
+
+export type ConciliarLoteItem = {
+  facturaId: string;
+  destino: DestinoPago;
+  tipo: TipoPagoFactura;
+  monto: bigint;
+  fecha: Date;
+  tipoRecaudo?: TipoRecaudo;
+  canalPago?: CanalPago;
+  comprobanteKey?: string | null;
+  verificadoBanco?: boolean;
+};
+
+export type ConciliarLoteItemResult =
+  | { facturaId: string; destino: DestinoPago; ok: true; pagoId: string; saldoNeto: string }
+  | { facturaId: string; destino: DestinoPago; ok: false; status: number; error: string };
+
+export type ConciliarLoteResult = {
+  ok: number;
+  failed: number;
+  total: number;
+  loteAuditId: string;
+  results: ConciliarLoteItemResult[];
+};
+
 type GetCarteraClienteInput = {
   clienteId: string;
   soloPendientes?: boolean;
+  /** Filtro por fecha de emisión de la factura (inclusivo), formato YYYY-MM-DD. */
+  desde?: string;
+  hasta?: string;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -381,10 +410,16 @@ export async function eliminarPagoFactura(pagoId: string, usuarioId: string) {
  *         generados por pagos del cliente y pagos a LM.
  */
 export async function getCarteraCliente(input: GetCarteraClienteInput) {
-  const { clienteId, soloPendientes = false } = input;
+  const { clienteId, soloPendientes = false, desde, hasta } = input;
+
+  // Filtro por periodo sobre la fecha de emisión de la factura (inclusivo en ambos extremos).
+  const fechaFilter: Prisma.DateTimeFilter = {};
+  if (desde) fechaFilter.gte = new Date(`${desde}T00:00:00.000Z`);
+  if (hasta) fechaFilter.lte = new Date(`${hasta}T23:59:59.999Z`);
+  const fechaWhere = desde || hasta ? { fecha: fechaFilter } : {};
 
   const facturas = await prisma.factura.findMany({
-    where: { clienteId },
+    where: { clienteId, ...fechaWhere },
     include: {
       borrador: {
         select: {
@@ -665,4 +700,112 @@ export async function registrarPagoFactura(input: RegistrarPagoFacturaLegacyInpu
 
     return { ok: true as const, factura: updated };
   });
+}
+
+/**
+ * Conciliación batch de múltiples facturas (lote).
+ *
+ * Cada ítem se procesa en su PROPIA transacción (ejecución parcial). Los advisory
+ * locks de `registrarPagoFacturaAbono` solo se sostienen durante su tx individual.
+ * Devuelve un array de resultados por ítem y registra un AuditLog "paraguas" con
+ * trazabilidad del lote.
+ */
+export async function conciliarLoteFacturas(input: {
+  items: ConciliarLoteItem[];
+  usuarioId: string;
+}): Promise<ConciliarLoteResult> {
+  const { items, usuarioId } = input;
+
+  // 1) Crear AuditLog paraguas (entidad="ConciliacionBatchCartera") en estado EN_PROCESO.
+  //    entidadId se rellena con el propio id después de la creación.
+  const loteAudit = await prisma.auditLog.create({
+    data: {
+      entidad: "ConciliacionBatchCartera",
+      entidadId: "", // placeholder; se actualiza justo abajo
+      accion: "CREATE",
+      usuarioId,
+      antes: Prisma.JsonNull,
+      despues: normalizeSerializable({
+        totalItems: items.length,
+        status: "EN_PROCESO",
+        pagoIds: [],
+      }),
+    },
+  });
+
+  // Actualizar entidadId = id propio para que el índice [entidad, entidadId] sea usable.
+  await prisma.auditLog.update({
+    where: { id: loteAudit.id },
+    data: { entidadId: loteAudit.id },
+  });
+
+  // 2) Procesar cada ítem de forma secuencial (cada uno en su propia tx).
+  const results: ConciliarLoteItemResult[] = [];
+
+  for (const item of items) {
+    try {
+      const r = await registrarPagoFacturaAbono({ ...item, usuarioId });
+      if (r.ok) {
+        results.push({
+          facturaId: item.facturaId,
+          destino: item.destino,
+          ok: true,
+          pagoId: r.pago.id,
+          saldoNeto: r.saldoNeto.toString(),
+        });
+      } else {
+        results.push({
+          facturaId: item.facturaId,
+          destino: item.destino,
+          ok: false,
+          status: r.status,
+          error: r.message,
+        });
+      }
+    } catch (err) {
+      results.push({
+        facturaId: item.facturaId,
+        destino: item.destino,
+        ok: false,
+        status: 500,
+        error: err instanceof Error ? err.message : "Error desconocido",
+      });
+    }
+  }
+
+  // 3) Calcular totales y actualizar el AuditLog paraguas con el resultado final.
+  const okCount = results.filter((r) => r.ok).length;
+  const failedCount = results.length - okCount;
+  const batchStatus =
+    failedCount === 0 ? "COMPLETADO" : okCount === 0 ? "FALLIDO" : "PARCIAL";
+
+  const pagoIds = results
+    .filter((r): r is Extract<ConciliarLoteItemResult, { ok: true }> => r.ok)
+    .map((r) => r.pagoId);
+
+  const errores = results
+    .filter((r): r is Extract<ConciliarLoteItemResult, { ok: false }> => !r.ok)
+    .map((r) => ({ facturaId: r.facturaId, destino: r.destino, error: r.error }));
+
+  await prisma.auditLog.update({
+    where: { id: loteAudit.id },
+    data: {
+      despues: normalizeSerializable({
+        totalItems: items.length,
+        ok: okCount,
+        failed: failedCount,
+        status: batchStatus,
+        pagoIds,
+        errores,
+      }),
+    },
+  });
+
+  return {
+    ok: okCount,
+    failed: failedCount,
+    total: items.length,
+    loteAuditId: loteAudit.id,
+    results,
+  };
 }

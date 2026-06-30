@@ -153,13 +153,6 @@ export function readGalcomexWorkbook(filePath: string, sheetName = DEFAULT_DO_SH
   });
 
   const doSheets = listDoSheets(workbook);
-  const worksheet = workbook.Sheets[sheetName];
-
-  if (!worksheet) {
-    throw new Error(
-      `Sheet "${sheetName}" was not found. Available DO sheets: ${doSheets.join(", ") || "(none)"}`,
-    );
-  }
 
   return {
     source: {
@@ -170,8 +163,29 @@ export function readGalcomexWorkbook(filePath: string, sheetName = DEFAULT_DO_SH
       dryRun: true,
     },
     doSheets,
-    target: parseDoSheet(worksheet, sheetName),
+    target: parseDoSheetFromWorkbook(workbook, sheetName),
   };
+}
+
+/**
+ * Parsea una hoja DO de un workbook ya cargado en memoria (p.ej. desde un
+ * archivo subido vía `XLSX.read(buffer, …)`). Misma lógica que usa
+ * `readGalcomexWorkbook` tras `XLSX.readFile`; permite importar sin tocar disco.
+ */
+export function parseDoSheetFromWorkbook(
+  workbook: Workbook,
+  sheetName: string,
+): ParsedDoSheet {
+  const worksheet = workbook.Sheets[sheetName];
+
+  if (!worksheet) {
+    const doSheets = listDoSheets(workbook);
+    throw new Error(
+      `Sheet "${sheetName}" was not found. Available DO sheets: ${doSheets.join(", ") || "(none)"}`,
+    );
+  }
+
+  return parseDoSheet(worksheet, sheetName);
 }
 
 export function listDoSheets(workbook: Workbook): string[] {

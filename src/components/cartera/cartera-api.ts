@@ -125,6 +125,44 @@ export type RegistrarPagoInput = {
   verificadoBanco?: boolean;
 };
 
+// ─── Conciliación batch (lote de facturas) ───────────────────────────────────
+
+export type ConciliarLoteItemInput = {
+  facturaId: string;
+  destino: "CLIENTE" | "LM";
+  tipo: "ABONO" | "DEVOLUCION";
+  monto: string;          // BigInt as string
+  fecha: string;          // ISO
+  tipoRecaudo?: TipoRecaudo;
+  canalPago?: CanalPago;
+  comprobanteKey?: string | null;
+  verificadoBanco?: boolean;
+};
+
+export type ConciliarLoteItemResultUi =
+  | {
+      facturaId: string;
+      destino: "CLIENTE" | "LM";
+      ok: true;
+      pagoId: string;
+      saldoNeto: string;
+    }
+  | {
+      facturaId: string;
+      destino: "CLIENTE" | "LM";
+      ok: false;
+      status: number;
+      error: string;
+    };
+
+export type ConciliarLoteResponse = {
+  ok: number;
+  failed: number;
+  total: number;
+  loteAuditId: string;
+  results: ConciliarLoteItemResultUi[];
+};
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class CarteraApiError extends Error {
@@ -264,9 +302,13 @@ export async function fetchClienteOptions(
 export async function fetchCartera(
   clienteId: string,
   soloPendientes: boolean,
+  desde?: string,
+  hasta?: string,
   signal?: AbortSignal,
 ): Promise<CarteraData> {
-  const url = `/api/cartera?clienteId=${encodeURIComponent(clienteId)}&pendientes=${soloPendientes ? "true" : "false"}`;
+  let url = `/api/cartera?clienteId=${encodeURIComponent(clienteId)}&pendientes=${soloPendientes ? "true" : "false"}`;
+  if (desde) url += `&desde=${encodeURIComponent(desde)}`;
+  if (hasta) url += `&hasta=${encodeURIComponent(hasta)}`;
   let res: Response;
   try {
     res = await fetch(url, {
@@ -467,6 +509,77 @@ export function formatDate(isoString: string | null): string {
   } catch {
     return isoString;
   }
+}
+
+/**
+ * Conciliación batch de múltiples facturas (lote).
+ *
+ * POST /api/cartera/conciliar-lote. Devuelve resultados por ítem y un loteAuditId.
+ * Acepta status 207 (parcial) además de 2xx como respuesta válida.
+ */
+export async function conciliarLote(
+  items: ConciliarLoteItemInput[],
+): Promise<ConciliarLoteResponse> {
+  let res: Response;
+  try {
+    res = await fetch("/api/cartera/conciliar-lote", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({ items }),
+    });
+  } catch {
+    throw new CarteraApiError(
+      "No fue posible conectar con /api/cartera/conciliar-lote.",
+    );
+  }
+
+  const payload: unknown = await res.json().catch(() => null);
+
+  // 207 = parcial-success: el body sigue siendo válido y debe procesarse.
+  const okStatus = res.ok || res.status === 207;
+  if (!okStatus) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `No fue posible conciliar el lote (${res.status}).`;
+    throw new CarteraApiError(message, res.status);
+  }
+
+  if (!isRecord(payload) || !Array.isArray(payload.results)) {
+    throw new CarteraApiError("Respuesta de lote no válida.");
+  }
+
+  return {
+    ok: typeof payload.ok === "number" ? payload.ok : 0,
+    failed: typeof payload.failed === "number" ? payload.failed : 0,
+    total: typeof payload.total === "number" ? payload.total : 0,
+    loteAuditId: String(payload.loteAuditId ?? ""),
+    results: payload.results
+      .filter(isRecord)
+      .map((r): ConciliarLoteItemResultUi => {
+        const facturaId = String(r.facturaId ?? "");
+        const destino = r.destino === "LM" ? "LM" : "CLIENTE";
+        if (r.ok === true) {
+          return {
+            facturaId,
+            destino,
+            ok: true,
+            pagoId: String(r.pagoId ?? ""),
+            saldoNeto: String(r.saldoNeto ?? "0"),
+          };
+        }
+        return {
+          facturaId,
+          destino,
+          ok: false,
+          status: typeof r.status === "number" ? r.status : 500,
+          error: typeof r.error === "string" ? r.error : "Error desconocido",
+        };
+      }),
+  };
 }
 
 /** Parsea un input de monto COP sin formato → BigInt string. */
