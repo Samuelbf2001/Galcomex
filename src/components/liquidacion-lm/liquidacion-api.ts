@@ -4,9 +4,11 @@
  */
 
 export type LiquidacionTramiteRow = {
+  facturaId: string;
   borradorId: string;
   tramiteId: string;
   consecutivo: string;
+  clienteNombre: string;
   numFacturaSiigo: string | null;
   fechaFactura: string | null;
   saldoLMInterno: string; // BigInt as string
@@ -41,9 +43,11 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function mapTramiteRow(t: Record<string, unknown>): LiquidacionTramiteRow {
   return {
+    facturaId: String(t.facturaId ?? ""),
     borradorId: String(t.borradorId ?? ""),
     tramiteId: String(t.tramiteId ?? ""),
     consecutivo: String(t.consecutivo ?? ""),
+    clienteNombre: String(t.clienteNombre ?? ""),
     numFacturaSiigo:
       typeof t.numFacturaSiigo === "string" ? t.numFacturaSiigo : null,
     fechaFactura: typeof t.fechaFactura === "string" ? t.fechaFactura : null,
