@@ -72,6 +72,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       const result = await solicitarSubida({
         tramiteId: payload.tramiteId,
         categoria: payload.categoria,
+        carpeta: payload.carpeta,
         fileName: payload.fileName,
         contentType: payload.contentType,
         sizeBytes: payload.sizeBytes,

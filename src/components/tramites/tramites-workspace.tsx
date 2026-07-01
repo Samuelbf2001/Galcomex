@@ -294,15 +294,16 @@ function CreateTramiteDialog({
             body: JSON.stringify({
               action: "uploadUrl",
               categoria,
+              carpeta: "documentos-adjuntos",
               fileName: file.name,
               contentType: file.type || "application/octet-stream",
               sizeBytes: file.size,
             }),
           });
           if (!urlRes.ok) continue;
-          const { uploadUrl } = (await urlRes.json()) as { uploadUrl: { url: string; key: string } };
+          const { uploadUrl } = (await urlRes.json()) as { uploadUrl: { uploadUrl: string; storageKey: string } };
 
-          await fetch(uploadUrl.url, {
+          await fetch(uploadUrl.uploadUrl, {
             method: "PUT",
             body: file,
             headers: { "content-type": file.type || "application/octet-stream" },
@@ -315,7 +316,7 @@ function CreateTramiteDialog({
               action: "register",
               categoria,
               nombreArchivo: file.name,
-              storageKey: uploadUrl.key,
+              storageKey: uploadUrl.storageKey,
               mimeType: file.type || "application/octet-stream",
               tamanoBytes: file.size,
             }),

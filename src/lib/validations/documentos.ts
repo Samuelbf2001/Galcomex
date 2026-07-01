@@ -5,6 +5,7 @@ export const solicitarSubidaSchema = z.object({
   action: z.literal("uploadUrl"),
   tramiteId: z.string().min(1),
   categoria: z.nativeEnum(CategoriaDocumento),
+  carpeta: z.string().min(1).optional(),
   fileName: z.string().min(1),
   contentType: z.string().min(1),
   sizeBytes: z.number().int().positive(),
