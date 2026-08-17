@@ -6,7 +6,11 @@ import { requireRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import { createTramite, tramiteInclude } from "@/lib/tramites/service";
+import {
+  construirFiltroFacturado,
+  createTramite,
+  tramiteInclude,
+} from "@/lib/tramites/service";
 import {
   tramiteCreateSchema,
   tramiteQuerySchema,
@@ -26,6 +30,7 @@ export async function GET(request: NextRequest) {
       estado: request.nextUrl.searchParams.get("estado") ?? undefined,
       ciudad: request.nextUrl.searchParams.get("ciudad") ?? undefined,
       clienteId: request.nextUrl.searchParams.get("clienteId") ?? undefined,
+      facturado: request.nextUrl.searchParams.get("facturado") ?? undefined,
       take: request.nextUrl.searchParams.get("take") ?? undefined,
       skip: request.nextUrl.searchParams.get("skip") ?? undefined,
     });
@@ -48,6 +53,11 @@ export async function GET(request: NextRequest) {
 
   if (query.clienteId) {
     where.clienteId = query.clienteId;
+  }
+
+  const filtroFacturado = construirFiltroFacturado(query.facturado);
+  if (filtroFacturado) {
+    where.borradores = filtroFacturado;
   }
 
   if (query.q) {

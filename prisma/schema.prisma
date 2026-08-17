@@ -415,6 +415,17 @@ model PagoTramite {
   // otros bancos / PSE → lo elige el operario en el modal "Agregar pago".
   bancoBeneficiarioId String?
   bancoBeneficiario   Beneficiario? @relation("PagoTramiteBancoBeneficiario", fields: [bancoBeneficiarioId], references: [id], onDelete: SetNull)
+  // Facturas en divisa (USD): el proveedor emite en USD con un valor COP de
+  // referencia, pero lo realmente pagado varía con la TRM del día. `valor`
+  // (arriba) SIEMPRE es el COP realmente pagado — fuente de verdad contable.
+  // Estos tres campos documentan de dónde salió ese COP:
+  //   moneda      → "USD", "EUR"… null = pago en COP puro (caso normal)
+  //   valorDivisa → monto en la divisa, en centavos (BigInt, sin flotantes)
+  //   tasaCambio  → TRM aplicada, decimal como string para no perder precisión
+  // Se validan en conjunto: o los tres null, o los tres presentes.
+  moneda        String?
+  valorDivisa   BigInt?
+  tasaCambio    String?
   orden         Int              @default(0)
   fechaRealPago DateTime?
   viaSocio      Boolean          @default(false)

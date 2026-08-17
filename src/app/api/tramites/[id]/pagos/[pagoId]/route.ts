@@ -5,6 +5,7 @@ import { requireRole } from "@/lib/auth/session";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import {
+  CamposDivisaIncompletosError,
   MatrizCanalNoEncontradoError,
   actualizarPago,
   eliminarPago,
@@ -38,6 +39,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     if (error instanceof MatrizCanalNoEncontradoError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
+    if (error instanceof CamposDivisaIncompletosError) {
+      return NextResponse.json({ error: error.message }, { status: 422 });
     }
 
     throw error;

@@ -12,6 +12,14 @@ import {
   FacturaProveedorNoEncontradaError,
   FacturaProveedorNoModificableError,
 } from "@/lib/facturas-proveedor/service";
+import {
+  CLAVES_UMBRAL,
+  DEFAULTS_UMBRAL,
+  getParametroBool,
+  getParametroNumero,
+} from "@/lib/parametros/service";
+import { camposDivisaValidos, type CamposDivisaInput } from "@/lib/pagos/divisa";
+import { calcularDesviacionPct, excedeUmbralDesviacion } from "@/lib/pagos/desviacion";
 
 type CrearPagoInput = {
   tramiteId: string;
@@ -32,6 +40,18 @@ type CrearPagoInput = {
    */
   bancoBeneficiarioId?: string | null;
   usuarioId: string;
+  /**
+   * Confirmación explícita de que el usuario aceptó la desviación
+   * pago↔facturas (A1). Sin este flag, se rechaza con 422 si el valor se
+   * desvía más del umbral configurado respecto a la suma de facturas
+   * vinculadas. La regla es server-side: no es evadible llamando la API
+   * directo sin pasar por el diálogo del cliente.
+   */
+  confirmarDesviacion?: boolean;
+  /** Campos de divisa (A2) — o los tres presentes, o los tres null/ausentes. */
+  moneda?: string | null;
+  valorDivisa?: bigint | null;
+  tasaCambio?: string | null;
 };
 
 type AplicacionDetalle = {
@@ -88,6 +108,13 @@ type LibroPagosResult = {
   saldos: bigint[];
   saldoFinal: bigint;
   cruceFactura: CruceFactura | null;
+  /**
+   * Umbral de desviación pago↔facturas configurado en `UMBRAL_DESVIACION_PAGO_PCT`
+   * (A1, reunión 1-jul-2026). El cliente lo usa para el diálogo de
+   * confirmación; el servicio SIEMPRE lo re-valida en `crearPago`, así que
+   * este valor es solo informativo/UX, nunca la fuente de la regla.
+   */
+  umbralDesviacionPct: number;
 };
 
 type ListarPagosFiltros = {
@@ -197,6 +224,54 @@ export class SinAnticipoAplicadoError extends Error {
 }
 
 /**
+ * A1 (reunión 1-jul-2026): el valor del pago se desvía más del umbral
+ * configurado (`UMBRAL_DESVIACION_PAGO_PCT`) respecto a la suma de las
+ * facturas de proveedor vinculadas. Se lanza SALVO que el caller confirme
+ * explícitamente con `confirmarDesviacion: true`.
+ */
+export class DesviacionPagoExcedeUmbralError extends Error {
+  public readonly status = 422;
+  public readonly desviacionPct: number;
+  public readonly umbralPct: number;
+  constructor(desviacionPct: number, umbralPct: number) {
+    super(
+      `El valor del pago se desvía ${desviacionPct.toFixed(1)}% de la suma de facturas vinculadas ` +
+        `(umbral: ${umbralPct}%). Confirme para continuar.`,
+    );
+    this.name = "DesviacionPagoExcedeUmbralError";
+    this.desviacionPct = desviacionPct;
+    this.umbralPct = umbralPct;
+  }
+}
+
+/**
+ * A2 (reunión 1-jul-2026): moneda/valorDivisa/tasaCambio deben venir los tres
+ * juntos, o los tres ausentes. Nunca parcial.
+ */
+export class CamposDivisaIncompletosError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super(
+      "moneda, valorDivisa y tasaCambio deben venir los tres juntos o ninguno (nunca parcial).",
+    );
+    this.name = "CamposDivisaIncompletosError";
+  }
+}
+
+/**
+ * A4 (reunión 1-jul-2026): con PAGO_COMPROBANTE_OBLIGATORIO=true, todo pago
+ * requiere `documentoId`. Con el default (false) el pago se acepta igual,
+ * pero queda visible como "sin comprobante" en el libro de pagos.
+ */
+export class ComprobanteObligatorioError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super("Este pago requiere un comprobante adjunto (documentoId) antes de registrarse.");
+    this.name = "ComprobanteObligatorioError";
+  }
+}
+
+/**
  * Crea un pago en el libro del trámite.
  * - Resuelve costoBancario automáticamente desde MatrizPago según canalPago.
  * - Vincula N facturas de proveedor vía tabla pivot (N↔N).
@@ -215,7 +290,26 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
     facturaProveedorIds = [],
     bancoBeneficiarioId,
     usuarioId,
+    confirmarDesviacion = false,
+    moneda = null,
+    valorDivisa = null,
+    tasaCambio = null,
   } = input;
+
+  // A2: o los tres campos de divisa vienen juntos, o ninguno (nunca parcial).
+  const camposDivisa: CamposDivisaInput = { moneda, valorDivisa, tasaCambio };
+  if (!camposDivisaValidos(camposDivisa)) {
+    throw new CamposDivisaIncompletosError();
+  }
+
+  // A4: con el parámetro en true, todo pago requiere comprobante adjunto.
+  const comprobanteObligatorio = await getParametroBool(
+    CLAVES_UMBRAL.pagoComprobanteObligatorio,
+    DEFAULTS_UMBRAL.pagoComprobanteObligatorio,
+  );
+  if (comprobanteObligatorio && !documentoId) {
+    throw new ComprobanteObligatorioError();
+  }
 
   return prisma.$transaction(async (tx) => {
     const anticipo = await tx.aplicacionAnticipo.findFirst({
@@ -246,7 +340,9 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
 
     const orden = (ultimoPago?.orden ?? 0) + 1;
 
-    // Validar y marcar facturas de proveedor como PAGADA
+    // Validar facturas de proveedor y acumular su valor para el chequeo de
+    // desviación (A1) — se marcan como PAGADA más abajo, tras crear el pago.
+    let sumaFacturas = 0n;
     for (const fpId of facturaProveedorIds) {
       const fp = await tx.facturaProveedor.findUnique({ where: { id: fpId } });
 
@@ -260,6 +356,24 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
 
       if (fp.estado === EstadoFacturaProveedor.FACTURADA_CLIENTE) {
         throw new FacturaProveedorNoModificableError(fpId, fp.estado);
+      }
+
+      sumaFacturas += fp.valor;
+    }
+
+    // A1: rechaza si el valor se desvía más del umbral configurado respecto a
+    // la suma de facturas vinculadas, salvo confirmación explícita del
+    // cliente. Regla server-side — no evadible llamando la API directo.
+    if (facturaProveedorIds.length > 0 && sumaFacturas > 0n && !confirmarDesviacion) {
+      const umbralPct = await getParametroNumero(
+        CLAVES_UMBRAL.desviacionPagoPct,
+        DEFAULTS_UMBRAL.desviacionPagoPct,
+      );
+      if (excedeUmbralDesviacion(valor, sumaFacturas, umbralPct)) {
+        throw new DesviacionPagoExcedeUmbralError(
+          calcularDesviacionPct(valor, sumaFacturas),
+          umbralPct,
+        );
       }
     }
 
@@ -275,6 +389,9 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
         orden,
         fechaRealPago,
         bancoBeneficiarioId: bancoFinal,
+        moneda,
+        valorDivisa,
+        tasaCambio,
       },
     });
 
@@ -337,9 +454,14 @@ export async function actualizarPago(
     /** Si se provee, reemplaza todos los beneficiarios vinculados. */
     beneficiarioIds?: string[];
     numSoporte?: string | null;
+    documentoId?: string | null;
     fechaRealPago?: Date | null;
     /** Banco (Beneficiario) para el 4x1000. null = limpiar. */
     bancoBeneficiarioId?: string | null;
+    /** Campos de divisa (A2). Omitido = sin cambios; null = limpiar. */
+    moneda?: string | null;
+    valorDivisa?: bigint | null;
+    tasaCambio?: string | null;
   },
   usuarioId: string,
 ): Promise<PagoTramite> {
@@ -350,6 +472,17 @@ export async function actualizarPago(
 
     if (!actual) {
       throw new Error(`Pago ${pagoId} no encontrado`);
+    }
+
+    // A2: valida el estado RESULTANTE tras fusionar el PATCH parcial con lo ya
+    // persistido — un campo omitido (undefined) conserva el valor de BD.
+    const camposDivisaFusionados: CamposDivisaInput = {
+      moneda: cambios.moneda !== undefined ? cambios.moneda : actual.moneda,
+      valorDivisa: cambios.valorDivisa !== undefined ? cambios.valorDivisa : actual.valorDivisa,
+      tasaCambio: cambios.tasaCambio !== undefined ? cambios.tasaCambio : actual.tasaCambio,
+    };
+    if (!camposDivisaValidos(camposDivisaFusionados)) {
+      throw new CamposDivisaIncompletosError();
     }
 
     const canalEfectivo = cambios.canalPago ?? actual.canalPago;
@@ -526,7 +659,7 @@ export async function getPagoConBeneficiario(pagoId: string) {
  * Retorna el libro de pagos del trámite con saldo corriente línea a línea.
  */
 export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult> {
-  const [pagos, rawAplicaciones, borradorCruce] = await Promise.all([
+  const [pagos, rawAplicaciones, borradorCruce, umbralDesviacionPct] = await Promise.all([
     prisma.pagoTramite.findMany({
       where: { tramiteId },
       orderBy: { orden: "asc" },
@@ -569,6 +702,7 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
         saldoACargoCliente: true,
       },
     }),
+    getParametroNumero(CLAVES_UMBRAL.desviacionPagoPct, DEFAULTS_UMBRAL.desviacionPagoPct),
   ]);
 
   const aplicaciones: AplicacionDetalle[] = rawAplicaciones.map((a) => ({
@@ -621,6 +755,7 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
     saldos,
     saldoFinal,
     cruceFactura,
+    umbralDesviacionPct,
   };
 }
 

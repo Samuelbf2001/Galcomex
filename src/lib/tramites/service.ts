@@ -1,8 +1,11 @@
 import {
   AgenciaAduanas,
+  CategoriaDocumento,
   Ciudad,
+  EstadoBorrador,
   EstadoTramite,
   Prisma,
+  TipoCliente,
   type TramiteDO,
 } from "@prisma/client";
 
@@ -36,6 +39,89 @@ const transitionMap: Record<EstadoTramite, EstadoTramite[]> = {
   PAGADO: [EstadoTramite.CERRADO],
   CERRADO: [],
 };
+
+/**
+ * Reunión 2026-07-01 (bloque ~01:30): "si el trámite se cerró no pueden
+ * modificar nada... nadie lo puede modificar para la seguridad de la misma
+ * información". Un trámite CERRADO es inmutable en cuanto a documentos:
+ * no se pueden subir nuevos ni eliminar/reemplazar los existentes.
+ * Función pura y testeable — sin BD.
+ */
+export function puedeModificarDocumentos(estado: EstadoTramite): boolean {
+  return estado !== EstadoTramite.CERRADO;
+}
+
+/**
+ * Traduce el filtro de query `facturado` del listado de trámites al criterio
+ * de Prisma sobre la relación `borradores`. Reusa el mismo criterio que usa
+ * el dashboard (`src/lib/dashboard/service.ts`: `borradores: { none: { estado:
+ * "FACTURADO" } }` para "pendiente de facturar") para que ambos módulos sean
+ * consistentes entre sí.
+ * Función pura y testeable — sin BD.
+ *
+ * @param facturado  true → solo trámites con un BorradorFactura FACTURADO.
+ *                   false → solo trámites SIN ningún BorradorFactura FACTURADO.
+ *                   undefined → sin filtrar (no se agrega criterio).
+ */
+export function construirFiltroFacturado(
+  facturado: boolean | undefined,
+): Prisma.BorradorFacturaListRelationFilter | undefined {
+  if (facturado === undefined) {
+    return undefined;
+  }
+
+  return facturado
+    ? { some: { estado: EstadoBorrador.FACTURADO } }
+    : { none: { estado: EstadoBorrador.FACTURADO } };
+}
+
+// ─── B4: BL + Factura Comercial obligatorios para clientes SOCIO_LM ──────────
+// Reunión 2026-07-01 (bloque ~00:00–00:01): Ernesto demostró en vivo que un DO
+// de cliente SOCIO_LM no se puede crear sin BL ni Factura Comercial. Esa
+// exigencia solo vivía en el cliente (tramites-workspace.tsx) — un
+// POST /api/tramites directo la saltaba, violando las invariantes #3 y #4 de
+// CLAUDE.md. Como el storageKey del documento depende del `consecutivo` (que
+// solo existe una vez creado el DO), los documentos SIEMPRE se suben en una
+// segunda llamada, después de crear el trámite — no es posible bloquear la
+// creación misma sin rediseñar storage. La red de seguridad real se aplica en
+// el primer gate de progreso operativo del DO (transición APERTURA→EN_TRAMITE,
+// el mismo punto donde ya se valida el checklist y la regla Litoplas): un DO
+// SOCIO_LM no puede avanzar sin esos dos documentos.
+// Alcance deliberadamente limitado a SOCIO_LM (Guillermo pidió extenderlo a
+// todos los clientes en la reunión, pero es decisión de negocio pendiente —
+// ver .claude/PENDIENTES.md).
+const DOCUMENTOS_OBLIGATORIOS_SOCIO_LM: readonly CategoriaDocumento[] = [
+  CategoriaDocumento.BL,
+  CategoriaDocumento.FACTURA_COMERCIAL,
+];
+
+const ETIQUETAS_CATEGORIA_DOCUMENTO: Partial<Record<CategoriaDocumento, string>> = {
+  BL: "BL (Bill of Lading)",
+  FACTURA_COMERCIAL: "Factura comercial",
+};
+
+function etiquetaCategoriaDocumento(categoria: CategoriaDocumento): string {
+  return ETIQUETAS_CATEGORIA_DOCUMENTO[categoria] ?? categoria;
+}
+
+/**
+ * Calcula qué categorías de documento obligatorias faltan para un trámite,
+ * dado el tipo de cliente y las categorías de documentos ya presentes (no
+ * eliminados). Solo aplica a clientes SOCIO_LM; para cualquier otro tipo
+ * siempre devuelve `[]`.
+ * Función pura y testeable — sin BD.
+ */
+export function faltanDocumentosObligatorios(
+  tipoCliente: TipoCliente,
+  categoriasPresentes: CategoriaDocumento[],
+): CategoriaDocumento[] {
+  if (tipoCliente !== TipoCliente.SOCIO_LM) {
+    return [];
+  }
+
+  const presentes = new Set(categoriasPresentes);
+  return DOCUMENTOS_OBLIGATORIOS_SOCIO_LM.filter((categoria) => !presentes.has(categoria));
+}
 
 function formatConsecutivo(ciudad: Ciudad, anio: number, numero: number) {
   const shortYear = String(anio).slice(-2);
@@ -246,8 +332,12 @@ export async function transitionTramite(
     const actual = await tx.tramiteDO.findUnique({
       where: { id: tramiteId },
       include: {
-        cliente: { select: { nombre: true } },
+        cliente: { select: { nombre: true, tipo: true } },
         checklistItems: true,
+        documentos: {
+          where: { eliminado: false },
+          select: { categoria: true },
+        },
       },
     });
 
@@ -289,6 +379,25 @@ export async function transitionTramite(
           ok: false,
           status: 422,
           message: litoplasError,
+        };
+      }
+
+      // B4: hueco de seguridad — la exigencia de BL + Factura Comercial para
+      // SOCIO_LM solo vivía en el cliente. No es bypasseable con `bypassChecklist`
+      // (igual que Litoplas): es un requisito estructural, no un hábito operativo.
+      const documentosFaltantes = faltanDocumentosObligatorios(
+        actual.cliente.tipo,
+        actual.documentos.map((documento) => documento.categoria),
+      );
+
+      if (documentosFaltantes.length > 0) {
+        return {
+          ok: false,
+          status: 422,
+          message: `Faltan documentos obligatorios para clientes SOCIO_LM: ${documentosFaltantes
+            .map(etiquetaCategoriaDocumento)
+            .join(", ")}`,
+          faltantes: documentosFaltantes.map(etiquetaCategoriaDocumento),
         };
       }
     }

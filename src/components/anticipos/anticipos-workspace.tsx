@@ -438,6 +438,15 @@ function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, onVerificar, 
         {/* Acciones */}
         <td className="px-3 py-2.5">
           <div className="flex flex-wrap items-center gap-1.5">
+            {!anticipo.soporteKey && (
+              <span
+                className="inline-flex items-center gap-1 border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
+                title="Este anticipo no tiene comprobante (soporte) adjunto"
+              >
+                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                SIN SOPORTE
+              </span>
+            )}
             {anticipo.estado === "VERIFICADO" && (
               <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                 VERIFICADO
@@ -539,6 +548,7 @@ export function AnticiposWorkspace() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [conSaldo, setConSaldo] = useState(false);
+  const [sinSoporte, setSinSoporte] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [aplicarTarget, setAplicarTarget] = useState<AnticipoRow | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -553,7 +563,7 @@ export function AnticiposWorkspace() {
       setLoadError(null);
 
       const [anticiposData, clientesData, tramitesData] = await Promise.all([
-        fetchAnticipos({ conSaldo }, controller.signal),
+        fetchAnticipos({ conSaldo, sinSoporte }, controller.signal),
         fetchClienteOptions(controller.signal),
         fetchTramiteOptions(controller.signal),
       ]);
@@ -580,7 +590,7 @@ export function AnticiposWorkspace() {
     });
 
     return () => controller.abort();
-  }, [reloadKey, conSaldo]);
+  }, [reloadKey, conSaldo, sinSoporte]);
 
   // Estadísticas
   const stats = useMemo(() => {
@@ -756,6 +766,18 @@ export function AnticiposWorkspace() {
         </button>
         <button
           type="button"
+          onClick={() => setSinSoporte((v) => !v)}
+          title="Anticipos sin comprobante adjunto (soporteKey)"
+          className={`h-8 border px-3 text-xs font-semibold transition ${
+            sinSoporte
+              ? "border-amber-600 bg-amber-500 text-white"
+              : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+          }`}
+        >
+          Sin soporte
+        </button>
+        <button
+          type="button"
           onClick={() => setReloadKey((k) => k + 1)}
           className="ml-auto inline-flex h-8 items-center gap-2 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
         >
@@ -785,6 +807,7 @@ export function AnticiposWorkspace() {
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-sm">
           <p className="font-semibold text-slate-900">
             Anticipos {conSaldo ? "(con saldo)" : "(todos)"}
+            {sinSoporte ? " · sin soporte" : ""}
           </p>
           <p className="text-slate-500">{anticipos.length} registros</p>
         </div>
@@ -834,9 +857,11 @@ export function AnticiposWorkspace() {
               ) : anticipos.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-12 text-center text-sm text-slate-500">
-                    {conSaldo
-                      ? "No hay anticipos con saldo disponible."
-                      : "Sin anticipos registrados."}
+                    {sinSoporte
+                      ? "No hay anticipos sin soporte adjunto."
+                      : conSaldo
+                        ? "No hay anticipos con saldo disponible."
+                        : "Sin anticipos registrados."}
                   </td>
                 </tr>
               ) : (

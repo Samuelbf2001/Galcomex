@@ -47,6 +47,13 @@ export const tramiteQuerySchema = z.object({
   estado: z.nativeEnum(EstadoTramite).optional(),
   ciudad: z.nativeEnum(Ciudad).optional(),
   clienteId: z.string().trim().min(1).optional(),
+  // "¿ya está facturado?" (reunión 2026-07-01, bloque 00:00–00:05).
+  // true → tiene un BorradorFactura FACTURADO. false → pendiente de facturar.
+  // Ausente → sin filtrar por facturación.
+  facturado: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value === "true")),
   take: z.coerce.number().int().min(1).max(100).default(50),
   skip: z.coerce.number().int().min(0).default(0),
 });

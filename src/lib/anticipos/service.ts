@@ -1,6 +1,11 @@
 import { EstadoMovimiento, Rol, TipoRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import {
+  CLAVES_UMBRAL,
+  DEFAULTS_UMBRAL,
+  getParametroBool,
+} from "@/lib/parametros/service";
 
 export class VerificarAnticipoPermisoError extends Error {
   public readonly status = 403;
@@ -16,6 +21,46 @@ export class AnticipoNoEncontradoError extends Error {
     super(`Anticipo ${id} no encontrado`);
     this.name = "AnticipoNoEncontradoError";
   }
+}
+
+/**
+ * Reunión 2026-07-01 (bloque ~00:03–00:07): "hay anticipos que no tienen
+ * soporte... ahí sería como una obligación de que se suba el soporte para
+ * poder continuar". El soporte NO prueba que la plata entró a la cuenta —
+ * eso lo verifica Camila contra el banco vía `Anticipo.verificadoBanco`;
+ * esta regla solo exige que exista el comprobante adjunto.
+ */
+export class AnticipoSoporteObligatorioError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super(
+      "El soporte del anticipo es obligatorio (parámetro ANTICIPO_SOPORTE_OBLIGATORIO). Adjunta el soporte (soporteKey) para continuar.",
+    );
+    this.name = "AnticipoSoporteObligatorioError";
+  }
+}
+
+/**
+ * Regla pura: determina si un anticipo sin `soporteKey` debe rechazarse,
+ * según el parámetro de sistema `ANTICIPO_SOPORTE_OBLIGATORIO` (default
+ * `false` — decisión de la reunión fue arrancar sin bloquear).
+ * Función pura y testeable — sin BD.
+ */
+export function debeRechazarAnticipoSinSoporte(
+  soporteObligatorio: boolean,
+  soporteKey: string | null | undefined,
+): boolean {
+  return soporteObligatorio && !soporteKey;
+}
+
+/**
+ * Regla pura: un anticipo "sin soporte" es aquel sin `soporteKey`. Se usa
+ * para identificarlos y poder listarlos (caso real de la reunión: "ahora
+ * que estamos verificando... hay anticipos que no tienen soporte").
+ * Función pura y testeable — sin BD.
+ */
+export function esAnticipoSinSoporte(soporteKey: string | null | undefined): boolean {
+  return !soporteKey;
 }
 
 type CrearAnticipoInput = {
@@ -61,6 +106,15 @@ type AnticipoConSaldo = {
 };
 
 export async function crearAnticipo(input: CrearAnticipoInput) {
+  const soporteObligatorio = await getParametroBool(
+    CLAVES_UMBRAL.anticipoSoporteObligatorio,
+    DEFAULTS_UMBRAL.anticipoSoporteObligatorio,
+  );
+
+  if (debeRechazarAnticipoSinSoporte(soporteObligatorio, input.soporteKey)) {
+    throw new AnticipoSoporteObligatorioError();
+  }
+
   // Snapshot del costo de recaudo desde la matriz
   const matrizRow = await prisma.matrizRecaudo.findUnique({
     where: { tipoRecaudo: input.tipoRecaudo },
@@ -192,6 +246,8 @@ export async function getAnticipoConSaldo(
 type ListarAnticiposInput = {
   clienteId?: string;
   conSaldo?: boolean;
+  /** Solo anticipos sin `soporteKey` (caso real: "hay anticipos que no tienen soporte"). */
+  sinSoporte?: boolean;
 };
 
 export async function listarAnticipos(
@@ -237,11 +293,17 @@ export async function listarAnticipos(
     };
   });
 
+  let filtrado = resultado;
+
   if (input.conSaldo) {
-    return resultado.filter((a) => a.restante > 0n);
+    filtrado = filtrado.filter((a) => a.restante > 0n);
   }
 
-  return resultado;
+  if (input.sinSoporte) {
+    filtrado = filtrado.filter((a) => esAnticipoSinSoporte(a.soporteKey));
+  }
+
+  return filtrado;
 }
 
 /**

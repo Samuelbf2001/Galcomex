@@ -34,6 +34,8 @@ import {
   verificarMovimientoPago,
 } from "@/components/pagos/pagos-api";
 import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
+import { calcularDesviacionPct } from "@/lib/pagos/desviacion";
+import { esDecimalValido } from "@/lib/pagos/divisa";
 
 // ---------------------------------------------------------------------------
 // Tipos internos
@@ -102,6 +104,34 @@ function formatCOPInput(bigStr: string): string {
     return new Intl.NumberFormat("es-CO").format(Number(n));
   } catch {
     return bigStr;
+  }
+}
+
+/**
+ * Parsea un monto en divisa escrito con punto decimal (ej. "1234.56") a
+ * centavos BigInt serializado como string — sin pasar por flotantes en
+ * ningún momento. Devuelve null si no es un decimal válido o es <= 0.
+ */
+function parseDivisaCentavos(raw: string): string | null {
+  const cleaned = raw.trim();
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(cleaned);
+  if (!match) return null;
+  const [, intPart, fracPart = ""] = match;
+  const fracPadded = (fracPart + "00").slice(0, 2);
+  const centavos = BigInt(intPart) * 100n + BigInt(fracPadded);
+  return centavos > 0n ? centavos.toString() : null;
+}
+
+/** Formatea centavos BigInt serializados como string decimal ("123456" → "1.234,56"). */
+function formatDivisaCentavos(centavosStr: string): string {
+  try {
+    const n = BigInt(centavosStr);
+    return new Intl.NumberFormat("es-CO", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(Number(n) / 100);
+  } catch {
+    return centavosStr;
   }
 }
 
@@ -595,11 +625,20 @@ function FacturasProveedorCombobox({
 // ---------------------------------------------------------------------------
 
 type PseStep = "form" | "soporte";
-type PendingSubmit = { concepto: string; numSoporte: string | null; canalPago: CanalPago; valor: string };
+type PendingSubmit = {
+  concepto: string;
+  numSoporte: string | null;
+  canalPago: CanalPago;
+  valor: string;
+  /** true = el usuario ya confirmó la desviación en el diálogo (A1). */
+  confirmarDesviacion?: boolean;
+};
 
 type NuevoPagoModalProps = {
   tramiteId: string;
   tramiteConsecutivo: string;
+  /** Umbral de desviación pago↔facturas (%) — A1, viene del libro de pagos. */
+  umbralDesviacionPct: number;
   initialConcepto?: string;
   initialFacturaIds?: string[];
   initialBeneficiarios?: BeneficiarioSeleccion[];
@@ -611,6 +650,7 @@ type NuevoPagoModalProps = {
 export function NuevoPagoModal({
   tramiteId,
   tramiteConsecutivo,
+  umbralDesviacionPct,
   initialConcepto,
   initialFacturaIds,
   initialBeneficiarios,
@@ -636,16 +676,28 @@ export function NuevoPagoModal({
   const [facturasSeleccionadas, setFacturasSeleccionadas] = useState<string[]>(initialFacturaIds ?? []);
   const [facturasLoadError, setFacturasLoadError] = useState(false);
 
-  // Diálogo de confirmación cuando el valor desvía ±10% del total de facturas seleccionadas
+  // Diálogo de confirmación cuando el valor desvía más del umbral configurado
+  // del total de facturas seleccionadas (A1)
   const [confirmPending, setConfirmPending] = useState<PendingSubmit | null>(null);
   const [confirmPct, setConfirmPct] = useState(0);
+
+  // Divisa (A2): sección opcional/colapsable — no estorba el caso normal (COP).
+  const [divisaActiva, setDivisaActiva] = useState(false);
+  const [monedaInput, setMonedaInput] = useState("USD");
+  const [valorDivisaInput, setValorDivisaInput] = useState("");
+  const [tasaCambioInput, setTasaCambioInput] = useState("");
+  const [divisaError, setDivisaError] = useState<string | null>(null);
 
   // PSE: wizard de 2 pasos (form → soporte)
   const [pseStep, setPseStep] = useState<PseStep>("form");
   const [psePendingPayload, setPsePendingPayload] = useState<PendingSubmit | null>(null);
   const [isRequestingToken, setIsRequestingToken] = useState(false);
   const [pseCodigoRecibido, setPseCodigoRecibido] = useState<string | null>(null);
-  const [pseRetryRemaining, setPseRetryRemaining] = useState(0);
+  // A3: vigencia corta del CÓDIGO (no del enlace) — cuenta regresiva en
+  // segundos que llega del servidor (`expiraEnSegundos`, ver pse-codigo/route.ts).
+  // Al llegar a 0 el código se borra de pantalla y hay que solicitar uno nuevo.
+  const [codigoExpiraEn, setCodigoExpiraEn] = useState<number | null>(null);
+  const [pseCodigoExpirado, setPseCodigoExpirado] = useState(false);
   const [soporteFile, setSoporteFile] = useState<File | null>(null);
   const [isUploadingDoc, setIsUploadingDoc] = useState(false);
 
@@ -656,9 +708,15 @@ export function NuevoPagoModal({
       fetch(`/api/tramites/${tramiteId}/pse-codigo`, { method: "GET" })
         .then(async (r) => {
           if (!r.ok) return;
-          const data = (await r.json()) as { ready: boolean; codigo?: string };
+          const data = (await r.json()) as {
+            ready: boolean;
+            codigo?: string;
+            expiraEnSegundos?: number;
+          };
           if (data.ready && data.codigo) {
             setPseCodigoRecibido(data.codigo);
+            setCodigoExpiraEn(typeof data.expiraEnSegundos === "number" ? data.expiraEnSegundos : null);
+            setPseCodigoExpirado(false);
           }
         })
         .catch(() => undefined);
@@ -666,15 +724,26 @@ export function NuevoPagoModal({
     return () => clearInterval(interval);
   }, [pseStep, pseCodigoRecibido, tramiteId]);
 
+  // A3: cuenta regresiva de vigencia del CÓDIGO (no del enlace). Al llegar a 0
+  // el código desaparece de pantalla y el operario debe pedir uno nuevo —
+  // exactamente lo prometido en la reunión ("son 30 [segundos]... de ahí
+  // desaparece el token del sistema"). Mismo patrón de setTimeout que ya
+  // usaba el archivo para el cooldown anterior.
   useEffect(() => {
-    if (pseRetryRemaining <= 0) return;
+    if (codigoExpiraEn === null) return;
+    if (codigoExpiraEn <= 0) {
+      setPseCodigoRecibido(null);
+      setCodigoExpiraEn(null);
+      setPseCodigoExpirado(true);
+      return;
+    }
 
     const timeout = setTimeout(() => {
-      setPseRetryRemaining((current) => Math.max(current - 1, 0));
+      setCodigoExpiraEn((current) => (current === null ? null : current - 1));
     }, 1000);
 
     return () => clearTimeout(timeout);
-  }, [pseRetryRemaining]);
+  }, [codigoExpiraEn]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -730,6 +799,11 @@ export function NuevoPagoModal({
           payload.canalPago !== "TRANSF_BANCOLOMBIA" && bancoSel
             ? bancoSel.id
             : null,
+        confirmarDesviacion: payload.confirmarDesviacion ?? false,
+        // Divisa (A2): o los tres campos, o ninguno.
+        moneda: divisaActiva ? monedaInput.trim().toUpperCase() : null,
+        valorDivisa: divisaActiva ? parseDivisaCentavos(valorDivisaInput) : null,
+        tasaCambio: divisaActiva ? tasaCambioInput.trim() : null,
       });
       onCreated(pago);
     } catch (caught) {
@@ -749,9 +823,10 @@ export function NuevoPagoModal({
       });
       if (!resp.ok) throw new Error("No fue posible notificar a María Camila.");
       setPseCodigoRecibido(null);
+      setCodigoExpiraEn(null);
+      setPseCodigoExpirado(false);
       setPsePendingPayload(payload);
       setPseStep("soporte");
-      setPseRetryRemaining(30);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Error al solicitar el pago PSE.");
     } finally {

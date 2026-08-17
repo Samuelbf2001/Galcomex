@@ -47,6 +47,51 @@ async function main() {
       valor: "890300279",
       descripcion: "NIT del Banco de Occidente S.A. — beneficiario GMF (impuesto 4x1000) en todas las facturas",
     },
+    // ── Umbrales de alerta (reunión 1-jul-2026) ────────────────────────────
+    // Los valores son el punto de partida discutido en la reunión; la política
+    // definitiva la fija Galcomex desde Configuración → Parámetros.
+    {
+      clave: "UMBRAL_DESVIACION_PAGO_PCT",
+      valor: "10",
+      descripcion:
+        "Desviación máxima (%) entre el valor del pago y la suma de facturas vinculadas antes de pedir confirmación",
+    },
+    {
+      clave: "UMBRAL_SALDO_TRAMITE_ALERTA",
+      valor: "200000",
+      descripcion:
+        "Saldo negativo (COP) de un trámite a partir del cual se alerta que se le acabó la plata",
+    },
+    {
+      clave: "UMBRAL_CARTERA_CLIENTE_ALERTA",
+      valor: "20000000",
+      descripcion:
+        "Saldo negativo (COP) acumulado de un cliente a partir del cual se alerta la cartera",
+    },
+    {
+      clave: "ANTICIPO_SOPORTE_OBLIGATORIO",
+      valor: "false",
+      descripcion:
+        "Si true, no se puede registrar un anticipo sin comprobante adjunto (reunión 1-jul: arranca en false)",
+    },
+    {
+      clave: "PAGO_COMPROBANTE_OBLIGATORIO",
+      valor: "false",
+      descripcion:
+        "Si true, no se puede registrar un pago sin comprobante adjunto (reunión 1-jul: arranca en false, se alerta en vez de bloquear)",
+    },
+    {
+      clave: "PSE_TOKEN_VIGENCIA_SEGUNDOS",
+      valor: "1800",
+      descripcion:
+        "Vigencia (segundos) del enlace PSE enviado a María Camila. 1800 = 30 min",
+    },
+    {
+      clave: "PSE_CODIGO_VIGENCIA_SEGUNDOS",
+      valor: "30",
+      descripcion:
+        "Vigencia (segundos) del código PSE una vez visible para el operario, tal como se demostró en la reunión del 1-jul",
+    },
   ];
 
   for (const p of params) {

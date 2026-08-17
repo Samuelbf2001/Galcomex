@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { calcularDiasYAlerta } from "../service";
+import { calcularDiasYAlerta, evaluarAlertaSaldoTramite } from "../service";
 
 // ─── Función auxiliar ─────────────────────────────────────────────────────────
 
@@ -84,5 +84,73 @@ describe("calcularDiasYAlerta", () => {
     const result = calcularDiasYAlerta(fechaFutura, HOY);
     expect(result.dias).toBe(0);
     expect(result.alerta).toBe(false);
+  });
+});
+
+/**
+ * Tests de la función pura evaluarAlertaSaldoTramite — C1
+ *
+ * Verifica la alerta de "saldo agotado" por trámite: cuando los pagos
+ * superan los anticipos aplicados por más del umbral de política
+ * (reunión 1-jul-2026, default UMBRAL_SALDO_TRAMITE_ALERTA = 200.000 COP).
+ */
+describe("evaluarAlertaSaldoTramite", () => {
+  const UMBRAL = 200_000n;
+
+  it("pagos menores a anticipos → deficit 0, sin alerta", () => {
+    const result = evaluarAlertaSaldoTramite(10_000_000n, 8_000_000n, UMBRAL);
+    expect(result.deficit).toBe(0n);
+    expect(result.alerta).toBe(false);
+  });
+
+  it("pagos exactamente iguales a anticipos → deficit 0, sin alerta", () => {
+    const result = evaluarAlertaSaldoTramite(5_000_000n, 5_000_000n, UMBRAL);
+    expect(result.deficit).toBe(0n);
+    expect(result.alerta).toBe(false);
+  });
+
+  it("pagos exceden anticipos pero dentro del umbral → sin alerta", () => {
+    // Déficit de 150.000, umbral 200.000 → no excede
+    const result = evaluarAlertaSaldoTramite(5_000_000n, 5_150_000n, UMBRAL);
+    expect(result.deficit).toBe(150_000n);
+    expect(result.alerta).toBe(false);
+  });
+
+  it("déficit exactamente igual al umbral → sin alerta (no excede, umbral estricto)", () => {
+    const result = evaluarAlertaSaldoTramite(5_000_000n, 5_200_000n, UMBRAL);
+    expect(result.deficit).toBe(200_000n);
+    expect(result.alerta).toBe(false);
+  });
+
+  it("déficit supera el umbral por 1 peso → alerta true", () => {
+    const result = evaluarAlertaSaldoTramite(5_000_000n, 5_200_001n, UMBRAL);
+    expect(result.deficit).toBe(200_001n);
+    expect(result.alerta).toBe(true);
+  });
+
+  it("trámite sin ningún anticipo pero con pagos → deficit = pagos, alerta true si excede umbral", () => {
+    const result = evaluarAlertaSaldoTramite(0n, 500_000n, UMBRAL);
+    expect(result.deficit).toBe(500_000n);
+    expect(result.alerta).toBe(true);
+  });
+
+  it("trámite sin anticipos ni pagos → deficit 0, sin alerta", () => {
+    const result = evaluarAlertaSaldoTramite(0n, 0n, UMBRAL);
+    expect(result.deficit).toBe(0n);
+    expect(result.alerta).toBe(false);
+  });
+
+  it("umbral personalizado (0) → cualquier déficit positivo dispara alerta", () => {
+    const result = evaluarAlertaSaldoTramite(1_000_000n, 1_000_001n, 0n);
+    expect(result.deficit).toBe(1n);
+    expect(result.alerta).toBe(true);
+  });
+
+  it("tolerancia 0 pesos: montos grandes exactos no pierden precisión (BigInt)", () => {
+    const anticipos = 45_226_000n;
+    const pagos = 45_426_001n; // excede en 200.001, justo 1 peso sobre el umbral
+    const result = evaluarAlertaSaldoTramite(anticipos, pagos, UMBRAL);
+    expect(result.deficit).toBe(200_001n);
+    expect(result.alerta).toBe(true);
   });
 });

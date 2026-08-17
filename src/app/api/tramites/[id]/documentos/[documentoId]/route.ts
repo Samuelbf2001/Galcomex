@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { requireRole } from "@/lib/auth/session";
+import { prisma } from "@/lib/db/prisma";
 import {
   DocumentoNoEncontradoError,
   DocumentoYaEliminadoError,
@@ -8,6 +9,7 @@ import {
   refrescarUrlDescarga,
 } from "@/lib/documentos/service";
 import { jsonResponse } from "@/lib/http/json";
+import { puedeModificarDocumentos } from "@/lib/tramites/service";
 
 type RouteContext = {
   params: Promise<{ id: string; documentoId: string }>;
@@ -48,7 +50,22 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     return session;
   }
 
-  const { documentoId } = await context.params;
+  const { id, documentoId } = await context.params;
+
+  const tramite = await prisma.tramiteDO.findUnique({
+    where: { id },
+    select: { estado: true },
+  });
+
+  if (tramite && !puedeModificarDocumentos(tramite.estado)) {
+    return NextResponse.json(
+      {
+        error:
+          "El trámite está CERRADO: no se pueden eliminar ni reemplazar documentos para preservar la información.",
+      },
+      { status: 409 },
+    );
+  }
 
   try {
     await eliminarDocumento(documentoId, session.user.id);

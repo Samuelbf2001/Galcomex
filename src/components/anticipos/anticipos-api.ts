@@ -144,11 +144,12 @@ function normalizeAnticipo(raw: unknown, clientes: ClienteOption[]): AnticipoRow
 }
 
 export async function fetchAnticipos(
-  params: { conSaldo?: boolean; clienteId?: string } = {},
+  params: { conSaldo?: boolean; sinSoporte?: boolean; clienteId?: string } = {},
   signal?: AbortSignal,
 ): Promise<AnticipoRow[]> {
   const url = new URL("/api/anticipos", window.location.origin);
   if (params.conSaldo) url.searchParams.set("con_saldo", "true");
+  if (params.sinSoporte) url.searchParams.set("sin_soporte", "true");
   if (params.clienteId) url.searchParams.set("clienteId", params.clienteId);
 
   let response: Response;

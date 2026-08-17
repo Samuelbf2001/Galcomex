@@ -25,4 +25,10 @@ export const listarAnticiposQuerySchema = z.object({
     .enum(["true", "false", "1", "0"])
     .optional()
     .transform((v) => v === "true" || v === "1"),
+  // Anticipos sin soporte adjunto (reunión 2026-07-01): permite listarlos
+  // para que Camila/Karina puedan seguirles el rastro y pedir el comprobante.
+  sinSoporte: z
+    .enum(["true", "false", "1", "0"])
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
 });

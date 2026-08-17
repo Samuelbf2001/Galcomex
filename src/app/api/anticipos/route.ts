@@ -4,7 +4,11 @@ import { ZodError } from "zod";
 import { requireRole } from "@/lib/auth/session";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import { crearAnticipo, listarAnticipos } from "@/lib/anticipos/service";
+import {
+  AnticipoSoporteObligatorioError,
+  crearAnticipo,
+  listarAnticipos,
+} from "@/lib/anticipos/service";
 import {
   crearAnticipoSchema,
   listarAnticiposQuerySchema,
@@ -21,11 +25,13 @@ export async function GET(request: NextRequest) {
     const params = listarAnticiposQuerySchema.parse({
       clienteId: request.nextUrl.searchParams.get("clienteId") ?? undefined,
       conSaldo: request.nextUrl.searchParams.get("con_saldo") ?? undefined,
+      sinSoporte: request.nextUrl.searchParams.get("sin_soporte") ?? undefined,
     });
 
     const anticipos = await listarAnticipos({
       clienteId: params.clienteId,
       conSaldo: params.conSaldo,
+      sinSoporte: params.sinSoporte,
     });
 
     return jsonResponse({ anticipos });
@@ -61,6 +67,10 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);
+    }
+
+    if (error instanceof AnticipoSoporteObligatorioError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
     }
 
     throw error;

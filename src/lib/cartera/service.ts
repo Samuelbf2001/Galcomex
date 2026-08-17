@@ -14,6 +14,7 @@
 import { CanalPago, DestinoPago, EstadoMovimiento, Prisma, Rol, TipoPagoFactura, TipoRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { CLAVES_UMBRAL, DEFAULTS_UMBRAL, getParametroBigInt } from "@/lib/parametros/service";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -105,6 +106,41 @@ export function calcularSaldoNeto({
   devoluciones: bigint;
 }): bigint {
   return saldoAFavor - saldoACargo + abonos - devoluciones;
+}
+
+/**
+ * Evalúa si la deuda acumulada de un cliente hacia Galcomex supera el umbral
+ * de alerta de cartera (C2, reunión 1-jul-2026, 01:13:59–01:15:20):
+ * "Vamos a alertar cuando ya el cliente esté bajo menos 20 millones. Ya eso
+ * es una alerta importante. Vamos a mandarla al señor Guillermo." No es un
+ * bloqueo — es una señal de riesgo de crédito para decidir si se sigue
+ * dándole anticipos al cliente.
+ *
+ * Convención de signo — IDÉNTICA a `calcularSaldoNeto` de este mismo archivo
+ * y a `cruceLabel`/`CruceTarjetas` en `cartera-workspace.tsx`:
+ *   saldoNetoAcumulado > 0 → Galcomex le debe a la parte (saldo a favor)
+ *   saldoNetoAcumulado < 0 → la parte le debe a Galcomex (pendiente de cobro)
+ *
+ * "El cliente está bajo menos 20 millones" (00:32:41: "tiene de 22 millones
+ * a Galcomex... ya no puedo darle más plata") se traduce entonces como
+ * saldoNetoAcumulado < -umbral, NO como |saldoNetoAcumulado| > umbral: un
+ * cliente con saldo A FAVOR (Galcomex le debe) jamás dispara esta alerta sin
+ * importar cuán grande sea ese saldo — la alerta es de cartera por cobrar
+ * (riesgo de que el cliente no pague), no de magnitud de saldo en general.
+ *
+ * Se aplica igual a la vista CLIENTE y a la vista LM (mismo ledger, mismo
+ * signo, dos acumulados independientes) — ver `getClientesEnAlertaCartera`.
+ *
+ * @param saldoNetoAcumulado  Σ saldoNeto (CLIENTE o LM) de todas las facturas del cliente.
+ * @param umbral              Umbral de alerta en COP (política de negocio, editable).
+ * @returns deuda = max(0, -saldoNetoAcumulado); alerta = saldoNetoAcumulado < -umbral.
+ */
+export function evaluarAlertaCarteraCliente(
+  saldoNetoAcumulado: bigint,
+  umbral: bigint,
+): { deuda: bigint; alerta: boolean } {
+  const deuda = saldoNetoAcumulado < 0n ? -saldoNetoAcumulado : 0n;
+  return { deuda, alerta: saldoNetoAcumulado < -umbral };
 }
 
 // ─── API pública ──────────────────────────────────────────────────────────────
@@ -525,6 +561,120 @@ export async function getCarteraCliente(input: GetCarteraClienteInput) {
     cruceLM,
     totalFacturas: facturasFiltradas.length,
   };
+}
+
+/** Cliente cuya deuda acumulada con Galcomex supera el umbral en la vista CLIENTE y/o la vista LM (C2). */
+export type ClienteEnAlertaCarteraRow = {
+  clienteId: string;
+  clienteNombre: string;
+  saldoNetoCliente: string; // BigInt as string — Σ saldoNeto CLIENTE; negativo = cliente debe a Galcomex
+  saldoNetoLM: string;      // BigInt as string — Σ saldoNeto LM; negativo = LM (Lucho) debe a Galcomex
+  alertaCliente: boolean;
+  alertaLM: boolean;
+};
+
+/**
+ * Agrega el ledger (WS-D) por CLIENTE en lugar de por factura suelta y aplica
+ * `evaluarAlertaCarteraCliente` a los dos acumulados (CLIENTE y LM) de cada
+ * cliente. Devuelve solo los clientes con al menos una de las dos vistas en
+ * alerta (C2, reunión 1-jul-2026, 01:13:59–01:15:20).
+ *
+ * A diferencia de `getCarteraCliente` (que exige un `clienteId` y trae el
+ * detalle de pagos), esta función recorre TODAS las facturas una sola vez
+ * para poder comparar el acumulado de cada cliente contra el umbral —
+ * necesario porque hoy `carteraVencida` en el dashboard evalúa factura por
+ * factura, sin agregación por cliente ni umbral de política.
+ */
+export async function getClientesEnAlertaCartera(): Promise<ClienteEnAlertaCarteraRow[]> {
+  const umbral = await getParametroBigInt(
+    CLAVES_UMBRAL.carteraCliente,
+    DEFAULTS_UMBRAL.carteraCliente,
+  );
+
+  const facturas = await prisma.factura.findMany({
+    select: {
+      clienteId: true,
+      cliente: { select: { nombre: true } },
+      saldoAFavorCliente: true,
+      saldoACargoCliente: true,
+      saldoAFavorLM: true,
+      saldoACargoLM: true,
+      pagos: { select: { destino: true, tipo: true, monto: true } },
+    },
+  });
+
+  const acumuladoPorCliente = new Map<
+    string,
+    { nombre: string; saldoNetoCliente: bigint; saldoNetoLM: bigint }
+  >();
+
+  for (const f of facturas) {
+    const pagosCliente = f.pagos.filter((p) => p.destino === DestinoPago.CLIENTE);
+    const pagosLM = f.pagos.filter((p) => p.destino === DestinoPago.LM);
+
+    const abonosCliente = pagosCliente
+      .filter((p) => p.tipo === TipoPagoFactura.ABONO)
+      .reduce((sum, p) => sum + p.monto, 0n);
+    const devolucionesCliente = pagosCliente
+      .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
+      .reduce((sum, p) => sum + p.monto, 0n);
+    const saldoNetoCliente = calcularSaldoNeto({
+      saldoAFavor: f.saldoAFavorCliente,
+      saldoACargo: f.saldoACargoCliente,
+      abonos: abonosCliente,
+      devoluciones: devolucionesCliente,
+    });
+
+    const abonosLM = pagosLM
+      .filter((p) => p.tipo === TipoPagoFactura.ABONO)
+      .reduce((sum, p) => sum + p.monto, 0n);
+    const devolucionesLM = pagosLM
+      .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
+      .reduce((sum, p) => sum + p.monto, 0n);
+    const saldoNetoLM = calcularSaldoNeto({
+      saldoAFavor: f.saldoAFavorLM,
+      saldoACargo: f.saldoACargoLM,
+      abonos: abonosLM,
+      devoluciones: devolucionesLM,
+    });
+
+    const acumulado = acumuladoPorCliente.get(f.clienteId) ?? {
+      nombre: f.cliente.nombre,
+      saldoNetoCliente: 0n,
+      saldoNetoLM: 0n,
+    };
+    acumulado.saldoNetoCliente += saldoNetoCliente;
+    acumulado.saldoNetoLM += saldoNetoLM;
+    acumuladoPorCliente.set(f.clienteId, acumulado);
+  }
+
+  const rows: ClienteEnAlertaCarteraRow[] = [];
+  for (const [clienteId, acumulado] of acumuladoPorCliente) {
+    const evalCliente = evaluarAlertaCarteraCliente(acumulado.saldoNetoCliente, umbral);
+    const evalLM = evaluarAlertaCarteraCliente(acumulado.saldoNetoLM, umbral);
+
+    if (!evalCliente.alerta && !evalLM.alerta) continue;
+
+    rows.push({
+      clienteId,
+      clienteNombre: acumulado.nombre,
+      saldoNetoCliente: acumulado.saldoNetoCliente.toString(),
+      saldoNetoLM: acumulado.saldoNetoLM.toString(),
+      alertaCliente: evalCliente.alerta,
+      alertaLM: evalLM.alerta,
+    });
+  }
+
+  // Los más urgentes (mayor deuda combinada) primero.
+  rows.sort((a, b) => {
+    const deudaA = (BigInt(a.saldoNetoCliente) < 0n ? -BigInt(a.saldoNetoCliente) : 0n) +
+      (BigInt(a.saldoNetoLM) < 0n ? -BigInt(a.saldoNetoLM) : 0n);
+    const deudaB = (BigInt(b.saldoNetoCliente) < 0n ? -BigInt(b.saldoNetoCliente) : 0n) +
+      (BigInt(b.saldoNetoLM) < 0n ? -BigInt(b.saldoNetoLM) : 0n);
+    return deudaA < deudaB ? 1 : deudaA > deudaB ? -1 : 0;
+  });
+
+  return rows;
 }
 
 /**

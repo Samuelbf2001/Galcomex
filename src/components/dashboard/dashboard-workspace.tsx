@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   ArrowRight,
+  Banknote,
   Clock,
   FileText,
   Loader2,
@@ -20,6 +21,8 @@ import {
   type PendienteFacturarRow,
   type CarteraVencidaRow,
   type ActividadRecienteRow,
+  type TramiteSaldoAlertaRow,
+  type ClienteCarteraAlertaRow,
   DashboardApiError,
   fetchDashboard,
   formatCOP,
@@ -190,6 +193,140 @@ function TablaCarteraVencida({ rows }: { rows: CarteraVencidaRow[] }) {
   );
 }
 
+// ─── Tabla trámites con saldo en alerta (C1) ─────────────────────────────────
+
+function TablaTramitesSaldoAlerta({ rows }: { rows: TramiteSaldoAlertaRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <p className="py-4 text-center text-sm text-slate-500">
+        Ningún trámite activo tiene el saldo agotado.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+          <tr>
+            <th className="border-b border-slate-200 px-4 py-2.5">DO</th>
+            <th className="border-b border-slate-200 px-4 py-2.5">Cliente</th>
+            <th className="border-b border-slate-200 px-4 py-2.5">Estado</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Anticipos</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Pagos</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Déficit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={row.id}
+              className="border-b border-slate-100 bg-rose-50 last:border-b-0 hover:bg-rose-100 transition-colors"
+            >
+              <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
+                {row.consecutivo}
+              </td>
+              <td className="px-4 py-3 text-xs text-slate-700 whitespace-nowrap">
+                {row.clienteNombre}
+              </td>
+              <td className="px-4 py-3 whitespace-nowrap">
+                <span className="inline-flex h-5 items-center border border-slate-200 bg-white px-1.5 text-xs text-slate-600">
+                  {labelEstado(row.estado)}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-right text-xs text-slate-600 whitespace-nowrap">
+                {formatCOP(row.totalAnticipos)}
+              </td>
+              <td className="px-4 py-3 text-right text-xs text-slate-600 whitespace-nowrap">
+                {formatCOP(row.totalPagos)}
+              </td>
+              <td className="px-4 py-3 text-right whitespace-nowrap">
+                <span className="inline-flex items-center gap-1 font-semibold text-rose-600">
+                  <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                  {formatCOP(row.deficit)}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Tabla clientes en alerta de cartera (C2) ────────────────────────────────
+
+function saldoSignoLabel(saldoStr: string): { texto: string; clase: string } {
+  try {
+    const n = BigInt(saldoStr);
+    if (n < 0n) return { texto: `Debe ${formatCOP((-n).toString())}`, clase: "text-rose-600" };
+    if (n > 0n) return { texto: `Galcomex debe ${formatCOP(saldoStr)}`, clase: "text-violet-700" };
+    return { texto: "A mano", clase: "text-slate-400" };
+  } catch {
+    return { texto: "—", clase: "text-slate-400" };
+  }
+}
+
+function TablaClientesCarteraAlerta({ rows }: { rows: ClienteCarteraAlertaRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <p className="py-4 text-center text-sm text-slate-500">
+        Ningún cliente supera el umbral de cartera.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[600px] border-collapse text-left text-sm">
+        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+          <tr>
+            <th className="border-b border-slate-200 px-4 py-2.5">Cliente</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Cruce cliente</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Cruce LM</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const cliente = saldoSignoLabel(row.saldoNetoCliente);
+            const lm = saldoSignoLabel(row.saldoNetoLM);
+            return (
+              <tr
+                key={row.clienteId}
+                className="border-b border-slate-100 bg-rose-50 last:border-b-0 hover:bg-rose-100 transition-colors"
+              >
+                <td className="px-4 py-3 text-xs font-semibold text-slate-800 whitespace-nowrap">
+                  <Link href={`/cartera?clienteId=${row.clienteId}`} className="hover:underline">
+                    {row.clienteNombre}
+                  </Link>
+                </td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <span
+                    className={`inline-flex items-center gap-1 font-semibold ${cliente.clase}`}
+                  >
+                    {row.alertaCliente ? (
+                      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                    ) : null}
+                    {cliente.texto}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <span className={`inline-flex items-center gap-1 font-semibold ${lm.clase}`}>
+                    {row.alertaLM ? (
+                      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                    ) : null}
+                    {lm.texto}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── Lista actividad reciente ─────────────────────────────────────────────────
 
 function ListaActividad({ rows }: { rows: ActividadRecienteRow[] }) {
@@ -288,13 +425,17 @@ export function DashboardWorkspace() {
 
   // ── Ready ────────────────────────────────────────────────────────────────
   const alertaPendientes = data.pendientesFacturar.some((p) => p.alerta);
+  const totalDeficitTramites = data.tramitesSaldoAlerta.reduce(
+    (sum, t) => sum + BigInt(t.deficit),
+    0n,
+  );
 
   return (
     <section className="space-y-6">
       <DashboardHeader onRefresh={handleRefresh} refreshing={false} />
 
       {/* Tarjetas de métricas */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <MetricCard
           label="DOs activos"
           value={String(data.dosActivos)}
@@ -345,6 +486,30 @@ export function DashboardWorkspace() {
           href="/anticipos?con_saldo=true"
           icon={<FileText className="h-4 w-4" aria-hidden="true" />}
         />
+        <MetricCard
+          label="Trámites con saldo agotado"
+          value={String(data.tramitesSaldoAlerta.length)}
+          sub={
+            data.tramitesSaldoAlerta.length > 0
+              ? `Déficit total ${formatCOP(totalDeficitTramites.toString())}`
+              : "Ningún trámite en alerta"
+          }
+          href="/tramites"
+          icon={<Banknote className="h-4 w-4" aria-hidden="true" />}
+          alert={data.tramitesSaldoAlerta.length > 0}
+        />
+        <MetricCard
+          label="Clientes en alerta de cartera"
+          value={String(data.clientesCarteraAlerta.length)}
+          sub={
+            data.clientesCarteraAlerta.length > 0
+              ? "Bajo el umbral de política"
+              : "Ningún cliente en alerta"
+          }
+          href="/cartera"
+          icon={<AlertTriangle className="h-4 w-4" aria-hidden="true" />}
+          alert={data.clientesCarteraAlerta.length > 0}
+        />
       </div>
 
       {/* Sección pendientes de facturar */}
@@ -369,6 +534,54 @@ export function DashboardWorkspace() {
           </Link>
         </div>
         <TablaPendientesFacturar rows={data.pendientesFacturar} />
+      </div>
+
+      {/* Sección trámites con saldo en alerta (C1) — señal para negociar con el cliente, no un bloqueo */}
+      <div className="overflow-hidden border border-slate-200 bg-white">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-slate-900">
+              Trámites con saldo en alerta
+            </h2>
+            {data.tramitesSaldoAlerta.length > 0 ? (
+              <span className="inline-flex items-center gap-1 border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-xs font-medium text-rose-700">
+                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                {data.tramitesSaldoAlerta.length} en alerta
+              </span>
+            ) : null}
+          </div>
+          <Link
+            href="/tramites"
+            className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+          >
+            Ver trámites <ArrowRight className="h-3 w-3" aria-hidden="true" />
+          </Link>
+        </div>
+        <TablaTramitesSaldoAlerta rows={data.tramitesSaldoAlerta} />
+      </div>
+
+      {/* Sección clientes en alerta de cartera (C2) — riesgo de crédito, se avisa a Guillermo */}
+      <div className="overflow-hidden border border-slate-200 bg-white">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-slate-900">
+              Clientes en alerta de cartera
+            </h2>
+            {data.clientesCarteraAlerta.length > 0 ? (
+              <span className="inline-flex items-center gap-1 border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-xs font-medium text-rose-700">
+                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                {data.clientesCarteraAlerta.length} sobre el umbral
+              </span>
+            ) : null}
+          </div>
+          <Link
+            href="/cartera"
+            className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+          >
+            Ir a cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
+          </Link>
+        </div>
+        <TablaClientesCarteraAlerta rows={data.clientesCarteraAlerta} />
       </div>
 
       {/* Grid: cartera vencida + actividad reciente */}

@@ -2,6 +2,7 @@ import "dotenv/config";
 
 import {
   AgenciaAduanas,
+  CategoriaDocumento,
   Ciudad,
   EstadoTramite,
   Rol,
@@ -24,6 +25,7 @@ const concurrencyYear = 2099;
 
 type Fixture = {
   clienteId: string;
+  clienteSocioLmId: string;
   userId: string;
 };
 
@@ -129,7 +131,15 @@ async function createFixture(): Promise<Fixture> {
     },
   });
 
-  return { clienteId: cliente.id, userId: user.id };
+  const clienteSocioLm = await prisma.cliente.create({
+    data: {
+      nombre: "Cliente Vitest Tramites Socio LM",
+      nit: `${runId}-nit-lm`,
+      tipo: TipoCliente.SOCIO_LM,
+    },
+  });
+
+  return { clienteId: cliente.id, clienteSocioLmId: clienteSocioLm.id, userId: user.id };
 }
 
 function ensureDb(ctx: { skip: (note?: string) => void }): Fixture {
@@ -265,6 +275,99 @@ describe("tramites service con Postgres local", () => {
       select: { estado: true },
     });
     expect(persisted?.estado).toBe(EstadoTramite.APERTURA);
+  });
+
+  it("B4: bloquea APERTURA -> EN_TRAMITE para SOCIO_LM sin BL ni Factura Comercial (no bypasseable con bypassChecklist)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramite = await createTramite(
+      createInput({
+        ciudad: Ciudad.CTG,
+        anio: stateYear,
+        clienteId: db.clienteSocioLmId,
+        creadoPorId: db.userId,
+      }),
+    );
+
+    await prisma.tramiteDO.update({
+      where: { id: tramite.id },
+      data: { estado: EstadoTramite.APERTURA },
+    });
+
+    // bypassChecklist=true (como haría un ADMIN) NO debe saltar este gate:
+    // es un requisito estructural, no un hábito operativo (igual que Litoplas).
+    const result = await transitionTramite(
+      tramite.id,
+      EstadoTramite.EN_TRAMITE,
+      db.userId,
+      true,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      expect.fail("La transicion debio ser rechazada");
+    }
+    expect(result.status).toBe(422);
+    expect(result.message).toContain("BL");
+    expect(result.message).toContain("Factura comercial");
+
+    const persisted = await prisma.tramiteDO.findUnique({
+      where: { id: tramite.id },
+      select: { estado: true },
+    });
+    expect(persisted?.estado).toBe(EstadoTramite.APERTURA);
+  });
+
+  it("B4: permite APERTURA -> EN_TRAMITE para SOCIO_LM una vez subidos BL y Factura Comercial", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramite = await createTramite(
+      createInput({
+        ciudad: Ciudad.CTG,
+        anio: stateYear,
+        clienteId: db.clienteSocioLmId,
+        creadoPorId: db.userId,
+      }),
+    );
+
+    await prisma.tramiteDO.update({
+      where: { id: tramite.id },
+      data: { estado: EstadoTramite.APERTURA },
+    });
+
+    await prisma.documento.createMany({
+      data: [
+        {
+          tramiteId: tramite.id,
+          categoria: CategoriaDocumento.BL,
+          nombreArchivo: "bl.pdf",
+          storageKey: `tramites/${tramite.consecutivo}/BL/${runId}-bl.pdf`,
+          mimeType: "application/pdf",
+          tamanoBytes: 1024,
+          subidoPorId: db.userId,
+        },
+        {
+          tramiteId: tramite.id,
+          categoria: CategoriaDocumento.FACTURA_COMERCIAL,
+          nombreArchivo: "factura-comercial.pdf",
+          storageKey: `tramites/${tramite.consecutivo}/FACTURA_COMERCIAL/${runId}-fc.pdf`,
+          mimeType: "application/pdf",
+          tamanoBytes: 2048,
+          subidoPorId: db.userId,
+        },
+      ],
+    });
+
+    const result = await transitionTramite(
+      tramite.id,
+      EstadoTramite.EN_TRAMITE,
+      db.userId,
+      true,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      expect.fail(`La transicion debio permitirse: ${result.message}`);
+    }
+    expect(result.tramite.estado).toBe(EstadoTramite.EN_TRAMITE);
   });
 
   it("crea 20 tramites concurrentes sin consecutivos duplicados ni saltos", async (ctx) => {

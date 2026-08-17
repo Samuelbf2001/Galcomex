@@ -34,6 +34,25 @@ export type AnticiposConSaldoResumen = {
   totalRestante: string;
 };
 
+export type TramiteSaldoAlertaRow = {
+  id: string;
+  consecutivo: string;
+  clienteNombre: string;
+  estado: string;
+  totalAnticipos: string;
+  totalPagos: string;
+  deficit: string;
+};
+
+export type ClienteCarteraAlertaRow = {
+  clienteId: string;
+  clienteNombre: string;
+  saldoNetoCliente: string;
+  saldoNetoLM: string;
+  alertaCliente: boolean;
+  alertaLM: boolean;
+};
+
 export type ActividadRecienteRow = {
   id: string;
   accion: string;
@@ -51,6 +70,8 @@ export type DashboardApiData = {
   totalCarteraVencida: string;
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
+  tramitesSaldoAlerta: TramiteSaldoAlertaRow[];
+  clientesCarteraAlerta: ClienteCarteraAlertaRow[];
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -123,6 +144,29 @@ function mapActividadRow(r: Record<string, unknown>): ActividadRecienteRow {
   };
 }
 
+function mapTramiteSaldoAlertaRow(r: Record<string, unknown>): TramiteSaldoAlertaRow {
+  return {
+    id: String(r.id ?? ""),
+    consecutivo: String(r.consecutivo ?? ""),
+    clienteNombre: String(r.clienteNombre ?? ""),
+    estado: String(r.estado ?? ""),
+    totalAnticipos: String(r.totalAnticipos ?? "0"),
+    totalPagos: String(r.totalPagos ?? "0"),
+    deficit: String(r.deficit ?? "0"),
+  };
+}
+
+function mapClienteCarteraAlertaRow(r: Record<string, unknown>): ClienteCarteraAlertaRow {
+  return {
+    clienteId: String(r.clienteId ?? ""),
+    clienteNombre: String(r.clienteNombre ?? ""),
+    saldoNetoCliente: String(r.saldoNetoCliente ?? "0"),
+    saldoNetoLM: String(r.saldoNetoLM ?? "0"),
+    alertaCliente: Boolean(r.alertaCliente),
+    alertaLM: Boolean(r.alertaLM),
+  };
+}
+
 // ─── API pública ──────────────────────────────────────────────────────────────
 
 export async function fetchDashboard(
@@ -176,6 +220,12 @@ export async function fetchDashboard(
     },
     actividadReciente: Array.isArray(payload.actividadReciente)
       ? payload.actividadReciente.filter(isRecord).map(mapActividadRow)
+      : [],
+    tramitesSaldoAlerta: Array.isArray(payload.tramitesSaldoAlerta)
+      ? payload.tramitesSaldoAlerta.filter(isRecord).map(mapTramiteSaldoAlertaRow)
+      : [],
+    clientesCarteraAlerta: Array.isArray(payload.clientesCarteraAlerta)
+      ? payload.clientesCarteraAlerta.filter(isRecord).map(mapClienteCarteraAlertaRow)
       : [],
   };
 }

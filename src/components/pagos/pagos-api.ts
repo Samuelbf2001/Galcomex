@@ -36,6 +36,8 @@ export type PagoRow = {
   /** Lista de beneficiarios vinculados (N↔N). */
   beneficiarios: BeneficiarioMinimo[];
   numSoporte: string | null;
+  /** null = sin comprobante adjunto (A4, reunión 1-jul-2026). */
+  documentoId: string | null;
   valor: string; // BigInt serializado
   canalPago: CanalPago;
   costoBancario: string; // BigInt serializado
@@ -48,6 +50,13 @@ export type PagoRow = {
   viaSocio: boolean;
   /** Banco usado como tercero del 4x1000 (null = sin banco asignado). */
   bancoBeneficiario: BeneficiarioMinimo | null;
+  /**
+   * Campos de divisa (A2, reunión 1-jul-2026) — documentan de dónde salió el
+   * COP realmente pagado (`valor`). O los tres presentes, o los tres null.
+   */
+  moneda: string | null;
+  valorDivisa: string | null; // BigInt serializado, en centavos de la divisa
+  tasaCambio: string | null; // decimal como string
   createdAt: string;
   updatedAt: string;
 };
@@ -90,6 +99,8 @@ export type LibroPagosData = {
   saldos: string[];
   saldoFinal: string;
   cruceFactura: CruceFacturaRow | null;
+  /** Umbral de desviación pago↔facturas (%) — A1, reunión 1-jul-2026. */
+  umbralDesviacionPct: number;
 };
 
 export type TramiteDetail = {
@@ -116,6 +127,15 @@ export type CreatePagoInput = {
   facturaProveedorIds?: string[];
   /** Banco (Beneficiario) usado como tercero del 4x1000. null/omitido = auto. */
   bancoBeneficiarioId?: string | null;
+  /**
+   * Confirmación explícita de la desviación pago↔facturas (A1). Sin esto, el
+   * servidor rechaza con 422 si el valor se desvía más del umbral configurado.
+   */
+  confirmarDesviacion?: boolean;
+  /** Campos de divisa (A2) — o los tres presentes, o los tres omitidos/null. */
+  moneda?: string | null;
+  valorDivisa?: string | null; // BigInt as string, en centavos de la divisa
+  tasaCambio?: string | null;
 };
 
 /**
@@ -189,6 +209,10 @@ export type UpdatePagoInput = {
   fechaRealPago?: string | null;
   /** Banco para 4x1000. null limpia, undefined deja como está. */
   bancoBeneficiarioId?: string | null;
+  /** Campos de divisa (A2). Omitido = sin cambios; los tres null = limpiar. */
+  moneda?: string | null;
+  valorDivisa?: string | null;
+  tasaCambio?: string | null;
 };
 
 export class PagosApiError extends Error {
@@ -277,6 +301,7 @@ function parsePagoRow(p: Record<string, unknown>): PagoRow {
       });
     })(),
     numSoporte: typeof p.numSoporte === "string" ? p.numSoporte : null,
+    documentoId: typeof p.documentoId === "string" ? p.documentoId : null,
     valor: String(p.valor ?? "0"),
     canalPago: (p.canalPago as CanalPago) ?? "TRANSF_BANCOLOMBIA",
     costoBancario: String(p.costoBancario ?? "0"),
@@ -308,6 +333,9 @@ function parsePagoRow(p: Record<string, unknown>): PagoRow {
         nit: typeof b.nit === "string" ? b.nit : null,
       };
     })(),
+    moneda: typeof p.moneda === "string" ? p.moneda : null,
+    valorDivisa: p.valorDivisa === null || p.valorDivisa === undefined ? null : String(p.valorDivisa),
+    tasaCambio: typeof p.tasaCambio === "string" ? p.tasaCambio : null,
     createdAt: String(p.createdAt ?? ""),
     updatedAt: String(p.updatedAt ?? ""),
   };
@@ -376,6 +404,10 @@ export async function fetchLibroPagos(
       }
     : null;
 
+  const umbralRaw = payload.umbralDesviacionPct;
+  const umbralDesviacionPct =
+    typeof umbralRaw === "number" && Number.isFinite(umbralRaw) ? umbralRaw : 10;
+
   return {
     pagos,
     aplicaciones,
@@ -386,6 +418,7 @@ export async function fetchLibroPagos(
     saldos: Array.isArray(payload.saldos) ? payload.saldos.map(String) : [],
     saldoFinal: String(payload.saldoFinal ?? "0"),
     cruceFactura,
+    umbralDesviacionPct,
   };
 }
 

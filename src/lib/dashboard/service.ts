@@ -7,7 +7,9 @@
 
 import { EstadoTramite } from "@prisma/client";
 
+import { getClientesEnAlertaCartera, type ClienteEnAlertaCarteraRow } from "@/lib/cartera/service";
 import { prisma } from "@/lib/db/prisma";
+import { CLAVES_UMBRAL, DEFAULTS_UMBRAL, getParametroBigInt } from "@/lib/parametros/service";
 
 // ─── Función pura testeable ───────────────────────────────────────────────────
 
@@ -33,6 +35,33 @@ export function calcularDiasYAlerta(
   const dias = Math.max(0, Math.floor(diff / msPerDay));
 
   return { dias, alerta: dias > slaDias };
+}
+
+/**
+ * Evalúa si un trámite se quedó sin saldo: los pagos superan los anticipos
+ * aplicados por más del umbral de alerta.
+ *
+ * Reunión 1-jul-2026 (00:27:13–00:32:41): "yo podría tener una alerta ahí que
+ * eso no debe pasar... A este trámite se le acabó la plata." El umbral
+ * (~$200.000 discutido en la reunión) NO es una alerta de bloqueo — es una
+ * señal para negociar con el cliente ("la decisión ya queda basada en usted,
+ * pero al menos usted tiene datos en que respaldarse") — y es una POLÍTICA de
+ * Galcomex, no una constante de código: se lee de `Parametro` vía
+ * `getParametroBigInt(CLAVES_UMBRAL.saldoTramite, ...)` en el caller.
+ *
+ * @param totalAnticipos  Σ montoAplicado de AplicacionAnticipo del trámite.
+ * @param totalPagos      Σ valor de PagoTramite del trámite.
+ * @param umbral          Umbral de alerta en COP (política de negocio, editable).
+ * @returns deficit = max(0, totalPagos − totalAnticipos); alerta = deficit > umbral.
+ */
+export function evaluarAlertaSaldoTramite(
+  totalAnticipos: bigint,
+  totalPagos: bigint,
+  umbral: bigint,
+): { deficit: bigint; alerta: boolean } {
+  const diferencia = totalPagos - totalAnticipos;
+  const deficit = diferencia > 0n ? diferencia : 0n;
+  return { deficit, alerta: deficit > umbral };
 }
 
 // ─── Tipos de retorno ─────────────────────────────────────────────────────────
@@ -66,6 +95,17 @@ export type AnticiposConSaldoResumen = {
   totalRestante: string;      // BigInt as string
 };
 
+/** Trámite activo cuyos pagos exceden los anticipos aplicados por > umbral (política, reunión 1-jul-2026). */
+export type TramiteSaldoAlertaRow = {
+  id: string;
+  consecutivo: string;
+  clienteNombre: string;
+  estado: EstadoTramite;
+  totalAnticipos: string;     // BigInt as string
+  totalPagos: string;         // BigInt as string
+  deficit: string;            // BigInt as string — totalPagos − totalAnticipos
+};
+
 export type ActividadRecienteRow = {
   id: string;
   accion: string;
@@ -83,6 +123,8 @@ export type DashboardData = {
   totalCarteraVencida: string;  // BigInt as string
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
+  tramitesSaldoAlerta: TramiteSaldoAlertaRow[];
+  clientesCarteraAlerta: ClienteEnAlertaCarteraRow[];
 };
 
 // ─── Estados que cuentan como "activos" ──────────────────────────────────────
@@ -248,6 +290,58 @@ export async function getDashboardData(): Promise<DashboardData> {
     createdAt: log.createdAt.toISOString(),
   }));
 
+  // 6. Trámites con saldo agotado (C1, reunión 1-jul-2026): entre los trámites
+  //    activos (todo menos CERRADO), los pagos superan los anticipos aplicados
+  //    por más del umbral de política `UMBRAL_SALDO_TRAMITE_ALERTA`.
+  const umbralSaldoTramite = await getParametroBigInt(
+    CLAVES_UMBRAL.saldoTramite,
+    DEFAULTS_UMBRAL.saldoTramite,
+  );
+
+  const tramitesParaSaldo = await prisma.tramiteDO.findMany({
+    where: { estado: { in: ESTADOS_ACTIVOS } },
+    select: {
+      id: true,
+      consecutivo: true,
+      estado: true,
+      cliente: { select: { nombre: true } },
+      aplicacionesAnticipo: { select: { montoAplicado: true } },
+      pagos: { select: { valor: true } },
+    },
+  });
+
+  const tramitesSaldoAlerta: TramiteSaldoAlertaRow[] = tramitesParaSaldo
+    .map((t) => {
+      const totalAnticipos = t.aplicacionesAnticipo.reduce(
+        (sum, a) => sum + a.montoAplicado,
+        0n,
+      );
+      const totalPagos = t.pagos.reduce((sum, p) => sum + p.valor, 0n);
+      const { deficit, alerta } = evaluarAlertaSaldoTramite(
+        totalAnticipos,
+        totalPagos,
+        umbralSaldoTramite,
+      );
+
+      return { t, totalAnticipos, totalPagos, deficit, alerta };
+    })
+    .filter((row) => row.alerta)
+    // Los más urgentes (mayor déficit) primero.
+    .sort((a, b) => (a.deficit < b.deficit ? 1 : a.deficit > b.deficit ? -1 : 0))
+    .map(({ t, totalAnticipos, totalPagos, deficit }) => ({
+      id: t.id,
+      consecutivo: t.consecutivo,
+      clienteNombre: t.cliente.nombre,
+      estado: t.estado,
+      totalAnticipos: totalAnticipos.toString(),
+      totalPagos: totalPagos.toString(),
+      deficit: deficit.toString(),
+    }));
+
+  // 7. Clientes con cartera en alerta (C2, reunión 1-jul-2026): agregación por
+  //    cliente (no por factura suelta) de las dos vistas del ledger WS-D.
+  const clientesCarteraAlerta = await getClientesEnAlertaCartera();
+
   return {
     dosActivos,
     dosPorEstado,
@@ -259,5 +353,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       totalRestante: anticiposTotalRestante.toString(),
     },
     actividadReciente,
+    tramitesSaldoAlerta,
+    clientesCarteraAlerta,
   };
 }

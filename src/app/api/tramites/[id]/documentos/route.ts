@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
+import { prisma } from "@/lib/db/prisma";
 import {
   DocumentoNoEncontradoError,
   listarDocumentos,
@@ -12,6 +13,7 @@ import {
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { StorageValidationError } from "@/lib/storage/service";
+import { puedeModificarDocumentos } from "@/lib/tramites/service";
 import {
   registrarDocumentoSchema,
   solicitarSubidaSchema,
@@ -56,6 +58,21 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
   if (permiso === "forbidden") {
     return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+  }
+
+  const tramite = await prisma.tramiteDO.findUnique({
+    where: { id },
+    select: { estado: true },
+  });
+
+  if (tramite && !puedeModificarDocumentos(tramite.estado)) {
+    return NextResponse.json(
+      {
+        error:
+          "El trámite está CERRADO: no se pueden subir ni modificar documentos para preservar la información.",
+      },
+      { status: 409 },
+    );
   }
 
   try {

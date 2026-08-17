@@ -10,6 +10,9 @@ import {
   FacturaProveedorNoModificableError,
 } from "@/lib/facturas-proveedor/service";
 import {
+  CamposDivisaIncompletosError,
+  ComprobanteObligatorioError,
+  DesviacionPagoExcedeUmbralError,
   MatrizCanalNoEncontradoError,
   PagoFacturaDeOtroTramiteError,
   SinAnticipoAplicadoError,
@@ -86,6 +89,25 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
 
     if (error instanceof SinAnticipoAplicadoError) {
+      return NextResponse.json({ error: error.message }, { status: 422 });
+    }
+
+    if (error instanceof DesviacionPagoExcedeUmbralError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          desviacionPct: error.desviacionPct,
+          umbralPct: error.umbralPct,
+        },
+        { status: 422 },
+      );
+    }
+
+    if (error instanceof CamposDivisaIncompletosError) {
+      return NextResponse.json({ error: error.message }, { status: 422 });
+    }
+
+    if (error instanceof ComprobanteObligatorioError) {
       return NextResponse.json({ error: error.message }, { status: 422 });
     }
 
