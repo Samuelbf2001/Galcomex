@@ -6,6 +6,7 @@ import { requireRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
+import { emitirDoCreado } from "@/lib/tramites/eventos";
 import {
   construirFiltroFacturado,
   createTramite,
@@ -101,6 +102,8 @@ export async function POST(request: NextRequest) {
       eta: payload.eta ?? undefined,
       creadoPorId: session.user.id,
     });
+
+    void emitirDoCreado(tramite.id);
 
     return jsonResponse({ tramite }, { status: 201 });
   } catch (error) {

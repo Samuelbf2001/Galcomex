@@ -11,6 +11,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
+import { emitirEventoTransicionBorrador } from "@/lib/borradores/eventos";
 import { transicionarBorrador } from "@/lib/borradores/service";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
@@ -69,6 +70,10 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   if (!result.ok) {
     return NextResponse.json({ error: result.message }, { status: result.status });
   }
+
+  // Fuera de la transacción y sin await bloqueante: notificar a n8n no puede
+  // demorar ni hacer fallar la aprobación de una factura.
+  void emitirEventoTransicionBorrador(borradorId, nuevoEstado, session.user.id);
 
   return jsonResponse({ borrador: result.borrador });
 }

@@ -56,6 +56,25 @@ export type DocumentoConUrl = Documento & {
 
 export type DocumentosPorCategoria = Record<string, DocumentoConUrl[]>;
 
+// ─── Repositorio documental por cliente (agregación entre trámites) ──────────
+
+export type DocumentoClienteRow = DocumentoConUrl & {
+  tramite: { id: string; consecutivo: string; ciudad: string };
+};
+
+export type ListarDocumentosClienteFiltros = {
+  categoria?: CategoriaDocumento;
+  desde?: Date;
+  hasta?: Date;
+  take: number;
+  skip: number;
+};
+
+export type ListarDocumentosClienteResult = {
+  documentos: DocumentoClienteRow[];
+  total: number;
+};
+
 // ─── Errores de dominio ───────────────────────────────────────────────────────
 
 export class DocumentoNoEncontradoError extends Error {
@@ -255,6 +274,76 @@ export async function listarDocumentos(
   }
 
   return result;
+}
+
+/**
+ * Lista los documentos no eliminados de TODOS los trámites de un cliente
+ * ("carpetica virtual" por cliente — reunión 2026-07-01, min 01:15 y 01:29).
+ * Paginado (take/skip, igual que GET /api/tramites) y filtrable por
+ * categoría y rango de fechas de subida (createdAt).
+ *
+ * Devuelve una lista PLANA ordenada por fecha de subida descendente, cada
+ * documento con su trámite de origen (id, consecutivo, ciudad) para que el
+ * usuario sepa de qué DO viene. El agrupamiento por categoría para la UI se
+ * hace del lado del cliente con la función pura `agruparPor` (agrupar.ts)
+ * sobre la página recibida — así la paginación opera siempre sobre el total
+ * real de documentos del cliente, no sobre grupos ya armados.
+ *
+ * La URL de descarga es prefirmada (expira ≤ 15 min, igual que
+ * listarDocumentos). Si MinIO no está disponible se omite con gracia.
+ */
+export async function listarDocumentosCliente(
+  clienteId: string,
+  filtros: ListarDocumentosClienteFiltros,
+): Promise<ListarDocumentosClienteResult> {
+  const where: Prisma.DocumentoWhereInput = {
+    eliminado: false,
+    tramite: { clienteId },
+  };
+
+  if (filtros.categoria) {
+    where.categoria = filtros.categoria;
+  }
+
+  if (filtros.desde || filtros.hasta) {
+    where.createdAt = {
+      ...(filtros.desde ? { gte: filtros.desde } : {}),
+      ...(filtros.hasta ? { lte: filtros.hasta } : {}),
+    };
+  }
+
+  const [documentos, total] = await prisma.$transaction([
+    prisma.documento.findMany({
+      where,
+      include: {
+        subidoPor: { select: { id: true, name: true } },
+        tramite: { select: { id: true, consecutivo: true, ciudad: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: filtros.take,
+      skip: filtros.skip,
+    }),
+    prisma.documento.count({ where }),
+  ]);
+
+  const documentosConUrl: DocumentoClienteRow[] = [];
+
+  for (const doc of documentos) {
+    let downloadUrl = "";
+
+    try {
+      const presigned = await createPresignedDownloadUrl({ storageKey: doc.storageKey });
+      downloadUrl = presigned.url;
+    } catch {
+      // MinIO no disponible: devolver URL vacía (el UI la refresca bajo demanda)
+      downloadUrl = "";
+    }
+
+    const { tramite, ...documento } = doc;
+    documentosConUrl.push({ ...documento, downloadUrl, tramite });
+  }
+
+  return { documentos: documentosConUrl, total };
 }
 
 /**

@@ -8,6 +8,7 @@ import {
 } from "@/lib/facturas-proveedor/service";
 import { jsonResponse } from "@/lib/http/json";
 import { prisma } from "@/lib/db/prisma";
+import { emitirDoEnviadoAFacturar } from "@/lib/tramites/eventos";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -44,6 +45,8 @@ export async function POST(_request: NextRequest, context: RouteContext) {
     if (!result.ok) {
       return NextResponse.json({ error: result.message }, { status: result.status });
     }
+
+    void emitirDoEnviadoAFacturar(id);
 
     return jsonResponse({ ok: true, message: "Trámite enviado a facturar" });
   } catch (error) {

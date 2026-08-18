@@ -5,12 +5,9 @@ import { requireRole } from "@/lib/auth/session";
 import { jsonResponse } from "@/lib/http/json";
 import { generatePseToken } from "@/lib/crypto/pse";
 import { CLAVES_UMBRAL, DEFAULTS_UMBRAL, getParametroNumero } from "@/lib/parametros/service";
+import { enviarWebhookFirmado } from "@/lib/webhooks/dispatch";
 
 type RouteContext = { params: Promise<{ id: string }> };
-
-const WEBHOOK_PSE_URL =
-  process.env.WEBHOOK_PSE_URL ??
-  "https://n8n.sixteam.pro/webhook/b53a9bb0-5904-4a9a-9828-5eeb2243e4df";
 
 export async function POST(_request: NextRequest, context: RouteContext) {
   const session = await requireRole(["ADMIN", "OPERATIVO"]);
@@ -44,15 +41,21 @@ export async function POST(_request: NextRequest, context: RouteContext) {
 
   const linkPse = `pse/${token}`;
 
-  // Notifica a María Camila vía n8n con el link seguro (fire-and-forget)
-  fetch(WEBHOOK_PSE_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      url: linkPse,
-    }),
-  }).catch(() => {
-    console.error("[PSE] No se pudo notificar a n8n para tramite", id);
+  // Notifica a María Camila vía n8n con el link seguro (fire-and-forget).
+  //
+  // Payload se mantiene EXACTAMENTE `{ url: linkPse }` — hay un flujo n8n en
+  // producción que ya lo consume así. NO cambiar la forma sin actualizar
+  // ese flujo primero. Lo único que cambia acá es que ahora viaja firmado
+  // (X-Galcomex-Signature / X-Galcomex-Timestamp, ver src/lib/webhooks) y
+  // que la URL sale de WEBHOOK_PSE_URL sin fallback hardcodeado — si no
+  // está configurada, no se envía nada (no-op silencioso con log, ver
+  // enviarWebhookFirmado).
+  const bodyPse = JSON.stringify({ url: linkPse });
+  void enviarWebhookFirmado({
+    url: process.env.WEBHOOK_PSE_URL,
+    secreto: process.env.WEBHOOK_SECRET,
+    body: bodyPse,
+    etiqueta: `pse-token:${id}`,
   });
 
   return jsonResponse({ ok: true, solicitudId: token });

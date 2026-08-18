@@ -25,6 +25,7 @@ import {
   type TramiteResumen,
   type UpdateClienteInput,
 } from "@/components/clientes/clientes-api";
+import { DocumentosCliente } from "@/components/clientes/documentos-cliente";
 
 // ---------------------------------------------------------------------------
 // Helpers de formato
@@ -863,6 +864,8 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
       <SeccionAnticipos anticipos={cliente.anticipos} />
 
       <SeccionFacturas facturas={cliente.facturas} />
+
+      <DocumentosCliente clienteId={cliente.id} />
 
       {editModalOpen ? (
         <EditClienteModal
