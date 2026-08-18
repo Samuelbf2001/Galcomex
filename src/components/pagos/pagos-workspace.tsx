@@ -28,6 +28,7 @@ import {
   formatCOP,
   updatePago,
 } from "@/components/pagos/pagos-global-api";
+import { LotePagoModal } from "@/components/pagos/lote-pago-modal";
 import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
 
 type LoadState = "loading" | "ready" | "error";
@@ -427,6 +428,7 @@ export function PagosWorkspace() {
   const [reloadKey, setReloadKey] = useState(0);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [loteOpen, setLoteOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Filtros
@@ -631,6 +633,16 @@ export function PagosWorkspace() {
           <Plus className="h-4 w-4" aria-hidden="true" />
           Nuevo pago
         </button>
+        {/* Un solo desembolso que cubre facturas de varios DOs (flujo de la
+            cartera del puerto). */}
+        <button
+          type="button"
+          onClick={() => setLoteOpen(true)}
+          className="inline-flex h-10 shrink-0 items-center gap-2 border border-slate-300 px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+        >
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          Pago por lote
+        </button>
       </div>
 
       {/* Tarjetas de resumen */}
@@ -794,6 +806,14 @@ export function PagosWorkspace() {
         <NuevoPagoModal
           tramites={tramites}
           onClose={() => setCreateOpen(false)}
+          onCreated={handlePagoCreado}
+        />
+      ) : null}
+
+      {loteOpen ? (
+        <LotePagoModal
+          clientes={clientes}
+          onClose={() => setLoteOpen(false)}
           onCreated={handlePagoCreado}
         />
       ) : null}

@@ -103,17 +103,35 @@ El plan 24-jun reportaba para BAQ-18453: `restanteInterno = 1.766.766` y `saldoL
 
 ## G. Hallazgos de la auditoría de la reunión 1-jul-2026
 
-> Origen: `docs/reuniones/2026-07-01-auditoria-vs-codigo.md` — auditoría minuto a minuto de la demo contra el código real. Lo implementable se implementó; aquí queda lo que **requiere decisión de negocio** o **rediseño**, que no se debe improvisar.
+> Origen: `docs/reuniones/2026-07-01-auditoria-vs-codigo.md` — auditoría minuto a minuto de la demo contra el código real.
+>
+> **Estado (2026-08-17): G1 a G6 resueltos.** Sigue abierto G7 (falta especificación) y G9 (verificación con BD, bloqueante para go-live). Cada punto conserva abajo el contexto original y cierra con lo que se hizo.
+
+### Variables de entorno nuevas (configurar antes de desplegar)
+
+| Variable | Para qué | Si falta |
+|---|---|---|
+| `WEBHOOK_N8N_URL` | Destino de los 5 eventos firmados | No se emite nada (no-op silencioso) |
+| `WEBHOOK_SECRET` | Secreto HMAC-SHA256 de la firma | No se emite nada |
+
+El consumidor valida con la cabecera `X-Galcomex-Signature` (`sha256=<hex>`) y `X-Galcomex-Timestamp`, firmando `"<timestamp>.<body>"`. Ventana de tolerancia: 5 minutos.
+
+`cartera.vencida` no se emite solo: n8n debe invocar `POST /api/cartera/alertas/notificar` en agenda (diaria basta).
 
 ### G1. 🔴 Solo ADMIN puede registrar anticipos — no hay separación de funciones
 **Detalle:** `POST /api/anticipos` exige `requireRole(["ADMIN"])`. En la reunión (min 00:04) se demostró el flujo contrario: *"ellos pueden montar el anticipo, pero los que definen si entró a la cuenta son ustedes"*. Hoy quien crea el anticipo es el mismo rol que lo verifica → el control de cuatro ojos que motivó toda esa discusión no existe. Además **contradice la matriz de roles de `CLAUDE.md`**, que asigna "Registrar anticipos/pagos" también a OPERATIVO.
 **Por qué no se cambió:** ampliar autorización es una frontera de seguridad y hay ambigüedad real sobre quién es "ellos" — existen dos cuentas (`lucho@` OPERATIVO y `luismartinez@` SOCIO) cuya relación ya estaba marcada como dudosa en A1.
 **Siguiente acción:** Camila confirma (a) si Lucho y Luis Martínez son una persona o dos cuentas a propósito, y (b) qué rol debe poder registrar anticipos. Luego alinear código y matriz de `CLAUDE.md` (hoy discrepan).
 
+**RESUELTO (2026-08-17).** Registrar un anticipo vuelve a ser ADMIN u OPERATIVO, alineado con la matriz de `CLAUDE.md`. La verificación NO se tocó: ya reservaba a ADMIN los clientes SOCIO_LM, que es donde importa el control de cuatro ojos — restringirla del todo habría sido una regresión para los clientes propios. Con eso el flujo del min 00:04 queda posible: OPERATIVO monta, ADMIN verifica los de Lucho. Se añadió además `AuditLog` a la creación de anticipos, que no lo tenía pese a ser movimiento de dinero.
+**Sigue abierto (menor):** confirmar con Camila si `lucho@` y `luismartinez@` son la misma persona.
+
 ### G2. 🔴 Webhooks: existe 1 de 5, sin firma HMAC
 **Detalle:** `CLAUDE.md` documenta 5 eventos firmados HMAC-SHA256 (`do.creado`, `do.enviado_a_facturar`, `factura.aprobada`, `factura.facturada`, `cartera.vencida`). En todo el repo existe **un solo** webhook: el de PSE (`api/tramites/[id]/pse-token/route.ts`). `createHmac`/`HMAC`/`sha256` **no aparecen en ningún archivo** fuera de `node_modules`. La URL de n8n está hardcodeada como fallback en el fuente y el envío es fire-and-forget.
 **Impacto:** las alertas de saldo de trámite y cartera por cliente ya calculan y exponen el dato tras este sprint, pero **no tienen canal de entrega**. Las promesas de la reunión de alertar a Camila (min 00:59) y a Guillermo (min 01:14) no se cumplen hoy: solo se ven entrando a la aplicación, que es justo lo que Guillermo quería evitar.
 **Siguiente acción:** decidir canal (WhatsApp vía n8n / correo / solo in-app), y si se implementan webhooks, agregar la firma HMAC que la documentación ya promete y sacar la URL a variable de entorno sin fallback hardcodeado.
+
+**RESUELTO (2026-08-17).** Infraestructura propia en `src/lib/webhooks/`: firma HMAC-SHA256 sobre `"<timestamp>.<body>"` (anti-replay), comparación en tiempo constante, URL y secreto desde entorno sin fallback hardcodeado, y no-op silencioso si no hay configuración. Los 5 eventos se emiten desde su punto real, siempre fuera de transacción. El webhook PSE pasó a usarla conservando la forma de su payload (hay un flujo n8n en producción esperándolo).
 
 ### G3. 🟠 Un pago no puede cubrir facturas de dos DOs — límite de modelo de datos
 **Detalle:** pedido de Karina (min 00:48–00:50): ver *todas* las facturas impagas de un cliente y pagar varias de DOs distintos en una sola transacción. Hoy `listarPorTramite(id)` es la única vía y **`PagoTramite.tramiteId` es obligatorio**: un pago pertenece a exactamente un trámite. No es un ajuste de UI.
@@ -121,18 +139,26 @@ El plan 24-jun reportaba para BAQ-18453: `restanteInterno = 1.766.766` y `saldoL
 1. Hacer `tramiteId` opcional y derivar los trámites desde las facturas vinculadas — impacta todos los cálculos de saldo por trámite y el motor de factura.
 2. Introducir un concepto de "lote de pago" que agrupe pagos por trámite bajo un mismo comprobante.
 
+**RESUELTO (2026-08-17).** Se eligió la opción 2 (lote de pago). `LotePago` + `PagoTramite.loteId`: se sigue creando un pago por trámite —los saldos por DO no se mueven, y los casos dorados lo confirman— y el lote comparte comprobante, fecha, canal y referencia bancaria. El costo bancario se cobra una sola vez. Incluye listado de facturas impagas por cliente y el flujo de UI de Karina.
+
 ### G4. 🟠 "Enlace público" de documentos no existe (y no debería construirse sin decisión)
 **Detalle:** en min 01:29 se mostró "descargar, compartir o en un **enlace público**". El storage solo emite URLs prefirmadas con **tope duro de 15 minutos** (`MAX_PRESIGNED_URL_EXPIRY_SECONDS`; `normalizeExpiry` lanza si se excede). Un enlace público permanente violaría la invariante de seguridad del proyecto.
 **Siguiente acción:** definir si basta el prefirmado corto o se quiere un enlace durable, y con qué control de acceso y caducidad.
+
+**RESUELTO (2026-08-17).** En vez de un enlace público permanente, enlace con token propio: al abrirlo se valida vigencia y revocación y recién ahí se emite una URL prefirmada corta. Caduca solo (7 días por defecto, 30 de techo), se revoca, cuenta aperturas y registra quién lo creó. La ruta de apertura es el único endpoint sin autenticación y responde igual ante token inexistente, expirado o revocado.
 
 ### G5. 🟠 No hay vista documental por cliente
 **Detalle:** requisito explícito de Guillermo (min 01:15): *"va a poder acceder **por cada cliente** cuáles son los documentos"*. Los documentos se indexan **solo por trámite** (`api/tramites/[id]/documentos/`); no hay API ni vista agregada por cliente. Se llega a ellos navegando trámite por trámite.
 **Relacionado:** en min 01:29 el propio Ernesto reconoció que falta replicar la nomenclatura y estructura de carpetas de Galcomex. Sigue pendiente que Camila comparta esa estructura.
 
+**RESUELTO (2026-08-17).** `GET /api/clientes/[id]/documentos` agrega los documentos de todos los trámites del cliente, con su DO de origen, filtros y paginación, más la vista en el detalle del cliente. El scoping del rol SOCIO reutiliza el criterio ya existente.
+
 ### G6. ⚠️ ¿BL + Factura Comercial para todos los clientes?
 **Detalle:** en min 00:01 Guillermo pidió extenderlo más allá del socio: *"Sí, **para todos**. Para todos."*. Se implementó server-side **solo para SOCIO_LM** deliberadamente: extenderlo a clientes PROPIO bloquearía el flujo diario de Camila, y ella no fue quien lo pidió.
 **Matiz técnico:** el gate del servidor actúa en la **transición de estado** (junto al checklist y Litoplas), no en la creación. Un POST directo crea el DO "cascarón" pero este no puede salir de APERTURA. La UI sí bloquea al crear.
 **Siguiente acción:** decisión de Camila + Guillermo juntos.
+
+**RESUELTO (2026-08-17).** El alcance es ahora el parámetro `DOCUMENTOS_OBLIGATORIOS_ALCANCE` (`SOCIO_LM` por defecto, `TODOS` para lo que pidió Guillermo). Queda listo para activarse sin tocar código cuando Camila y Guillermo lo decidan juntos.
 
 ### G7. ⏸️ Reglas de revisión por cliente (caso Polired / orden de compra)
 **Detalle:** min 00:56 — con Polired la factura se revisa contra la orden de compra, no contra los pagos. **"Polired" no aparece en ningún archivo del código** y no existe modelo de datos de orden de compra ni reglas de revisión por cliente.
