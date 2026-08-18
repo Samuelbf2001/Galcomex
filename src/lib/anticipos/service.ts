@@ -1,4 +1,4 @@
-import { EstadoMovimiento, Rol, TipoRecaudo } from "@prisma/client";
+import { EstadoMovimiento, Prisma, Rol, TipoRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -70,6 +70,13 @@ type CrearAnticipoInput = {
   tipoRecaudo: TipoRecaudo;
   soporteKey?: string | null;
   verificadoBanco?: boolean;
+  /**
+   * Quién registra el anticipo. Desde que OPERATIVO también puede hacerlo
+   * (matriz de roles de CLAUDE.md), saber quién lo montó es justamente el dato
+   * que sostiene la separación de funciones: uno registra, otro verifica.
+   * Opcional para no romper llamadas existentes; sin él no se audita.
+   */
+  usuarioId?: string;
 };
 
 type AplicarAnticipoInput = {
@@ -122,16 +129,44 @@ export async function crearAnticipo(input: CrearAnticipoInput) {
   });
   const costoRecaudo = matrizRow?.costoFijo ?? 0n;
 
-  return prisma.anticipo.create({
-    data: {
-      clienteId: input.clienteId,
-      monto: input.monto,
-      fecha: input.fecha,
-      tipoRecaudo: input.tipoRecaudo,
-      costoRecaudo,
-      soporteKey: input.soporteKey ?? null,
-      verificadoBanco: input.verificadoBanco ?? false,
-    },
+  // Un anticipo es un movimiento de dinero: mutación crítica, y CLAUDE.md exige
+  // registro en AuditLog. Se crea junto al anticipo en una sola transacción para
+  // que no pueda existir un anticipo sin su rastro.
+  return prisma.$transaction(async (tx) => {
+    const creado = await tx.anticipo.create({
+      data: {
+        clienteId: input.clienteId,
+        monto: input.monto,
+        fecha: input.fecha,
+        tipoRecaudo: input.tipoRecaudo,
+        costoRecaudo,
+        soporteKey: input.soporteKey ?? null,
+        verificadoBanco: input.verificadoBanco ?? false,
+      },
+    });
+
+    if (input.usuarioId) {
+      await tx.auditLog.create({
+        data: {
+          entidad: "Anticipo",
+          entidadId: creado.id,
+          accion: "CREATE",
+          usuarioId: input.usuarioId,
+          antes: Prisma.DbNull,
+          despues: {
+            clienteId: creado.clienteId,
+            monto: creado.monto.toString(),
+            fecha: creado.fecha.toISOString(),
+            tipoRecaudo: creado.tipoRecaudo,
+            costoRecaudo: creado.costoRecaudo.toString(),
+            soporteKey: creado.soporteKey,
+            verificadoBanco: creado.verificadoBanco,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    }
+
+    return creado;
   });
 }
 

@@ -87,6 +87,12 @@ async function main() {
         "Vigencia (segundos) del enlace PSE enviado a María Camila. 1800 = 30 min",
     },
     {
+      clave: "DOCUMENTOS_OBLIGATORIOS_ALCANCE",
+      valor: "SOCIO_LM",
+      descripcion:
+        "A qué clientes se les exige BL + Factura Comercial para avanzar el DO. 'SOCIO_LM' (default) o 'TODOS' (lo que pidió Guillermo el 1-jul; frena a Camila con clientes propios, actívese cuando se decida)",
+    },
+    {
       clave: "PSE_CODIGO_VIGENCIA_SEGUNDOS",
       valor: "30",
       descripcion:

@@ -10,6 +10,7 @@ import {
 } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { getParametro } from "@/lib/parametros/service";
 
 type CreateTramiteInput = {
   ciudad: Ciudad;
@@ -95,6 +96,13 @@ const DOCUMENTOS_OBLIGATORIOS_SOCIO_LM: readonly CategoriaDocumento[] = [
   CategoriaDocumento.FACTURA_COMERCIAL,
 ];
 
+/**
+ * Alcance de la exigencia de BL + Factura Comercial. Valores admitidos:
+ * `"SOCIO_LM"` (default, solo trámites del socio) o `"TODOS"` (todos los
+ * clientes, como pidió Guillermo en la reunión del 1-jul).
+ */
+const CLAVE_ALCANCE_DOCUMENTOS = "DOCUMENTOS_OBLIGATORIOS_ALCANCE";
+
 const ETIQUETAS_CATEGORIA_DOCUMENTO: Partial<Record<CategoriaDocumento, string>> = {
   BL: "BL (Bill of Lading)",
   FACTURA_COMERCIAL: "Factura comercial",
@@ -114,8 +122,15 @@ function etiquetaCategoriaDocumento(categoria: CategoriaDocumento): string {
 export function faltanDocumentosObligatorios(
   tipoCliente: TipoCliente,
   categoriasPresentes: CategoriaDocumento[],
+  aplicaATodosLosClientes = false,
 ): CategoriaDocumento[] {
-  if (tipoCliente !== TipoCliente.SOCIO_LM) {
+  // En la reunión del 1-jul (min 00:01) Guillermo pidió extender la exigencia
+  // más allá del socio: "Sí, para todos. Para todos." Pero activarlo de golpe
+  // frenaría el trabajo diario de Camila con los clientes propios, y ella no
+  // fue quien lo pidió. Por eso el alcance es un parámetro editable
+  // (DOCUMENTOS_OBLIGATORIOS_ALCANCE) que arranca en SOCIO_LM: Galcomex lo
+  // amplía a TODOS cuando decida, sin tocar código.
+  if (!aplicaATodosLosClientes && tipoCliente !== TipoCliente.SOCIO_LM) {
     return [];
   }
 
@@ -385,16 +400,18 @@ export async function transitionTramite(
       // B4: hueco de seguridad — la exigencia de BL + Factura Comercial para
       // SOCIO_LM solo vivía en el cliente. No es bypasseable con `bypassChecklist`
       // (igual que Litoplas): es un requisito estructural, no un hábito operativo.
+      const alcanceDocumentos = await getParametro(CLAVE_ALCANCE_DOCUMENTOS);
       const documentosFaltantes = faltanDocumentosObligatorios(
         actual.cliente.tipo,
         actual.documentos.map((documento) => documento.categoria),
+        alcanceDocumentos === "TODOS",
       );
 
       if (documentosFaltantes.length > 0) {
         return {
           ok: false,
           status: 422,
-          message: `Faltan documentos obligatorios para clientes SOCIO_LM: ${documentosFaltantes
+          message: `Faltan documentos obligatorios: ${documentosFaltantes
             .map(etiquetaCategoriaDocumento)
             .join(", ")}`,
           faltantes: documentosFaltantes.map(etiquetaCategoriaDocumento),

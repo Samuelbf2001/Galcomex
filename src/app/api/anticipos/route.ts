@@ -44,8 +44,16 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// Registrar un anticipo es rol ADMIN u OPERATIVO, como siempre documentó la
+// matriz de roles de CLAUDE.md ("Registrar anticipos/pagos": ADMIN, OPERATIVO).
+// El código había quedado en solo-ADMIN, lo que rompía la separación de
+// funciones que se describió en la reunión del 1-jul (min 00:04): "ellos pueden
+// montar el anticipo, pero los que definen si entró a la cuenta son ustedes".
+// Quien monta ya no es necesariamente quien verifica: para clientes SOCIO_LM
+// la verificación sigue reservada a ADMIN (ver `verificarAnticipo`), así que el
+// control de cuatro ojos sobre los anticipos de Lucho queda intacto.
 export async function POST(request: NextRequest) {
-  const session = await requireRole(["ADMIN"]);
+  const session = await requireRole(["ADMIN", "OPERATIVO"]);
 
   if (session instanceof NextResponse) {
     return session;
@@ -61,6 +69,7 @@ export async function POST(request: NextRequest) {
       tipoRecaudo: payload.tipoRecaudo,
       soporteKey: payload.soporteKey,
       verificadoBanco: payload.verificadoBanco,
+      usuarioId: session.user.id,
     });
 
     return jsonResponse({ anticipo }, { status: 201 });

@@ -28,6 +28,7 @@ model User {
   borradoresFact           BorradorFactura[]  @relation("FacturadoPor")
   facturasProveedorSubidas FacturaProveedor[] @relation("FacturasProveedorSubidas")
   pagosFactura             PagoFactura[]      @relation("PagosFacturaRegistrados")
+  lotesPago                LotePago[]         @relation("LotesPagoRegistrados")
 
   @@map("user")
 }
@@ -266,6 +267,7 @@ model Documento {
 
   pagosTramite      PagoTramite[]      @relation("SoporteDocumento")
   facturasProveedor FacturaProveedor[] @relation("FacturaProveedorDoc")
+  lotesPago         LotePago[]         @relation("LotePagoComprobante")
 
   @@map("documento")
 }
@@ -430,6 +432,11 @@ model PagoTramite {
   fechaRealPago DateTime?
   viaSocio      Boolean          @default(false)
   estado        EstadoMovimiento @default(REALIZADO)
+  // Lote al que pertenece este pago, si salió de un solo desembolso bancario
+  // que cubrió facturas de varios trámites (ver modelo LotePago). null = pago
+  // suelto, que es el caso normal.
+  loteId        String?
+  lote          LotePago?        @relation(fields: [loteId], references: [id], onDelete: SetNull)
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 
@@ -437,6 +444,34 @@ model PagoTramite {
   facturasProveedor PagoTramiteFactura[]
 
   @@map("pago_tramite")
+}
+
+// ─── Lote de pago ─────────────────────────────────────────────────────────────
+// Karina paga de una sola vez la cartera del puerto, y esa única transacción
+// bancaria cubre facturas de VARIOS trámites (reunión 1-jul, 00:48–00:50).
+// Modelarlo aflojando `PagoTramite.tramiteId` habría obligado a rehacer todos
+// los cálculos de saldo por trámite y el motor de factura. En vez de eso, el
+// lote AGRUPA: se sigue creando un PagoTramite por trámite (los saldos por
+// trámite quedan intactos y siguen cuadrando), y el lote es lo que comparten —
+// el comprobante del banco, la fecha y la referencia de la transacción.
+// Así el operario sube el comprobante UNA vez y deja de armar carpetas aparte.
+model LotePago {
+  id              String     @id @default(cuid())
+  // Referencia de la transacción bancaria (nro. de operación del extracto).
+  referencia      String?
+  fechaPago       DateTime
+  canalPago       CanalPago
+  // Comprobante único del desembolso, compartido por todos los pagos del lote.
+  documentoId     String?
+  documento       Documento? @relation("LotePagoComprobante", fields: [documentoId], references: [id])
+  registradoPorId String
+  registradoPor   User       @relation("LotesPagoRegistrados", fields: [registradoPorId], references: [id])
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  pagos PagoTramite[]
+
+  @@map("lote_pago")
 }
 
 // Pivot N↔N entre PagoTramite y Beneficiario

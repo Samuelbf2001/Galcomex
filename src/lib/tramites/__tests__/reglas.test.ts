@@ -100,3 +100,41 @@ describe("faltanDocumentosObligatorios", () => {
     ).toEqual([CategoriaDocumento.BL, CategoriaDocumento.FACTURA_COMERCIAL]);
   });
 });
+
+/**
+ * G6 — alcance configurable (parámetro DOCUMENTOS_OBLIGATORIOS_ALCANCE).
+ * Guillermo pidió en la reunión del 1-jul extender la exigencia a todos los
+ * clientes ("Sí, para todos"). Se implementó como interruptor para que Galcomex
+ * lo active cuando decida, sin frenar de golpe el trabajo de Camila.
+ */
+describe("faltanDocumentosObligatorios — alcance TODOS los clientes", () => {
+  it("con el alcance ampliado, un cliente PROPIO sin documentos sí los exige", () => {
+    expect(faltanDocumentosObligatorios(TipoCliente.PROPIO, [], true)).toEqual([
+      CategoriaDocumento.BL,
+      CategoriaDocumento.FACTURA_COMERCIAL,
+    ]);
+  });
+
+  it("con el alcance ampliado, un cliente PROPIO completo no exige nada", () => {
+    expect(
+      faltanDocumentosObligatorios(
+        TipoCliente.PROPIO,
+        [CategoriaDocumento.BL, CategoriaDocumento.FACTURA_COMERCIAL],
+        true,
+      ),
+    ).toEqual([]);
+  });
+
+  it("el alcance ampliado no relaja lo que ya se exigía a SOCIO_LM", () => {
+    expect(faltanDocumentosObligatorios(TipoCliente.SOCIO_LM, [], true)).toEqual([
+      CategoriaDocumento.BL,
+      CategoriaDocumento.FACTURA_COMERCIAL,
+    ]);
+  });
+
+  it("el default (sin tercer argumento) deja fuera a los clientes PROPIO", () => {
+    // Este es el comportamiento vigente hoy: omitir el parámetro NO debe
+    // endurecer la regla por accidente.
+    expect(faltanDocumentosObligatorios(TipoCliente.PROPIO, [])).toEqual([]);
+  });
+});
