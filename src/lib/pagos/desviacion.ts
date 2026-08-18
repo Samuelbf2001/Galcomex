@@ -17,6 +17,16 @@
  *
  * Sin base de comparación (sumaFacturas <= 0) devuelve 0.
  */
+/**
+ * Fallback de UI para el umbral de desviación cuando el caller no tiene el
+ * valor real cargado (ej. un acceso directo que abre el modal sin pasar por
+ * el libro de pagos). Espeja `DEFAULTS_UMBRAL.desviacionPagoPct` en
+ * `src/lib/parametros/service.ts` — el servidor SIEMPRE re-valida contra el
+ * parámetro real, así que este número solo afecta cuándo aparece el diálogo
+ * de confirmación en el cliente, nunca si el pago se acepta o no.
+ */
+export const DEFAULT_UMBRAL_DESVIACION_PAGO_PCT = 10;
+
 export function calcularDesviacionPct(valor: bigint, sumaFacturas: bigint): number {
   if (sumaFacturas <= 0n) return 0;
   const diff = valor - sumaFacturas;

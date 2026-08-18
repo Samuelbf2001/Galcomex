@@ -98,3 +98,63 @@ El plan 24-jun reportaba para BAQ-18453: `restanteInterno = 1.766.766` y `saldoL
 ### F2. Reset de contraseña por email (autoservicio)
 **Estado:** fuera de scope. Requeriría SMTP configurado. Para single-tenant interno con 5 usuarios sobra.
 **Mitigación ya implementada (2026-06-25):** cualquier usuario cambia su propia contraseña en `/cambiar-password` (ícono en el header) y el ADMIN restablece la de cualquier usuario desde Configuración → Usuarios (`POST /api/usuarios/[id]/reset-password`, audita `RESET_PASSWORD` y cierra sesiones).
+
+---
+
+## G. Hallazgos de la auditoría de la reunión 1-jul-2026
+
+> Origen: `docs/reuniones/2026-07-01-auditoria-vs-codigo.md` — auditoría minuto a minuto de la demo contra el código real. Lo implementable se implementó; aquí queda lo que **requiere decisión de negocio** o **rediseño**, que no se debe improvisar.
+
+### G1. 🔴 Solo ADMIN puede registrar anticipos — no hay separación de funciones
+**Detalle:** `POST /api/anticipos` exige `requireRole(["ADMIN"])`. En la reunión (min 00:04) se demostró el flujo contrario: *"ellos pueden montar el anticipo, pero los que definen si entró a la cuenta son ustedes"*. Hoy quien crea el anticipo es el mismo rol que lo verifica → el control de cuatro ojos que motivó toda esa discusión no existe. Además **contradice la matriz de roles de `CLAUDE.md`**, que asigna "Registrar anticipos/pagos" también a OPERATIVO.
+**Por qué no se cambió:** ampliar autorización es una frontera de seguridad y hay ambigüedad real sobre quién es "ellos" — existen dos cuentas (`lucho@` OPERATIVO y `luismartinez@` SOCIO) cuya relación ya estaba marcada como dudosa en A1.
+**Siguiente acción:** Camila confirma (a) si Lucho y Luis Martínez son una persona o dos cuentas a propósito, y (b) qué rol debe poder registrar anticipos. Luego alinear código y matriz de `CLAUDE.md` (hoy discrepan).
+
+### G2. 🔴 Webhooks: existe 1 de 5, sin firma HMAC
+**Detalle:** `CLAUDE.md` documenta 5 eventos firmados HMAC-SHA256 (`do.creado`, `do.enviado_a_facturar`, `factura.aprobada`, `factura.facturada`, `cartera.vencida`). En todo el repo existe **un solo** webhook: el de PSE (`api/tramites/[id]/pse-token/route.ts`). `createHmac`/`HMAC`/`sha256` **no aparecen en ningún archivo** fuera de `node_modules`. La URL de n8n está hardcodeada como fallback en el fuente y el envío es fire-and-forget.
+**Impacto:** las alertas de saldo de trámite y cartera por cliente ya calculan y exponen el dato tras este sprint, pero **no tienen canal de entrega**. Las promesas de la reunión de alertar a Camila (min 00:59) y a Guillermo (min 01:14) no se cumplen hoy: solo se ven entrando a la aplicación, que es justo lo que Guillermo quería evitar.
+**Siguiente acción:** decidir canal (WhatsApp vía n8n / correo / solo in-app), y si se implementan webhooks, agregar la firma HMAC que la documentación ya promete y sacar la URL a variable de entorno sin fallback hardcodeado.
+
+### G3. 🟠 Un pago no puede cubrir facturas de dos DOs — límite de modelo de datos
+**Detalle:** pedido de Karina (min 00:48–00:50): ver *todas* las facturas impagas de un cliente y pagar varias de DOs distintos en una sola transacción. Hoy `listarPorTramite(id)` es la única vía y **`PagoTramite.tramiteId` es obligatorio**: un pago pertenece a exactamente un trámite. No es un ajuste de UI.
+**Opciones de rediseño (elegir una, ambas requieren migración):**
+1. Hacer `tramiteId` opcional y derivar los trámites desde las facturas vinculadas — impacta todos los cálculos de saldo por trámite y el motor de factura.
+2. Introducir un concepto de "lote de pago" que agrupe pagos por trámite bajo un mismo comprobante.
+
+### G4. 🟠 "Enlace público" de documentos no existe (y no debería construirse sin decisión)
+**Detalle:** en min 01:29 se mostró "descargar, compartir o en un **enlace público**". El storage solo emite URLs prefirmadas con **tope duro de 15 minutos** (`MAX_PRESIGNED_URL_EXPIRY_SECONDS`; `normalizeExpiry` lanza si se excede). Un enlace público permanente violaría la invariante de seguridad del proyecto.
+**Siguiente acción:** definir si basta el prefirmado corto o se quiere un enlace durable, y con qué control de acceso y caducidad.
+
+### G5. 🟠 No hay vista documental por cliente
+**Detalle:** requisito explícito de Guillermo (min 01:15): *"va a poder acceder **por cada cliente** cuáles son los documentos"*. Los documentos se indexan **solo por trámite** (`api/tramites/[id]/documentos/`); no hay API ni vista agregada por cliente. Se llega a ellos navegando trámite por trámite.
+**Relacionado:** en min 01:29 el propio Ernesto reconoció que falta replicar la nomenclatura y estructura de carpetas de Galcomex. Sigue pendiente que Camila comparta esa estructura.
+
+### G6. ⚠️ ¿BL + Factura Comercial para todos los clientes?
+**Detalle:** en min 00:01 Guillermo pidió extenderlo más allá del socio: *"Sí, **para todos**. Para todos."*. Se implementó server-side **solo para SOCIO_LM** deliberadamente: extenderlo a clientes PROPIO bloquearía el flujo diario de Camila, y ella no fue quien lo pidió.
+**Matiz técnico:** el gate del servidor actúa en la **transición de estado** (junto al checklist y Litoplas), no en la creación. Un POST directo crea el DO "cascarón" pero este no puede salir de APERTURA. La UI sí bloquea al crear.
+**Siguiente acción:** decisión de Camila + Guillermo juntos.
+
+### G7. ⏸️ Reglas de revisión por cliente (caso Polired / orden de compra)
+**Detalle:** min 00:56 — con Polired la factura se revisa contra la orden de compra, no contra los pagos. **"Polired" no aparece en ningún archivo del código** y no existe modelo de datos de orden de compra ni reglas de revisión por cliente.
+**Bloqueado por:** falta especificar de dónde sale la orden de compra y qué se compara exactamente.
+
+### G8. Valores finales de los umbrales sembrados
+Los 4 umbrales quedaron como **parámetros editables** con defaults tomados de lo discutido, no como constantes. Galcomex debe fijar los definitivos desde Configuración:
+| Parámetro | Default sembrado |
+|---|---|
+| `UMBRAL_DESVIACION_PAGO_PCT` | 10 |
+| `UMBRAL_SALDO_TRAMITE_ALERTA` | 200.000 COP |
+| `UMBRAL_CARTERA_CLIENTE_ALERTA` | 20.000.000 COP |
+| `ANTICIPO_SOPORTE_OBLIGATORIO` | `false` |
+| `PAGO_COMPROBANTE_OBLIGATORIO` | `false` |
+| `PSE_TOKEN_VIGENCIA_SEGUNDOS` | 1800 (enlace) |
+| `PSE_CODIGO_VIGENCIA_SEGUNDOS` | 30 (código) |
+
+### G9. Verificación de integración pendiente (BLOQUEANTE para go-live)
+**Detalle:** el sprint se desarrolló **sin PostgreSQL disponible**. De 330 tests, **92 se auto-skipean** por requerir BD, y cubren justo los servicios modificados: `facturas-proveedor` (20 skip / 0 pass), `cartera` (19/6), `pagos` (14/0), `borradores` (6/0), `anticipos` (4/2), `documentos` (3/0).
+**Verificado sí:** tsc limpio, lint sin regresión, casos dorados 79/79 con tolerancia 0, y los tests unitarios puros nuevos de cada regla (+67 tests).
+**Siguiente acción obligatoria:** correr la suite completa con PostgreSQL levantado antes de go-live.
+
+### G10. Lección de proceso — trabajo concurrente en un working tree compartido
+Durante este sprint un `git stash` ejecutado por un proceso concurrente revirtió 27 archivos (1520 líneas) de golpe. Se recuperó del stash sin pérdida y se blindó con un commit checkpoint inmediato.
+**Regla para futuros sprints multi-agente:** aislar cada línea de trabajo en su propio git worktree, o prohibir explícitamente todo comando git que modifique árbol o índice (`checkout`, `restore`, `stash`, `reset`, `clean`). "Revertir" debe significar reescribir el archivo, nunca usar git.

@@ -43,7 +43,7 @@ De los 12 módulos/temas recorridos, el sistema cumple lo demostrado en la gran 
 | 00:00 | "cada trámite pueda tener un estado que pueda ser modificado… de enviado a facturar pasarlo a facturado" | DEMOSTRADO | `EstadoTramite` (9 estados) + `EstadoLog` con usuario y timestamp, `schema.prisma:139-203` | ✅ Cumple |
 | 00:00 | "esta vista tablero es lo que acabo de mostrar" | DEMOSTRADO | `components/tramites/kanban-tramites.tsx` | ✅ Cumple |
 | 00:00 | Filtros "por estados, clientes, ciudades, tipo de importación, si ya está facturado" | PROMETIDO | `estado`/`ciudad`/`clienteId`/`q` ya existían. **`facturado` se agregó este sprint.** `tipo de importación` no existe como campo. | 🔧 Parcial |
-| 00:01 | "trato de crear un DO y no me deja avanzar" sin BL ni Factura Comercial | **DEMOSTRADO** | La regla estaba **solo en React** (`tramites-workspace.tsx:254-265`); `tramiteCreateSchema` no la tenía. Un POST directo la evadía. **Corregido este sprint** (validación server-side). | 🔴→✅ |
+| 00:01 | "trato de crear un DO y no me deja avanzar" sin BL ni Factura Comercial | **DEMOSTRADO** | La regla estaba **solo en React** (`tramites-workspace.tsx:254-265`); `tramiteCreateSchema` no la tenía y un POST directo la evadía. **Corregido este sprint** con `faltanDocumentosObligatorios` (`lib/tramites/service.ts:114`), aplicada en la **transición de estado** junto al checklist y la regla Litoplas, y **no** evadible con `bypassChecklist`. **Matiz:** el gate del servidor actúa un paso después que el de la UI — un POST directo todavía crea el DO "cascarón", pero este no puede salir de APERTURA. Defendible (permite adjuntar los documentos al DO ya creado), pero no es paridad exacta con lo demostrado. | 🔴→✅ con matiz |
 | 00:01 | "Sí, **para todos**. Para todos" (extender BL+FC a todo cliente, no solo socio) | Pedido explícito de Guillermo | Hoy aplica solo a `SOCIO_LM`. **No implementado a propósito**: extenderlo bloquearía el flujo diario de Camila con clientes PROPIO, y ella no fue quien lo pidió. | ⚠️ Decisión |
 | 00:01 | "ahí queda como tarea definir esas pregunticas" (cuestionario que determina documentos por tipo de importación) | ABIERTO, autodeclarado tarea | No existe. Ya estaba diferido en `PENDIENTES.md` B2 ("lo define el papá de Camila"). En min 01:51 se repite la ambigüedad: Ernesto afirma "los documentos que se requieran **ya están definidos**" y en la misma frase le corrigen "**Esa es la tarea que tenemos**". La lista sigue sin definirse. | ⏸️ Bloqueado por especificación |
 | 00:02 | "acá abajito me dice usuario administrador" | DEMOSTRADO | `components/layout/sidebar.tsx:123` "Rol activo: {rol}" + nav filtrada por rol (`:93`) | ✅ Cumple |
@@ -218,10 +218,41 @@ Ambas requieren análisis y migración. **No se debe improvisar.**
 
 Todo bajo los invariantes del proyecto: dinero en `BigInt`, sin `any`, Zod en endpoints, umbrales como parámetros editables y no constantes.
 
-**Base compartida (orquestador):**
+**Base compartida:**
 - Migración `20260817120000_add_divisa_pago_tramite` — campos `moneda`/`valorDivisa`/`tasaCambio` en `PagoTramite`.
 - 7 parámetros nuevos sembrados en `prisma/seed.ts` con los valores discutidos en la reunión como punto de partida.
 - Lectores genéricos `getParametro` / `getParametroBigInt` / `getParametroNumero` / `getParametroBool` en `lib/parametros/service.ts`, tolerantes a BD sin sembrar.
+
+**Pagos, TRM y PSE:**
+- `lib/pagos/desviacion.ts` — `calcularDesviacionPct` / `excedeUmbralDesviacion`, puras y en BigInt. Preservan **exactamente** la fórmula que ya usaba el cliente, para que UI y servidor no divergan.
+- Validación **server-side** de la desviación en `crearPago`, con flag explícito `confirmarDesviacion` para el caso confirmado por el operario. Antes la regla era solo un diálogo de React, evadible por API.
+- `lib/pagos/divisa.ts` — regla todo-o-nada de los tres campos de divisa + `esDecimalValido`. `valor` (COP) sigue siendo la única fuente de verdad contable; la TRM solo documenta su origen.
+- Vigencia real del código PSE con cuenta regresiva visible (`PSE_CODIGO_VIGENCIA_SEGUNDOS`, 30 s), incluido el caso borde de un código que el servidor ya reporta vencido.
+- Marca de "pago sin comprobante" consultable, con obligatoriedad conmutable (`PAGO_COMPROBANTE_OBLIGATORIO`, arranca en `false` como se acordó).
+
+**Trámites, documentos y anticipos:**
+- Filtro `facturado` en `GET /api/tramites`, respetando el scoping del rol SOCIO.
+- Documentos inmutables en trámite `CERRADO`: 409 tanto al subir como al eliminar.
+- `faltanDocumentosObligatorios` (BL + Factura Comercial para SOCIO_LM), server-side y no evadible con `bypassChecklist`.
+- Soporte de anticipo obligatorio conmutable (`ANTICIPO_SOPORTE_OBLIGATORIO`, arranca en `false`) y anticipos sin soporte identificables.
+
+**Alertas:**
+- `evaluarAlertaSaldoTramite` — déficit por trámite en BigInt (`deficit = max(0, pagos − anticipos)`), umbral `UMBRAL_SALDO_TRAMITE_ALERTA`. Nueva sección en el dashboard.
+- `evaluarAlertaCarteraCliente` + `getClientesEnAlertaCartera()` y `GET /api/cartera/alertas` (ADMIN/REVISOR). Aplica a **ambas** vistas (cliente y LM).
+- **Convención de signo:** se reutilizó la ya existente de `calcularSaldoNeto` — positivo = Galcomex debe; negativo = la parte debe a Galcomex. "Cliente bajo menos 20 millones" se implementó como `saldoNeto < -umbral`, **no** como valor absoluto: un cliente con saldo a favor nunca dispara la alerta, por grande que sea. Cubre el caso literal de los 22 M mencionado en el minuto 00:32.
+
+### Gates al cierre
+
+| Gate | Baseline | Ahora |
+|---|---|---|
+| `npx tsc --noEmit` | limpio | **limpio (exit 0)** |
+| `npm run test` | 171 pass · 90 skip · 1 falla pre-existente | **238 pass · 92 skip · 1 falla pre-existente** (+67 tests) |
+| `npm run lint` | 11 errores · 13 warnings | **11 errores · 13 warnings — cero regresión** |
+| Casos dorados | 79/79 | **79/79, tolerancia 0 pesos** |
+
+### Incidente de proceso
+
+A mitad del sprint, un `git stash` ejecutado sobre el working tree compartido revirtió 27 archivos (1520 líneas) de golpe. Se recuperó completo del stash y se commiteó de inmediato como checkpoint (`e7e9b64`). **Causa raíz:** la instrucción "si rompes algo, revierte" se interpretó como revertir vía git en un árbol compartido por varios procesos. Para trabajo concurrente futuro: aislar cada línea de trabajo en su propio worktree, o prohibir explícitamente los comandos git que modifican el árbol.
 
 ---
 

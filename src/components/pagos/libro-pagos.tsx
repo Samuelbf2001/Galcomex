@@ -22,6 +22,7 @@ import {
   type LibroPagosData,
   type PagoRow,
   type TramiteDetail,
+  DEFAULT_UMBRAL_DESVIACION_PCT,
   PagosApiError,
   calcularSaldosCliente,
   createPago,
@@ -637,8 +638,15 @@ type PendingSubmit = {
 type NuevoPagoModalProps = {
   tramiteId: string;
   tramiteConsecutivo: string;
-  /** Umbral de desviación pago↔facturas (%) — A1, viene del libro de pagos. */
-  umbralDesviacionPct: number;
+  /**
+   * Umbral de desviación pago↔facturas (%) — A1. Lo provee el libro de pagos,
+   * que lo lee del parámetro `UMBRAL_DESVIACION_PAGO_PCT`. Es OPCIONAL porque
+   * hay call sites (la hoja del trámite) que no cargan ese payload; en esos
+   * casos solo se pierde la precisión del diálogo de confirmación, no la regla:
+   * la validación bloqueante vive en el servidor (ver `crearPago`), que siempre
+   * lee el parámetro real.
+   */
+  umbralDesviacionPct?: number;
   initialConcepto?: string;
   initialFacturaIds?: string[];
   initialBeneficiarios?: BeneficiarioSeleccion[];
@@ -650,7 +658,7 @@ type NuevoPagoModalProps = {
 export function NuevoPagoModal({
   tramiteId,
   tramiteConsecutivo,
-  umbralDesviacionPct,
+  umbralDesviacionPct = DEFAULT_UMBRAL_DESVIACION_PCT,
   initialConcepto,
   initialFacturaIds,
   initialBeneficiarios,
@@ -714,8 +722,19 @@ export function NuevoPagoModal({
             expiraEnSegundos?: number;
           };
           if (data.ready && data.codigo) {
+            const vigencia =
+              typeof data.expiraEnSegundos === "number" ? data.expiraEnSegundos : null;
+            // Si el servidor ya lo reporta vencido, no lo mostramos: se pide
+            // uno nuevo. Sin esto el código quedaría visible sin caducar,
+            // porque la cuenta regresiva ignora los valores <= 0.
+            if (vigencia !== null && vigencia <= 0) {
+              setPseCodigoRecibido(null);
+              setCodigoExpiraEn(null);
+              setPseCodigoExpirado(true);
+              return;
+            }
             setPseCodigoRecibido(data.codigo);
-            setCodigoExpiraEn(typeof data.expiraEnSegundos === "number" ? data.expiraEnSegundos : null);
+            setCodigoExpiraEn(vigencia);
             setPseCodigoExpirado(false);
           }
         })
@@ -730,16 +749,20 @@ export function NuevoPagoModal({
   // desaparece el token del sistema"). Mismo patrón de setTimeout que ya
   // usaba el archivo para el cooldown anterior.
   useEffect(() => {
-    if (codigoExpiraEn === null) return;
-    if (codigoExpiraEn <= 0) {
-      setPseCodigoRecibido(null);
-      setCodigoExpiraEn(null);
-      setPseCodigoExpirado(true);
-      return;
-    }
+    if (codigoExpiraEn === null || codigoExpiraEn <= 0) return;
 
+    // El vencimiento se detecta DENTRO del callback del temporizador, no en el
+    // cuerpo del efecto: llamar setState sincrónicamente aquí dispararía
+    // renders en cascada (react-hooks/set-state-in-effect).
     const timeout = setTimeout(() => {
-      setCodigoExpiraEn((current) => (current === null ? null : current - 1));
+      const restante = codigoExpiraEn - 1;
+      if (restante <= 0) {
+        setPseCodigoRecibido(null);
+        setCodigoExpiraEn(null);
+        setPseCodigoExpirado(true);
+      } else {
+        setCodigoExpiraEn(restante);
+      }
     }, 1000);
 
     return () => clearTimeout(timeout);
@@ -875,6 +898,7 @@ export function NuevoPagoModal({
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
+    setDivisaError(null);
 
     const formData = new FormData(e.currentTarget);
     const concepto = String(formData.get("concepto") ?? "").trim();
@@ -885,6 +909,19 @@ export function NuevoPagoModal({
       return;
     }
 
+    // A2: si la sección de divisa está activa, los tres campos son obligatorios.
+    if (divisaActiva) {
+      const moneda = monedaInput.trim();
+      const centavos = parseDivisaCentavos(valorDivisaInput);
+      const tasa = tasaCambioInput.trim();
+      if (!moneda || !centavos || !tasa || !esDecimalValido(tasa)) {
+        setDivisaError(
+          "Completa moneda, valor en divisa (ej. 1234.56) y TRM (ej. 4200.50), o desactiva esta sección.",
+        );
+        return;
+      }
+    }
+
     const payload: PendingSubmit = { concepto, numSoporte: null, canalPago, valor: valorBig };
 
     // Flujo PSE: notifica a María Camila y pasa directo a adjuntar soporte
@@ -893,11 +930,11 @@ export function NuevoPagoModal({
       return;
     }
 
-    // Verificar desviación ±10% solo si hay facturas seleccionadas
+    // A1: verifica desviación contra el umbral configurado (server-side es
+    // quien manda; este chequeo es solo para no hacer un round-trip de más).
     if (facturasSeleccionadas.length > 0 && sumaFacturas > 0n) {
-      const diff = BigInt(valorBig) - sumaFacturas;
-      const pct = Number((diff * 1000n) / sumaFacturas) / 10;
-      if (Math.abs(pct) > 10) {
+      const pct = calcularDesviacionPct(BigInt(valorBig), sumaFacturas);
+      if (Math.abs(pct) > umbralDesviacionPct) {
         setConfirmPending(payload);
         setConfirmPct(pct);
         return;
@@ -1062,6 +1099,66 @@ export function NuevoPagoModal({
                 />
               </label>
 
+              {/* Divisa (A2, reunión 1-jul-2026): colapsable — no estorba el caso
+                  normal en COP. `valor` (arriba) sigue siendo la fuente de verdad
+                  contable; estos campos solo documentan de dónde salió ese COP. */}
+              <div className="border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setDivisaActiva((v) => !v)}
+                  className="flex h-10 w-full items-center justify-between px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  <span>Este pago viene de una factura en divisa (USD)</span>
+                  <span className="text-xs font-normal text-slate-400">
+                    {divisaActiva ? "Ocultar" : "Agregar"}
+                  </span>
+                </button>
+                {divisaActiva ? (
+                  <div className="space-y-3 border-t border-slate-200 px-3 py-3">
+                    <p className="text-[11px] text-slate-500">
+                      El proveedor factura en divisa pero se contabiliza el COP
+                      realmente pagado (arriba). Estos campos solo documentan la
+                      TRM usada — nunca reemplazan el valor en COP.
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-medium text-slate-700">Moneda</span>
+                        <input
+                          value={monedaInput}
+                          onChange={(ev) => setMonedaInput(ev.target.value)}
+                          placeholder="USD"
+                          maxLength={10}
+                          className="h-9 w-full border border-slate-300 px-2 text-sm outline-none focus:border-cyan-600"
+                        />
+                      </label>
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-medium text-slate-700">Valor en divisa</span>
+                        <input
+                          value={valorDivisaInput}
+                          onChange={(ev) => setValorDivisaInput(ev.target.value)}
+                          placeholder="1234.56"
+                          inputMode="decimal"
+                          className="h-9 w-full border border-slate-300 px-2 text-sm outline-none focus:border-cyan-600"
+                        />
+                      </label>
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-medium text-slate-700">TRM aplicada</span>
+                        <input
+                          value={tasaCambioInput}
+                          onChange={(ev) => setTasaCambioInput(ev.target.value)}
+                          placeholder="4200.50"
+                          inputMode="decimal"
+                          className="h-9 w-full border border-slate-300 px-2 text-sm outline-none focus:border-cyan-600"
+                        />
+                      </label>
+                    </div>
+                    {divisaError ? (
+                      <p className="text-xs text-rose-600">{divisaError}</p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+
               {error ? (
                 <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
@@ -1095,39 +1192,71 @@ export function NuevoPagoModal({
           {pseStep === "soporte" ? (
             <div className="space-y-4 px-5 py-5">
 
-              {/* Estado del código */}
+              {/* Estado del código — A3: el código tiene vida corta (PSE_CODIGO_VIGENCIA_SEGUNDOS,
+                  default 30s) contada desde que María Camila responde, no desde que
+                  el operario lo ve. Al vencer se borra de pantalla y hay que pedir uno nuevo. */}
               {!pseCodigoRecibido ? (
                 <div className="space-y-3 rounded border border-amber-200 bg-amber-50 px-4 py-3">
                   <div className="flex items-center gap-3">
                     <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-600" aria-hidden="true" />
                     <div>
-                      <p className="text-sm font-medium text-amber-800">Esperando a María Camila…</p>
-                      <p className="text-xs text-amber-600">Se le envió el link para que ingrese el código PSE. Esta pantalla se actualiza automáticamente.</p>
+                      <p className="text-sm font-medium text-amber-800">
+                        {pseCodigoExpirado ? "El código anterior expiró" : "Esperando a María Camila…"}
+                      </p>
+                      <p className="text-xs text-amber-600">
+                        {pseCodigoExpirado
+                          ? "Vuelve a solicitar un pago PSE para recibir un código nuevo."
+                          : "Se le envió el link para que ingrese el código PSE. Esta pantalla se actualiza automáticamente."}
+                      </p>
                     </div>
                   </div>
+                  {pseCodigoExpirado ? (
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => void (psePendingPayload ? notificarCamilaPse(psePendingPayload) : Promise.resolve())}
+                        disabled={isRequestingToken || !psePendingPayload}
+                        className="inline-flex h-8 items-center gap-2 border border-amber-300 bg-white px-3 text-xs font-semibold text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isRequestingToken ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                        ) : null}
+                        Solicitar nuevo código
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="space-y-3 rounded border border-emerald-200 bg-emerald-50 px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
-                    <div>
-                      <p className="text-xs text-emerald-600">Código PSE recibido</p>
-                      <p className="text-lg font-bold tracking-widest text-emerald-800">{pseCodigoRecibido}</p>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+                      <div>
+                        <p className="text-xs text-emerald-600">Código PSE recibido</p>
+                        <p className="text-lg font-bold tracking-widest text-emerald-800">{pseCodigoRecibido}</p>
+                      </div>
                     </div>
+                    {codigoExpiraEn !== null ? (
+                      <span
+                        className={`shrink-0 text-xs font-semibold ${
+                          codigoExpiraEn <= 10 ? "text-rose-600" : "text-emerald-600"
+                        }`}
+                      >
+                        Expira en {codigoExpiraEn}s
+                      </span>
+                    ) : null}
                   </div>
                   <div className="flex justify-end">
                     <button
                       type="button"
                       onClick={() => void (psePendingPayload ? notificarCamilaPse(psePendingPayload) : Promise.resolve())}
-                      disabled={isRequestingToken || pseRetryRemaining > 0 || !psePendingPayload}
+                      disabled={isRequestingToken || !psePendingPayload}
                       className="inline-flex h-8 items-center gap-2 border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {isRequestingToken ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
                       ) : null}
-                      {pseRetryRemaining > 0
-                        ? `Nuevo código en ${pseRetryRemaining}s`
-                        : "Solicitar nuevo código"}
+                      Solicitar nuevo código
                     </button>
                   </div>
                 </div>
@@ -1184,7 +1313,7 @@ export function NuevoPagoModal({
         </div>
       </div>
 
-      {/* Diálogo de confirmación por desviación ±10% (solo flujo no-PSE) */}
+      {/* Diálogo de confirmación por desviación (umbral configurable, solo flujo no-PSE) */}
       {confirmPending ? (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 px-4">
           <div className="w-full max-w-sm border border-amber-300 bg-white p-5 shadow-2xl">
@@ -1197,7 +1326,8 @@ export function NuevoPagoModal({
                   <span className="font-semibold text-amber-700">
                     {confirmPct > 0 ? "+" : ""}{confirmPct.toFixed(1)}%
                   </span>{" "}
-                  del total de facturas seleccionadas ({formatCOP(sumaFacturas.toString())}).
+                  del total de facturas seleccionadas ({formatCOP(sumaFacturas.toString())}) —
+                  umbral configurado: {umbralDesviacionPct}%.
                   ¿Deseas continuar de todos modos?
                 </p>
               </div>
@@ -1212,7 +1342,7 @@ export function NuevoPagoModal({
               </button>
               <button
                 type="button"
-                onClick={() => void submitPayload(confirmPending)}
+                onClick={() => void submitPayload({ ...confirmPending, confirmarDesviacion: true })}
                 disabled={isSubmitting}
                 className="inline-flex h-9 items-center gap-2 bg-amber-600 px-3 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:opacity-60"
               >
@@ -1619,6 +1749,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
         <NuevoPagoModal
           tramiteId={tramiteId}
           tramiteConsecutivo={tramite.consecutivo}
+          umbralDesviacionPct={libro.umbralDesviacionPct}
           onClose={() => setModalOpen(false)}
           onCreated={handlePagoCreado}
         />
@@ -1692,6 +1823,11 @@ function FilaPago({
             onBlur={() => onBlur(fila.id)}
             className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
           />
+          {fila.moneda && fila.valorDivisa && fila.tasaCambio ? (
+            <p className="px-1 text-[10px] text-slate-400">
+              {fila.moneda} {formatDivisaCentavos(fila.valorDivisa)} · TRM {fila.tasaCambio}
+            </p>
+          ) : null}
         </td>
 
         {/* Beneficiarios (multi) */}
@@ -1730,6 +1866,14 @@ function FilaPago({
             {fila.viaSocio ? (
               <span className="inline-flex items-center border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
                 vía Lucho
+              </span>
+            ) : null}
+            {!fila.documentoId ? (
+              <span
+                className="inline-flex items-center border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700"
+                title="Este pago no tiene un comprobante (documento) adjunto"
+              >
+                Sin comprobante
               </span>
             ) : null}
             {estadoMovimientoBadge(fila.estado)}

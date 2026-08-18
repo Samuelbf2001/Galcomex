@@ -103,6 +103,14 @@ export type LibroPagosData = {
   umbralDesviacionPct: number;
 };
 
+/**
+ * Fallback del umbral de desviación pago↔facturas cuando el servidor no lo
+ * envía. Debe coincidir con `UMBRAL_DESVIACION_PAGO_PCT` en `prisma/seed.ts`.
+ * Solo afecta el diálogo de confirmación: la regla bloqueante la aplica el
+ * servidor leyendo el parámetro real.
+ */
+export const DEFAULT_UMBRAL_DESVIACION_PCT = 10;
+
 export type TramiteDetail = {
   id: string;
   consecutivo: string;
@@ -406,7 +414,9 @@ export async function fetchLibroPagos(
 
   const umbralRaw = payload.umbralDesviacionPct;
   const umbralDesviacionPct =
-    typeof umbralRaw === "number" && Number.isFinite(umbralRaw) ? umbralRaw : 10;
+    typeof umbralRaw === "number" && Number.isFinite(umbralRaw)
+      ? umbralRaw
+      : DEFAULT_UMBRAL_DESVIACION_PCT;
 
   return {
     pagos,
