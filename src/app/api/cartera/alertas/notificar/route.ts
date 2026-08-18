@@ -13,11 +13,21 @@
  *
  * Origen: reunión 1-jul-2026, min 01:14 — "vamos a alertar cuando ya el cliente
  * esté bajo menos 20 millones… vamos a mandarla al señor Guillermo".
+ *
+ * AUTORIZACIÓN: quien llama esto en la práctica es el workflow programado de
+ * n8n, no una persona con sesión de navegador — `requireRole` por sí solo
+ * habría dejado el endpoint inalcanzable para la propia automatización que
+ * necesita invocarlo. Acepta CUALQUIERA de los dos caminos: un ADMIN con
+ * sesión (para disparar la evaluación a mano) o el secreto de servicio
+ * `CARTERA_ALERTAS_SERVICE_TOKEN` vía `Authorization: Bearer <secreto>` (para
+ * la agenda de n8n). Sin ese secreto configurado, la ruta de servicio
+ * simplemente nunca autoriza — no hay fallback inseguro.
  */
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import { requireRole } from "@/lib/auth/session";
+import { tieneTokenDeServicioValido } from "@/lib/auth/service-token";
 import {
   getClientesEnAlertaCartera,
   type ClienteEnAlertaCarteraRow,
@@ -44,11 +54,17 @@ function saldoQueDisparoLaAlerta(fila: ClienteEnAlertaCarteraRow): bigint {
   return candidatos.reduce((peor, actual) => (actual < peor ? actual : peor));
 }
 
-export async function POST() {
-  const session = await requireRole(["ADMIN"]);
+export async function POST(request: NextRequest) {
+  const autorizadoPorServicio = tieneTokenDeServicioValido(
+    request.headers.get("authorization"),
+    process.env.CARTERA_ALERTAS_SERVICE_TOKEN,
+  );
 
-  if (session instanceof NextResponse) {
-    return session;
+  if (!autorizadoPorServicio) {
+    const session = await requireRole(["ADMIN"]);
+    if (session instanceof NextResponse) {
+      return session;
+    }
   }
 
   const clientes = await getClientesEnAlertaCartera();
