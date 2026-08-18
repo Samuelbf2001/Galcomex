@@ -204,6 +204,47 @@ export async function listarPorTramite(tramiteId: string) {
 }
 
 /**
+ * Facturas de proveedor impagas de un cliente, atravesando TODOS sus trámites.
+ *
+ * Karina paga la cartera del puerto de una sola vez, y ese desembolso cubre
+ * facturas de varios DOs (reunión 1-jul, min 00:48). Para poder armar ese pago
+ * hay que poder ver primero las facturas del cliente sin ir DO por DO — que es
+ * lo que este listado resuelve.
+ *
+ * "Impaga" = `REGISTRADA`, el mismo criterio que usa el resto del módulo: una
+ * vez pagada pasa a `PAGADA` y ya no debe ofrecerse para un lote nuevo.
+ *
+ * Cada fila trae su trámite de origen, porque el operario necesita saber de qué
+ * DO viene cada factura antes de seleccionarla.
+ */
+export async function listarFacturasImpagasPorCliente(
+  clienteId: string,
+  opciones?: { take?: number; skip?: number },
+) {
+  const where = {
+    estado: EstadoFacturaProveedor.REGISTRADA,
+    tramite: { clienteId },
+  } as const;
+
+  const [facturas, total] = await Promise.all([
+    prisma.facturaProveedor.findMany({
+      where,
+      include: {
+        beneficiario: { select: { id: true, nombre: true, nit: true } },
+        documento: { select: { id: true, nombreArchivo: true } },
+        tramite: { select: { id: true, consecutivo: true } },
+      },
+      orderBy: [{ fecha: "asc" }, { numFactura: "asc" }],
+      take: opciones?.take ?? 100,
+      skip: opciones?.skip ?? 0,
+    }),
+    prisma.facturaProveedor.count({ where }),
+  ]);
+
+  return { facturas, total };
+}
+
+/**
  * Actualiza una factura de proveedor existente.
  * Solo se puede actualizar si está en estado REGISTRADA.
  */

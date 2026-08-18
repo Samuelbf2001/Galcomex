@@ -21,7 +21,7 @@ import {
 import { camposDivisaValidos, type CamposDivisaInput } from "@/lib/pagos/divisa";
 import { calcularDesviacionPct, excedeUmbralDesviacion } from "@/lib/pagos/desviacion";
 
-type CrearPagoInput = {
+export type CrearPagoInput = {
   tramiteId: string;
   concepto: string;
   /** IDs de beneficiarios a vincular (N↔N). */
@@ -52,6 +52,24 @@ type CrearPagoInput = {
   moneda?: string | null;
   valorDivisa?: bigint | null;
   tasaCambio?: string | null;
+  /**
+   * Lote de pago al que pertenece este PagoTramite, si salió de un solo
+   * desembolso bancario que cubrió facturas de varios trámites (ver
+   * `lotes-pago-service.ts`). undefined/null = pago suelto, el caso normal.
+   */
+  loteId?: string | null;
+};
+
+/**
+ * Variante interna de `CrearPagoInput` usada por `crearPagoEnTx`: permite
+ * inyectar el costo bancario ya resuelto en vez de recalcularlo desde
+ * `MatrizPago`. La usa `lotes-pago-service.ts` para que el costo del
+ * desembolso único del lote no se cobre una vez por cada trámite agrupado
+ * (ver `repartirCostoBancario`) — todos los `PagoTramite` del lote menos uno
+ * llevan `costoBancarioOverride: 0n`.
+ */
+export type CrearPagoEnTxInput = CrearPagoInput & {
+  costoBancarioOverride?: bigint;
 };
 
 type AplicacionDetalle = {
@@ -149,9 +167,23 @@ function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
   ) as Prisma.InputJsonValue;
 }
 
-async function resolverCostoBancario(
+/**
+ * Cliente de transacción interactiva de Prisma — mismo tipo que ya se
+ * derivaba inline en varios sitios de este archivo. Se nombra una sola vez
+ * para reutilizarlo también en `crearPagoEnTx` (lote de pago, Sprint lotes).
+ */
+type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+/**
+ * Resuelve el costo bancario de un canal desde `MatrizPago`. Exportada para
+ * que `lotes-pago-service.ts` pueda resolver el costo del desembolso ÚNICO
+ * del lote (se cobra una vez, no una vez por trámite — ver
+ * `repartirCostoBancario` en `lotes-pago-calculo.ts`) sin duplicar esta
+ * consulta.
+ */
+export async function resolverCostoBancario(
   canal: CanalPago,
-  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  tx?: TxClient,
 ): Promise<bigint> {
   const db = tx ?? prisma;
   const entrada = await db.matrizPago.findUnique({
@@ -172,7 +204,7 @@ async function resolverCostoBancario(
  * si el FK ya no existe; el caller decide si tratar la ausencia como warning.
  */
 async function resolverBancoBancolombiaId(
-  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  tx?: TxClient,
 ): Promise<string | null> {
   const db = tx ?? prisma;
   const param = await db.parametro.findUnique({
@@ -272,12 +304,25 @@ export class ComprobanteObligatorioError extends Error {
 }
 
 /**
- * Crea un pago en el libro del trámite.
- * - Resuelve costoBancario automáticamente desde MatrizPago según canalPago.
+ * Núcleo de `crearPago`, factorizado para poder correr DENTRO de una
+ * transacción que el caller ya abrió (usado por `lotes-pago-service.ts`
+ * para crear varios `PagoTramite` — uno por trámite del lote — en una sola
+ * transacción atómica junto con el `LotePago`). NO abre su propia
+ * transacción ni valida los pre-chequeos de `crearPago` (divisa completa,
+ * comprobante obligatorio) — esos son responsabilidad del caller, porque
+ * para un lote se evalúan UNA vez para todo el lote, no una vez por trámite.
+ *
+ * - Resuelve costoBancario automáticamente desde MatrizPago según canalPago,
+ *   salvo que el caller pase `costoBancarioOverride` (lote: el costo del
+ *   desembolso único se imputa a un solo trámite, ver
+ *   `repartirCostoBancario`).
  * - Vincula N facturas de proveedor vía tabla pivot (N↔N).
  * - Genera AuditLog.
  */
-export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
+export async function crearPagoEnTx(
+  tx: TxClient,
+  input: CrearPagoEnTxInput,
+): Promise<PagoTramite> {
   const {
     tramiteId,
     concepto,
@@ -291,6 +336,154 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
     bancoBeneficiarioId,
     usuarioId,
     confirmarDesviacion = false,
+    moneda = null,
+    valorDivisa = null,
+    tasaCambio = null,
+    loteId = null,
+    costoBancarioOverride,
+  } = input;
+
+  const anticipo = await tx.aplicacionAnticipo.findFirst({
+    where: { tramiteId },
+    select: { id: true },
+  });
+  if (!anticipo) {
+    throw new SinAnticipoAplicadoError(tramiteId);
+  }
+
+  const costoBancario =
+    costoBancarioOverride !== undefined
+      ? costoBancarioOverride
+      : await resolverCostoBancario(canalPago, tx);
+
+  // Banco asociado al pago (tercero del 4x1000).
+  // - TRANSF_BANCOLOMBIA: si el operario no envió banco explícito, se
+  //   auto-resuelve desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID. Si el operario
+  //   pasó uno (override), se respeta.
+  // - Otros canales: lo elige el operario en el modal; puede quedar null.
+  let bancoFinal: string | null = bancoBeneficiarioId ?? null;
+  if (bancoFinal === null && canalPago === "TRANSF_BANCOLOMBIA") {
+    bancoFinal = await resolverBancoBancolombiaId(tx);
+  }
+
+  const ultimoPago = await tx.pagoTramite.findFirst({
+    where: { tramiteId },
+    orderBy: { orden: "desc" },
+    select: { orden: true },
+  });
+
+  const orden = (ultimoPago?.orden ?? 0) + 1;
+
+  // Validar facturas de proveedor y acumular su valor para el chequeo de
+  // desviación (A1) — se marcan como PAGADA más abajo, tras crear el pago.
+  let sumaFacturas = 0n;
+  for (const fpId of facturaProveedorIds) {
+    const fp = await tx.facturaProveedor.findUnique({ where: { id: fpId } });
+
+    if (!fp) {
+      throw new FacturaProveedorNoEncontradaError(fpId);
+    }
+
+    if (fp.tramiteId !== tramiteId) {
+      throw new PagoFacturaDeOtroTramiteError(fpId, tramiteId);
+    }
+
+    if (fp.estado === EstadoFacturaProveedor.FACTURADA_CLIENTE) {
+      throw new FacturaProveedorNoModificableError(fpId, fp.estado);
+    }
+
+    sumaFacturas += fp.valor;
+  }
+
+  // A1: rechaza si el valor se desvía más del umbral configurado respecto a
+  // la suma de facturas vinculadas, salvo confirmación explícita del
+  // cliente. Regla server-side — no evadible llamando la API directo.
+  if (facturaProveedorIds.length > 0 && sumaFacturas > 0n && !confirmarDesviacion) {
+    const umbralPct = await getParametroNumero(
+      CLAVES_UMBRAL.desviacionPagoPct,
+      DEFAULTS_UMBRAL.desviacionPagoPct,
+    );
+    if (excedeUmbralDesviacion(valor, sumaFacturas, umbralPct)) {
+      throw new DesviacionPagoExcedeUmbralError(
+        calcularDesviacionPct(valor, sumaFacturas),
+        umbralPct,
+      );
+    }
+  }
+
+  const pago = await tx.pagoTramite.create({
+    data: {
+      tramiteId,
+      concepto,
+      numSoporte,
+      documentoId,
+      valor,
+      canalPago,
+      costoBancario,
+      orden,
+      fechaRealPago,
+      bancoBeneficiarioId: bancoFinal,
+      moneda,
+      valorDivisa,
+      tasaCambio,
+      loteId,
+    },
+  });
+
+  // Vincular beneficiarios (N↔N)
+  for (const bid of beneficiarioIds) {
+    await tx.pagoTramiteBeneficiario.create({
+      data: { pagoId: pago.id, beneficiarioId: bid },
+    });
+  }
+
+  // Crear pivot records y marcar facturas como PAGADA
+  for (const fpId of facturaProveedorIds) {
+    await tx.pagoTramiteFactura.create({
+      data: { pagoId: pago.id, facturaId: fpId },
+    });
+
+    await tx.facturaProveedor.update({
+      where: { id: fpId },
+      data: { estado: EstadoFacturaProveedor.PAGADA },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "FacturaProveedor",
+        entidadId: fpId,
+        accion: "UPDATE_ESTADO",
+        usuarioId,
+        tramiteId,
+        antes: normalizeSerializable({ estado: EstadoFacturaProveedor.REGISTRADA }),
+        despues: normalizeSerializable({ estado: EstadoFacturaProveedor.PAGADA }),
+      },
+    });
+  }
+
+  await tx.auditLog.create({
+    data: {
+      entidad: "PagoTramite",
+      entidadId: pago.id,
+      accion: "CREATE",
+      usuarioId,
+      tramiteId,
+      despues: normalizeSerializable({ ...pago, beneficiarioIds, facturaProveedorIds }),
+    },
+  });
+
+  return pago;
+}
+
+/**
+ * Crea un pago suelto en el libro del trámite (caso normal, fuera de un
+ * lote). Valida los pre-chequeos que aplican una sola vez por pago (divisa
+ * completa, comprobante obligatorio) y abre su propia transacción alrededor
+ * de `crearPagoEnTx`.
+ */
+export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
+  const {
+    documentoId,
     moneda = null,
     valorDivisa = null,
     tasaCambio = null,
@@ -311,134 +504,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
     throw new ComprobanteObligatorioError();
   }
 
-  return prisma.$transaction(async (tx) => {
-    const anticipo = await tx.aplicacionAnticipo.findFirst({
-      where: { tramiteId },
-      select: { id: true },
-    });
-    if (!anticipo) {
-      throw new SinAnticipoAplicadoError(tramiteId);
-    }
-
-    const costoBancario = await resolverCostoBancario(canalPago, tx);
-
-    // Banco asociado al pago (tercero del 4x1000).
-    // - TRANSF_BANCOLOMBIA: si el operario no envió banco explícito, se
-    //   auto-resuelve desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID. Si el operario
-    //   pasó uno (override), se respeta.
-    // - Otros canales: lo elige el operario en el modal; puede quedar null.
-    let bancoFinal: string | null = bancoBeneficiarioId ?? null;
-    if (bancoFinal === null && canalPago === "TRANSF_BANCOLOMBIA") {
-      bancoFinal = await resolverBancoBancolombiaId(tx);
-    }
-
-    const ultimoPago = await tx.pagoTramite.findFirst({
-      where: { tramiteId },
-      orderBy: { orden: "desc" },
-      select: { orden: true },
-    });
-
-    const orden = (ultimoPago?.orden ?? 0) + 1;
-
-    // Validar facturas de proveedor y acumular su valor para el chequeo de
-    // desviación (A1) — se marcan como PAGADA más abajo, tras crear el pago.
-    let sumaFacturas = 0n;
-    for (const fpId of facturaProveedorIds) {
-      const fp = await tx.facturaProveedor.findUnique({ where: { id: fpId } });
-
-      if (!fp) {
-        throw new FacturaProveedorNoEncontradaError(fpId);
-      }
-
-      if (fp.tramiteId !== tramiteId) {
-        throw new PagoFacturaDeOtroTramiteError(fpId, tramiteId);
-      }
-
-      if (fp.estado === EstadoFacturaProveedor.FACTURADA_CLIENTE) {
-        throw new FacturaProveedorNoModificableError(fpId, fp.estado);
-      }
-
-      sumaFacturas += fp.valor;
-    }
-
-    // A1: rechaza si el valor se desvía más del umbral configurado respecto a
-    // la suma de facturas vinculadas, salvo confirmación explícita del
-    // cliente. Regla server-side — no evadible llamando la API directo.
-    if (facturaProveedorIds.length > 0 && sumaFacturas > 0n && !confirmarDesviacion) {
-      const umbralPct = await getParametroNumero(
-        CLAVES_UMBRAL.desviacionPagoPct,
-        DEFAULTS_UMBRAL.desviacionPagoPct,
-      );
-      if (excedeUmbralDesviacion(valor, sumaFacturas, umbralPct)) {
-        throw new DesviacionPagoExcedeUmbralError(
-          calcularDesviacionPct(valor, sumaFacturas),
-          umbralPct,
-        );
-      }
-    }
-
-    const pago = await tx.pagoTramite.create({
-      data: {
-        tramiteId,
-        concepto,
-        numSoporte,
-        documentoId,
-        valor,
-        canalPago,
-        costoBancario,
-        orden,
-        fechaRealPago,
-        bancoBeneficiarioId: bancoFinal,
-        moneda,
-        valorDivisa,
-        tasaCambio,
-      },
-    });
-
-    // Vincular beneficiarios (N↔N)
-    for (const bid of beneficiarioIds) {
-      await tx.pagoTramiteBeneficiario.create({
-        data: { pagoId: pago.id, beneficiarioId: bid },
-      });
-    }
-
-    // Crear pivot records y marcar facturas como PAGADA
-    for (const fpId of facturaProveedorIds) {
-      await tx.pagoTramiteFactura.create({
-        data: { pagoId: pago.id, facturaId: fpId },
-      });
-
-      await tx.facturaProveedor.update({
-        where: { id: fpId },
-        data: { estado: EstadoFacturaProveedor.PAGADA },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          entidad: "FacturaProveedor",
-          entidadId: fpId,
-          accion: "UPDATE_ESTADO",
-          usuarioId,
-          tramiteId,
-          antes: normalizeSerializable({ estado: EstadoFacturaProveedor.REGISTRADA }),
-          despues: normalizeSerializable({ estado: EstadoFacturaProveedor.PAGADA }),
-        },
-      });
-    }
-
-    await tx.auditLog.create({
-      data: {
-        entidad: "PagoTramite",
-        entidadId: pago.id,
-        accion: "CREATE",
-        usuarioId,
-        tramiteId,
-        despues: normalizeSerializable({ ...pago, beneficiarioIds, facturaProveedorIds }),
-      },
-    });
-
-    return pago;
-  });
+  return prisma.$transaction((tx) => crearPagoEnTx(tx, input));
 }
 
 /**
