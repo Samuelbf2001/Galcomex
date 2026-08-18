@@ -176,10 +176,14 @@ Los 4 umbrales quedaron como **parámetros editables** con defaults tomados de l
 | `PSE_TOKEN_VIGENCIA_SEGUNDOS` | 1800 (enlace) |
 | `PSE_CODIGO_VIGENCIA_SEGUNDOS` | 30 (código) |
 
-### G9. Verificación de integración pendiente (BLOQUEANTE para go-live)
-**Detalle:** el sprint se desarrolló **sin PostgreSQL disponible**. De 330 tests, **92 se auto-skipean** por requerir BD, y cubren justo los servicios modificados: `facturas-proveedor` (20 skip / 0 pass), `cartera` (19/6), `pagos` (14/0), `borradores` (6/0), `anticipos` (4/2), `documentos` (3/0).
-**Verificado sí:** tsc limpio, lint sin regresión, casos dorados 79/79 con tolerancia 0, y los tests unitarios puros nuevos de cada regla (+67 tests).
-**Siguiente acción obligatoria:** correr la suite completa con PostgreSQL levantado antes de go-live.
+### G9. Verificación de integración — ✅ RESUELTO (2026-08-17)
+**Era:** el sprint se desarrolló sin PostgreSQL, así que 92 tests se auto-skipeaban justo sobre los servicios modificados (`facturas-proveedor`, `cartera`, `pagos`, `borradores`, `anticipos`, `documentos`). Quedó marcado como bloqueante para go-live.
+
+**Hecho:** se levantó PostgreSQL 16 local, se aplicaron **las 30 migraciones** (incluidas las tres nuevas de este sprint: divisa, lote de pago y enlaces de documento — el SQL escrito a mano quedó así validado contra un motor real), se sembró y se corrió la suite completa.
+
+**Resultado: 412 tests passing, 1 failing.** El único fallo es el test pre-existente de C2, que asserta una regla que el código cambió hace sprints — no un defecto de lo construido. Es decir: **toda la capa de integración de este sprint quedó verificada contra base de datos real**, incluidas las transacciones del lote de pago y los saldos por trámite.
+
+**Procedimiento documentado en `docs/tests-con-postgres.md`.** Regla práctica que conviene no olvidar: una corrida sin `DATABASE_URL` ejecuta ~321 tests y una con base de datos ~413. La diferencia es exactamente la capa donde viven transacciones, saldos y reglas de estado, así que un cambio que toque persistencia no está verificado hasta correrla con base de datos.
 
 ### G10. Lección de proceso — trabajo concurrente en un working tree compartido
 Durante este sprint un `git stash` ejecutado por un proceso concurrente revirtió 27 archivos (1520 líneas) de golpe. Se recuperó del stash sin pérdida y se blindó con un commit checkpoint inmediato.
