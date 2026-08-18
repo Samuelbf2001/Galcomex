@@ -1,6 +1,11 @@
 import { getSessionCookie } from "better-auth/cookies";
 import { NextResponse, type NextRequest } from "next/server";
 
+// Toda ruta bajo (dashboard) va aquí. `/pagos`, `/ingresos` y `/liquidacion-lm`
+// se habían quedado fuera: sus endpoints sí exigen rol, así que los datos nunca
+// estuvieron expuestos, pero la página se renderizaba sin sesión. Al agregar una
+// pantalla nueva al dashboard hay que sumarla también al `matcher` de abajo.
+// `/cambiar-password` queda deliberadamente fuera.
 const protectedPrefixes = [
   "/dashboard",
   "/tramites",
@@ -9,6 +14,9 @@ const protectedPrefixes = [
   "/anticipos",
   "/clientes",
   "/configuracion",
+  "/pagos",
+  "/ingresos",
+  "/liquidacion-lm",
 ];
 
 export function middleware(request: NextRequest) {
@@ -41,5 +49,8 @@ export const config = {
     "/anticipos/:path*",
     "/clientes/:path*",
     "/configuracion/:path*",
+    "/pagos/:path*",
+    "/ingresos/:path*",
+    "/liquidacion-lm/:path*",
   ],
 };

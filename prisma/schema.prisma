@@ -29,6 +29,7 @@ model User {
   facturasProveedorSubidas FacturaProveedor[] @relation("FacturasProveedorSubidas")
   pagosFactura             PagoFactura[]      @relation("PagosFacturaRegistrados")
   lotesPago                LotePago[]         @relation("LotesPagoRegistrados")
+  enlacesDocumento         EnlaceDocumento[]  @relation("EnlacesDocumentoCreados")
 
   @@map("user")
 }
@@ -268,8 +269,36 @@ model Documento {
   pagosTramite      PagoTramite[]      @relation("SoporteDocumento")
   facturasProveedor FacturaProveedor[] @relation("FacturaProveedorDoc")
   lotesPago         LotePago[]         @relation("LotePagoComprobante")
+  enlaces           EnlaceDocumento[]
 
   @@map("documento")
+}
+
+// ─── Enlaces compartibles de documento ────────────────────────────────────────
+// En la demo del 1-jul (min 01:29) se ofreció "descargar, compartir o en un
+// enlace público". Un enlace público permanente choca de frente con la regla de
+// que las URLs de storage caducan en ≤15 min, así que se resuelve así: el
+// enlace NO expone el archivo, expone un token propio que, al abrirse, valida
+// vigencia y revocación y recién entonces emite una URL prefirmada corta.
+// El resultado es compartible con el cliente, caduca solo, se puede revocar en
+// cualquier momento y deja rastro de quién lo creó — sin dejar suelta una URL
+// eterna al bucket.
+model EnlaceDocumento {
+  id          String    @id @default(cuid())
+  documentoId String
+  documento   Documento @relation(fields: [documentoId], references: [id], onDelete: Cascade)
+  token       String    @unique
+  expiresAt   DateTime
+  revocadoEn  DateTime?
+  // Contador de aperturas: sirve para auditar si un enlace se difundió más de
+  // lo previsto antes de decidir revocarlo.
+  aperturas   Int       @default(0)
+  creadoPorId String
+  creadoPor   User      @relation("EnlacesDocumentoCreados", fields: [creadoPorId], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@index([documentoId])
+  @@map("enlace_documento")
 }
 
 // ─── Anticipos ────────────────────────────────────────────────────────────────
