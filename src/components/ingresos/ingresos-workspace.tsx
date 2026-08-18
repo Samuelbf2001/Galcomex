@@ -113,6 +113,9 @@ export function IngresosWorkspace() {
   const [hasta, setHasta] = useState(initialHasta);
 
   const [filas, setFilas] = useState<FilaIngreso[]>([]);
+  // Saldo de caja GLOBAL (D2-c) — viene calculado del servidor, no se deriva
+  // de `filas` en el cliente. Ver nota en fetchIngresos/ingresos-api.ts.
+  const [saldoGlobal, setSaldoGlobal] = useState<string>("0");
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -163,7 +166,8 @@ export function IngresosWorkspace() {
         },
         controller.signal,
       );
-      setFilas(data);
+      setFilas(data.filas);
+      setSaldoGlobal(data.saldoGlobal);
       setLoadState("ready");
     }
 
@@ -188,8 +192,10 @@ export function IngresosWorkspace() {
   const totalSalidas = filas
     .filter((f) => BigInt(f.montoConSigno) < 0n)
     .reduce((acc, f) => acc + BigInt(f.monto), 0n);
-  const saldoFinal =
-    filas.length > 0 ? BigInt(filas[filas.length - 1]!.saldoCorrido) : 0n;
+  // D2-c: saldo GLOBAL calculado server-side (Σ saldo final por cliente),
+  // NO la última fila de `filas` — esa fila es el acumulado de UN solo
+  // cliente (el del movimiento cronológicamente más reciente), no un total.
+  const saldoFinal = BigInt(saldoGlobal);
 
   // ── Render ───────────────────────────────────────────────────────────────
 
@@ -315,7 +321,7 @@ export function IngresosWorkspace() {
             <p className="mt-0.5 text-xs text-slate-500">
               {clienteId
                 ? clientes.find((c) => c.id === clienteId)?.nombre ?? "Cliente"
-                : "Acumulado por cliente"}
+                : "Global — todos los clientes"}
             </p>
           </div>
         </div>

@@ -107,10 +107,16 @@ export type FacturaRow = {
 };
 
 export type CarteraData = {
+  /** Solo la PÁGINA pedida (D2-b, take/skip) — no el histórico completo. */
   facturas: FacturaRow[];
+  // Agregados: SIEMPRE sobre el conjunto COMPLETO que cumple los filtros,
+  // nunca sobre `facturas` de arriba (que puede ser solo una página).
   cruceCliente: string;  // BigInt as string; >0 → cliente debe; <0 → Galcomex debe
   cruceLM: string;       // BigInt as string
+  /** Total de facturas que cumplen el filtro (para armar la paginación) — NO el tamaño de `facturas`. */
   totalFacturas: number;
+  /** saldoNetoLM − costos bancarios, agregado sobre el conjunto completo. NOTA: fórmula pendiente de confirmar con Camila. */
+  totalRealLM: string;
 };
 
 export type RegistrarPagoInput = {
@@ -298,17 +304,26 @@ export async function fetchClienteOptions(
   );
 }
 
-/** Carga la cartera de un cliente. */
+/**
+ * Carga la cartera de un cliente (D2-b: página server-side vía take/skip).
+ * `cartera.totalFacturas` en la respuesta es el total que cumple los filtros
+ * (para armar la paginación), NO el tamaño de `cartera.facturas` — esa es la
+ * página. `cruceCliente`/`cruceLM` siempre reflejan el total completo.
+ */
 export async function fetchCartera(
   clienteId: string,
   soloPendientes: boolean,
   desde?: string,
   hasta?: string,
   signal?: AbortSignal,
+  take?: number,
+  skip?: number,
 ): Promise<CarteraData> {
   let url = `/api/cartera?clienteId=${encodeURIComponent(clienteId)}&pendientes=${soloPendientes ? "true" : "false"}`;
   if (desde) url += `&desde=${encodeURIComponent(desde)}`;
   if (hasta) url += `&hasta=${encodeURIComponent(hasta)}`;
+  if (take !== undefined) url += `&take=${encodeURIComponent(String(take))}`;
+  if (skip !== undefined) url += `&skip=${encodeURIComponent(String(skip))}`;
   let res: Response;
   try {
     res = await fetch(url, {
@@ -340,6 +355,7 @@ export async function fetchCartera(
     cruceLM: String(cartera.cruceLM ?? "0"),
     totalFacturas:
       typeof cartera.totalFacturas === "number" ? cartera.totalFacturas : 0,
+    totalRealLM: String(cartera.totalRealLM ?? "0"),
   };
 }
 

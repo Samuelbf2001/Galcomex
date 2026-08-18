@@ -25,6 +25,14 @@ export type FilaIngreso = {
 
 export type IngresosData = {
   filas: FilaIngreso[];
+  /**
+   * Saldo de caja GLOBAL (D2-c) — suma del saldo final de CADA cliente
+   * presente en `filas`, calculado server-side. Úsalo para la tarjeta
+   * "Saldo de caja" en vez de tomar `saldoCorrido` de la última fila: ese
+   * campo es un acumulado POR CLIENTE, no un total (con más de un cliente en
+   * la vista, la última fila solo refleja el saldo de uno de ellos).
+   */
+  saldoGlobal: string; // BigInt as string
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -82,7 +90,7 @@ export type FetchIngresosParams = {
 export async function fetchIngresos(
   params: FetchIngresosParams = {},
   signal?: AbortSignal,
-): Promise<FilaIngreso[]> {
+): Promise<IngresosData> {
   const url = new URL("/api/ingresos", window.location.origin);
   if (params.clienteId) url.searchParams.set("clienteId", params.clienteId);
   if (params.desde) url.searchParams.set("desde", params.desde);
@@ -110,9 +118,14 @@ export async function fetchIngresos(
     throw new IngresosApiError("Respuesta de ingresos no válida.");
   }
 
-  return payload.ingresos
+  const filas = payload.ingresos
     .map(mapFila)
     .filter((f): f is FilaIngreso => f !== null);
+
+  return {
+    filas,
+    saldoGlobal: String(payload.saldoGlobal ?? "0"),
+  };
 }
 
 // ─── Utilidades de formato ────────────────────────────────────────────────────

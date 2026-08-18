@@ -6,6 +6,7 @@ import {
   ArrowUpCircle,
   BadgeCheck,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   FileText,
   Loader2,
@@ -48,6 +49,13 @@ import {
 type LoadState = "idle" | "loading" | "ready" | "error";
 type VistaMode = "cliente" | "lm";
 type TipoModal = "ABONO" | "DEVOLUCION";
+
+/**
+ * Tamaño de página del listado (D2-b). Debe coincidir con DEFAULT_TAKE en
+ * src/app/api/cartera/route.ts — se pasa explícito en cada request para no
+ * depender de que los defaults del cliente y el servidor queden sincronizados.
+ */
+const PAGE_SIZE = 50;
 
 // ─── Helpers visuales ─────────────────────────────────────────────────────────
 
@@ -911,6 +919,8 @@ export function CarteraWorkspace() {
   const [desde, setDesde] = useState<string>(searchParams.get("desde") ?? "");
   const [hasta, setHasta] = useState<string>(searchParams.get("hasta") ?? "");
   const [vista, setVista] = useState<VistaMode>("cliente");
+  // Paginación server-side (D2-b) — offset de la página actual del listado.
+  const [skip, setSkip] = useState(0);
 
   const [cartera, setCartera] = useState<CarteraData | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("idle");
@@ -1017,6 +1027,8 @@ export function CarteraWorkspace() {
         desde || undefined,
         hasta || undefined,
         controller.signal,
+        PAGE_SIZE,
+        skip,
       );
       setCartera(data);
       setLoadState("ready");
@@ -1033,33 +1045,40 @@ export function CarteraWorkspace() {
     });
 
     return () => controller.abort();
-  }, [clienteId, soloPendientes, desde, hasta, reloadKey]);
+  }, [clienteId, soloPendientes, desde, hasta, skip, reloadKey]);
 
   // ── Handlers ────────────────────────────────────────────────────────────
+  // Cualquier cambio de filtro vuelve a la primera página (skip=0) — una
+  // página que existía con el filtro anterior puede no existir con el nuevo.
 
   function handleClienteChange(id: string) {
     setClienteId(id);
+    setSkip(0);
     syncUrl(id, soloPendientes, desde, hasta);
   }
 
   function handlePendientesChange(val: boolean) {
     setSoloPendientes(val);
+    setSkip(0);
     syncUrl(clienteId, val, desde, hasta);
   }
 
   function handleDesdeChange(val: string) {
     setDesde(val);
+    setSkip(0);
     syncUrl(clienteId, soloPendientes, val, hasta);
   }
 
   function handleHastaChange(val: string) {
     setHasta(val);
+    setSkip(0);
     syncUrl(clienteId, soloPendientes, desde, val);
   }
 
   function handleLimpiarFechas() {
     setDesde("");
     setHasta("");
+    setSkip(0);
     syncUrl(clienteId, soloPendientes, "", "");
   }
 
@@ -1412,7 +1431,9 @@ export function CarteraWorkspace() {
                     {soloPendientes ? " (pendientes)" : ""}
                   </p>
                   <p className="text-slate-500">
-                    {facturas.length} factura{facturas.length !== 1 ? "s" : ""}
+                    {cartera.totalFacturas > PAGE_SIZE
+                      ? `Mostrando ${skip + 1}–${Math.min(skip + PAGE_SIZE, cartera.totalFacturas)} de ${cartera.totalFacturas}`
+                      : `${cartera.totalFacturas} factura${cartera.totalFacturas !== 1 ? "s" : ""}`}
                   </p>
                 </div>
 
@@ -1521,12 +1542,12 @@ export function CarteraWorkspace() {
                       )}
                     </span>
                   </span>
-                  {/* Total real a LM: saldoNetoLM − costos bancarios (solo en vista LM) */}
+                  {/* Total real a LM: saldoNetoLM − costos bancarios (solo en vista LM).
+                      D2-b: agregado sobre el conjunto COMPLETO que devuelve la API
+                      (cartera.totalRealLM), NUNCA sumado sobre `facturas` (la página
+                      visible) — con más de una página esa suma quedaría incompleta. */}
                   {vista === "lm" && (() => {
-                    const totalRealLM = facturas.reduce(
-                      (acc, f) => acc + BigInt(f.totalRealLM),
-                      0n,
-                    );
+                    const totalRealLM = BigInt(cartera.totalRealLM);
                     return (
                       <span className="text-slate-500 font-medium border-l border-slate-300 pl-6">
                         Total real a LM (neto costos bancarios):{" "}
@@ -1541,6 +1562,36 @@ export function CarteraWorkspace() {
                     );
                   })()}
                 </div>
+
+                {/* Paginación (D2-b) */}
+                {cartera.totalFacturas > PAGE_SIZE ? (
+                  <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3">
+                    <p className="text-xs text-slate-500">
+                      Página {Math.floor(skip / PAGE_SIZE) + 1} de{" "}
+                      {Math.ceil(cartera.totalFacturas / PAGE_SIZE)}
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSkip((s) => Math.max(0, s - PAGE_SIZE))}
+                        disabled={skip === 0}
+                        className="inline-flex h-8 items-center gap-1 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                        Anterior
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSkip((s) => s + PAGE_SIZE)}
+                        disabled={skip + PAGE_SIZE >= cartera.totalFacturas}
+                        className="inline-flex h-8 items-center gap-1 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        Siguiente
+                        <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )}
           </>

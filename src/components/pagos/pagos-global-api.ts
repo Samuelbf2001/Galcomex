@@ -14,6 +14,7 @@ export {
   updatePago,
   deletePago,
   formatCOP,
+  refrescarUrlComprobante,
 } from "@/components/pagos/pagos-api";
 
 import { PagosApiError } from "@/components/pagos/pagos-api";
@@ -31,6 +32,8 @@ export type PagoGlobalRow = {
   /** Nombres de beneficiarios vinculados (display). */
   beneficiarios: string;
   numSoporte: string | null;
+  /** null = sin comprobante adjunto (D2-a, deuda Sprint 7). */
+  documentoId: string | null;
   valor: string; // BigInt serializado
   canalPago: CanalPago;
   costoBancario: string; // BigInt serializado
@@ -99,6 +102,7 @@ function normalizePago(raw: unknown): PagoGlobalRow | null {
         .join(", ");
     })(),
     numSoporte: typeof raw.numSoporte === "string" ? raw.numSoporte : null,
+    documentoId: typeof raw.documentoId === "string" ? raw.documentoId : null,
     valor: String(raw.valor ?? "0"),
     canalPago: (raw.canalPago as CanalPago) ?? "OTRO",
     costoBancario: String(raw.costoBancario ?? "0"),

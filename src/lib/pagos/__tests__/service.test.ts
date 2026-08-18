@@ -557,14 +557,23 @@ describe("pagos service con Postgres local", () => {
     expect(fpActualizada?.estado).toBe(EstadoFacturaProveedor.PAGADA);
   });
 
-  it("crearPago con facturaProveedorId de una FP ya PAGADA lanza FacturaProveedorNoModificableError y no crea el pago", async (ctx) => {
+  // REGLA VIGENTE (commit 788d65a, reunión 1-jul-2026): una FP en estado
+  // PAGADA SÍ admite pagos adicionales — son los abonos parciales, ya que
+  // los pagos casi nunca coinciden al peso con la factura. Lo que bloquea
+  // `crearPago` es únicamente `fp.estado === FACTURADA_CLIENTE` (ver
+  // service.ts ~línea 391). NO restaurar la condición vieja
+  // `!== REGISTRADA` — sería revertir una decisión de negocio deliberada.
+  // El caso que SÍ debe rechazar (FACTURADA_CLIENTE) está cubierto en el
+  // test siguiente.
+  it("crearPago con facturaProveedorId de una FP ya PAGADA se acepta (abono parcial adicional)", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 800);
     await aplicarAnticipoTest(db, tramiteId, 10_000_000n);
 
     const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-800-001", 3_000_000n);
 
-    // Primer pago: vincula y marca PAGADA
+    // Primer pago: coincide al peso con la factura → vincula y marca PAGADA
+    // sin disparar la validación de desviación (0% de desviación).
     await crearPago({
       tramiteId,
       concepto: "Primer pago",
@@ -574,21 +583,58 @@ describe("pagos service con Postgres local", () => {
       facturaProveedorIds: [fpId],
     });
 
-    // Segundo pago sobre la misma FP ya PAGADA → debe lanzar error
+    // Segundo pago sobre la misma FP ya PAGADA (abono adicional, p.ej. un
+    // reajuste). El monto se desvía de la factura vinculada a propósito,
+    // así que se confirma explícitamente con `confirmarDesviacion: true`
+    // (DesviacionPagoExcedeUmbralError es una validación aparte, no la que
+    // este test protege). No debe lanzar FacturaProveedorNoModificableError.
+    const segundoPago = await crearPago({
+      tramiteId,
+      concepto: "Segundo pago (abono) sobre FP ya pagada",
+      valor: 1_000_000n,
+      canalPago: CanalPago.PSE,
+      usuarioId: db.userId,
+      facturaProveedorIds: [fpId],
+      confirmarDesviacion: true,
+    });
+    expect(segundoPago.id).toBeDefined();
+
+    // Ambos pagos quedaron creados y la FP sigue PAGADA (no cambia de estado).
+    const pagos = await prisma.pagoTramite.findMany({ where: { tramiteId } });
+    expect(pagos).toHaveLength(2);
+
+    const fpFinal = await prisma.facturaProveedor.findUnique({ where: { id: fpId } });
+    expect(fpFinal?.estado).toBe(EstadoFacturaProveedor.PAGADA);
+  });
+
+  it("crearPago con facturaProveedorId de una FP en FACTURADA_CLIENTE lanza FacturaProveedorNoModificableError y no crea el pago", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 801);
+    await aplicarAnticipoTest(db, tramiteId, 10_000_000n);
+
+    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-801-001", 3_000_000n);
+
+    // La FP ya fue incluida en una factura de venta al cliente: no admite
+    // más pagos vinculados (a diferencia de PAGADA, ver test anterior).
+    await prisma.facturaProveedor.update({
+      where: { id: fpId },
+      data: { estado: EstadoFacturaProveedor.FACTURADA_CLIENTE },
+    });
+
     await expect(
       crearPago({
         tramiteId,
-        concepto: "Segundo pago sobre FP ya pagada",
-        valor: 1_000_000n,
+        concepto: "Pago sobre FP ya facturada al cliente",
+        valor: 3_000_000n,
         canalPago: CanalPago.PSE,
         usuarioId: db.userId,
         facturaProveedorIds: [fpId],
       }),
     ).rejects.toThrow(FacturaProveedorNoModificableError);
 
-    // Verificar que el segundo pago NO fue creado
+    // Verificar que no se creó ningún pago
     const pagos = await prisma.pagoTramite.findMany({ where: { tramiteId } });
-    expect(pagos).toHaveLength(1);
+    expect(pagos).toHaveLength(0);
   });
 
   it("crearPago con facturaProveedorId de OTRO trámite lanza PagoFacturaDeOtroTramiteError", async (ctx) => {

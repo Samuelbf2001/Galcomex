@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  Eye,
   Loader2,
   Plus,
   RotateCcw,
@@ -26,6 +27,7 @@ import {
   fetchPagosGlobal,
   fetchTramiteOptions,
   formatCOP,
+  refrescarUrlComprobante,
   updatePago,
 } from "@/components/pagos/pagos-global-api";
 import { LotePagoModal } from "@/components/pagos/lote-pago-modal";
@@ -286,6 +288,27 @@ type FilaPagoProps = {
 };
 
 function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoProps) {
+  const [abriendoComprobante, setAbriendoComprobante] = useState(false);
+  const [errorComprobante, setErrorComprobante] = useState<string | null>(null);
+
+  async function verComprobante() {
+    if (!fila.documentoId) return;
+    setAbriendoComprobante(true);
+    setErrorComprobante(null);
+    try {
+      // Generar la URL en el momento del clic (no al pintar la lista): las
+      // URLs prefirmadas caducan en ≤ 15 min.
+      const url = await refrescarUrlComprobante(fila.tramiteId, fila.documentoId);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (caught) {
+      setErrorComprobante(
+        caught instanceof PagosApiError ? caught.message : "No fue posible abrir el comprobante.",
+      );
+    } finally {
+      setAbriendoComprobante(false);
+    }
+  }
+
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
@@ -377,6 +400,20 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
         {/* Acciones */}
         <td className="px-3 py-2">
           <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={verComprobante}
+              disabled={!fila.documentoId || abriendoComprobante}
+              className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-cyan-700 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-slate-400"
+              aria-label={fila.documentoId ? "Ver comprobante" : "Sin comprobante adjunto"}
+              title={fila.documentoId ? "Ver o descargar el comprobante adjunto" : "Este pago no tiene un comprobante (documento) adjunto"}
+            >
+              {abriendoComprobante ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Eye className="h-4 w-4" aria-hidden="true" />
+              )}
+            </button>
             {fila.saving ? (
               <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
             ) : fila.dirty ? (
@@ -402,11 +439,13 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
         </td>
       </tr>
 
-      {fila.errorFila ? (
+      {fila.errorFila || errorComprobante ? (
         <tr className="bg-rose-50">
           <td colSpan={10} className="px-3 py-1.5 text-xs text-rose-700">
             <AlertTriangle className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
-            {fila.errorFila} — los valores anteriores se restauraron.
+            {fila.errorFila
+              ? `${fila.errorFila} — los valores anteriores se restauraron.`
+              : errorComprobante}
           </td>
         </tr>
       ) : null}

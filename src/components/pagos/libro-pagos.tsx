@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
+  Eye,
   Loader2,
   Plus,
   RotateCcw,
@@ -31,6 +32,7 @@ import {
   fetchLibroPagos,
   fetchTramiteDetail,
   formatCOP,
+  refrescarUrlComprobante,
   updatePago,
   verificarMovimientoPago,
 } from "@/components/pagos/pagos-api";
@@ -1810,6 +1812,28 @@ function FilaPago({
   onVerify,
   isVerifying,
 }: FilaPagoProps) {
+  const [abriendoComprobante, setAbriendoComprobante] = useState(false);
+  const [errorComprobante, setErrorComprobante] = useState<string | null>(null);
+
+  async function verComprobante() {
+    if (!fila.documentoId) return;
+    setAbriendoComprobante(true);
+    setErrorComprobante(null);
+    try {
+      // Generar la URL en el momento del clic (no al pintar la lista): las
+      // URLs prefirmadas caducan en ≤ 15 min y una generada al render podría
+      // expirar mientras el usuario mira la pantalla.
+      const url = await refrescarUrlComprobante(fila.tramiteId, fila.documentoId);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (caught) {
+      setErrorComprobante(
+        caught instanceof PagosApiError ? caught.message : "No fue posible abrir el comprobante.",
+      );
+    } finally {
+      setAbriendoComprobante(false);
+    }
+  }
+
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
@@ -1868,15 +1892,36 @@ function FilaPago({
                 vía Lucho
               </span>
             ) : null}
-            {!fila.documentoId ? (
+            {fila.documentoId ? (
+              <button
+                type="button"
+                onClick={verComprobante}
+                disabled={abriendoComprobante}
+                className="inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
+                title="Ver o descargar el comprobante adjunto"
+              >
+                {abriendoComprobante ? (
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Eye className="h-3 w-3" aria-hidden="true" />
+                )}
+                Comprobante
+              </button>
+            ) : (
               <span
                 className="inline-flex items-center border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700"
                 title="Este pago no tiene un comprobante (documento) adjunto"
               >
                 Sin comprobante
               </span>
-            ) : null}
+            )}
             {estadoMovimientoBadge(fila.estado)}
+            {errorComprobante ? (
+              <span className="text-[10px] text-rose-600" title={errorComprobante}>
+                <AlertTriangle className="mr-0.5 inline h-3 w-3" aria-hidden="true" />
+                No se pudo abrir
+              </span>
+            ) : null}
           </div>
         </td>
 

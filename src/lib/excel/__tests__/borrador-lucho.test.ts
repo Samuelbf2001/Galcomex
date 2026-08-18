@@ -2,9 +2,29 @@
  * Tests de reconciliación del parser borrador-lucho.ts contra los dos
  * archivos reales de Lucho (tolerancia 0 pesos).
  *
- * Archivos de prueba:
- *   C:\Users\samue\Galcomex\excel-lucho-1.xls  → BAQ-18453 (GRUPO E PAPIS, DO.CTG26-0118)
- *   C:\Users\samue\Galcomex\excel-lucho-2.xls  → BAQ-18512 (LITOPLAS, DO.26-0113)
+ * Los archivos .xls son insumos de negocio reales, no se generan
+ * sintéticamente. Resolución de ruta (por archivo):
+ *   1. Variable de entorno (LUCHO_EXCEL_PATH / LUCHO_EXCEL_PATH_2) — para
+ *      correr con una copia local que no está versionada.
+ *   2. Ruta versionada por defecto dentro del repo.
+ *
+ * BAQ-18453 (GRUPO E PAPIS, DO.CTG26-0118) SÍ está versionado en
+ * "documentos referencia /BAQ-18453 MAYO 13-2026 DO.CTG26-0118
+ * G.PAPIS-LUTOSA..xls" y su suite corre siempre.
+ *
+ * BAQ-18512 (LITOPLAS, DO.26-0113) NO está versionado — solo existe en la
+ * máquina de Samuel (históricamente en
+ * "C:\Users\samue\Galcomex\excel-lucho-2.xls"). Su suite se salta
+ * limpiamente (describe.skipIf) hasta que alguien consiga el archivo real y
+ * lo agregue a "documentos referencia /" (o exporte LUCHO_EXCEL_PATH_2
+ * apuntando a una copia local).
+ *
+ * IMPORTANTE: la comprobación de existencia del archivo debe pasar ANTES de
+ * llamar a `parseBorradorLucho` — por eso el parseo vive en `beforeAll`
+ * (que `describe.skipIf` no ejecuta cuando la suite se salta) y no en el
+ * cuerpo síncrono del `describe` (que sí se ejecuta siempre, incluso
+ * saltado, para poder listar los tests). Ponerlo en el cuerpo del describe
+ * revienta la carga del módulo entero en máquinas sin el archivo.
  *
  * Casos dorados (ver PLAN-FLUJO-LUCHO.md §2):
  *   BAQ-18453: terceros 32.652.000 + comisión 400.000 + IVA 76.000 = total 33.128.000
@@ -13,17 +33,50 @@
  *              = total 1.322.230; anticipo 1.572.000 → saldo a favor 249.770
  */
 
-import { describe, it, expect } from "vitest";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { parseBorradorLucho, reconciliar } from "../borrador-lucho";
+import { describe, it, expect, beforeAll } from "vitest";
 
-const EXCEL_1 = "C:\\Users\\samue\\Galcomex\\excel-lucho-1.xls";
-const EXCEL_2 = "C:\\Users\\samue\\Galcomex\\excel-lucho-2.xls";
+import { parseBorradorLucho, reconciliar, type BorradorLuchoParseado } from "../borrador-lucho";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// src/lib/excel/__tests__ → raíz del repo (4 niveles arriba)
+const REPO_ROOT = path.resolve(__dirname, "../../../..");
+
+/** Resuelve la ruta de un fixture .xls: env var primero, ruta versionada de fallback. */
+function resolveExcelPath(envVar: string, defaultRelativePath: string): string {
+  const fromEnv = process.env[envVar];
+  if (fromEnv && fromEnv.trim().length > 0) return fromEnv;
+  return path.join(REPO_ROOT, defaultRelativePath);
+}
+
+const EXCEL_1 = resolveExcelPath(
+  "LUCHO_EXCEL_PATH",
+  "documentos referencia /BAQ-18453 MAYO 13-2026 DO.CTG26-0118 G.PAPIS-LUTOSA..xls",
+);
+
+// No versionado — ver nota en el encabezado del archivo. La ruta de fallback
+// intencionalmente no existe en el repo; sirve solo de documentación de qué
+// nombre buscar si alguien lo consigue y quiere probarlo sin exportar la env var.
+const EXCEL_2 = resolveExcelPath(
+  "LUCHO_EXCEL_PATH_2",
+  "documentos referencia /BAQ-18512 LITOPLAS DO.26-0113.xls",
+);
+
+const excel1Existe = existsSync(EXCEL_1);
+const excel2Existe = existsSync(EXCEL_2);
 
 // ─── BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS ─────────────────────────────────
 
-describe("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", () => {
-  const parsed = parseBorradorLucho(EXCEL_1);
+describe.skipIf(!excel1Existe)("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", () => {
+  let parsed!: BorradorLuchoParseado;
+
+  beforeAll(() => {
+    parsed = parseBorradorLucho(EXCEL_1);
+  });
 
   // Cabecera
   it("extrae nombre del cliente", () => {
@@ -148,9 +201,15 @@ describe("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", () => {
 });
 
 // ─── BAQ-18512 — LITOPLAS S.A. ────────────────────────────────────────────────
+// No versionado en el repo (ver nota de cabecera) — se salta limpiamente si
+// no hay archivo disponible ni por env var ni por ruta de fallback.
 
-describe("BAQ-18512 — LITOPLAS S.A.", () => {
-  const parsed = parseBorradorLucho(EXCEL_2);
+describe.skipIf(!excel2Existe)("BAQ-18512 — LITOPLAS S.A.", () => {
+  let parsed!: BorradorLuchoParseado;
+
+  beforeAll(() => {
+    parsed = parseBorradorLucho(EXCEL_2);
+  });
 
   // Cabecera
   it("extrae nombre del cliente", () => {

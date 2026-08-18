@@ -14,7 +14,7 @@ import { TipoPagoFactura } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 
-type FilaIngreso = {
+export type FilaIngreso = {
   id: string;
   tipo: "ANTICIPO" | "ABONO" | "DEVOLUCION";
   /** DO consecutivo o numSiigo de la factura */
@@ -139,4 +139,46 @@ export async function getIngresos(input: GetIngresosInput = {}): Promise<FilaIng
   });
 
   return resultado;
+}
+
+// ─── Saldo de caja GLOBAL multi-cliente (D2-c) ───────────────────────────────
+//
+// `getIngresos` ya calcula `saldoCorrido` como un acumulado POR CLIENTE
+// (`saldosPorCliente` arriba) — es correcto y necesario para poder ver, fila
+// a fila, cómo evoluciona el saldo de UN cliente. El bug que reportaba
+// PENDIENTES.md D2-c no estaba en ese cálculo: estaba en cómo el frontend
+// resumía la lista completa cuando NO se filtra por cliente — tomaba el
+// `saldoCorrido` de la ÚLTIMA fila del arreglo unificado como si fuera un
+// total, pero esa fila solo pertenece a UN cliente (el que tuvo el
+// movimiento cronológicamente más reciente), no a todos.
+//
+// Verificado: la semántica de `saldoCorrido` por fila está bien — el defecto
+// era real y estaba en la agregación, no en el ledger. Este helper lo cierra.
+
+/**
+ * Saldo de caja GLOBAL (todos los clientes combinados) a partir de las filas
+ * ya calculadas por `getIngresos`. Pura — no toca BD.
+ *
+ * Como `filas` viene ordenada ASC por fecha, el saldo final de CADA cliente
+ * es el `saldoCorrido` de su ÚLTIMA aparición en el arreglo. Sumar ese valor
+ * una vez por cliente distinto da el saldo de caja combinado real — nunca se
+ * sume `saldoCorrido` de todas las filas (eso contaría cada movimiento
+ * intermedio del cliente una vez por cada fila suya, no solo el final).
+ *
+ * Con un solo cliente en `filas` (vista ya filtrada por clienteId) el
+ * resultado es idéntico al saldo de ese cliente — el caso que ya funcionaba
+ * bien — así que esta función puede usarse sin distinción en ambos casos.
+ */
+export function calcularSaldoGlobal(
+  filas: Pick<FilaIngreso, "clienteId" | "saldoCorrido">[],
+): bigint {
+  const ultimoPorCliente = new Map<string, bigint>();
+  for (const f of filas) {
+    ultimoPorCliente.set(f.clienteId, f.saldoCorrido);
+  }
+  let total = 0n;
+  for (const saldo of ultimoPorCliente.values()) {
+    total += saldo;
+  }
+  return total;
 }

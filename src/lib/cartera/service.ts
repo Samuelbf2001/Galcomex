@@ -72,7 +72,131 @@ type GetCarteraClienteInput = {
   /** Filtro por fecha de emisión de la factura (inclusivo), formato YYYY-MM-DD. */
   desde?: string;
   hasta?: string;
+  /**
+   * Paginación server-side de las FILAS devueltas (D2-b, deuda Sprint 7:
+   * "trae todas las facturas y agrega en memoria... con cinco años de
+   * historia eso se degrada").
+   *
+   * OPCIONALES A PROPÓSITO: si se omiten (undefined), se devuelven TODAS las
+   * facturas que cumplen el filtro — el comportamiento histórico. Eso es
+   * necesario porque `getCarteraCliente` tiene otros dos callers que NO
+   * pueden quedar truncados a una página: el export a Excel
+   * (`/api/cartera/export`) y el PDF de estado de cuenta (`/api/cartera/pdf`)
+   * necesitan el histórico COMPLETO del cliente. Solo el listado interactivo
+   * (`GET /api/cartera` ← `cartera-workspace.tsx`) pasa `take`/`skip`
+   * explícitos.
+   */
+  take?: number;
+  skip?: number;
 };
+
+// ─── Agregados de cartera con paginación (D2-b) ──────────────────────────────
+//
+// Separación explícita "filas de la página" vs "agregados del total" (pedido
+// en PENDIENTES.md D2-b): cruceCliente/cruceLM SIEMPRE se calculan sobre el
+// conjunto COMPLETO de facturas que cumple los filtros de cliente/fecha —
+// nunca sobre la página visible — porque son el saldo real de la cuenta, no
+// una vista parcial. Si se calcularan solo sobre la página, el saldo
+// mostrado mentiría en cuanto hubiera más de una página. Ver también la nota
+// de `soloPendientes` en `getCarteraCliente`: ese filtro SÍ decide qué filas
+// se muestran, pero NO afecta a cruceCliente/cruceLM (idéntico al
+// comportamiento previo a D2-b).
+
+/** Campos base de saldo de una factura, suficientes para derivar su saldoNeto. */
+export type FacturaBaseLedger = {
+  id: string;
+  saldoAFavorCliente: bigint;
+  saldoACargoCliente: bigint;
+  saldoAFavorLM: bigint;
+  saldoACargoLM: bigint;
+};
+
+/** Σ abonos/devoluciones de una factura por destino, ya agregados en BD (groupBy). */
+export type SumaPagosFactura = {
+  abonosCliente: bigint;
+  devolucionesCliente: bigint;
+  abonosLM: bigint;
+  devolucionesLM: bigint;
+};
+
+const SUMA_PAGOS_VACIA: SumaPagosFactura = {
+  abonosCliente: 0n,
+  devolucionesCliente: 0n,
+  abonosLM: 0n,
+  devolucionesLM: 0n,
+};
+
+export type AgregadoCarteraResult = {
+  /** IDs de TODAS las facturas que cumplen el filtro (orden preservado), sin paginar. */
+  idsFiltrados: string[];
+  /** IDs de la página solicitada (take/skip aplicados sobre idsFiltrados). */
+  idsPagina: string[];
+  /** Total de facturas que cumplen el filtro — sobre el conjunto COMPLETO, no la página. */
+  totalFacturas: number;
+  /** Σ saldoNeto de TODAS las facturas del filtro (ignora soloPendientes y la paginación). */
+  cruceCliente: bigint;
+  cruceLM: bigint;
+};
+
+/**
+ * Núcleo PURO del cálculo de agregados + paginación de cartera (D2-b).
+ * Sin BD: recibe los campos base de saldo por factura y las sumas de
+ * abonos/devoluciones ya agregadas (típicamente vía `pagoFactura.groupBy`),
+ * y decide qué facturas quedan (según `soloPendientes`), cuántas hay en
+ * total, y cuáles caen en la página pedida — todo en una sola pasada O(n).
+ *
+ * `take` opcional: si se omite, `idsPagina` es TODO `idsFiltrados` desde
+ * `skip` (sin límite) — ver nota de "OPCIONALES A PROPÓSITO" en
+ * `GetCarteraClienteInput`.
+ */
+export function calcularAgregadoCartera(
+  facturasBase: FacturaBaseLedger[],
+  sumasPorFactura: Map<string, SumaPagosFactura>,
+  opciones: { soloPendientes: boolean; take?: number; skip?: number },
+): AgregadoCarteraResult {
+  let cruceCliente = 0n;
+  let cruceLM = 0n;
+  const idsFiltrados: string[] = [];
+
+  for (const f of facturasBase) {
+    const sumas = sumasPorFactura.get(f.id) ?? SUMA_PAGOS_VACIA;
+
+    const saldoNetoCliente = calcularSaldoNeto({
+      saldoAFavor: f.saldoAFavorCliente,
+      saldoACargo: f.saldoACargoCliente,
+      abonos: sumas.abonosCliente,
+      devoluciones: sumas.devolucionesCliente,
+    });
+    const saldoNetoLM = calcularSaldoNeto({
+      saldoAFavor: f.saldoAFavorLM,
+      saldoACargo: f.saldoACargoLM,
+      abonos: sumas.abonosLM,
+      devoluciones: sumas.devolucionesLM,
+    });
+
+    // SIEMPRE se suma al cruce, sin importar soloPendientes ni la página.
+    cruceCliente += saldoNetoCliente;
+    cruceLM += saldoNetoLM;
+
+    if (!opciones.soloPendientes || saldoNetoCliente !== 0n || saldoNetoLM !== 0n) {
+      idsFiltrados.push(f.id);
+    }
+  }
+
+  const skip = opciones.skip ?? 0;
+  const idsPagina =
+    opciones.take === undefined
+      ? idsFiltrados.slice(skip)
+      : idsFiltrados.slice(skip, skip + opciones.take);
+
+  return {
+    idsFiltrados,
+    idsPagina,
+    totalFacturas: idsFiltrados.length,
+    cruceCliente,
+    cruceLM,
+  };
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -446,34 +570,96 @@ export async function eliminarPagoFactura(pagoId: string, usuarioId: string) {
  *         generados por pagos del cliente y pagos a LM.
  */
 export async function getCarteraCliente(input: GetCarteraClienteInput) {
-  const { clienteId, soloPendientes = false, desde, hasta } = input;
+  const { clienteId, soloPendientes = false, desde, hasta, take, skip } = input;
 
   // Filtro por periodo sobre la fecha de emisión de la factura (inclusivo en ambos extremos).
   const fechaFilter: Prisma.DateTimeFilter = {};
   if (desde) fechaFilter.gte = new Date(`${desde}T00:00:00.000Z`);
   if (hasta) fechaFilter.lte = new Date(`${hasta}T23:59:59.999Z`);
   const fechaWhere = desde || hasta ? { fecha: fechaFilter } : {};
+  const where: Prisma.FacturaWhereInput = { clienteId, ...fechaWhere };
 
-  const facturas = await prisma.factura.findMany({
-    where: { clienteId, ...fechaWhere },
-    include: {
-      borrador: {
-        select: {
-          tramiteId: true,
-          tramite: {
-            select: { consecutivo: true },
-          },
-        },
-      },
-      pagos: {
-        orderBy: { fecha: "asc" },
-      },
+  // ── PASO 1: agregados sobre el conjunto COMPLETO (nunca paginado) ─────────
+  // Dos consultas LIVIANAS en vez de la findMany con include completo (pagos
+  // con todos sus campos + borrador + tramite) que traía TODO el histórico
+  // del cliente de una sola vez — exactamente el problema de escala de D2-b.
+  //
+  // 1a) Solo los campos base de saldo por factura (sin relaciones).
+  const facturasBase: FacturaBaseLedger[] = await prisma.factura.findMany({
+    where,
+    select: {
+      id: true,
+      saldoAFavorCliente: true,
+      saldoACargoCliente: true,
+      saldoAFavorLM: true,
+      saldoACargoLM: true,
     },
     orderBy: { fecha: "desc" },
   });
 
-  // Enriquecer cada factura con el ledger
-  const facturasEnriquecidas = facturas.map((f) => {
+  // 1b) Σ abonos/devoluciones por (factura, destino, tipo), agregado en BD
+  // (groupBy) — nunca se traen las filas de PagoFactura una por una para
+  // esto, solo las sumas ya reducidas por Postgres.
+  const sumasRaw = await prisma.pagoFactura.groupBy({
+    by: ["facturaId", "destino", "tipo"],
+    where: { factura: where },
+    _sum: { monto: true },
+  });
+
+  const sumasPorFactura = new Map<string, SumaPagosFactura>();
+  for (const s of sumasRaw) {
+    const acc = sumasPorFactura.get(s.facturaId) ?? { ...SUMA_PAGOS_VACIA };
+    const monto = s._sum.monto ?? 0n;
+    if (s.destino === DestinoPago.CLIENTE) {
+      if (s.tipo === TipoPagoFactura.ABONO) acc.abonosCliente += monto;
+      else acc.devolucionesCliente += monto;
+    } else {
+      if (s.tipo === TipoPagoFactura.ABONO) acc.abonosLM += monto;
+      else acc.devolucionesLM += monto;
+    }
+    sumasPorFactura.set(s.facturaId, acc);
+  }
+
+  // Núcleo puro: decide qué facturas quedan (soloPendientes), cuántas hay en
+  // total, y cuáles caen en la página — y calcula cruceCliente/cruceLM SIEMPRE
+  // sobre el conjunto completo (ver calcularAgregadoCartera más arriba).
+  const agregado = calcularAgregadoCartera(facturasBase, sumasPorFactura, {
+    soloPendientes,
+    take,
+    skip,
+  });
+
+  // ── PASO 2: detalle completo — SOLO para las facturas de la página ────────
+  const facturasDetalle =
+    agregado.idsPagina.length > 0
+      ? await prisma.factura.findMany({
+          where: { id: { in: agregado.idsPagina } },
+          include: {
+            borrador: {
+              select: {
+                tramiteId: true,
+                tramite: {
+                  select: { consecutivo: true },
+                },
+              },
+            },
+            pagos: {
+              orderBy: { fecha: "asc" },
+            },
+          },
+        })
+      : [];
+
+  // findMany con id:{in} no garantiza el orden de la lista — reordenar según
+  // idsPagina (que ya viene en orden fecha desc, igual que antes de D2-b).
+  const detallePorId = new Map(facturasDetalle.map((f) => [f.id, f]));
+  const facturasOrdenadas = agregado.idsPagina
+    .map((id) => detallePorId.get(id))
+    .filter((f): f is (typeof facturasDetalle)[number] => f !== undefined);
+
+  // Enriquecer cada factura de la PÁGINA con el ledger (idéntico cálculo
+  // por-factura de siempre; ya no se hace para el histórico completo).
+  const facturasEnriquecidas = facturasOrdenadas.map((f) => {
     const pagosCliente = f.pagos.filter((p) => p.destino === DestinoPago.CLIENTE);
     const pagosLM = f.pagos.filter((p) => p.destino === DestinoPago.LM);
 
@@ -538,28 +724,38 @@ export async function getCarteraCliente(input: GetCarteraClienteInput) {
     };
   });
 
-  // Filtro de pendientes: saldo neto distinto de 0 en cualquier destino
-  const facturasFiltradas = soloPendientes
-    ? facturasEnriquecidas.filter(
-        (f) => f.saldoNetoCliente !== 0n || f.saldoNetoLM !== 0n,
-      )
-    : facturasEnriquecidas;
-
-  // Cruces totales (suma de saldoNeto de todas las facturas del cliente)
-  const cruceCliente = facturasEnriquecidas.reduce(
-    (acc, f) => acc + f.saldoNetoCliente,
-    0n,
-  );
-  const cruceLM = facturasEnriquecidas.reduce(
-    (acc, f) => acc + f.saldoNetoLM,
-    0n,
-  );
+  // Costos bancarios agregados por destino (para "Total real a LM" del pie de
+  // tabla en la UI) — SIEMPRE sobre el conjunto COMPLETO, igual que
+  // cruceCliente/cruceLM (no la página, y sin filtrar por soloPendientes, por
+  // consistencia con esos otros dos agregados). Antes de D2-b este total se
+  // calculaba en el cliente sumando sobre `facturas` (que era el histórico
+  // completo, así que coincidía); con la página ya no alcanza — se agrega
+  // aquí con el mismo groupBy liviano que las sumas de abonos/devoluciones.
+  // Fórmula pendiente de confirmar con Camila (ver nota en el enriquecimiento
+  // por factura más arriba).
+  const costosBancariosPorDestino = await prisma.pagoFactura.groupBy({
+    by: ["destino"],
+    where: { factura: where },
+    _sum: { costoBancario: true },
+  });
+  let costosBancariosClienteTotal = 0n;
+  let costosBancariosLMTotal = 0n;
+  for (const c of costosBancariosPorDestino) {
+    const suma = c._sum.costoBancario ?? 0n;
+    if (c.destino === DestinoPago.CLIENTE) costosBancariosClienteTotal = suma;
+    else costosBancariosLMTotal = suma;
+  }
+  const totalRealLM =
+    agregado.cruceLM - costosBancariosClienteTotal - costosBancariosLMTotal;
 
   return {
-    facturas: facturasFiltradas,
-    cruceCliente,
-    cruceLM,
-    totalFacturas: facturasFiltradas.length,
+    // Solo la página pedida (o todo, si take se omitió — ver GetCarteraClienteInput).
+    facturas: facturasEnriquecidas,
+    // Agregados SIEMPRE sobre el conjunto completo — NUNCA sobre `facturas` de arriba.
+    cruceCliente: agregado.cruceCliente,
+    cruceLM: agregado.cruceLM,
+    totalFacturas: agregado.totalFacturas,
+    totalRealLM,
   };
 }
 

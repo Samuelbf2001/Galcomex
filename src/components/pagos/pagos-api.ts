@@ -502,6 +502,38 @@ export async function deletePago(
   }
 }
 
+/**
+ * Refresca la URL de descarga del comprobante adjunto a un pago (D2-a, deuda
+ * Sprint 7: "existe downloadUrl en storage; falta el botón").
+ * `PagoTramite.documentoId` apunta al mismo modelo `Documento` que el
+ * repositorio documental del trámite, así que reutilizamos el endpoint ya
+ * existente `GET /api/tramites/{id}/documentos/{documentoId}`
+ * (`refrescarUrlDescarga` en src/lib/documentos/service.ts) en vez de crear
+ * uno nuevo. Se llama en el momento del clic (no al pintar la lista): la URL
+ * prefirmada caduca en ≤ 15 min (`MAX_PRESIGNED_URL_EXPIRY_SECONDS`) y una
+ * generada al render podría expirar mientras el usuario mira la pantalla.
+ */
+export async function refrescarUrlComprobante(
+  tramiteId: string,
+  documentoId: string,
+): Promise<string> {
+  const response = await fetch(`/api/tramites/${tramiteId}/documentos/${documentoId}`, {
+    cache: "no-store",
+    headers: { accept: "application/json" },
+  });
+
+  if (!response.ok) {
+    const msg = await parseErrorMessage(response);
+    throw new PagosApiError(msg, response.status);
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!isRecord(payload) || typeof payload.url !== "string") {
+    throw new PagosApiError("Respuesta de URL de comprobante no válida.");
+  }
+  return payload.url;
+}
+
 export async function verificarMovimientoPago(
   tramiteId: string,
   pagoId: string,

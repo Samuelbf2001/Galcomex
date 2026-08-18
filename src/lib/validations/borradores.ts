@@ -168,6 +168,12 @@ export const carteraQuerySchema = z.object({
     .transform((v) => v === "true"),
   desde: fechaIso,
   hasta: fechaIso,
+  // Paginación server-side del listado (D2-b). Mismo patrón take/skip que
+  // tramiteQuerySchema. Opcionales: el servicio getCarteraCliente trata su
+  // ausencia como "sin paginar" (usado por el export a Excel y el PDF de
+  // estado de cuenta, que necesitan el histórico completo, no una página).
+  take: z.coerce.number().int().min(1).max(200).optional(),
+  skip: z.coerce.number().int().min(0).optional(),
 });
 
 // ── Liquidación por lotes LM (cuenta Lucho) ───────────────────────────────────
