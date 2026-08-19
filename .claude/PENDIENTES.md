@@ -49,15 +49,13 @@ Sprint 7 ya implementó `PagoFactura.tipo = DEVOLUCION` con el ledger unificado.
 
 Confirmado con `git stash` contra HEAD `be74724` que estas dos fallas **NO** fueron introducidas por el Sprint 11 — el sprint sumó 2 tests pasando (227→229) sin agregar fallas.
 
-### C1. `src/lib/excel/__tests__/borrador-lucho.test.ts`
-**Falla:** abre `C:\Users\samue\Galcomex\excel-lucho-1.xls` (ruta Windows del entorno de Samuel) — falla en cualquier otra máquina.
-**Origen:** Sprint 6 (importador Lucho). El test sí pasa cuando se ejecuta en la máquina con esos archivos.
-**Acción sugerida:** parametrizar con variable de entorno (`LUCHO_EXCEL_PATH`) o copiar los `.xls` a una ruta versionada (`documentos referencia /` ya contiene el BAQ-18453, falta el segundo). Marcar como `skip` si la ruta no existe.
+### C1. `src/lib/excel/__tests__/borrador-lucho.test.ts` — ✅ RESUELTO (2026-08-18)
+**Era:** abría `C:\Users\samue\Galcomex\excel-lucho-1.xls` (ruta Windows del entorno de Samuel) y reventaba la carga de la suite en cualquier otra máquina.
+**Hecho:** el archivo se resuelve ahora desde `LUCHO_EXCEL_PATH` con fallback a una ruta versionada del repo; si no existe, la suite se salta limpio (`skip` condicional) en vez de romper la carga del módulo.
 
-### C2. `src/lib/pagos/__tests__/service.test.ts` — "crearPago con facturaProveedorId de una FP ya PAGADA lanza FacturaProveedorNoModificableError"
-**Falla:** el test espera que un segundo pago sobre una FP ya `PAGADA` lance `FacturaProveedorNoModificableError`.
-**Causa:** en commit `788d65a` ("fix pagos, anticipos y enlace pse") la regla se cambió de `fp.estado !== REGISTRADA → throw` a `fp.estado === FACTURADA_CLIENTE → throw` (ahora se permiten múltiples pagos sobre una FP `PAGADA`, p.ej. abonos parciales). El test quedó desactualizado.
-**Acción sugerida:** o bien (a) ajustar el test para reflejar la regla nueva (segundo pago sobre `PAGADA` se acepta y queda en estado `PAGADA`), o (b) si se quiere prohibir el segundo pago sobre `PAGADA`, restaurar la condición `!== REGISTRADA` y revisar abonos parciales. **Decisión de negocio**: ¿una FP `PAGADA` admite más pagos? Si SÍ → corregir test; si NO → restaurar regla.
+### C2. `src/lib/pagos/__tests__/service.test.ts` — ✅ RESUELTO (2026-08-18)
+**Era:** el test esperaba que un segundo pago sobre una FP `PAGADA` lanzara `FacturaProveedorNoModificableError` — pero desde el commit `788d65a` la regla vigente es que una FP `PAGADA` SÍ admite más pagos (abonos parciales); solo `FACTURADA_CLIENTE` bloquea. El test asertaba una regla que el código había dejado atrás hace sprints.
+**Hecho:** el test se reescribió para reflejar la regla vigente (segundo pago sobre `PAGADA` se acepta), y se agregó cobertura del caso que sí debe rechazar: una FP `FACTURADA_CLIENTE` lanza `FacturaProveedorNoModificableError`.
 
 ---
 
@@ -69,10 +67,10 @@ Confirmado con `git stash` contra HEAD `be74724` que estas dos fallas **NO** fue
 - SOCIO ve el botón "Crear DO" (el backend lo rechaza con 403; pulir render condicional). **Relacionado con D1 abierto (B4).**
 - Canal del anticipo en imports asumido PSE.
 
-### D2. Sprint 7 — cobros/devoluciones
-- Sin botón para descargar/previsualizar el comprobante adjunto de un pago (existe `downloadUrl` en storage; falta el botón).
-- Saldo de caja en Ingresos es por cliente, no global multi-cliente.
-- Falta paginación server-side en cartera a escala.
+### D2. Sprint 7 — cobros/devoluciones — ✅ RESUELTO (2026-08-18)
+- Botón para ver/descargar el comprobante de un pago, generando la URL prefirmada en el momento del clic (no al pintar la lista, para que no caduque mientras el usuario mira la pantalla). Deshabilitado con razón visible cuando el pago no tiene comprobante.
+- Paginación server-side en cartera e ingresos (`take`/`skip`), con los totales y el cruce por cliente calculados sobre el conjunto completo, no sobre la página visible.
+- Saldo de caja global en Ingresos, además del desglose por cliente que ya existía.
 
 ### D3. Sprint 10 — integración Siigo API
 - El envío a Siigo no distinguía PROPIO/SOCIO_LM (enviaba las líneas tal cual). **Sprint 11 lo resuelve indirectamente**: las líneas COMISION/COSTOS_BANCARIOS ya no se materializan para SOCIO_LM, así que el envío sigue siendo línea-a-línea pero con el set correcto.
@@ -105,7 +103,7 @@ El plan 24-jun reportaba para BAQ-18453: `restanteInterno = 1.766.766` y `saldoL
 
 > Origen: `docs/reuniones/2026-07-01-auditoria-vs-codigo.md` — auditoría minuto a minuto de la demo contra el código real.
 >
-> **Estado (2026-08-17): G1 a G6 resueltos.** Sigue abierto G7 (falta especificación) y G9 (verificación con BD, bloqueante para go-live). Cada punto conserva abajo el contexto original y cierra con lo que se hizo.
+> **Estado (2026-08-18): G1 a G6, G9 resueltos. C1, C2, D2 (sección C/D) también resueltos.** Sigue abierto G7 (falta especificación) y las decisiones de negocio listadas al final del archivo. Cada punto conserva abajo el contexto original y cierra con lo que se hizo.
 
 ### Variables de entorno nuevas (configurar antes de desplegar)
 
@@ -113,10 +111,21 @@ El plan 24-jun reportaba para BAQ-18453: `restanteInterno = 1.766.766` y `saldoL
 |---|---|---|
 | `WEBHOOK_N8N_URL` | Destino de los 5 eventos firmados | No se emite nada (no-op silencioso) |
 | `WEBHOOK_SECRET` | Secreto HMAC-SHA256 de la firma | No se emite nada |
+| `CARTERA_ALERTAS_SERVICE_TOKEN` | Secreto que n8n presenta como `Authorization: Bearer <token>` para invocar `POST /api/cartera/alertas/notificar` sin sesión de ADMIN | Sin este secreto esa ruta solo la puede llamar un ADMIN con sesión de navegador — la agenda de n8n no podría dispararla sola |
 
 El consumidor valida con la cabecera `X-Galcomex-Signature` (`sha256=<hex>`) y `X-Galcomex-Timestamp`, firmando `"<timestamp>.<body>"`. Ventana de tolerancia: 5 minutos.
 
-`cartera.vencida` no se emite solo: n8n debe invocar `POST /api/cartera/alertas/notificar` en agenda (diaria basta).
+`cartera.vencida` no se emite solo: n8n debe invocar `POST /api/cartera/alertas/notificar` en agenda (diaria basta), con el header `Authorization: Bearer <CARTERA_ALERTAS_SERVICE_TOKEN>`.
+
+### Canal de las alertas — investigación de Kapso (WhatsApp) y GHL (correo)
+
+Se investigó a pedido explícito: ¿Kapso para WhatsApp y la API de GHL para correo? Conclusión — **ninguno de los dos, para este caso.**
+
+- **Kapso:** capa multi-tenant sobre la API oficial de Meta, pensada para agencias que conectan *muchos números de terceros* (inbox compartido, broadcasts, agentes IA). Galcomex necesita 2-3 destinatarios fijos internos — eso es exactamente lo que hace gratis el nodo nativo **"WhatsApp Business Cloud"** que **n8n ya trae de fábrica**, sin capa intermedia ni costo mensual. Kapso tampoco acelera la aprobación de Meta, que es el único cuello de botella real.
+- **GHL para correo:** exige que el destinatario exista como "Contact" en una sub-cuenta y ata el envío al modelo de conversaciones de su CRM — sobredimensionado para notificar a 2-3 personas. Recomendado: **Resend** (capa gratuita permanente, 3.000 correos/mes, nodo oficial en n8n, ~15 min de setup). Si más adelante se decide Google Workspace/Microsoft 365 (pendiente B5, aparte), se migra al SMTP nativo de n8n sin rehacer el workflow.
+- **Antes de montar nada:** ya existe un flujo de WhatsApp funcionando en producción para la aprobación de pagos PSE (mismo n8n, `WEBHOOK_PSE_URL`). Vale la pena confirmar con quien lo mantiene qué proveedor usa por debajo — si es reutilizable, extenderlo a las 2 alertas nuevas es más rápido que montar algo desde cero.
+- **Arquitectura sugerida:** `factura.aprobada` con `tieneObservaciones: true` → WhatsApp a Camila; `cartera.vencida` → WhatsApp y correo a Guillermo; los otros 3 eventos, solo trazabilidad por ahora (sin saturar de notificaciones). Costo total estimado: prácticamente $0/mes.
+- **Siguiente acción:** decisión de Galcomex sobre el canal (coincide con la pregunta #3 de "Decisiones pendientes" al final del archivo) — con eso se monta el workflow de n8n en horas, no días.
 
 ### G1. 🔴 Solo ADMIN puede registrar anticipos — no hay separación de funciones
 **Detalle:** `POST /api/anticipos` exige `requireRole(["ADMIN"])`. En la reunión (min 00:04) se demostró el flujo contrario: *"ellos pueden montar el anticipo, pero los que definen si entró a la cuenta son ustedes"*. Hoy quien crea el anticipo es el mismo rol que lo verifica → el control de cuatro ojos que motivó toda esa discusión no existe. Además **contradice la matriz de roles de `CLAUDE.md`**, que asigna "Registrar anticipos/pagos" también a OPERATIVO.
