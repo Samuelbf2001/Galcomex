@@ -226,3 +226,13 @@ Cuatro endpoints permitían al rol SOCIO leer/modificar datos de clientes ajenos
 
 ### G7. Test con rutas absolutas de la máquina de Samuel (ya conocido C1)
 `src/lib/excel/__tests__/borrador-lucho.test.ts:20` — hardcodea `C:\Users\samue\Galcomex\excel-lucho-*.xls`. Sin guardia `existsSync` → falla en CI y en cualquier otra máquina. Parametrizar con env var + skip si no existe.
+
+## Reconciliación VPS ↔ local (2026-08-27, rama `reconcile-vps-20260827`)
+
+Repo local ahora contiene la UNIÓN: features de junio del VPS (comisión interna LM, liquidación LM, conciliar lote de cartera, importador Grupo E Papis) + ola 2 local (pagos multi, DocumentoEnlace, guard CERRADO, matrices/parámetros, compartir, rate-limit). Commits: `63a3ed4` (snapshot ola 2) y `c7bfdd5` (reconciliación). `npx tsc --noEmit` limpio.
+
+Pendientes que dejó la reconciliación:
+- **[DESARROLLO/deploy] BD local desactualizada:** el Postgres local (:5433) NO tiene las migraciones `20260627005759_cruce_comision_interna_lm` ni `20260629220550_canal_comision_interna_lm` (no se aplicaron por instrucción). 35 tests de integración fallan con "column comisionInternaLM does not exist" hasta correr `prisma migrate deploy` en local. El VPS ya las tiene aplicadas; en el próximo deploy solo faltará `20260826120000_ola2_pagos_documentos`.
+- **[LIMITACIÓN Windows] Fixture no materializable:** `src/lib/import/__tests__/grupo-e-papis.test.ts` lee `documentos referencia /GRUPO E PAPIS 2026.xlsm` (directorio con espacio final). El archivo SÍ está en git (y en el VPS), pero Windows no puede hacer checkout de esa ruta → ese test solo corre en Linux/Docker. Considerar renombrar el directorio sin espacio final.
+- **[DECISIÓN de merge a validar] Filtro de fechas de cartera:** ambos lados implementaron el filtro por separado; se adoptó la versión VPS (params `desde`/`hasta`, filtrado en servidor) y se conservó el pase client-side de ola 2 como respaldo. La URL con `fechaDesde`/`fechaHasta` (marcadores viejos de ola 2) ya no filtra.
+- **[DECISIÓN de merge a validar] `cliente.tipo` en hoja-tramite:** se conservó el tipado de ola 2 (`string | null`) en vez del default `"PROPIO"` del VPS; los usos son solo comparaciones `=== "SOCIO_LM"`, equivalentes.
