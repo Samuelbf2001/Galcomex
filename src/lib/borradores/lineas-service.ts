@@ -11,6 +11,7 @@
 import { EstadoBorrador, Prisma, SeccionLinea } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
 
 import { recalcularTotalBorrador } from "./recalculo";
 import { getBorrador } from "./service";
@@ -94,6 +95,7 @@ async function cargarBorradorEditable(tx: Tx, borradorId: string) {
   if (!ESTADOS_EDITABLES.includes(borrador.estado)) {
     throw new BorradorNoEditableError(borrador.estado);
   }
+  await assertTramiteModificable(tx, borrador.tramiteId);
   return borrador;
 }
 

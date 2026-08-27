@@ -43,6 +43,12 @@ export type ActividadRecienteRow = {
   createdAt: string;
 };
 
+export type ClienteAlertaCarteraRow = {
+  clienteId: string;
+  clienteNombre: string;
+  saldoNeto: string; // BigInt as string; negativo = el cliente debe a Galcomex
+};
+
 export type DashboardApiData = {
   dosActivos: number;
   dosPorEstado: DosPorEstado[];
@@ -51,6 +57,7 @@ export type DashboardApiData = {
   totalCarteraVencida: string;
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
+  alertasCartera: ClienteAlertaCarteraRow[];
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -123,6 +130,14 @@ function mapActividadRow(r: Record<string, unknown>): ActividadRecienteRow {
   };
 }
 
+function mapAlertaCarteraRow(r: Record<string, unknown>): ClienteAlertaCarteraRow {
+  return {
+    clienteId: String(r.clienteId ?? ""),
+    clienteNombre: String(r.clienteNombre ?? ""),
+    saldoNeto: String(r.saldoNeto ?? "0"),
+  };
+}
+
 // ─── API pública ──────────────────────────────────────────────────────────────
 
 export async function fetchDashboard(
@@ -176,6 +191,9 @@ export async function fetchDashboard(
     },
     actividadReciente: Array.isArray(payload.actividadReciente)
       ? payload.actividadReciente.filter(isRecord).map(mapActividadRow)
+      : [],
+    alertasCartera: Array.isArray(payload.alertasCartera)
+      ? payload.alertasCartera.filter(isRecord).map(mapAlertaCarteraRow)
       : [],
   };
 }

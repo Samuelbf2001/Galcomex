@@ -496,12 +496,29 @@ type ComisionEditableProps = {
   ejecutar: (accion: () => Promise<BorradorRow>) => Promise<void>;
 };
 
+// Opciones fijas de comisión de servicio logístico (pedido del cliente:
+// desplegable 400.000 / 800.000, o "Otro valor…" que abre el campo libre).
+const OPCIONES_COMISION_FIJA = ["400000", "800000"] as const;
+type OpcionComision = (typeof OPCIONES_COMISION_FIJA)[number] | "otro";
+
+function modoComisionDesde(comision: string): OpcionComision {
+  return (OPCIONES_COMISION_FIJA as readonly string[]).includes(comision)
+    ? (comision as OpcionComision)
+    : "otro";
+}
+
 function ComisionEditable({
   borrador,
   puedeEditar,
   guardando,
   ejecutar,
 }: ComisionEditableProps) {
+  // Sin efecto de resincronización: el padre pasa `key={borrador.comision}`
+  // (mismo idioma que el input libre de abajo), así que React remonta este
+  // componente — y reinicializa `modo` desde el valor real — cada vez que
+  // cambia la comisión guardada en el server.
+  const [modo, setModo] = useState<OpcionComision>(() => modoComisionDesde(borrador.comision));
+
   if (!puedeEditar) {
     return (
       <div className="flex w-full max-w-md justify-between">
@@ -511,36 +528,55 @@ function ComisionEditable({
     );
   }
 
-  async function commit(input: HTMLInputElement) {
-    const parsed = parseBigIntInput(input.value);
-    if (parsed === null) {
-      input.value = borrador.comision;
+  async function commitValor(valorRaw: string) {
+    const parsed = parseBigIntInput(valorRaw);
+    if (parsed === null || parsed === borrador.comision) return;
+    await ejecutar(() => apiActualizarComision(borrador.id, parsed));
+  }
+
+  function handleSelectChange(value: string) {
+    if (value === "otro") {
+      // Deja el campo libre visible para que el usuario escriba el valor;
+      // no se guarda nada hasta que lo confirme.
+      setModo("otro");
       return;
     }
-    if (parsed === borrador.comision) return;
-    await ejecutar(() => apiActualizarComision(borrador.id, parsed));
+    setModo(value as OpcionComision);
+    void commitValor(value);
   }
 
   return (
     <div className="flex w-full max-w-md items-center justify-between gap-2">
       <span className="text-slate-500">+ Comisión</span>
-      <input
-        // El `key` fuerza remount cuando cambia el valor del servidor — evita
-        // setState-en-effect para resincronizar y mantiene el input ligero.
-        key={borrador.comision}
-        defaultValue={borrador.comision}
-        onBlur={(e) => void commit(e.currentTarget)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
-          if (e.key === "Escape") {
-            e.currentTarget.value = borrador.comision;
-            e.currentTarget.blur();
-          }
-        }}
-        disabled={guardando}
-        inputMode="numeric"
-        className="w-36 border border-slate-300 px-2 py-1 text-right text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
-      />
+      <div className="flex items-center gap-2">
+        <select
+          value={modo}
+          onChange={(e) => handleSelectChange(e.target.value)}
+          disabled={guardando}
+          className="h-8 border border-slate-300 bg-white px-2 text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
+        >
+          <option value="400000">$400.000</option>
+          <option value="800000">$800.000</option>
+          <option value="otro">Otro valor…</option>
+        </select>
+        {modo === "otro" ? (
+          <input
+            defaultValue={borrador.comision}
+            onBlur={(e) => void commitValor(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                e.currentTarget.value = borrador.comision;
+                e.currentTarget.blur();
+              }
+            }}
+            disabled={guardando}
+            inputMode="numeric"
+            placeholder="Valor en COP"
+            className="w-36 border border-slate-300 px-2 py-1 text-right text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
+          />
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1095,6 +1131,9 @@ export function EditorLineas({
             de OPERACIONAL — los mostramos como atajo editable, pero ya están
             sumados en `subtotalOperacional`. */}
         <ComisionEditable
+          // Fuerza remount cuando cambia la comisión guardada en el server —
+          // evita un efecto de resincronización (ver comentario en el componente).
+          key={borrador.comision}
           borrador={borrador}
           puedeEditar={puedeEditar}
           guardando={guardando}

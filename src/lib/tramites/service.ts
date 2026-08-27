@@ -1,8 +1,11 @@
 import {
   AgenciaAduanas,
   Ciudad,
+  EstadoBorrador,
   EstadoTramite,
   Prisma,
+  Rol,
+  TipoCliente,
   type TramiteDO,
 } from "@prisma/client";
 
@@ -161,6 +164,111 @@ export const tramiteInclude = {
   },
 } satisfies Prisma.TramiteDOInclude;
 
+// ─── Listado con filtros ──────────────────────────────────────────────────────
+// Estados del ciclo de vida en los que el trámite ya paso por facturación.
+// Un trámite tambien se considera facturado si alguno de sus borradores llego
+// a estado FACTURADO (momento en el que se crea el registro Factura — ver
+// borradores/service.ts). Se combinan ambas señales con OR porque el estado
+// del TramiteDO y el estado del BorradorFactura se actualizan por separado y
+// pueden desincronizarse (p.ej. un TramiteDO movido manualmente a FACTURADO
+// sin que exista aun el borrador facturado, o viceversa).
+const ESTADOS_FACTURADOS: EstadoTramite[] = [
+  EstadoTramite.FACTURADO,
+  EstadoTramite.PAGADO,
+  EstadoTramite.CERRADO,
+];
+
+export type TramiteListQuery = {
+  q?: string;
+  estado?: EstadoTramite;
+  ciudad?: Ciudad;
+  clienteId?: string;
+  tipoCliente?: TipoCliente;
+  /** true = solo facturados, false = solo no facturados, undefined = sin filtro. */
+  facturado?: boolean;
+  take?: number;
+  skip?: number;
+};
+
+export type TramiteListOptions = {
+  /**
+   * Scoping del rol SOCIO: solo ve tramites de clientes tipo SOCIO_LM.
+   * Se aplica SIEMPRE con AND respecto a los demas filtros — nunca se
+   * debilita (si ademas se pide tipoCliente=PROPIO, el resultado es vacio).
+   */
+  socioScope?: boolean;
+};
+
+export async function listTramites(
+  query: TramiteListQuery,
+  options: TramiteListOptions = {},
+) {
+  const where: Prisma.TramiteDOWhereInput = {};
+  const and: Prisma.TramiteDOWhereInput[] = [];
+
+  if (query.estado) {
+    where.estado = query.estado;
+  }
+
+  if (query.ciudad) {
+    where.ciudad = query.ciudad;
+  }
+
+  if (query.clienteId) {
+    where.clienteId = query.clienteId;
+  }
+
+  if (query.q) {
+    and.push({
+      OR: [
+        { consecutivo: { contains: query.q, mode: "insensitive" } },
+        { doAgencia: { contains: query.q, mode: "insensitive" } },
+        { doCliente: { contains: query.q, mode: "insensitive" } },
+        { cliente: { nombre: { contains: query.q, mode: "insensitive" } } },
+      ],
+    });
+  }
+
+  if (query.tipoCliente) {
+    and.push({ cliente: { tipo: query.tipoCliente } });
+  }
+
+  if (query.facturado === true) {
+    and.push({
+      OR: [
+        { estado: { in: ESTADOS_FACTURADOS } },
+        { borradores: { some: { estado: EstadoBorrador.FACTURADO } } },
+      ],
+    });
+  } else if (query.facturado === false) {
+    and.push({
+      estado: { notIn: ESTADOS_FACTURADOS },
+      borradores: { none: { estado: EstadoBorrador.FACTURADO } },
+    });
+  }
+
+  if (options.socioScope) {
+    and.push({ cliente: { tipo: TipoCliente.SOCIO_LM } });
+  }
+
+  if (and.length > 0) {
+    where.AND = and;
+  }
+
+  const [tramites, total] = await prisma.$transaction([
+    prisma.tramiteDO.findMany({
+      where,
+      orderBy: [{ anio: "desc" }, { ciudad: "asc" }, { numero: "desc" }],
+      take: query.take ?? 50,
+      skip: query.skip ?? 0,
+      include: tramiteInclude,
+    }),
+    prisma.tramiteDO.count({ where }),
+  ]);
+
+  return { tramites, total };
+}
+
 export const tramiteDetalleInclude = {
   cliente: {
     select: {
@@ -191,6 +299,8 @@ export const tramiteDetalleInclude = {
           tipoRecaudo: true,
           costoRecaudo: true,
           verificadoBanco: true,
+          estado: true,
+          soporteKey: true,
         },
       },
     },
@@ -241,6 +351,15 @@ export async function transitionTramite(
   estadoDes: EstadoTramite,
   usuarioId: string,
   bypassChecklist = false,
+  /**
+   * Rol del usuario que solicita la transición. Solo se usa para decidir la
+   * "reapertura de emergencia" cuando el trámite YA está CERRADO (punto 3 del
+   * guard transversal): en ese caso, únicamente ADMIN puede sacarlo de
+   * CERRADO, y queda un AuditLog explícito con accion "REAPERTURA". Si no se
+   * provee (callers que nunca transicionan un trámite CERRADO, p.ej.
+   * solicitarFacturacion), se trata como "no ADMIN" — deniega por defecto.
+   */
+  usuarioRol?: Rol,
 ): Promise<TransitionResult> {
   return prisma.$transaction(async (tx) => {
     const actual = await tx.tramiteDO.findUnique({
@@ -253,6 +372,50 @@ export async function transitionTramite(
 
     if (!actual) {
       return { ok: false, status: 404, message: "Tramite no encontrado" };
+    }
+
+    // Reapertura de emergencia: el trámite YA está CERRADO (estado terminal).
+    // Bloqueo total salvo ADMIN, que puede sacarlo de CERRADO hacia cualquier
+    // estado — queda auditado con accion "REAPERTURA" (distinta de
+    // "UPDATE_ESTADO") para que sea trazable como excepción. No aplica cuando
+    // el destino también es CERRADO (no-op sin sentido de negocio).
+    if (actual.estado === EstadoTramite.CERRADO && estadoDes !== EstadoTramite.CERRADO) {
+      if (usuarioRol !== Rol.ADMIN) {
+        return {
+          ok: false,
+          status: 403,
+          message: `El trámite ${actual.consecutivo} está cerrado. Solo un ADMIN puede reabrirlo.`,
+        };
+      }
+
+      const reabierto = await tx.tramiteDO.update({
+        where: { id: tramiteId },
+        data: { estado: estadoDes },
+        include: tramiteInclude,
+      });
+
+      await tx.estadoLog.create({
+        data: {
+          tramiteId,
+          estadoAntes: actual.estado,
+          estadoDes,
+          usuarioId,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          entidad: "TramiteDO",
+          entidadId: tramiteId,
+          accion: "REAPERTURA",
+          usuarioId,
+          tramiteId,
+          antes: normalizeSerializable({ estado: actual.estado }),
+          despues: normalizeSerializable({ estado: estadoDes }),
+        },
+      });
+
+      return { ok: true, tramite: reabierto };
     }
 
     if (!bypassChecklist && !transitionMap[actual.estado].includes(estadoDes)) {

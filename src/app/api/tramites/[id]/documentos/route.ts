@@ -9,7 +9,7 @@ import {
   registrarDocumento,
   solicitarSubida,
 } from "@/lib/documentos/service";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { StorageValidationError } from "@/lib/storage/service";
 import {
@@ -30,12 +30,23 @@ export async function GET(_request: NextRequest, context: RouteContext) {
 
   const { id } = await context.params;
 
+  const permiso = await resolverTramiteConPermiso(id, session.user.rol);
+  if (permiso === null) {
+    return NextResponse.json({ error: "Trámite no encontrado" }, { status: 404 });
+  }
+  if (permiso === "forbidden") {
+    return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+  }
+
   try {
     const documentosPorCategoria = await listarDocumentos(id);
     return jsonResponse({ documentos: documentosPorCategoria });
   } catch (error) {
     if (error instanceof DocumentoNoEncontradoError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }
@@ -103,6 +114,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
     if (error instanceof DocumentoNoEncontradoError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }

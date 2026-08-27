@@ -1,4 +1,9 @@
-import { AgenciaAduanas, Ciudad, EstadoTramite } from "@prisma/client";
+import {
+  AgenciaAduanas,
+  Ciudad,
+  EstadoTramite,
+  TipoCliente,
+} from "@prisma/client";
 import { z } from "zod";
 
 const optionalDate = z
@@ -47,6 +52,12 @@ export const tramiteQuerySchema = z.object({
   estado: z.nativeEnum(EstadoTramite).optional(),
   ciudad: z.nativeEnum(Ciudad).optional(),
   clienteId: z.string().trim().min(1).optional(),
+  tipoCliente: z.nativeEnum(TipoCliente).optional(),
+  // "true"/"false" en el query string; undefined = sin filtro.
+  facturado: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value === "true")),
   take: z.coerce.number().int().min(1).max(100).default(50),
   skip: z.coerce.number().int().min(0).default(0),
 });

@@ -109,6 +109,29 @@ export type CruceFacturaRow = {
   diferencia: string; // BigInt serializado (montoFacturado − montoPagado)
 };
 
+/** Cruce por proveedor/beneficiario: Σ facturas de proveedor vs Σ pagos vinculados. */
+export type ValidacionProveedorRow = {
+  proveedorId: string;
+  proveedorNombre: string;
+  totalFacturas: string; // BigInt serializado
+  totalPagos: string; // BigInt serializado
+  diferencia: string; // BigInt serializado (totalFacturas − totalPagos)
+  cuadra: boolean;
+};
+
+/** Pago del trámite sin ninguna factura de proveedor vinculada. */
+export type PagoSueltoRow = {
+  pagoId: string;
+  concepto: string;
+  numSoporte: string | null;
+  valor: string; // BigInt serializado
+};
+
+export type ValidacionesCruceResult = {
+  proveedores: ValidacionProveedorRow[];
+  pagosSueltos: PagoSueltoRow[];
+};
+
 export type TramiteParaFacturacion = {
   id: string;
   consecutivo: string;
@@ -541,6 +564,44 @@ export function descargarSiigoImport(borradorId: string): void {
   a.remove();
 }
 
+// ─── PDF / Excel genérico del borrador ────────────────────────────────────────
+
+/**
+ * URL del PDF del borrador de factura (formato genérico, distinto del import
+ * SIIGO). El endpoint exige rol ADMIN/REVISOR.
+ */
+export function urlBorradorPdf(borradorId: string): string {
+  return `/api/borradores/${borradorId}/pdf`;
+}
+
+/** Dispara la apertura/descarga del PDF del borrador en el navegador. */
+export function descargarBorradorPdf(borradorId: string): void {
+  const a = document.createElement("a");
+  a.href = urlBorradorPdf(borradorId);
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/**
+ * URL del XLSX genérico del borrador (distinto del formato de importación SIIGO
+ * columnas A–AE). El endpoint exige rol ADMIN/REVISOR.
+ */
+export function urlBorradorExport(borradorId: string): string {
+  return `/api/borradores/${borradorId}/export`;
+}
+
+/** Dispara la descarga del XLSX genérico del borrador en el navegador. */
+export function descargarBorradorExport(borradorId: string): void {
+  const a = document.createElement("a");
+  a.href = urlBorradorExport(borradorId);
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 /**
  * Resultado de sincronizar un borrador con Siigo.
  * - facturada=true: Siigo ya devolvió consecutivo y la BD se actualizó.
@@ -707,6 +768,62 @@ export async function fetchCruceFacturas(borradorId: string): Promise<CruceFactu
       diferencia: String(r.diferencia ?? "0"),
     }),
   );
+}
+
+/**
+ * Cruce agregado por proveedor/beneficiario para la sección "Validaciones"
+ * del revisor. Mismo endpoint que `fetchCruceFacturas`; se reutiliza la
+ * respuesta ya cargada por el llamador cuando sea posible, pero se expone
+ * como fetch independiente para mantener los componentes desacoplados.
+ */
+export async function fetchValidacionesCruce(
+  borradorId: string,
+): Promise<ValidacionesCruceResult> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/borradores/${borradorId}/cruce-facturas`, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    throw new FacturacionApiError("No fue posible conectar con la API de validaciones.");
+  }
+
+  if (!response.ok) {
+    const msg = await parseErrorMessage(response);
+    throw new FacturacionApiError(msg, response.status);
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!isRecord(payload) || !isRecord(payload.validaciones)) {
+    throw new FacturacionApiError("Respuesta de validaciones no válida.");
+  }
+
+  const raw = payload.validaciones;
+  const proveedores = Array.isArray(raw.proveedores)
+    ? (raw.proveedores as unknown[]).filter(isRecord).map(
+        (r): ValidacionProveedorRow => ({
+          proveedorId: String(r.proveedorId ?? ""),
+          proveedorNombre: String(r.proveedorNombre ?? ""),
+          totalFacturas: String(r.totalFacturas ?? "0"),
+          totalPagos: String(r.totalPagos ?? "0"),
+          diferencia: String(r.diferencia ?? "0"),
+          cuadra: r.cuadra === true,
+        }),
+      )
+    : [];
+  const pagosSueltos = Array.isArray(raw.pagosSueltos)
+    ? (raw.pagosSueltos as unknown[]).filter(isRecord).map(
+        (r): PagoSueltoRow => ({
+          pagoId: String(r.pagoId ?? ""),
+          concepto: String(r.concepto ?? ""),
+          numSoporte: typeof r.numSoporte === "string" ? r.numSoporte : null,
+          valor: String(r.valor ?? "0"),
+        }),
+      )
+    : [];
+
+  return { proveedores, pagosSueltos };
 }
 
 // ─── Formateo ─────────────────────────────────────────────────────────────────

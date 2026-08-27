@@ -266,8 +266,8 @@ describe("documentos service — capa de persistencia", () => {
     const plAntes = antes["PACKING_LIST"] ?? [];
     expect(plAntes.find((d) => d.id === doc.id)).toBeTruthy();
 
-    // Eliminar
-    await eliminarDocumento(doc.id, db.userId);
+    // Eliminar (fixture user es ADMIN → puede eliminar)
+    await eliminarDocumento(doc.id, db.userId, Rol.ADMIN);
 
     // Verificar que eliminado=true en BD
     const persisted = await prisma.documento.findUnique({ where: { id: doc.id } });

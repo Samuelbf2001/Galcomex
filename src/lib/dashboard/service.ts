@@ -5,8 +5,10 @@
  * Expone getDashboardData() y la función pura calcularDiasYAlerta().
  */
 
-import { EstadoTramite } from "@prisma/client";
+import { DestinoPago, EstadoTramite, TipoPagoFactura } from "@prisma/client";
 
+import { getUmbralAlertaCarteraCliente } from "@/lib/alertas/umbrales";
+import { calcularSaldoNeto } from "@/lib/cartera/service";
 import { prisma } from "@/lib/db/prisma";
 
 // ─── Función pura testeable ───────────────────────────────────────────────────
@@ -33,6 +35,92 @@ export function calcularDiasYAlerta(
   const dias = Math.max(0, Math.floor(diff / msPerDay));
 
   return { dias, alerta: dias > slaDias };
+}
+
+// ─── Alertas de cartera por cliente ──────────────────────────────────────────
+
+export type ClienteSaldoNeto = {
+  clienteId: string;
+  clienteNombre: string;
+  /** Σ saldoNeto (WS-D) de todas las facturas del cliente. Negativo = el cliente debe. */
+  saldoNeto: bigint;
+};
+
+export type ClienteAlertaCarteraRow = {
+  clienteId: string;
+  clienteNombre: string;
+  saldoNeto: string; // BigInt as string
+};
+
+/**
+ * Función pura testeable: de una lista de clientes con su saldo neto de
+ * cartera ya calculado, retorna los que están por debajo del umbral
+ * (Parametro UMBRAL_ALERTA_CARTERA_CLIENTE, default −20.000.000 COP),
+ * ordenados de peor a mejor saldo (más negativo primero).
+ */
+export function seleccionarClientesEnAlertaCartera(
+  clientes: ClienteSaldoNeto[],
+  umbral: bigint,
+): ClienteAlertaCarteraRow[] {
+  return clientes
+    .filter((c) => c.saldoNeto < umbral)
+    .sort((a, b) => (a.saldoNeto < b.saldoNeto ? -1 : a.saldoNeto > b.saldoNeto ? 1 : 0))
+    .map((c) => ({
+      clienteId: c.clienteId,
+      clienteNombre: c.clienteNombre,
+      saldoNeto: c.saldoNeto.toString(),
+    }));
+}
+
+/**
+ * Calcula el saldo neto de cartera (Σ saldoNeto de todas las facturas, ledger
+ * destino=CLIENTE — misma fórmula que getCarteraCliente().cruceCliente) para
+ * todos los clientes, y retorna solo los que están bajo el umbral de alerta.
+ */
+export async function getClientesConAlertaCartera(): Promise<ClienteAlertaCarteraRow[]> {
+  const [clientes, umbral] = await Promise.all([
+    prisma.cliente.findMany({
+      select: {
+        id: true,
+        nombre: true,
+        facturas: {
+          select: {
+            saldoAFavorCliente: true,
+            saldoACargoCliente: true,
+            pagos: {
+              where: { destino: DestinoPago.CLIENTE },
+              select: { tipo: true, monto: true },
+            },
+          },
+        },
+      },
+    }),
+    getUmbralAlertaCarteraCliente(),
+  ]);
+
+  const clientesConSaldo: ClienteSaldoNeto[] = clientes.map((cliente) => {
+    const saldoNeto = cliente.facturas.reduce((acc, f) => {
+      const abonos = f.pagos
+        .filter((p) => p.tipo === TipoPagoFactura.ABONO)
+        .reduce((sum, p) => sum + p.monto, 0n);
+      const devoluciones = f.pagos
+        .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
+        .reduce((sum, p) => sum + p.monto, 0n);
+      return (
+        acc +
+        calcularSaldoNeto({
+          saldoAFavor: f.saldoAFavorCliente,
+          saldoACargo: f.saldoACargoCliente,
+          abonos,
+          devoluciones,
+        })
+      );
+    }, 0n);
+
+    return { clienteId: cliente.id, clienteNombre: cliente.nombre, saldoNeto };
+  });
+
+  return seleccionarClientesEnAlertaCartera(clientesConSaldo, umbral);
 }
 
 // ─── Tipos de retorno ─────────────────────────────────────────────────────────
@@ -83,6 +171,8 @@ export type DashboardData = {
   totalCarteraVencida: string;  // BigInt as string
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
+  /** Clientes con saldo neto de cartera por debajo de UMBRAL_ALERTA_CARTERA_CLIENTE. */
+  alertasCartera: ClienteAlertaCarteraRow[];
 };
 
 // ─── Estados que cuentan como "activos" ──────────────────────────────────────
@@ -248,6 +338,9 @@ export async function getDashboardData(): Promise<DashboardData> {
     createdAt: log.createdAt.toISOString(),
   }));
 
+  // 6. Alertas de cartera — clientes con saldo neto por debajo del umbral
+  const alertasCartera = await getClientesConAlertaCartera();
+
   return {
     dosActivos,
     dosPorEstado,
@@ -259,5 +352,6 @@ export async function getDashboardData(): Promise<DashboardData> {
       totalRestante: anticiposTotalRestante.toString(),
     },
     actividadReciente,
+    alertasCartera,
   };
 }

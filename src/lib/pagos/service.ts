@@ -4,7 +4,9 @@
  * Sprint 8: N↔N con FacturaProveedor (PagoTramiteFactura), EstadoMovimiento, sin fechaEsperadaPago.
  */
 
-import { type Beneficiario, CanalPago, EstadoBorrador, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite, type PagoTramiteBeneficiario } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+
+import { type Beneficiario, CanalPago, EstadoBorrador, type EstadoTramite, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite, type PagoTramiteBeneficiario } from "@prisma/client";
 
 import { calcularSaldosIntermedios } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
@@ -12,6 +14,7 @@ import {
   FacturaProveedorNoEncontradaError,
   FacturaProveedorNoModificableError,
 } from "@/lib/facturas-proveedor/service";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
 
 type CrearPagoInput = {
   tramiteId: string;
@@ -19,7 +22,10 @@ type CrearPagoInput = {
   /** IDs de beneficiarios a vincular (N↔N). */
   beneficiarioIds?: string[];
   numSoporte?: string | null;
+  /** Comprobante bancario (Bancolombia) — el que vale ante reclamos. Opcional (no bloquea el pago). */
   documentoId?: string | null;
+  /** Comprobante de la página del comercio (puerto/PSE) — opcional, complementa el bancario. */
+  comprobanteComercioId?: string | null;
   valor: bigint;
   canalPago: CanalPago;
   fechaRealPago?: Date | null;
@@ -55,10 +61,15 @@ type FacturaProveedorVinculada = {
 
 type BeneficiarioMinimo = Pick<Beneficiario, "id" | "nombre" | "nit">;
 
+/** Otro DO del mismo grupoPagoId (pago multi-DO) — para el badge "Pago multi-DO". */
+export type GrupoPagoDOInfo = { tramiteId: string; consecutivo: string };
+
 type PagoConRelaciones = PagoTramite & {
   facturasProveedor: { factura: FacturaProveedorVinculada }[];
   beneficiarios: (PagoTramiteBeneficiario & { beneficiario: BeneficiarioMinimo })[];
   bancoBeneficiario: BeneficiarioMinimo | null;
+  /** Otros DOs del mismo grupoPagoId (vacío si el pago no pertenece a un grupo multi-DO). */
+  grupoOtrosDOs: GrupoPagoDOInfo[];
 };
 
 /**
@@ -105,6 +116,8 @@ export type PagoGlobalRow = PagoTramite & {
     cliente: { id: string; nombre: string; nit: string };
   };
   beneficiarios: (PagoTramiteBeneficiario & { beneficiario: BeneficiarioMinimo })[];
+  /** Otros DOs del mismo grupoPagoId (vacío si el pago no pertenece a un grupo multi-DO). */
+  grupoOtrosDOs: GrupoPagoDOInfo[];
 };
 
 type ListarPagosResult = {
@@ -161,6 +174,60 @@ async function resolverBancoBancolombiaId(
   return benef?.id ?? null;
 }
 
+/**
+ * Para un lote de pagos, resuelve — por cada uno que tenga grupoPagoId — la
+ * lista de OTROS DOs (tramiteId + consecutivo) que comparten el mismo grupo.
+ * Usado para el badge "Pago multi-DO" con tooltip en el libro de pagos y en
+ * la vista global.
+ */
+async function cargarGrupoInfo(
+  pagos: { id: string; grupoPagoId: string | null; tramiteId: string }[],
+): Promise<Map<string, GrupoPagoDOInfo[]>> {
+  const grupoIds = [
+    ...new Set(
+      pagos
+        .map((p) => p.grupoPagoId)
+        .filter((g): g is string => g !== null),
+    ),
+  ];
+
+  if (grupoIds.length === 0) {
+    return new Map();
+  }
+
+  const relacionados = await prisma.pagoTramite.findMany({
+    where: { grupoPagoId: { in: grupoIds } },
+    select: {
+      grupoPagoId: true,
+      tramiteId: true,
+      tramite: { select: { consecutivo: true } },
+    },
+  });
+
+  const porGrupo = new Map<string, GrupoPagoDOInfo[]>();
+  for (const r of relacionados) {
+    if (!r.grupoPagoId) continue;
+    const lista = porGrupo.get(r.grupoPagoId) ?? [];
+    // Evitar duplicados (varios pagos del mismo DO en el mismo grupo no deberían
+    // existir, pero por seguridad deduplicamos por tramiteId).
+    if (!lista.some((x) => x.tramiteId === r.tramiteId)) {
+      lista.push({ tramiteId: r.tramiteId, consecutivo: r.tramite.consecutivo });
+    }
+    porGrupo.set(r.grupoPagoId, lista);
+  }
+
+  const resultado = new Map<string, GrupoPagoDOInfo[]>();
+  for (const p of pagos) {
+    if (!p.grupoPagoId) continue;
+    const todos = porGrupo.get(p.grupoPagoId) ?? [];
+    resultado.set(
+      p.id,
+      todos.filter((t) => t.tramiteId !== p.tramiteId),
+    );
+  }
+  return resultado;
+}
+
 export class MatrizCanalNoEncontradoError extends Error {
   public readonly canal: CanalPago;
   public readonly status = 400;
@@ -196,6 +263,80 @@ export class SinAnticipoAplicadoError extends Error {
   }
 }
 
+/** Variante de SinAnticipoAplicadoError para el pago multi-DO: identifica QUÉ DO falla. */
+export class SinAnticipoAplicadoMultiDOError extends Error {
+  public readonly status = 422;
+  public readonly tramiteId: string;
+  public readonly consecutivo: string;
+  constructor(tramiteId: string, consecutivo: string) {
+    super(
+      `El DO ${consecutivo} no tiene anticipo aplicado — no se puede incluir en el pago multi-DO`,
+    );
+    this.name = "SinAnticipoAplicadoMultiDOError";
+    this.tramiteId = tramiteId;
+    this.consecutivo = consecutivo;
+  }
+}
+
+export class DocumentoNoEncontradoParaPagoError extends Error {
+  public readonly status = 404;
+  constructor(documentoId: string) {
+    super(`Documento ${documentoId} no encontrado`);
+    this.name = "DocumentoNoEncontradoParaPagoError";
+  }
+}
+
+export class DocumentoDeOtroTramiteError extends Error {
+  public readonly status = 422;
+  constructor(documentoId: string, tramiteId: string, campo: string) {
+    super(`El documento ${documentoId} (${campo}) no pertenece al trámite ${tramiteId}`);
+    this.name = "DocumentoDeOtroTramiteError";
+  }
+}
+
+export class PagoMultiDOSinFacturasError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super("Debes seleccionar al menos una factura de proveedor para el pago multi-DO");
+    this.name = "PagoMultiDOSinFacturasError";
+  }
+}
+
+export class PagoMultiDOBeneficiarioMismatchError extends Error {
+  public readonly status = 422;
+  constructor(facturaProveedorId: string) {
+    super(
+      `La factura de proveedor ${facturaProveedorId} no pertenece al beneficiario seleccionado`,
+    );
+    this.name = "PagoMultiDOBeneficiarioMismatchError";
+  }
+}
+
+/**
+ * Valida (dentro de una transacción) que un Documento exista y pertenezca al
+ * trámite indicado. Usado por crearPago/actualizarPago para documentoId
+ * (comprobante bancario) y comprobanteComercioId (comprobante de comercio).
+ * NO se usa en crearPagoMultiDO: ahí el comprobante es compartido entre
+ * varios trámites por diseño (un solo comprobante cubre varios DOs).
+ */
+async function validarDocumentoDelTramite(
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  documentoId: string,
+  tramiteId: string,
+  campo: string,
+): Promise<void> {
+  const doc = await tx.documento.findUnique({
+    where: { id: documentoId },
+    select: { id: true, tramiteId: true },
+  });
+  if (!doc) {
+    throw new DocumentoNoEncontradoParaPagoError(documentoId);
+  }
+  if (doc.tramiteId !== tramiteId) {
+    throw new DocumentoDeOtroTramiteError(documentoId, tramiteId, campo);
+  }
+}
+
 /**
  * Crea un pago en el libro del trámite.
  * - Resuelve costoBancario automáticamente desde MatrizPago según canalPago.
@@ -209,6 +350,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
     beneficiarioIds = [],
     numSoporte,
     documentoId,
+    comprobanteComercioId,
     valor,
     canalPago,
     fechaRealPago,
@@ -218,12 +360,24 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
   } = input;
 
   return prisma.$transaction(async (tx) => {
+    await assertTramiteModificable(tx, tramiteId);
+
     const anticipo = await tx.aplicacionAnticipo.findFirst({
       where: { tramiteId },
       select: { id: true },
     });
     if (!anticipo) {
       throw new SinAnticipoAplicadoError(tramiteId);
+    }
+
+    // Comprobantes opcionales: si se envían, deben existir y ser del mismo
+    // trámite. NO bloquean el pago si se omiten (decisión de negocio: alertar,
+    // no bloquear — ver caso Karina).
+    if (documentoId) {
+      await validarDocumentoDelTramite(tx, documentoId, tramiteId, "comprobante bancario");
+    }
+    if (comprobanteComercioId) {
+      await validarDocumentoDelTramite(tx, comprobanteComercioId, tramiteId, "comprobante de comercio");
     }
 
     const costoBancario = await resolverCostoBancario(canalPago, tx);
@@ -269,6 +423,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
         concepto,
         numSoporte,
         documentoId,
+        comprobanteComercioId,
         valor,
         canalPago,
         costoBancario,
@@ -340,6 +495,10 @@ export async function actualizarPago(
     fechaRealPago?: Date | null;
     /** Banco (Beneficiario) para el 4x1000. null = limpiar. */
     bancoBeneficiarioId?: string | null;
+    /** Comprobante bancario (Bancolombia). null = limpiar. */
+    documentoId?: string | null;
+    /** Comprobante de la página del comercio (puerto/PSE), opcional. null = limpiar. */
+    comprobanteComercioId?: string | null;
   },
   usuarioId: string,
 ): Promise<PagoTramite> {
@@ -350,6 +509,22 @@ export async function actualizarPago(
 
     if (!actual) {
       throw new Error(`Pago ${pagoId} no encontrado`);
+    }
+
+    await assertTramiteModificable(tx, actual.tramiteId);
+
+    // Comprobantes opcionales: si se envían (no null/undefined), deben existir
+    // y ser del mismo trámite del pago.
+    if (cambios.documentoId) {
+      await validarDocumentoDelTramite(tx, cambios.documentoId, actual.tramiteId, "comprobante bancario");
+    }
+    if (cambios.comprobanteComercioId) {
+      await validarDocumentoDelTramite(
+        tx,
+        cambios.comprobanteComercioId,
+        actual.tramiteId,
+        "comprobante de comercio",
+      );
     }
 
     const canalEfectivo = cambios.canalPago ?? actual.canalPago;
@@ -422,6 +597,8 @@ export async function eliminarPago(
       throw new Error(`Pago ${pagoId} no encontrado`);
     }
 
+    await assertTramiteModificable(tx, actual.tramiteId);
+
     // Recalcular estado de FPs vinculadas antes de borrar el pago
     for (const { facturaId } of actual.facturasProveedor) {
       const pagosRestantes = await tx.pagoTramiteFactura.count({
@@ -489,6 +666,8 @@ export async function verificarPago(
     if (!pago) {
       throw new Error(`Pago ${pagoId} no encontrado`);
     }
+
+    await assertTramiteModificable(tx, pago.tramite);
 
     const esClienteSocioLM = pago.tramite.cliente.tipo === "SOCIO_LM";
     const puedeVerificar = usuarioRol === Rol.ADMIN ||
@@ -611,8 +790,18 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
       }
     : null;
 
+  // Pago multi-DO (grupoPagoId): resolver los OTROS DOs del grupo para el
+  // badge "Pago multi-DO" con tooltip.
+  const grupoInfo = await cargarGrupoInfo(
+    pagos.map((p) => ({ id: p.id, grupoPagoId: p.grupoPagoId, tramiteId: p.tramiteId })),
+  );
+  const pagosConGrupo = pagos.map((p) => ({
+    ...p,
+    grupoOtrosDOs: grupoInfo.get(p.id) ?? [],
+  }));
+
   return {
-    pagos: pagos as PagoConRelaciones[],
+    pagos: pagosConGrupo as PagoConRelaciones[],
     aplicaciones,
     totalPagos,
     costosBancarios,
@@ -665,10 +854,333 @@ export async function listarPagosGlobal(
     0n,
   );
 
+  const grupoInfo = await cargarGrupoInfo(
+    pagos.map((p) => ({ id: p.id, grupoPagoId: p.grupoPagoId, tramiteId: p.tramiteId })),
+  );
+  const pagosConGrupo = pagos.map((p) => ({
+    ...p,
+    grupoOtrosDOs: grupoInfo.get(p.id) ?? [],
+  }));
+
   return {
-    pagos: pagos as PagoGlobalRow[],
+    pagos: pagosConGrupo as PagoGlobalRow[],
     totalPagos,
     costosBancarios,
     totalPendiente,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pago multi-DO (caso Karina/Occidente)
+//
+// Una sola transferencia del beneficiario cubre facturas de proveedor que
+// pertenecen a VARIOS trámites (DOs) distintos. En vez de obligar a Camila a
+// registrar N pagos manuales con copy/paste de carpetas externas, este flujo:
+//   1. Lista TODAS las FacturaProveedor REGISTRADA del beneficiario, sin
+//      importar el trámite (listarFacturasElegiblesMultiDO).
+//   2. Recibe la selección + monto a pagar por factura y crea, en UNA sola
+//      transacción, UN PagoTramite POR CADA trámite involucrado — valor =
+//      Σ montos de las facturas seleccionadas de ese DO — todos con el mismo
+//      grupoPagoId, documentoId y comprobanteComercioId (crearPagoMultiDO).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type FacturaElegibleMultiDO = {
+  id: string;
+  numFactura: string;
+  valor: bigint;
+  fecha: Date;
+  tramiteId: string;
+  tramiteConsecutivo: string;
+  clienteNombre: string;
+  /** true si el DO ya tiene al menos una AplicacionAnticipo (regla "sin anticipo no hay pagos"). */
+  tieneAnticipoAplicado: boolean;
+};
+
+/**
+ * Lista todas las FacturaProveedor en estado REGISTRADA de un beneficiario,
+ * de TODOS los trámites, para el selector del pago multi-DO.
+ */
+export async function listarFacturasElegiblesMultiDO(
+  beneficiarioId: string,
+): Promise<FacturaElegibleMultiDO[]> {
+  const facturas = await prisma.facturaProveedor.findMany({
+    where: { beneficiarioId, estado: EstadoFacturaProveedor.REGISTRADA },
+    include: {
+      tramite: {
+        select: { id: true, consecutivo: true, cliente: { select: { nombre: true } } },
+      },
+    },
+    orderBy: [{ tramite: { consecutivo: "asc" } }, { fecha: "asc" }],
+  });
+
+  const tramiteIds = [...new Set(facturas.map((f) => f.tramiteId))];
+  const aplicaciones = tramiteIds.length
+    ? await prisma.aplicacionAnticipo.findMany({
+        where: { tramiteId: { in: tramiteIds } },
+        select: { tramiteId: true },
+      })
+    : [];
+  const tramitesConAnticipo = new Set(aplicaciones.map((a) => a.tramiteId));
+
+  return facturas.map((f) => ({
+    id: f.id,
+    numFactura: f.numFactura,
+    valor: f.valor,
+    fecha: f.fecha,
+    tramiteId: f.tramiteId,
+    tramiteConsecutivo: f.tramite.consecutivo,
+    clienteNombre: f.tramite.cliente.nombre,
+    tieneAnticipoAplicado: tramitesConAnticipo.has(f.tramiteId),
+  }));
+}
+
+export type CrearPagoMultiDOInput = {
+  beneficiarioId: string;
+  /** Facturas seleccionadas con el monto a pagar por cada una (puede ser parcial). */
+  facturas: { facturaProveedorId: string; monto: bigint }[];
+  canalPago: CanalPago;
+  fechaRealPago?: Date | null;
+  concepto?: string;
+  /** Comprobante bancario (Bancolombia) — compartido por todos los pagos del grupo. */
+  documentoId?: string | null;
+  /** Comprobante de comercio (opcional) — compartido por todos los pagos del grupo. */
+  comprobanteComercioId?: string | null;
+  bancoBeneficiarioId?: string | null;
+  usuarioId: string;
+};
+
+export type CrearPagoMultiDOResult = {
+  grupoPagoId: string;
+  pagos: PagoTramite[];
+};
+
+/**
+ * Crea un pago multi-DO: un solo comprobante/canal cubre facturas de
+ * proveedor de varios trámites distintos.
+ *
+ * Reglas:
+ * - Un PagoTramite por trámite involucrado (valor = Σ montos de sus facturas).
+ * - Mismo grupoPagoId (UUID), documentoId y comprobanteComercioId en todos.
+ * - El costo bancario del canal se cobra UNA sola vez — en el PRIMER pago
+ *   creado del grupo (orden de iteración = orden de trámites en `facturas`
+ *   deduplicado). Los demás pagos del grupo quedan con costoBancario = 0 para
+ *   no inflar los costos bancarios totales del cliente (el banco solo cobra
+ *   una transferencia real, aunque el sistema la reparta en N registros).
+ * - Regla "sin anticipo no hay pagos" (punto 3) aplica por cada DO
+ *   involucrado: si alguno no tiene AplicacionAnticipo, se rechaza TODO el
+ *   pago multi-DO indicando cuál DO falla (SinAnticipoAplicadoMultiDOError).
+ * - NO se valida documentoId/comprobanteComercioId contra "mismo trámite"
+ *   (a diferencia de crearPago) porque por diseño el comprobante es
+ *   compartido entre varios trámites — solo se valida que el Documento exista.
+ */
+export async function crearPagoMultiDO(
+  input: CrearPagoMultiDOInput,
+): Promise<CrearPagoMultiDOResult> {
+  const {
+    beneficiarioId,
+    facturas,
+    canalPago,
+    fechaRealPago,
+    concepto,
+    documentoId,
+    comprobanteComercioId,
+    bancoBeneficiarioId,
+    usuarioId,
+  } = input;
+
+  if (facturas.length === 0) {
+    throw new PagoMultiDOSinFacturasError();
+  }
+
+  return prisma.$transaction(async (tx) => {
+    if (documentoId) {
+      const doc = await tx.documento.findUnique({ where: { id: documentoId }, select: { id: true } });
+      if (!doc) throw new DocumentoNoEncontradoParaPagoError(documentoId);
+    }
+    if (comprobanteComercioId) {
+      const doc = await tx.documento.findUnique({
+        where: { id: comprobanteComercioId },
+        select: { id: true },
+      });
+      if (!doc) throw new DocumentoNoEncontradoParaPagoError(comprobanteComercioId);
+    }
+
+    // Cargar todas las facturas seleccionadas y validar estado/beneficiario.
+    const facturaIds = facturas.map((f) => f.facturaProveedorId);
+    const fps = await tx.facturaProveedor.findMany({
+      where: { id: { in: facturaIds } },
+      include: { tramite: { select: { id: true, consecutivo: true, estado: true } } },
+    });
+    const fpsPorId = new Map(fps.map((fp) => [fp.id, fp]));
+
+    for (const { facturaProveedorId } of facturas) {
+      const fp = fpsPorId.get(facturaProveedorId);
+      if (!fp) {
+        throw new FacturaProveedorNoEncontradaError(facturaProveedorId);
+      }
+      if (fp.beneficiarioId !== beneficiarioId) {
+        throw new PagoMultiDOBeneficiarioMismatchError(facturaProveedorId);
+      }
+      if (fp.estado === EstadoFacturaProveedor.FACTURADA_CLIENTE) {
+        throw new FacturaProveedorNoModificableError(facturaProveedorId, fp.estado);
+      }
+    }
+
+    // Agrupar por trámite: Σ montos + lista de facturas de ese DO.
+    // Map preserva el orden de inserción (= orden en que aparecen en `facturas`),
+    // que es lo que determina cuál pago del grupo se lleva el costoBancario.
+    type GrupoTramite = {
+      consecutivo: string;
+      estado: EstadoTramite;
+      facturas: { facturaId: string; monto: bigint }[];
+      total: bigint;
+    };
+    const porTramite = new Map<string, GrupoTramite>();
+    for (const { facturaProveedorId, monto } of facturas) {
+      const fp = fpsPorId.get(facturaProveedorId)!;
+      const entry = porTramite.get(fp.tramiteId) ?? {
+        consecutivo: fp.tramite.consecutivo,
+        estado: fp.tramite.estado,
+        facturas: [],
+        total: 0n,
+      };
+      entry.facturas.push({ facturaId: facturaProveedorId, monto });
+      entry.total += monto;
+      porTramite.set(fp.tramiteId, entry);
+    }
+
+    // Trámite cerrado no admite pagos — valida CADA DO del grupo antes de
+    // seguir (un solo DO cerrado rechaza el pago multi-DO completo).
+    for (const [tramiteId, grupo] of porTramite) {
+      await assertTramiteModificable(tx, {
+        id: tramiteId,
+        consecutivo: grupo.consecutivo,
+        estado: grupo.estado,
+      });
+    }
+
+    // Regla "sin anticipo no hay pagos" — aplica a CADA DO del grupo.
+    for (const [tramiteId, grupo] of porTramite) {
+      const anticipo = await tx.aplicacionAnticipo.findFirst({
+        where: { tramiteId },
+        select: { id: true },
+      });
+      if (!anticipo) {
+        throw new SinAnticipoAplicadoMultiDOError(tramiteId, grupo.consecutivo);
+      }
+    }
+
+    const costoBancarioTotal = await resolverCostoBancario(canalPago, tx);
+
+    let bancoFinal: string | null = bancoBeneficiarioId ?? null;
+    if (bancoFinal === null && canalPago === "TRANSF_BANCOLOMBIA") {
+      bancoFinal = await resolverBancoBancolombiaId(tx);
+    }
+
+    const grupoPagoId = randomUUID();
+    const pagosCreados: PagoTramite[] = [];
+    let esPrimerPagoDelGrupo = true;
+
+    for (const [tramiteId, grupo] of porTramite) {
+      const ultimoPago = await tx.pagoTramite.findFirst({
+        where: { tramiteId },
+        orderBy: { orden: "desc" },
+        select: { orden: true },
+      });
+      const orden = (ultimoPago?.orden ?? 0) + 1;
+
+      const conceptoFinal =
+        concepto ??
+        `Pago multi-DO — ${grupo.facturas.length} factura(s) de proveedor`;
+
+      const pago = await tx.pagoTramite.create({
+        data: {
+          tramiteId,
+          concepto: conceptoFinal,
+          documentoId: documentoId ?? null,
+          comprobanteComercioId: comprobanteComercioId ?? null,
+          grupoPagoId,
+          valor: grupo.total,
+          canalPago,
+          // El banco solo cobra el costo del canal UNA vez por transferencia
+          // real; solo el primer pago del grupo lo registra para no inflar
+          // los costos bancarios totales del cliente.
+          costoBancario: esPrimerPagoDelGrupo ? costoBancarioTotal : 0n,
+          orden,
+          fechaRealPago,
+          bancoBeneficiarioId: bancoFinal,
+        },
+      });
+      esPrimerPagoDelGrupo = false;
+
+      await tx.pagoTramiteBeneficiario.create({
+        data: { pagoId: pago.id, beneficiarioId },
+      });
+
+      for (const { facturaId, monto } of grupo.facturas) {
+        await tx.pagoTramiteFactura.create({
+          data: { pagoId: pago.id, facturaId },
+        });
+
+        const fpAntes = fpsPorId.get(facturaId)!;
+        await tx.facturaProveedor.update({
+          where: { id: facturaId },
+          data: { estado: EstadoFacturaProveedor.PAGADA },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            entidad: "FacturaProveedor",
+            entidadId: facturaId,
+            accion: "UPDATE_ESTADO",
+            usuarioId,
+            tramiteId,
+            antes: normalizeSerializable({ estado: fpAntes.estado, montoPagadoEnGrupo: monto }),
+            despues: normalizeSerializable({ estado: EstadoFacturaProveedor.PAGADA }),
+          },
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          entidad: "PagoTramite",
+          entidadId: pago.id,
+          accion: "CREATE",
+          usuarioId,
+          tramiteId,
+          despues: normalizeSerializable({
+            ...pago,
+            grupoPagoId,
+            beneficiarioId,
+            facturaProveedorIds: grupo.facturas.map((f) => f.facturaId),
+          }),
+        },
+      });
+
+      pagosCreados.push(pago);
+    }
+
+    // Auditoría a nivel de grupo (no pertenece a un único trámite).
+    await tx.auditLog.create({
+      data: {
+        entidad: "PagoTramiteGrupo",
+        entidadId: grupoPagoId,
+        accion: "CREATE",
+        usuarioId,
+        despues: normalizeSerializable({
+          grupoPagoId,
+          beneficiarioId,
+          canalPago,
+          costoBancarioTotal,
+          tramites: [...porTramite.entries()].map(([tramiteId, g]) => ({
+            tramiteId,
+            consecutivo: g.consecutivo,
+            valor: g.total,
+          })),
+        }),
+      },
+    });
+
+    return { grupoPagoId, pagos: pagosCreados };
+  });
 }

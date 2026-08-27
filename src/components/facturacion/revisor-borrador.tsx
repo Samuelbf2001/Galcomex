@@ -20,14 +20,18 @@ import {
   type LineaRevisionRow,
   type SiigoFormaPagoRow,
   type TramiteParaFacturacion,
+  type ValidacionesCruceResult,
   FacturacionApiError,
   ESTADO_BORRADOR_LABEL,
   actualizarFormaPago,
+  descargarBorradorExport,
+  descargarBorradorPdf,
   descargarSiigoImport,
   enviarBorradorASiigo,
   estadoBorradorColorClass,
   fetchCruceFacturas,
   fetchFormasPagoSiigo,
+  fetchValidacionesCruce,
   formatCOP,
   formatDate,
   sincronizarFacturaDesdeSiigo,
@@ -409,6 +413,14 @@ export function RevisorBorrador({
   const [cargandoCruce, setCargandoCruce] = useState(false);
   const [cruceCerrado, setCruceCerrado] = useState(false);
 
+  // Validaciones agregadas por proveedor/beneficiario + pagos sueltos
+  const [validaciones, setValidaciones] = useState<ValidacionesCruceResult>({
+    proveedores: [],
+    pagosSueltos: [],
+  });
+  const [cargandoValidaciones, setCargandoValidaciones] = useState(false);
+  const [validacionesCerrado, setValidacionesCerrado] = useState(false);
+
   // Facturas de proveedor: indexadas por numFactura para cruzar con numSoporte
   const [facturasByNumFactura, setFacturasByNumFactura] = useState<
     Map<string, FacturaProveedorRow>
@@ -511,6 +523,25 @@ export function RevisorBorrador({
       }
     }
     void cargarCruce();
+    return () => {
+      cancelled = true;
+    };
+  }, [borradorActual.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function cargarValidaciones() {
+      setCargandoValidaciones(true);
+      try {
+        const result = await fetchValidacionesCruce(borradorActual.id);
+        if (!cancelled) setValidaciones(result);
+      } catch {
+        // Non-critical; panel degrades gracefully
+      } finally {
+        if (!cancelled) setCargandoValidaciones(false);
+      }
+    }
+    void cargarValidaciones();
     return () => {
       cancelled = true;
     };
@@ -650,6 +681,9 @@ export function RevisorBorrador({
 
   const todasAprobadas = lineas.length > 0 && lineas.every((l) => l.estadoLocal === "aprobada");
   const hayObservadas = lineas.some((l) => l.estadoLocal === "observada");
+  // El PDF y el Excel genérico solo se pueden generar con el borrador
+  // APROBADO o FACTURADO (mismo estado que exige el Excel de importación SIIGO).
+  const puedeDescargarPdfExport = estado === "APROBADO" || estado === "FACTURADO";
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-white">
@@ -849,6 +883,45 @@ export function RevisorBorrador({
             >
               SIIGO: {borradorActual.ultimoErrorSiigo}
             </span>
+          ) : null}
+
+          {/* Descargar PDF del borrador (formato genérico). Habilitado solo con
+              borrador APROBADO/FACTURADO — mismo gating que Excel SIIGO. Se
+              deja visible pero deshabilitado con tooltip cuando el estado no
+              lo permite, para que el usuario sepa que la acción existe. */}
+          {puedeAprobar ? (
+            <button
+              type="button"
+              onClick={() => descargarBorradorPdf(borradorActual.id)}
+              disabled={!puedeDescargarPdfExport}
+              title={
+                puedeDescargarPdfExport
+                  ? "Descargar el borrador de factura en PDF"
+                  : "El borrador debe estar aprobado o facturado para descargar el PDF"
+              }
+              className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
+            >
+              <FileText className="h-4 w-4" aria-hidden="true" />
+              PDF
+            </button>
+          ) : null}
+
+          {/* Descargar Excel genérico del borrador — distinto del import SIIGO (A–AE) */}
+          {puedeAprobar ? (
+            <button
+              type="button"
+              onClick={() => descargarBorradorExport(borradorActual.id)}
+              disabled={!puedeDescargarPdfExport}
+              title={
+                puedeDescargarPdfExport
+                  ? "Descargar el borrador de factura en Excel (formato genérico)"
+                  : "El borrador debe estar aprobado o facturado para descargar el Excel"
+              }
+              className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Excel
+            </button>
           ) : null}
 
           {/* Descargar archivo de importación SIIGO — solo con borrador aprobado/facturado */}
@@ -1115,6 +1188,129 @@ export function RevisorBorrador({
               </p>
             ) : null}
           </div>
+
+          {/* Validaciones: cruce por proveedor/beneficiario + pagos sueltos */}
+          {validaciones.proveedores.length > 0 ||
+          validaciones.pagosSueltos.length > 0 ||
+          cargandoValidaciones ? (
+            <div className="border-t border-slate-200 px-4 py-4">
+              <button
+                type="button"
+                onClick={() => setValidacionesCerrado((v) => !v)}
+                className="mb-3 flex w-full items-center justify-between text-xs font-medium uppercase tracking-wide text-slate-500 hover:text-slate-700"
+              >
+                <span>
+                  Validaciones ({validaciones.proveedores.length}
+                  {validaciones.pagosSueltos.length > 0
+                    ? ` · ${validaciones.pagosSueltos.length} pago(s) sin factura`
+                    : ""}
+                  )
+                </span>
+                <span className="text-slate-400">{validacionesCerrado ? "+" : "−"}</span>
+              </button>
+
+              {!validacionesCerrado ? (
+                cargandoValidaciones ? (
+                  <p className="text-xs text-slate-400">Cargando validaciones...</p>
+                ) : (
+                  <div className="space-y-2">
+                    {validaciones.proveedores.map((v) => {
+                      const dif = globalThis.BigInt(v.diferencia);
+                      return (
+                        <div
+                          key={v.proveedorId}
+                          className={`border px-3 py-2.5 text-sm ${
+                            v.cuadra
+                              ? "border-emerald-200 bg-emerald-50"
+                              : "border-amber-200 bg-amber-50"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="min-w-0 truncate font-semibold text-slate-900">
+                              {v.proveedorNombre}
+                            </span>
+                            <span
+                              className={`inline-flex shrink-0 items-center gap-1 text-xs font-semibold px-1.5 py-0.5 border ${
+                                v.cuadra
+                                  ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                                  : "border-amber-300 bg-amber-100 text-amber-700"
+                              }`}
+                            >
+                              {v.cuadra ? (
+                                <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+                              ) : (
+                                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                              )}
+                              {v.cuadra ? "Cuadra" : "Desfase"}
+                            </span>
+                          </div>
+
+                          <dl className="mt-2 grid grid-cols-3 gap-x-3 text-xs">
+                            <div>
+                              <dt className="text-slate-500">Facturas</dt>
+                              <dd className="font-semibold text-slate-800">
+                                {formatCOP(v.totalFacturas)}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-slate-500">Pagos</dt>
+                              <dd className="font-semibold text-slate-800">
+                                {formatCOP(v.totalPagos)}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-slate-500">Diferencia</dt>
+                              <dd
+                                className={`font-bold ${
+                                  v.cuadra
+                                    ? "text-emerald-700"
+                                    : dif > 0n
+                                      ? "text-amber-700"
+                                      : "text-rose-700"
+                                }`}
+                              >
+                                {v.cuadra
+                                  ? formatCOP("0")
+                                  : dif > 0n
+                                    ? `+${formatCOP(v.diferencia)}`
+                                    : formatCOP(v.diferencia)}
+                              </dd>
+                            </div>
+                          </dl>
+                        </div>
+                      );
+                    })}
+
+                    {validaciones.pagosSueltos.length > 0 ? (
+                      <div className="space-y-1.5 border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Pagos sin factura vinculada
+                        </p>
+                        {validaciones.pagosSueltos.map((p) => (
+                          <div
+                            key={p.pagoId}
+                            className="flex items-center justify-between gap-2 text-xs"
+                          >
+                            <span className="min-w-0 truncate text-slate-700">
+                              {p.concepto}
+                              {p.numSoporte ? (
+                                <span className="ml-1 font-mono text-slate-400">
+                                  ({p.numSoporte})
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="shrink-0 font-semibold text-slate-700">
+                              {formatCOP(p.valor)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              ) : null}
+            </div>
+          ) : null}
 
           {/* Cruce pagos vs factura de venta por FacturaProveedor */}
           {cruce.length > 0 || cargandoCruce ? (

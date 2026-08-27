@@ -46,6 +46,39 @@ export type DocumentoRow = {
 
 export type DocumentosPorCategoria = Record<string, DocumentoRow[]>;
 
+export type EnlaceDocumento = {
+  id: string;
+  url: string;
+  expiraEn: string;
+  revocado: boolean;
+  createdAt: string;
+};
+
+// ─── Matriz de roles (espejo de src/lib/documentos/service.ts y enlaces.ts) ───
+// Decisión confirmada por el usuario: ADMIN/REVISOR eliminan y reemplazan
+// cualquier documento; OPERATIVO solo reemplaza lo que él mismo subió y no
+// elimina; SOCIO solo sube. Compartir: ADMIN/REVISOR/OPERATIVO (no SOCIO).
+// El backend vuelve a validar todo esto — estas funciones son solo para
+// decidir qué botones mostrar en la UI.
+
+export function puedeEliminarDocumentoUI(rol: string): boolean {
+  return rol === "ADMIN" || rol === "REVISOR";
+}
+
+export function puedeReemplazarDocumentoUI(
+  rol: string,
+  subidoPorId: string,
+  usuarioId: string,
+): boolean {
+  if (rol === "ADMIN" || rol === "REVISOR") return true;
+  if (rol === "OPERATIVO") return subidoPorId === usuarioId;
+  return false;
+}
+
+export function puedeCompartirDocumentoUI(rol: string): boolean {
+  return rol === "ADMIN" || rol === "REVISOR" || rol === "OPERATIVO";
+}
+
 export type UploadUrlResult = {
   storageKey: string;
   uploadUrl: string;
@@ -247,6 +280,101 @@ export async function eliminarDocumento(
   const response = await fetch(`/api/tramites/${tramiteId}/documentos/${documentoId}`, {
     method: "DELETE",
     headers: { accept: "application/json" },
+  });
+
+  if (!response.ok && response.status !== 204) {
+    const msg = await parseErrorMessage(response);
+    throw new DocumentosApiError(msg, response.status);
+  }
+}
+
+/**
+ * Reemplazar el archivo de un documento existente (mismo id). El caller debe
+ * primero pedir una URL prefirmada (solicitarUploadUrl) y subir el archivo
+ * directo a MinIO (subirArchivoDirecto), igual que en la subida normal, y
+ * luego llamar a esta función con el storageKey resultante para confirmar
+ * el reemplazo.
+ */
+export async function reemplazarDocumento(
+  tramiteId: string,
+  documentoId: string,
+  input: {
+    storageKey: string;
+    nombreArchivo: string;
+    mimeType: string;
+    tamanoBytes: number;
+  },
+): Promise<DocumentoRow> {
+  const response = await fetch(`/api/tramites/${tramiteId}/documentos/${documentoId}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error al reemplazar el documento (${response.status}).`;
+    throw new DocumentosApiError(message, response.status);
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.documento)) {
+    throw new DocumentosApiError("Respuesta de reemplazo no válida.");
+  }
+
+  return parseDocumentoRow(payload.documento);
+}
+
+/**
+ * Crear (o recuperar el ya existente) enlace público para compartir un
+ * documento. Idempotente: si ya hay un enlace activo, el backend devuelve
+ * ese mismo enlace en vez de crear uno nuevo.
+ */
+export async function crearEnlace(tramiteId: string, documentoId: string): Promise<EnlaceDocumento> {
+  const response = await fetch(`/api/tramites/${tramiteId}/documentos/${documentoId}/enlace`, {
+    method: "POST",
+    headers: { accept: "application/json" },
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error al crear el enlace (${response.status}).`;
+    throw new DocumentosApiError(message, response.status);
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.enlace)) {
+    throw new DocumentosApiError("Respuesta de enlace no válida.");
+  }
+
+  const e = payload.enlace;
+  return {
+    id: String(e.id ?? ""),
+    url: String(e.url ?? ""),
+    expiraEn: String(e.expiraEn ?? ""),
+    revocado: e.revocado === true,
+    createdAt: String(e.createdAt ?? ""),
+  };
+}
+
+/**
+ * Revocar el enlace público activo de un documento.
+ */
+export async function revocarEnlace(
+  tramiteId: string,
+  documentoId: string,
+  enlaceId: string,
+): Promise<void> {
+  const response = await fetch(`/api/tramites/${tramiteId}/documentos/${documentoId}/enlace`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ enlaceId }),
   });
 
   if (!response.ok && response.status !== 204) {

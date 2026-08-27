@@ -55,3 +55,74 @@ export async function getParametrosSistema(): Promise<ParametrosSistema> {
 
   return { tasaIva, tasa4x1000, comisionDefault, diasSla };
 }
+
+// ─── Edición de parámetros genéricos (ADMIN) ─────────────────────────────────
+//
+// Los parámetros SIIGO_* (integración con Siigo) tienen su propio flujo de
+// edición en /api/configuracion/siigo/parametros + siigo-parametros.tsx.
+// Este servicio es para el resto de los Parametro del sistema (los que se
+// listan en la tabla genérica de la página de Configuración).
+
+const PREFIJOS_PROTEGIDOS = ["SIIGO_"];
+
+function esClaveProtegida(clave: string): boolean {
+  return PREFIJOS_PROTEGIDOS.some((prefijo) => clave.startsWith(prefijo));
+}
+
+export class ParametroNoEncontradoError extends Error {
+  public readonly status = 404;
+  constructor(clave: string) {
+    super(`Parámetro '${clave}' no encontrado`);
+    this.name = "ParametroNoEncontradoError";
+  }
+}
+
+export class ParametroSiigoProtegidoError extends Error {
+  public readonly status = 400;
+  constructor(clave: string) {
+    super(
+      `El parámetro '${clave}' es de integración Siigo y se edita desde la sección "Configuración de envío Siigo"`,
+    );
+    this.name = "ParametroSiigoProtegidoError";
+  }
+}
+
+/**
+ * Actualiza el valor de un Parametro genérico del sistema (ADMIN).
+ * Genera AuditLog en la MISMA transacción con el valor anterior y el nuevo.
+ * Rechaza claves SIIGO_* (protegidas, ver arriba) y claves inexistentes.
+ */
+export async function actualizarParametro(
+  clave: string,
+  valor: string,
+  usuarioId: string,
+) {
+  if (esClaveProtegida(clave)) {
+    throw new ParametroSiigoProtegidoError(clave);
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const actual = await tx.parametro.findUnique({ where: { clave } });
+    if (!actual) {
+      throw new ParametroNoEncontradoError(clave);
+    }
+
+    const actualizado = await tx.parametro.update({
+      where: { clave },
+      data: { valor },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "Parametro",
+        entidadId: actual.id,
+        accion: "UPDATE",
+        usuarioId,
+        antes: { clave, valor: actual.valor },
+        despues: { clave, valor: actualizado.valor },
+      },
+    });
+
+    return actualizado;
+  });
+}

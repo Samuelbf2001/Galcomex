@@ -28,6 +28,7 @@ model User {
   borradoresFact           BorradorFactura[]  @relation("FacturadoPor")
   facturasProveedorSubidas FacturaProveedor[] @relation("FacturasProveedorSubidas")
   pagosFactura             PagoFactura[]      @relation("PagosFacturaRegistrados")
+  enlacesDocumento         DocumentoEnlace[]  @relation("EnlaceCreadoPor")
 
   @@map("user")
 }
@@ -245,6 +246,7 @@ enum CategoriaDocumento {
   SOPORTE_FACTURACION
   FOTO_RECONOCIMIENTO
   COMPROBANTE_BANCARIO
+  COMPROBANTE_COMERCIO
   FACTURA_PROVEEDOR
   OTRO
 }
@@ -265,9 +267,27 @@ model Documento {
   createdAt     DateTime           @default(now())
 
   pagosTramite      PagoTramite[]      @relation("SoporteDocumento")
+  pagosComercio     PagoTramite[]      @relation("ComprobanteComercio")
   facturasProveedor FacturaProveedor[] @relation("FacturaProveedorDoc")
+  enlaces           DocumentoEnlace[]
 
   @@map("documento")
+}
+
+// Enlace público para compartir un documento con terceros sin sesión.
+// El token es la única credencial: URL /compartir/{token}.
+model DocumentoEnlace {
+  id          String    @id @default(cuid())
+  token       String    @unique
+  documentoId String
+  documento   Documento @relation(fields: [documentoId], references: [id], onDelete: Cascade)
+  expiraEn    DateTime
+  revocado    Boolean   @default(false)
+  creadoPorId String
+  creadoPor   User      @relation("EnlaceCreadoPor", fields: [creadoPorId], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@map("documento_enlace")
 }
 
 // ─── Anticipos ────────────────────────────────────────────────────────────────
@@ -407,6 +427,12 @@ model PagoTramite {
   numSoporte    String? // Nro declaración DIAN, factura electrónica, etc.
   documentoId   String?
   documento     Documento?       @relation("SoporteDocumento", fields: [documentoId], references: [id])
+  // Comprobante de la página del comercio (puerto/PSE) — opcional; el bancario es el obligatorio.
+  comprobanteComercioId String?
+  comprobanteComercio   Documento? @relation("ComprobanteComercio", fields: [comprobanteComercioId], references: [id])
+  // Correlaciona los N pagos (uno por DO) creados desde un solo pago multi-trámite
+  // (caso Karina/Occidente: un comprobante cubre facturas de varios DOs).
+  grupoPagoId   String?
   valor         BigInt // COP sin decimales
   canalPago     CanalPago
   costoBancario BigInt           @default(0) // Tomado de MatrizRecaudoPago

@@ -436,6 +436,44 @@ export function subirArchivoDirecto(
   });
 }
 
+// ─── Estado de cuenta PDF / Excel de cartera ──────────────────────────────────
+
+/**
+ * URL del estado de cuenta PDF de un cliente. Respeta el filtro de pendientes
+ * de la vista. El endpoint exige rol ADMIN/REVISOR.
+ */
+export function urlCarteraPdf(clienteId: string, soloPendientes: boolean): string {
+  return `/api/cartera/pdf?clienteId=${encodeURIComponent(clienteId)}&pendientes=${soloPendientes ? "true" : "false"}`;
+}
+
+/** Dispara la apertura/descarga del estado de cuenta PDF en el navegador. */
+export function descargarCarteraPdf(clienteId: string, soloPendientes: boolean): void {
+  const a = document.createElement("a");
+  a.href = urlCarteraPdf(clienteId, soloPendientes);
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/**
+ * URL de la relación de facturas XLSX de un cliente. El endpoint exige rol
+ * ADMIN/REVISOR.
+ */
+export function urlCarteraExport(clienteId: string): string {
+  return `/api/cartera/export?clienteId=${encodeURIComponent(clienteId)}`;
+}
+
+/** Dispara la descarga de la relación de facturas XLSX en el navegador. */
+export function descargarCarteraExport(clienteId: string): void {
+  const a = document.createElement("a");
+  a.href = urlCarteraExport(clienteId);
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 // ─── Utilidades de formato ────────────────────────────────────────────────────
 
 /** Formatea BigInt serializado como COP: $45.226.000 */

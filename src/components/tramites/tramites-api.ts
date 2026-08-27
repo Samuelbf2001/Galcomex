@@ -19,6 +19,56 @@ export type ClienteOption = {
   tipo: string;
 };
 
+export type FacturadoFilter = "todos" | "si" | "no";
+
+export type TramiteFilters = {
+  q?: string;
+  estado?: string;
+  ciudad?: string;
+  clienteId?: string;
+  tipoCliente?: string;
+  facturado?: FacturadoFilter;
+};
+
+const allFilterValue = "todos";
+
+function buildTramitesQuery(filters?: TramiteFilters): string {
+  if (!filters) {
+    return "";
+  }
+
+  const params = new URLSearchParams();
+  const q = filters.q?.trim();
+
+  if (q) {
+    params.set("q", q);
+  }
+
+  if (filters.estado && filters.estado !== allFilterValue) {
+    params.set("estado", filters.estado);
+  }
+
+  if (filters.ciudad && filters.ciudad !== allFilterValue) {
+    params.set("ciudad", filters.ciudad);
+  }
+
+  if (filters.clienteId && filters.clienteId !== allFilterValue) {
+    params.set("clienteId", filters.clienteId);
+  }
+
+  if (filters.tipoCliente && filters.tipoCliente !== allFilterValue) {
+    params.set("tipoCliente", filters.tipoCliente);
+  }
+
+  if (filters.facturado && filters.facturado !== "todos") {
+    params.set("facturado", filters.facturado === "si" ? "true" : "false");
+  }
+
+  const query = params.toString();
+
+  return query ? `?${query}` : "";
+}
+
 export type CreateTramiteInput = {
   ciudad: string;
   anio?: number;
@@ -185,11 +235,14 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
   };
 }
 
-export async function fetchTramites(signal?: AbortSignal): Promise<TramiteRow[]> {
+export async function fetchTramites(
+  signal?: AbortSignal,
+  filters?: TramiteFilters,
+): Promise<TramiteRow[]> {
   let response: Response;
 
   try {
-    response = await fetch("/api/tramites", {
+    response = await fetch(`/api/tramites${buildTramitesQuery(filters)}`, {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal,

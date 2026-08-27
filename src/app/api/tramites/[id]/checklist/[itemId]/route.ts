@@ -4,8 +4,9 @@ import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
 import { checklistUpdateSchema } from "@/lib/validations/tramites";
 
 type RouteContext = {
@@ -25,6 +26,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
     const { id, itemId } = await context.params;
     const payload = checklistUpdateSchema.parse(await request.json());
+
+    await assertTramiteModificable(prisma, id);
+
     const item = await prisma.checklistItem.update({
       where: { id: itemId, tramiteId: id },
       data: {
@@ -48,6 +52,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
         { error: "Item de checklist no encontrado" },
         { status: 404 },
       );
+    }
+
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
 
     throw error;

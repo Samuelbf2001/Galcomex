@@ -21,6 +21,38 @@ type SeccionDocumentosProps = {
   tramiteId: string;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Sesión del usuario actual (id + rol), leída client-side desde better-auth.
+ * Mismo patrón que useUserRol() en tramite-detalle.tsx / clientes-workspace.tsx:
+ * fetch a /api/auth/get-session, sin depender de props que no llegan aquí.
+ * Se usa para decidir qué acciones (eliminar/reemplazar/compartir) mostrar
+ * por documento — el backend vuelve a validar el permiso real en cada caso.
+ */
+function useSesionActual(): { id: string; rol: string } {
+  const [sesion, setSesion] = useState<{ id: string; rol: string }>({ id: "", rol: "" });
+
+  useEffect(() => {
+    fetch("/api/auth/get-session", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (isRecord(data) && isRecord(data.user)) {
+          const id = typeof data.user.id === "string" ? data.user.id : "";
+          const rol = typeof data.user.rol === "string" ? data.user.rol : "";
+          setSesion({ id, rol });
+        }
+      })
+      .catch(() => {
+        /* silencioso: sin sesión detectada, no se muestran acciones restringidas */
+      });
+  }, []);
+
+  return sesion;
+}
+
 // ─── Componente principal ─────────────────────────────────────────────────────
 
 export function SeccionDocumentos({ tramiteId }: SeccionDocumentosProps) {
@@ -29,6 +61,7 @@ export function SeccionDocumentos({ tramiteId }: SeccionDocumentosProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
+  const sesionActual = useSesionActual();
 
   // ─── Carga inicial y recarga ───────────────────────────────────────────────
 
@@ -82,6 +115,16 @@ export function SeccionDocumentos({ tramiteId }: SeccionDocumentosProps) {
     },
     [],
   );
+
+  const handleDocumentoReemplazado = useCallback((documentoActualizado: DocumentoRow) => {
+    setDocumentos((prev) => {
+      const categoria = documentoActualizado.categoria as string;
+      const lista = (prev[categoria] ?? []).map((d) =>
+        d.id === documentoActualizado.id ? documentoActualizado : d,
+      );
+      return { ...prev, [categoria]: lista };
+    });
+  }, []);
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
@@ -137,7 +180,10 @@ export function SeccionDocumentos({ tramiteId }: SeccionDocumentosProps) {
           <ListaDocumentos
             tramiteId={tramiteId}
             documentos={documentos}
+            currentUserId={sesionActual.id}
+            currentUserRol={sesionActual.rol}
             onDocumentoEliminado={handleDocumentoEliminado}
+            onDocumentoReemplazado={handleDocumentoReemplazado}
           />
         )}
       </div>

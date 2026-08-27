@@ -30,6 +30,7 @@ import {
   fetchLibroPagos,
   fetchTramiteDetail,
   formatCOP,
+  subirComprobante,
   updatePago,
   verificarMovimientoPago,
 } from "@/components/pagos/pagos-api";
@@ -595,7 +596,16 @@ function FacturasProveedorCombobox({
 // ---------------------------------------------------------------------------
 
 type PseStep = "form" | "soporte";
-type PendingSubmit = { concepto: string; numSoporte: string | null; canalPago: CanalPago; valor: string };
+type PendingSubmit = {
+  concepto: string;
+  numSoporte: string | null;
+  canalPago: CanalPago;
+  valor: string;
+  /** Comprobante bancario (Bancolombia) ya subido — opcional, no bloquea el pago. */
+  documentoId?: string | null;
+  /** Comprobante de comercio (puerto/PSE) ya subido — opcional. */
+  comprobanteComercioId?: string | null;
+};
 
 type NuevoPagoModalProps = {
   tramiteId: string;
@@ -648,6 +658,13 @@ export function NuevoPagoModal({
   const [pseRetryRemaining, setPseRetryRemaining] = useState(0);
   const [soporteFile, setSoporteFile] = useState<File | null>(null);
   const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+
+  // Doble comprobante (flujo NO-PSE): el bancario (Bancolombia) es el que vale
+  // ante reclamos; el de comercio (puerto/PSE) es opcional. NINGUNO bloquea el
+  // pago — solo se muestra advertencia en el libro si falta el bancario.
+  const [comprobanteBancarioFile, setComprobanteBancarioFile] = useState<File | null>(null);
+  const [comprobanteComercioFile, setComprobanteComercioFile] = useState<File | null>(null);
+  const [isUploadingComprobantes, setIsUploadingComprobantes] = useState(false);
 
   // Polling: espera el código PSE que María Camila ingresa en su landing
   useEffect(() => {
@@ -720,6 +737,8 @@ export function NuevoPagoModal({
         concepto: payload.concepto,
         beneficiarioIds: beneficiariosSel.map((b) => b.id),
         numSoporte: payload.numSoporte,
+        documentoId: payload.documentoId ?? null,
+        comprobanteComercioId: payload.comprobanteComercioId ?? null,
         valor: payload.valor,
         canalPago: payload.canalPago,
         fechaRealPago: fechaRealPago || null,
@@ -764,34 +783,25 @@ export function NuevoPagoModal({
     setIsUploadingDoc(true);
     setError(null);
     try {
-      const uploadResp = await fetch("/api/storage", {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({
-          action: "uploadUrl",
-          consecutivo: tramiteConsecutivo,
-          categoria: "soporte-pse",
-          fileName: soporteFile.name,
-          contentType: soporteFile.type,
-          sizeBytes: soporteFile.size,
-        }),
-      });
-      if (!uploadResp.ok) {
-        const err = await uploadResp.json().catch(() => ({})) as Record<string, unknown>;
-        throw new Error(typeof err.error === "string" ? err.error : "Error al obtener URL de subida.");
-      }
-      const { uploadUrl } = await uploadResp.json() as { uploadUrl: { url: string; storageKey: string } };
+      // La captura de la página de PSE ES el comprobante de comercio (el
+      // bancario de Bancolombia es un documento aparte que Camila no tiene
+      // en este flujo — el pago queda con advertencia "sin comprobante
+      // bancario" en el libro, sin bloquearse).
+      const comprobante = await subirComprobante(tramiteId, "COMPROBANTE_COMERCIO", soporteFile);
 
-      const putResp = await fetch(uploadUrl.url, {
-        method: "PUT",
-        body: soporteFile,
-        headers: { "content-type": soporteFile.type },
+      await submitPayload({
+        ...psePendingPayload,
+        numSoporte: pseCodigoRecibido,
+        comprobanteComercioId: comprobante.id,
       });
-      if (!putResp.ok) throw new Error("Error al subir el documento.");
-
-      await submitPayload({ ...psePendingPayload, numSoporte: pseCodigoRecibido });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Error al finalizar el pago PSE.");
+      setError(
+        caught instanceof PagosApiError
+          ? caught.message
+          : caught instanceof Error
+            ? caught.message
+            : "Error al finalizar el pago PSE.",
+      );
     } finally {
       setIsUploadingDoc(false);
     }
@@ -810,12 +820,42 @@ export function NuevoPagoModal({
       return;
     }
 
-    const payload: PendingSubmit = { concepto, numSoporte: null, canalPago, valor: valorBig };
+    let payload: PendingSubmit = { concepto, numSoporte: null, canalPago, valor: valorBig };
 
     // Flujo PSE: notifica a María Camila y pasa directo a adjuntar soporte
+    // (esa captura de PSE se registra como comprobante de comercio — ver
+    // finalizarPsePago).
     if (canalPago === "PSE") {
       await notificarCamilaPse(payload);
       return;
+    }
+
+    // Doble comprobante (opcional, no bloquea el pago): si se adjuntó
+    // alguno, se sube ANTES de crear el pago para obtener su documentoId.
+    if (comprobanteBancarioFile || comprobanteComercioFile) {
+      setIsUploadingComprobantes(true);
+      try {
+        const [bancario, comercio] = await Promise.all([
+          comprobanteBancarioFile
+            ? subirComprobante(tramiteId, "COMPROBANTE_BANCARIO", comprobanteBancarioFile)
+            : Promise.resolve(null),
+          comprobanteComercioFile
+            ? subirComprobante(tramiteId, "COMPROBANTE_COMERCIO", comprobanteComercioFile)
+            : Promise.resolve(null),
+        ]);
+        payload = {
+          ...payload,
+          documentoId: bancario?.id ?? null,
+          comprobanteComercioId: comercio?.id ?? null,
+        };
+      } catch (caught) {
+        setError(
+          caught instanceof PagosApiError ? caught.message : "Error al subir el comprobante.",
+        );
+        setIsUploadingComprobantes(false);
+        return;
+      }
+      setIsUploadingComprobantes(false);
     }
 
     // Verificar desviación ±10% solo si hay facturas seleccionadas
@@ -987,6 +1027,49 @@ export function NuevoPagoModal({
                 />
               </label>
 
+              {/* Doble comprobante — solo en canales distintos a PSE (PSE tiene
+                  su propio paso 2 de adjuntar comprobante de comercio). Ninguno
+                  de los dos es obligatorio: si falta el bancario, el libro de
+                  pagos muestra advertencia visual pero NO bloquea el registro. */}
+              {canalPago !== "PSE" ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="block space-y-1.5">
+                    <span className="text-sm font-medium text-slate-700">
+                      Comprobante bancario (Bancolombia)
+                      <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                    </span>
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => setComprobanteBancarioFile(e.target.files?.[0] ?? null)}
+                      className="block w-full text-xs text-slate-600 file:mr-2 file:border file:border-slate-300 file:bg-white file:px-2 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-50"
+                    />
+                    {comprobanteBancarioFile ? (
+                      <p className="text-[11px] text-slate-500">{comprobanteBancarioFile.name}</p>
+                    ) : (
+                      <p className="text-[11px] text-amber-600">
+                        Sin comprobante bancario el pago queda con advertencia visual (no se bloquea).
+                      </p>
+                    )}
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-sm font-medium text-slate-700">
+                      Comprobante de comercio
+                      <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                    </span>
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => setComprobanteComercioFile(e.target.files?.[0] ?? null)}
+                      className="block w-full text-xs text-slate-600 file:mr-2 file:border file:border-slate-300 file:bg-white file:px-2 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-50"
+                    />
+                    {comprobanteComercioFile ? (
+                      <p className="text-[11px] text-slate-500">{comprobanteComercioFile.name}</p>
+                    ) : null}
+                  </label>
+                </div>
+              ) : null}
+
               {error ? (
                 <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
@@ -1004,10 +1087,10 @@ export function NuevoPagoModal({
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || isRequestingToken}
+                  disabled={isSubmitting || isRequestingToken || isUploadingComprobantes}
                   className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
                 >
-                  {isSubmitting || isRequestingToken ? (
+                  {isSubmitting || isRequestingToken || isUploadingComprobantes ? (
                     <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                   ) : null}
                   {canalPago === "PSE" ? "Solicitar pago PSE" : "Guardar pago"}
@@ -1058,9 +1141,10 @@ export function NuevoPagoModal({
                 </div>
               )}
 
-              {/* Soporte — solo habilitado cuando llegó el código */}
+              {/* Soporte — solo habilitado cuando llegó el código. Esta captura
+                  de la página de PSE se registra como comprobante de comercio. */}
               <label className="block space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">Documento de soporte *</span>
+                <span className="text-sm font-medium text-slate-700">Comprobante de comercio (captura de PSE) *</span>
                 <input
                   type="file"
                   accept=".pdf,.jpg,.jpeg,.png"
@@ -1655,6 +1739,27 @@ function FilaPago({
             {fila.viaSocio ? (
               <span className="inline-flex items-center border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
                 vía Lucho
+              </span>
+            ) : null}
+            {!fila.documentoId ? (
+              <span
+                className="inline-flex items-center gap-1 border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
+                title="Pago sin comprobante bancario"
+              >
+                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                Sin comprobante
+              </span>
+            ) : null}
+            {fila.grupoPagoId ? (
+              <span
+                className="inline-flex items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700"
+                title={
+                  fila.grupoOtrosDOs.length > 0
+                    ? `Pago multi-DO — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
+                    : "Pago multi-DO"
+                }
+              >
+                Pago multi-DO
               </span>
             ) : null}
             {estadoMovimientoBadge(fila.estado)}

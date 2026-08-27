@@ -9,6 +9,7 @@ import {
   Clock,
   FileText,
   Loader2,
+  Lock,
   MessageSquare,
   Receipt,
   RotateCcw,
@@ -17,6 +18,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 import {
   RegistrarAnticipoTramiteModal,
@@ -37,6 +40,10 @@ import {
 } from "@/components/facturas-proveedor/seccion-facturas-proveedor";
 import { ModuleState } from "@/components/layout/module-state";
 import { LibroPagos, NuevoPagoModal } from "@/components/pagos/libro-pagos";
+import {
+  patchChecklistItem,
+  type ChecklistItem,
+} from "@/components/tramites/checklist-api";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import {
   FacturasProveedorApiError,
@@ -67,13 +74,6 @@ function nextEstado(current: string): string | null {
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 type TabId = "hoja" | "resumen" | "documentos" | "pagos" | "facturas-proveedor" | "facturacion" | "historial";
-
-type ChecklistItem = {
-  id: string;
-  descripcion: string;
-  requerido: boolean;
-  recibido: boolean;
-};
 
 type EstadoLogEntry = {
   id: string;
@@ -721,6 +721,84 @@ function SeccionBorradores({
   );
 }
 
+// ─── Ítem de checklist (marcable) ─────────────────────────────────────────────
+
+function checklistBoxClass(item: ChecklistItem): string {
+  if (item.recibido) return "border-emerald-400 bg-emerald-100";
+  if (item.requerido) return "border-rose-300 bg-rose-50";
+  return "border-slate-300 bg-white";
+}
+
+function ChecklistItemRow({
+  item,
+  tramiteId,
+  editable,
+  onChanged,
+}: {
+  item: ChecklistItem;
+  tramiteId: string;
+  editable: boolean;
+  onChanged: (updated: ChecklistItem) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleToggle(next: boolean) {
+    setSaving(true);
+    setError(null);
+    // Actualización optimista: refleja el cambio de inmediato en el estado del trámite.
+    onChanged({ ...item, recibido: next });
+    try {
+      const updated = await patchChecklistItem(tramiteId, item.id, next);
+      onChanged(updated);
+    } catch (caught) {
+      // Revertir al valor previo si el PATCH falla.
+      onChanged({ ...item, recibido: item.recibido });
+      setError(caught instanceof Error ? caught.message : "No se pudo actualizar el ítem.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <li className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-2 text-sm">
+        {editable ? (
+          <input
+            type="checkbox"
+            checked={item.recibido}
+            disabled={saving}
+            onChange={(e) => void handleToggle(e.target.checked)}
+            aria-label={`Marcar "${item.descripcion}" como recibido`}
+            title={item.recibido ? "Desmarcar como recibido" : "Marcar como recibido"}
+            className={`h-4 w-4 shrink-0 cursor-pointer appearance-none border ${checklistBoxClass(item)} outline-none focus:ring-2 focus:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60`}
+          />
+        ) : (
+          <span
+            className={`inline-block h-4 w-4 shrink-0 border ${checklistBoxClass(item)}`}
+            aria-hidden="true"
+          />
+        )}
+        <span className={item.recibido ? "text-slate-600 line-through" : "text-slate-800"}>
+          {item.descripcion}
+        </span>
+        {item.requerido && !item.recibido ? (
+          <span className="text-xs text-rose-500">(requerido)</span>
+        ) : null}
+        {saving ? (
+          <Loader2 className="h-3 w-3 animate-spin text-slate-400" aria-hidden="true" />
+        ) : null}
+      </div>
+      {error ? (
+        <p className="flex items-center gap-1 pl-6 text-xs text-rose-600">
+          <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+          {error}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
 // ─── Pestaña Resumen ──────────────────────────────────────────────────────────
 
 function TabResumen({
@@ -728,6 +806,7 @@ function TabResumen({
   onDateSaved,
   onEstadoChanged,
   onFieldSaved,
+  onChecklistItemChanged,
   puedeEditar,
   onRefresh,
 }: {
@@ -735,12 +814,19 @@ function TabResumen({
   onDateSaved: (key: DateFieldKey, newIso: string | null, updated: TramiteDetalleData) => void;
   onEstadoChanged: (updated: TramiteDetalleData) => void;
   onFieldSaved: (updated: TramiteDetalleData) => void;
+  onChecklistItemChanged: (updated: ChecklistItem) => void;
   puedeEditar: boolean;
   onRefresh: () => void;
 }) {
   const checklistTotal = tramite.checklistItems.length;
   const checklistRecibidos = tramite.checklistItems.filter((i) => i.recibido).length;
   const checklistPendientes = tramite.checklistItems.filter((i) => i.requerido && !i.recibido);
+
+  // El checklist solo es marcable por roles con permiso (puedeEditar = ADMIN/REVISOR/OPERATIVO)
+  // y mientras el DO no haya avanzado más allá de APERTURA (bloquea APERTURA→EN_TRAMITE).
+  const estadoIdx = PIPELINE.indexOf(tramite.estado);
+  const checklistEditable =
+    puedeEditar && estadoIdx !== -1 && estadoIdx <= PIPELINE.indexOf("APERTURA");
 
   return (
     <div className="space-y-6">
@@ -871,6 +957,9 @@ function TabResumen({
             <div className="flex items-center gap-2">
               <CheckSquare className="h-4 w-4 text-slate-400" aria-hidden="true" />
               <h3 className="text-sm font-semibold text-slate-900">Checklist documental</h3>
+              {checklistEditable ? (
+                <span className="text-xs text-slate-400">(marca los recibidos)</span>
+              ) : null}
             </div>
             <span className="text-xs text-slate-500">
               {checklistRecibidos} / {checklistTotal} recibidos
@@ -884,24 +973,13 @@ function TabResumen({
           ) : null}
           <ul className="space-y-1">
             {tramite.checklistItems.map((item) => (
-              <li key={item.id} className="flex items-center gap-2 text-sm">
-                <span
-                  className={`inline-block h-4 w-4 shrink-0 border ${
-                    item.recibido
-                      ? "border-emerald-400 bg-emerald-100"
-                      : item.requerido
-                        ? "border-rose-300 bg-rose-50"
-                        : "border-slate-300 bg-white"
-                  }`}
-                  aria-hidden="true"
-                />
-                <span className={item.recibido ? "text-slate-600 line-through" : "text-slate-800"}>
-                  {item.descripcion}
-                </span>
-                {item.requerido && !item.recibido ? (
-                  <span className="text-xs text-rose-500">(requerido)</span>
-                ) : null}
-              </li>
+              <ChecklistItemRow
+                key={item.id}
+                item={item}
+                tramiteId={tramite.id}
+                editable={checklistEditable}
+                onChanged={onChecklistItemChanged}
+              />
             ))}
           </ul>
         </div>
@@ -1255,6 +1333,19 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
     setTramite(updated);
   }, []);
 
+  const handleChecklistItemChanged = useCallback((updatedItem: ChecklistItem) => {
+    setTramite((prev) =>
+      prev
+        ? {
+            ...prev,
+            checklistItems: prev.checklistItems.map((it) =>
+              it.id === updatedItem.id ? updatedItem : it,
+            ),
+          }
+        : prev,
+    );
+  }, []);
+
   async function handleSolicitarFacturacion() {
     if (!tramite) return;
     setSolicitandoFacturacion(true);
@@ -1333,11 +1424,29 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
     tramite.estado === "FACTURADO" ||
     tramite.estado === "PAGADO" ||
     tramite.estado === "CERRADO";
+  // Bloqueo total al cerrar el trámite (reunión 1-jul): nadie puede modificar
+  // nada una vez CERRADO. El backend rechaza cada mutación con 409
+  // (TramiteCerradoError) — aquí solo deshabilitamos los botones de acción
+  // principales que este archivo controla directamente, como refuerzo visual.
+  // Excepción: la reapertura de emergencia (solo ADMIN) sigue disponible vía
+  // el selector de cambio de estado, que el backend ya restringe por rol.
+  const esCerrado = tramite.estado === "CERRADO";
 
   const reload = () => setReloadKey((k) => k + 1);
 
   return (
     <div className="space-y-0">
+      {esCerrado ? (
+        <Alert variant="warning" className="mb-4">
+          <Lock aria-hidden="true" />
+          <AlertTitle>Trámite cerrado — solo lectura</AlertTitle>
+          <AlertDescription>
+            Este trámite está CERRADO y no admite modificaciones (pagos, anticipos, documentos,
+            facturas o borradores). Solo un ADMIN puede reabrirlo desde el selector de estado.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       {/* Barra de acciones rápidas — visible en cualquier pestaña */}
       <div className="mb-4 border border-slate-200 bg-white px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1364,7 +1473,9 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
               <button
                 type="button"
                 onClick={() => setTopAction("anticipo")}
-                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                disabled={esCerrado}
+                title={esCerrado ? "El trámite está cerrado y no admite modificaciones" : undefined}
+                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wallet className="h-4 w-4" aria-hidden="true" />
                 Registrar anticipo
@@ -1377,7 +1488,9 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
                   setPagoPrefill(null);
                   setTopAction("pago");
                 }}
-                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                disabled={esCerrado}
+                title={esCerrado ? "El trámite está cerrado y no admite modificaciones" : undefined}
+                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Banknote className="h-4 w-4" aria-hidden="true" />
                 Pago a proveedor
@@ -1387,7 +1500,9 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
               <button
                 type="button"
                 onClick={() => setTopAction("factura")}
-                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                disabled={esCerrado}
+                title={esCerrado ? "El trámite está cerrado y no admite modificaciones" : undefined}
+                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Receipt className="h-4 w-4" aria-hidden="true" />
                 Factura proveedor
@@ -1397,9 +1512,13 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
               <button
                 type="button"
                 onClick={() => void handleSolicitarFacturacion()}
-                disabled={solicitandoFacturacion || yaEnviadoAFacturar}
+                disabled={solicitandoFacturacion || yaEnviadoAFacturar || esCerrado}
                 title={
-                  yaEnviadoAFacturar ? "El trámite ya fue enviado a facturar" : undefined
+                  esCerrado
+                    ? "El trámite está cerrado y no admite modificaciones"
+                    : yaEnviadoAFacturar
+                      ? "El trámite ya fue enviado a facturar"
+                      : undefined
                 }
                 className="inline-flex h-9 items-center gap-2 bg-cyan-700 px-3 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:opacity-60"
               >
@@ -1450,6 +1569,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
             onDateSaved={handleDateSaved}
             onEstadoChanged={handleEstadoChanged}
             onFieldSaved={handleFieldSaved}
+            onChecklistItemChanged={handleChecklistItemChanged}
             puedeEditar={userRol === "ADMIN" || userRol === "REVISOR" || userRol === "OPERATIVO"}
             onRefresh={() => setReloadKey((k) => k + 1)}
           />

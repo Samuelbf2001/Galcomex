@@ -29,6 +29,8 @@ import {
   fetchTramites,
   type ClienteOption,
   type CreateTramiteInput,
+  type FacturadoFilter,
+  type TramiteFilters,
   type TramiteRow,
 } from "@/components/tramites/tramites-api";
 
@@ -38,14 +40,24 @@ type ClienteTipo = "PROPIO" | "SOCIO_LM";
 
 const allFilter = "todos";
 
+// Valores fijos de los enums Ciudad y EstadoTramite (prisma/schema.prisma).
+// No se derivan de las filas cargadas porque el filtrado ahora es server-side:
+// las filas ya vienen filtradas, asi que las opciones se verian recortadas.
+const CIUDADES_TRAMITE = ["BAQ", "CTG", "BUN", "SMR"] as const;
+const ESTADOS_TRAMITE = [
+  "SOLICITUD",
+  "APERTURA",
+  "EN_TRAMITE",
+  "EN_PUERTO",
+  "DESPACHADO",
+  "ENVIADO_A_FACTURAR",
+  "FACTURADO",
+  "PAGADO",
+  "CERRADO",
+] as const;
+
 function normalizeFilter(value: string) {
   return value.trim().toLocaleLowerCase("es-CO");
-}
-
-function uniqueValues(rows: TramiteRow[], key: "estado" | "ciudad") {
-  return Array.from(new Set(rows.map((row) => row[key]).filter(Boolean))).sort((a, b) =>
-    a.localeCompare(b, "es-CO"),
-  );
 }
 
 function statusClassName(status: string) {
@@ -70,7 +82,7 @@ function statusClassName(status: string) {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
-function useTramites() {
+function useTramites(filters: TramiteFilters) {
   const [rows, setRows] = useState<TramiteRow[]>([]);
   const [state, setState] = useState<LoadState>("loading");
   const [error, setError] = useState<string | null>(null);
@@ -78,8 +90,10 @@ function useTramites() {
 
   useEffect(() => {
     const controller = new AbortController();
+    setState("loading");
+    setError(null);
 
-    fetchTramites(controller.signal)
+    fetchTramites(controller.signal, filters)
       .then((tramites) => {
         setRows(tramites);
         setState("ready");
@@ -95,7 +109,18 @@ function useTramites() {
       });
 
     return () => controller.abort();
-  }, [reloadKey]);
+    // Los filtros se comparan por valor (primitivos) para evitar refetch por
+    // un objeto `filters` recreado en cada render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    filters.q,
+    filters.estado,
+    filters.ciudad,
+    filters.clienteId,
+    filters.tipoCliente,
+    filters.facturado,
+    reloadKey,
+  ]);
 
   return {
     error,
@@ -662,50 +687,75 @@ function CreateTramiteDialog({
 type ViewMode = "tabla" | "kanban";
 
 export function TramitesWorkspace() {
-  const { error, reload, rows, state } = useTramites();
   const router = useRouter();
   const [createOpen, setCreateOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [estado, setEstado] = useState(allFilter);
   const [ciudad, setCiudad] = useState(allFilter);
+  const [clienteId, setClienteId] = useState(allFilter);
+  const [tipoCliente, setTipoCliente] = useState(allFilter);
+  const [facturado, setFacturado] = useState<FacturadoFilter>("todos");
   const [viewMode, setViewMode] = useState<ViewMode>("tabla");
+  const [filterClientes, setFilterClientes] = useState<ClienteOption[]>([]);
 
-  const estados = useMemo(() => uniqueValues(rows, "estado"), [rows]);
-  const ciudades = useMemo(() => uniqueValues(rows, "ciudad"), [rows]);
+  // Debounce del texto de busqueda para no re-consultar por cada tecla.
+  useEffect(() => {
+    const timeout = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timeout);
+  }, [search]);
 
-  const filteredRows = useMemo(() => {
-    const query = normalizeFilter(search);
-    const selectedEstado = normalizeFilter(estado);
-    const selectedCiudad = normalizeFilter(ciudad);
+  // Clientes para el select del filtro (independiente del dialogo de creacion).
+  useEffect(() => {
+    const controller = new AbortController();
 
-    return rows.filter((row) => {
-      const searchable = normalizeFilter(
-        [
-          row.doNumber,
-          row.cliente,
-          row.estado,
-          row.ciudad,
-          row.modalidad,
-          row.referencia,
-          row.responsable,
-        ].join(" "),
-      );
-      const matchesSearch = query ? searchable.includes(query) : true;
-      const matchesEstado =
-        estado === allFilter ? true : normalizeFilter(row.estado) === selectedEstado;
-      const matchesCiudad =
-        ciudad === allFilter ? true : normalizeFilter(row.ciudad) === selectedCiudad;
+    fetchClienteOptions(controller.signal)
+      .then(setFilterClientes)
+      .catch(() => {
+        // El filtro por cliente es un extra; si falla la carga, el select queda vacio.
+      });
 
-      return matchesSearch && matchesEstado && matchesCiudad;
-    });
-  }, [ciudad, estado, rows, search]);
+    return () => controller.abort();
+  }, []);
 
-  const hasFilters = Boolean(search.trim()) || estado !== allFilter || ciudad !== allFilter;
+  const filters = useMemo<TramiteFilters>(
+    () => ({
+      q: debouncedSearch,
+      estado,
+      ciudad,
+      clienteId,
+      tipoCliente,
+      facturado,
+    }),
+    [debouncedSearch, estado, ciudad, clienteId, tipoCliente, facturado],
+  );
+
+  const { error, reload, rows, state } = useTramites(filters);
+  const filteredRows = rows;
+
+  const hasFilters =
+    Boolean(search.trim()) ||
+    estado !== allFilter ||
+    ciudad !== allFilter ||
+    clienteId !== allFilter ||
+    tipoCliente !== allFilter ||
+    facturado !== "todos";
+
+  function limpiarFiltros() {
+    setSearch("");
+    setDebouncedSearch("");
+    setEstado(allFilter);
+    setCiudad(allFilter);
+    setClienteId(allFilter);
+    setTipoCliente(allFilter);
+    setFacturado("todos");
+  }
+
   const isLoading = state === "loading";
   const isError = state === "error";
   const emptyTitle = hasFilters ? "Sin resultados para los filtros" : "Sin tramites registrados";
   const emptyDetail = hasFilters
-    ? "Ajusta estado, ciudad o busqueda para ampliar la consulta."
+    ? "Ajusta estado, ciudad, cliente, tipo o busqueda para ampliar la consulta."
     : "Cuando existan DOs, apareceran en esta tabla operativa.";
 
   return (
@@ -773,74 +823,103 @@ export function TramitesWorkspace() {
           <SlidersHorizontal className="h-4 w-4 text-slate-500" aria-hidden="true" />
           Filtros operativos
         </div>
-        <div className="grid gap-3 px-4 py-3 xl:grid-cols-[minmax(280px,1fr)_minmax(240px,auto)_220px_auto]">
+        <div className="space-y-3 px-4 py-3">
           <label className="relative block">
             <span className="sr-only">Buscar tramite</span>
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Buscar por DO, cliente, referencia o responsable"
+              placeholder="Buscar por numero de DO"
               className="h-10 w-full border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
             />
           </label>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]">
+            <label>
+              <span className="sr-only">Filtrar por estado</span>
+              <select
+                value={estado}
+                onChange={(event) => setEstado(event.target.value)}
+                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              >
+                <option value={allFilter}>Todos los estados</option>
+                {ESTADOS_TRAMITE.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span className="sr-only">Filtrar por ciudad</span>
+              <select
+                value={ciudad}
+                onChange={(event) => setCiudad(event.target.value)}
+                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              >
+                <option value={allFilter}>Todas las ciudades</option>
+                {CIUDADES_TRAMITE.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span className="sr-only">Filtrar por cliente</span>
+              <select
+                value={clienteId}
+                onChange={(event) => setClienteId(event.target.value)}
+                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              >
+                <option value={allFilter}>Todos los clientes</option>
+                {filterClientes.map((cliente) => (
+                  <option key={cliente.id} value={cliente.id}>
+                    {cliente.nombre}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span className="sr-only">Filtrar por tipo de cliente</span>
+              <select
+                value={tipoCliente}
+                onChange={(event) => setTipoCliente(event.target.value)}
+                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              >
+                <option value={allFilter}>Propio y Socio</option>
+                <option value="PROPIO">Galcomex (propio)</option>
+                <option value="SOCIO_LM">Con socio (Lucho)</option>
+              </select>
+            </label>
+
+            <label>
+              <span className="sr-only">Filtrar por facturado</span>
+              <select
+                value={facturado}
+                onChange={(event) => setFacturado(event.target.value as FacturadoFilter)}
+                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              >
+                <option value="todos">Facturado: todos</option>
+                <option value="si">Facturados</option>
+                <option value="no">No facturados</option>
+              </select>
+            </label>
+
             <button
               type="button"
-              onClick={() => setEstado(allFilter)}
-              className={`h-9 border px-3 text-xs font-semibold transition ${
-                estado === allFilter
-                  ? "border-slate-950 bg-slate-950 text-white"
-                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-              }`}
+              onClick={limpiarFiltros}
+              disabled={!hasFilters}
+              className="inline-flex h-10 items-center justify-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Todos {rows.length}
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+              Limpiar filtros
             </button>
-            {estados.slice(0, 4).map((option) => (
-              <button
-                key={option}
-                type="button"
-                onClick={() => setEstado(option)}
-                className={`h-9 border px-3 text-xs font-semibold transition ${
-                  estado === option
-                    ? "border-cyan-700 bg-cyan-700 text-white"
-                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                {option}
-              </button>
-            ))}
           </div>
-
-          <label>
-            <span className="sr-only">Filtrar por ciudad</span>
-            <select
-              value={ciudad}
-              onChange={(event) => setCiudad(event.target.value)}
-              className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
-            >
-              <option value={allFilter}>Todas las ciudades</option>
-              {ciudades.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <button
-            type="button"
-            onClick={() => {
-              setSearch("");
-              setEstado(allFilter);
-              setCiudad(allFilter);
-            }}
-            className="inline-flex h-10 items-center justify-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            Limpiar
-          </button>
         </div>
       </div>
 
@@ -875,7 +954,7 @@ export function TramitesWorkspace() {
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-sm">
             <p className="font-semibold text-slate-900">DOs operativos</p>
             <p className="text-slate-500">
-              {filteredRows.length} de {rows.length} visibles
+              {filteredRows.length} {filteredRows.length === 1 ? "resultado" : "resultados"}
             </p>
           </div>
           <div className="overflow-x-auto">

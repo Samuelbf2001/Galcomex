@@ -7,6 +7,7 @@ import {
   BadgeCheck,
   ChevronDown,
   ChevronRight,
+  Download,
   FileText,
   Loader2,
   MinusCircle,
@@ -31,6 +32,8 @@ import {
   type TipoRecaudo,
   type CanalPago,
   CarteraApiError,
+  descargarCarteraExport,
+  descargarCarteraPdf,
   eliminarPago,
   fetchCartera,
   fetchClienteOptions,
@@ -882,6 +885,8 @@ export function CarteraWorkspace() {
 
   const initialClienteId = searchParams.get("clienteId") ?? "";
   const initialPendientes = searchParams.get("pendientes") === "true";
+  const initialFechaDesde = searchParams.get("fechaDesde") ?? "";
+  const initialFechaHasta = searchParams.get("fechaHasta") ?? "";
 
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
   const [clientesLoading, setClientesLoading] = useState(true);
@@ -889,6 +894,8 @@ export function CarteraWorkspace() {
 
   const [clienteId, setClienteId] = useState<string>(initialClienteId);
   const [soloPendientes, setSoloPendientes] = useState(initialPendientes);
+  const [fechaDesde, setFechaDesde] = useState<string>(initialFechaDesde);
+  const [fechaHasta, setFechaHasta] = useState<string>(initialFechaHasta);
   const [vista, setVista] = useState<VistaMode>("cliente");
 
   const [cartera, setCartera] = useState<CarteraData | null>(null);
@@ -929,10 +936,12 @@ export function CarteraWorkspace() {
   // ── Actualizar URL ───────────────────────────────────────────────────────
 
   const syncUrl = useCallback(
-    (cid: string, pendientes: boolean) => {
+    (cid: string, pendientes: boolean, desde: string, hasta: string) => {
       const params = new URLSearchParams();
       if (cid) params.set("clienteId", cid);
       params.set("pendientes", String(pendientes));
+      if (desde) params.set("fechaDesde", desde);
+      if (hasta) params.set("fechaHasta", hasta);
       const next =
         params.toString() ? `?${params.toString()}` : window.location.pathname;
       router.replace(next, { scroll: false });
@@ -982,12 +991,28 @@ export function CarteraWorkspace() {
 
   function handleClienteChange(id: string) {
     setClienteId(id);
-    syncUrl(id, soloPendientes);
+    syncUrl(id, soloPendientes, fechaDesde, fechaHasta);
   }
 
   function handlePendientesChange(val: boolean) {
     setSoloPendientes(val);
-    syncUrl(clienteId, val);
+    syncUrl(clienteId, val, fechaDesde, fechaHasta);
+  }
+
+  function handleFechaDesdeChange(val: string) {
+    setFechaDesde(val);
+    syncUrl(clienteId, soloPendientes, val, fechaHasta);
+  }
+
+  function handleFechaHastaChange(val: string) {
+    setFechaHasta(val);
+    syncUrl(clienteId, soloPendientes, fechaDesde, val);
+  }
+
+  function handleLimpiarFechas() {
+    setFechaDesde("");
+    setFechaHasta("");
+    syncUrl(clienteId, soloPendientes, "", "");
   }
 
   function handlePagoRegistrado() {
@@ -1041,6 +1066,21 @@ export function CarteraWorkspace() {
   const facturas = cartera?.facturas ?? [];
   const nombreCliente = clientes.find((c) => c.id === clienteId)?.nombre ?? "";
 
+  // Filtro de rango de fechas — client-side: getCarteraCliente() ya trae todas
+  // las facturas del cliente (sin paginar), así que filtrar en el navegador
+  // evita tocar el contrato de /api/cartera (compartido con PDF y Excel).
+  // Las tarjetas de cruce (CruceTarjetas) siguen mostrando el saldo oficial
+  // completo del cliente, sin acotar por fecha, para no sugerir que el saldo
+  // real cambia según el rango elegido; solo la tabla y su total "real a LM"
+  // se acotan al rango visible.
+  const facturasVisibles = facturas.filter((f) => {
+    const fechaStr = f.fecha.slice(0, 10);
+    if (fechaDesde && fechaStr < fechaDesde) return false;
+    if (fechaHasta && fechaStr > fechaHasta) return false;
+    return true;
+  });
+  const hayFiltroFecha = Boolean(fechaDesde || fechaHasta);
+
   return (
     <>
       <section className="space-y-5">
@@ -1053,19 +1093,36 @@ export function CarteraWorkspace() {
             </p>
           </div>
 
-          {/* Estado de cuenta PDF — placeholder A3-T2 */}
-          <div className="relative group">
+          {/* Descargas de cartera — requieren un cliente seleccionado */}
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled
-              className="inline-flex h-10 items-center gap-2 border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-400 cursor-not-allowed"
+              onClick={() => descargarCarteraPdf(clienteId, soloPendientes)}
+              disabled={!clienteId}
+              title={
+                clienteId
+                  ? "Descargar el estado de cuenta en PDF (respeta el filtro de facturas)"
+                  : "Selecciona un cliente para generar el estado de cuenta"
+              }
+              className="inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <FileText className="h-4 w-4" aria-hidden="true" />
               Estado de cuenta PDF
             </button>
-            <div className="absolute right-0 top-full mt-1.5 hidden group-hover:block z-10 w-64 border border-slate-200 bg-slate-950 px-3 py-2 text-xs text-white shadow-lg">
-              Disponible en A3-T2 (generación de PDFs)
-            </div>
+            <button
+              type="button"
+              onClick={() => descargarCarteraExport(clienteId)}
+              disabled={!clienteId}
+              title={
+                clienteId
+                  ? "Descargar la relación de facturas en Excel"
+                  : "Selecciona un cliente para exportar la relación de facturas"
+              }
+              className="inline-flex h-10 items-center gap-2 border border-emerald-300 bg-emerald-50 px-4 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Excel
+            </button>
           </div>
         </div>
 
@@ -1125,6 +1182,43 @@ export function CarteraWorkspace() {
               >
                 Solo pendientes
               </button>
+            </div>
+          </div>
+
+          {/* Filtro rango de fechas */}
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+              Rango de fechas
+            </span>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="date"
+                value={fechaDesde}
+                onChange={(e) => handleFechaDesdeChange(e.target.value)}
+                max={fechaHasta || undefined}
+                aria-label="Fecha desde"
+                className="h-10 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
+              />
+              <span className="text-xs text-slate-400">a</span>
+              <input
+                type="date"
+                value={fechaHasta}
+                onChange={(e) => handleFechaHastaChange(e.target.value)}
+                min={fechaDesde || undefined}
+                aria-label="Fecha hasta"
+                className="h-10 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
+              />
+              {hayFiltroFecha && (
+                <button
+                  type="button"
+                  onClick={handleLimpiarFechas}
+                  title="Limpiar rango de fechas"
+                  aria-label="Limpiar rango de fechas"
+                  className="inline-flex h-10 w-10 items-center justify-center border border-slate-300 bg-white text-slate-500 transition hover:bg-slate-50"
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )}
             </div>
           </div>
 
@@ -1225,6 +1319,12 @@ export function CarteraWorkspace() {
                     : `${nombreCliente || "Este cliente"} no tiene facturas registradas.`
                 }
               />
+            ) : facturasVisibles.length === 0 ? (
+              <ModuleState
+                type="empty"
+                title="Sin facturas en el rango de fechas"
+                detail={`${nombreCliente || "Este cliente"} no tiene facturas entre las fechas seleccionadas.`}
+              />
             ) : (
               <div className="overflow-hidden border border-slate-200 bg-white">
                 <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2.5 text-xs">
@@ -1232,9 +1332,10 @@ export function CarteraWorkspace() {
                     {nombreCliente ? `${nombreCliente} — ` : ""}
                     {vista === "cliente" ? "Cartera cliente" : "Cartera LM"}
                     {soloPendientes ? " (pendientes)" : ""}
+                    {hayFiltroFecha ? " (rango de fechas)" : ""}
                   </p>
                   <p className="text-slate-500">
-                    {facturas.length} factura{facturas.length !== 1 ? "s" : ""}
+                    {facturasVisibles.length} factura{facturasVisibles.length !== 1 ? "s" : ""}
                   </p>
                 </div>
 
@@ -1256,7 +1357,7 @@ export function CarteraWorkspace() {
                       </tr>
                     </thead>
                     <tbody>
-                      {facturas.map((f) => (
+                      {facturasVisibles.map((f) => (
                         <FilaFactura
                           key={f.id}
                           factura={f}
@@ -1295,7 +1396,7 @@ export function CarteraWorkspace() {
                   </span>
                   {/* Total real a LM: saldoNetoLM − costos bancarios (solo en vista LM) */}
                   {vista === "lm" && (() => {
-                    const totalRealLM = facturas.reduce(
+                    const totalRealLM = facturasVisibles.reduce(
                       (acc, f) => acc + BigInt(f.totalRealLM),
                       0n,
                     );

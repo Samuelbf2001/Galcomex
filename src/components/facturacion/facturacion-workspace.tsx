@@ -24,6 +24,7 @@ import {
   fetchBorradoresDeTramite,
   fetchTramitesParaFacturacion,
   formatCOP,
+  formatDate,
   generarBorrador,
   parseBigIntInput,
 } from "@/components/facturacion/facturacion-api";
@@ -334,6 +335,82 @@ function ultimoBorrador(borradores: BorradorRow[]): BorradorRow | null {
   return borradores[0]; // ordenados desc por createdAt
 }
 
+// ─── Alerta: aprobados pendientes de enviar a SIIGO ───────────────────────────
+
+type PendienteEnvioSiigo = {
+  tramite: TramiteConBorradores;
+  borrador: BorradorRow;
+};
+
+/**
+ * Borradores APROBADOS que todavía no se enviaron a SIIGO como draft
+ * (siigoDraftId null). Separa "Aprobar" de "Enviar" en la UI: aprobar solo
+ * cambia el estado; el envío a SIIGO es una acción explícita de ADMIN. Esta
+ * lista es la alerta para que Camila no olvide enviarlos.
+ */
+function calcularPendientesEnvioSiigo(
+  tramites: TramiteConBorradores[],
+): PendienteEnvioSiigo[] {
+  const pendientes: PendienteEnvioSiigo[] = [];
+  for (const tramite of tramites) {
+    const borrador = ultimoBorrador(tramite.borradores);
+    if (borrador && borrador.estado === "APROBADO" && !borrador.siigoDraftId) {
+      pendientes.push({ tramite, borrador });
+    }
+  }
+  return pendientes;
+}
+
+type AlertaPendientesEnvioProps = {
+  pendientes: PendienteEnvioSiigo[];
+  onRevisar: (tramite: TramiteConBorradores, borrador: BorradorRow) => void;
+};
+
+function AlertaPendientesEnvio({ pendientes, onRevisar }: AlertaPendientesEnvioProps) {
+  if (pendientes.length === 0) return null;
+
+  return (
+    <div className="border border-amber-300 bg-amber-50">
+      <div className="flex items-center gap-2 border-b border-amber-200 px-4 py-2.5">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+        <p className="text-sm font-semibold text-amber-900">
+          {pendientes.length} borrador{pendientes.length !== 1 ? "es" : ""} aprobado
+          {pendientes.length !== 1 ? "s" : ""} pendiente{pendientes.length !== 1 ? "s" : ""} de
+          enviar a SIIGO
+        </p>
+      </div>
+      <ul className="divide-y divide-amber-200">
+        {pendientes.map(({ tramite, borrador }) => (
+          <li key={borrador.id}>
+            <button
+              type="button"
+              onClick={() => onRevisar(tramite, borrador)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm transition hover:bg-amber-100"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="font-mono font-semibold text-slate-900">
+                  {tramite.consecutivo}
+                </span>
+                <span className="truncate text-slate-600">{tramite.cliente.nombre}</span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="font-semibold text-slate-900">
+                  {formatCOP(borrador.totalFactura)}
+                </span>
+                <span className="text-xs text-amber-700">
+                  Aprobado{" "}
+                  {borrador.fechaAprobacion ? formatDate(borrador.fechaAprobacion) : ""}
+                </span>
+                <ChevronRight className="h-4 w-4 text-amber-500" aria-hidden="true" />
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ─── Fila de trámite en la tabla ──────────────────────────────────────────────
 
 type FilaTramiteProps = {
@@ -605,6 +682,10 @@ export function FacturacionWorkspace() {
     return borrador?.estado === filtro;
   });
 
+  // Alerta "Aprobados pendientes de enviar a SIIGO" — independiente del filtro
+  // activo, para que Camila (ADMIN) siempre la vea al entrar al módulo.
+  const pendientesEnvioSiigo = calcularPendientesEnvioSiigo(tramites);
+
   // ── Handlers ───────────────────────────────────────────────────────────────
 
   function handleBorradorGenerado(tramiteId: string, borrador: BorradorRow) {
@@ -666,6 +747,15 @@ export function FacturacionWorkspace() {
             Refrescar
           </button>
         </div>
+
+        {/* Alerta: aprobados pendientes de enviar a SIIGO — solo ADMIN, que es
+            quien puede ejecutar el envío. */}
+        {puedeFacturar ? (
+          <AlertaPendientesEnvio
+            pendientes={pendientesEnvioSiigo}
+            onRevisar={(tramite, borrador) => setRevisionState({ tramite, borrador })}
+          />
+        ) : null}
 
         {/* Filtros */}
         <div className="flex flex-wrap gap-2">

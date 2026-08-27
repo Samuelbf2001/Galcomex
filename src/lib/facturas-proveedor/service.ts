@@ -12,6 +12,7 @@ import { CanalPago, EstadoFacturaProveedor, EstadoTramite, Prisma } from "@prism
 
 import { ensureBorrador } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
 import { transitionTramite } from "@/lib/tramites/service";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -144,6 +145,8 @@ export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
     input;
 
   return prisma.$transaction(async (tx) => {
+    await assertTramiteModificable(tx, tramiteId);
+
     // Verificar unicidad
     const existente = await tx.facturaProveedor.findUnique({
       where: { tramiteId_numFactura: { tramiteId, numFactura } },
@@ -219,6 +222,9 @@ export async function actualizarFacturaProveedor(
     if (!actual) {
       throw new FacturaProveedorNoEncontradaError(facturaId);
     }
+
+    await assertTramiteModificable(tx, actual.tramiteId);
+
     if (actual.estado !== EstadoFacturaProveedor.REGISTRADA) {
       throw new FacturaProveedorNoModificableError(facturaId, actual.estado);
     }
@@ -273,6 +279,8 @@ export async function eliminarFacturaProveedor(
       throw new FacturaProveedorNoEncontradaError(facturaId);
     }
 
+    await assertTramiteModificable(tx, actual.tramiteId);
+
     // pagos es ahora PagoTramiteFactura[] (pivot N↔N)
     if (actual.pagos.length > 0) {
       throw new FacturaProveedorConPagosError(facturaId);
@@ -312,6 +320,9 @@ export async function generarPagoDesdeFactura(input: GenerarPagoInput) {
     if (!factura) {
       throw new FacturaProveedorNoEncontradaError(facturaProveedorId);
     }
+
+    await assertTramiteModificable(tx, factura.tramiteId);
+
     if (factura.estado !== EstadoFacturaProveedor.REGISTRADA) {
       throw new FacturaProveedorNoModificableError(facturaProveedorId, factura.estado);
     }

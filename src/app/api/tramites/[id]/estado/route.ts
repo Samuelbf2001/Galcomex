@@ -23,7 +23,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
   try {
     const { id } = await context.params;
     const payload = estadoTransitionSchema.parse(await request.json());
-    const result = await transitionTramite(id, payload.estado, session.user.id, session.user.rol === "ADMIN");
+    const result = await transitionTramite(
+      id,
+      payload.estado,
+      session.user.id,
+      session.user.rol === "ADMIN",
+      session.user.rol,
+    );
 
     if (!result.ok) {
       return NextResponse.json(

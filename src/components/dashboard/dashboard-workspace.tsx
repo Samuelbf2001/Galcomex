@@ -20,6 +20,7 @@ import {
   type PendienteFacturarRow,
   type CarteraVencidaRow,
   type ActividadRecienteRow,
+  type ClienteAlertaCarteraRow,
   DashboardApiError,
   fetchDashboard,
   formatCOP,
@@ -184,6 +185,60 @@ function TablaCarteraVencida({ rows }: { rows: CarteraVencidaRow[] }) {
               </td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Tabla alertas de cartera por cliente ─────────────────────────────────────
+
+function TablaAlertasCartera({ rows }: { rows: ClienteAlertaCarteraRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <p className="py-4 text-center text-sm text-slate-500">
+        Ningún cliente está por debajo del umbral de alerta de cartera.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[420px] border-collapse text-left text-sm">
+        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+          <tr>
+            <th className="border-b border-slate-200 px-4 py-2.5">Cliente</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Saldo neto</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Ver cartera</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const negativo = BigInt(row.saldoNeto) < 0n;
+            const absStr = negativo ? (-BigInt(row.saldoNeto)).toString() : row.saldoNeto;
+            return (
+              <tr
+                key={row.clienteId}
+                className="border-b border-slate-100 bg-rose-50/40 last:border-b-0 transition-colors hover:bg-rose-50"
+              >
+                <td className="px-4 py-3 text-xs font-medium text-slate-800 whitespace-nowrap">
+                  {row.clienteNombre}
+                </td>
+                <td className="px-4 py-3 text-right text-sm font-bold text-rose-600 whitespace-nowrap">
+                  {negativo ? "−" : ""}
+                  {formatCOP(absStr)}
+                </td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <Link
+                    href={`/cartera?clienteId=${row.clienteId}`}
+                    className="inline-flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+                  >
+                    Cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
+                  </Link>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -369,6 +424,23 @@ export function DashboardWorkspace() {
           </Link>
         </div>
         <TablaPendientesFacturar rows={data.pendientesFacturar} />
+      </div>
+
+      {/* Sección alertas de cartera — clientes bajo el umbral configurado */}
+      <div className="overflow-hidden border border-rose-200 bg-white">
+        <div className="flex items-center justify-between border-b border-rose-200 bg-rose-50/60 px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-rose-600" aria-hidden="true" />
+            <h2 className="text-sm font-semibold text-rose-900">Alertas de cartera</h2>
+          </div>
+          <Link
+            href="/cartera"
+            className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+          >
+            Ir a cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
+          </Link>
+        </div>
+        <TablaAlertasCartera rows={data.alertasCartera} />
       </div>
 
       {/* Grid: cartera vencida + actividad reciente */}

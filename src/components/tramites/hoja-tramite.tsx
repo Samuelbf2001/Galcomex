@@ -9,6 +9,7 @@ import {
   fetchLibroPagos,
   formatCOP,
 } from "@/components/pagos/pagos-api";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 /**
  * Hoja del trámite — espejo de la hoja de Excel de Camila (GRUPO E PAPIS).
@@ -63,9 +64,12 @@ type HojaData = {
   estado: string;
   doCliente: string | null;
   doAgencia: string | null;
-  cliente: { nombre: string; nit: string };
+  cliente: { nombre: string; nit: string; tipo: string | null };
   aplicacionesAnticipo: AnticipoAplicado[];
   borrador: BorradorHoja | null;
+  /** Umbral de alerta de saldo (COP, BigInt as string) aplicable a este DO
+   *  según el tipo de cliente (SOCIO_LM → umbral socio; PROPIO → umbral propio). */
+  umbralAlertaSaldo: string;
 };
 
 type LoadState = "loading" | "ready" | "error";
@@ -223,9 +227,14 @@ async function fetchHojaData(tramiteId: string, signal?: AbortSignal): Promise<H
     estado: str(t.estado, ""),
     doCliente: typeof t.doCliente === "string" ? t.doCliente : null,
     doAgencia: typeof t.doAgencia === "string" ? t.doAgencia : null,
-    cliente: { nombre: str(cliente.nombre, ""), nit: str(cliente.nit, "") },
+    cliente: {
+      nombre: str(cliente.nombre, ""),
+      nit: str(cliente.nit, ""),
+      tipo: typeof cliente.tipo === "string" ? cliente.tipo : null,
+    },
     aplicacionesAnticipo: aplicaciones,
     borrador,
+    umbralAlertaSaldo: str(payload.umbralAlertaSaldo, "500000"),
   };
 }
 
@@ -331,8 +340,29 @@ export function HojaTramite({ tramiteId }: { tramiteId: string }) {
 
   const numFactura = hoja.borrador?.numFacturaSiigo ?? null;
 
+  // Alerta de saldo disponible (anticipos aplicados − pagos) por debajo del
+  // umbral configurado para el tipo de cliente del DO (Parametro
+  // UMBRAL_ALERTA_SALDO_TRAMITE_PROPIO / _SOCIO — ver src/lib/alertas/umbrales.ts).
+  const saldoDisponible = bigOrZero(saldoTrasPagos);
+  const umbralAlertaSaldo = bigOrZero(hoja.umbralAlertaSaldo);
+  const alertaSaldoBajo = saldoDisponible < umbralAlertaSaldo;
+  const tipoClienteLabel =
+    hoja.cliente.tipo === "SOCIO_LM" ? "del socio Lucho" : "propios de Galcomex";
+
   return (
     <div className="space-y-5">
+      {/* ── Alerta de saldo bajo el umbral ──────────────────────────────── */}
+      {alertaSaldoBajo ? (
+        <Alert variant="destructive">
+          <AlertTriangle aria-hidden="true" />
+          <AlertTitle>Saldo del trámite por debajo del umbral de alerta</AlertTitle>
+          <AlertDescription>
+            El saldo disponible ({formatCOP(saldoTrasPagos)}) está por debajo del umbral
+            configurado para trámites {tipoClienteLabel} ({formatCOP(hoja.umbralAlertaSaldo)}).
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       {/* ── Cabecera tipo Excel ─────────────────────────────────────────── */}
       <div className="grid gap-px overflow-hidden border border-slate-300 bg-slate-300 sm:grid-cols-[1fr_1fr_auto]">
         <div className="bg-white px-4 py-3">

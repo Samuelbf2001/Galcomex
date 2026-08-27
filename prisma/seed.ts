@@ -47,6 +47,21 @@ async function main() {
       valor: "890300279",
       descripcion: "NIT del Banco de Occidente S.A. — beneficiario GMF (impuesto 4x1000) en todas las facturas",
     },
+    {
+      clave: "UMBRAL_ALERTA_SALDO_TRAMITE_PROPIO",
+      valor: "500000",
+      descripcion: "Umbral de alerta de saldo disponible para trámites propios de Galcomex (COP)",
+    },
+    {
+      clave: "UMBRAL_ALERTA_SALDO_TRAMITE_SOCIO",
+      valor: "200000",
+      descripcion: "Umbral de alerta de saldo disponible para trámites del socio Lucho/LM (COP)",
+    },
+    {
+      clave: "UMBRAL_ALERTA_CARTERA_CLIENTE",
+      valor: "-20000000",
+      descripcion: "Umbral de alerta de cartera: saldo neto del cliente por debajo de este valor dispara alerta (COP)",
+    },
   ];
 
   for (const p of params) {

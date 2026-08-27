@@ -15,7 +15,7 @@ import {
   generarBorrador,
   listarBorradores,
 } from "@/lib/borradores/service";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { generarBorradorPayloadSchema } from "@/lib/validations/borradores";
 
@@ -81,6 +81,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     if (error instanceof TramiteNoFacturableError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
 
     throw error;

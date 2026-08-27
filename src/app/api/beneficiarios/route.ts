@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const payload = crearBeneficiarioSchema.parse(await request.json());
-    const beneficiario = await crearBeneficiario(payload);
+    const beneficiario = await crearBeneficiario(payload, session.user.id);
     return jsonResponse({ beneficiario }, { status: 201 });
   } catch (error) {
     if (error instanceof ZodError) return validationError(error);

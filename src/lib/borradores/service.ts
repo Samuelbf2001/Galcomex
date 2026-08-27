@@ -13,6 +13,7 @@ import { EstadoBorrador, Prisma, TipoCliente } from "@prisma/client";
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
 import { getParametrosSistema } from "@/lib/parametros/service";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
 
 import {
   actualizarLineasComision,
@@ -185,11 +186,14 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   // ── Verificar que el trámite está en estado facturable ────────────────────
   const tramiteEstado = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
-    select: { estado: true, cliente: { select: { tipo: true } } },
+    select: { id: true, consecutivo: true, estado: true, cliente: { select: { tipo: true } } },
   });
   if (!tramiteEstado) {
     throw new TramiteNoFacturableError("no encontrado");
   }
+
+  await assertTramiteModificable(prisma, tramiteEstado);
+
   if (!(ESTADOS_FACTURABLES as readonly string[]).includes(tramiteEstado.estado)) {
     throw new TramiteNoFacturableError(tramiteEstado.estado);
   }
@@ -364,13 +368,15 @@ export async function transicionarBorrador(
     const borrador = await tx.borradorFactura.findUnique({
       where: { id: borradorId },
       include: {
-        tramite: { select: { id: true, clienteId: true } },
+        tramite: { select: { id: true, clienteId: true, consecutivo: true, estado: true } },
       },
     });
 
     if (!borrador) {
       return { ok: false, status: 404, message: `Borrador ${borradorId} no encontrado` };
     }
+
+    await assertTramiteModificable(tx, borrador.tramite);
 
     // Validar transición
     if (!TRANSITIONS[borrador.estado].includes(nuevoEstado)) {
@@ -542,6 +548,9 @@ export async function actualizarComentariosCabecera(
   if (!actual) {
     return { ok: false, status: 404, message: `Borrador ${borradorId} no encontrado` };
   }
+
+  await assertTramiteModificable(prisma, actual.tramiteId);
+
   if (
     actual.estado !== EstadoBorrador.BORRADOR &&
     actual.estado !== EstadoBorrador.EN_REVISION
@@ -617,6 +626,9 @@ export async function actualizarComisionBorrador(
         message: `Borrador ${borradorId} no encontrado`,
       };
     }
+
+    await assertTramiteModificable(tx, actual.tramiteId);
+
     if (
       actual.estado !== EstadoBorrador.BORRADOR &&
       actual.estado !== EstadoBorrador.EN_REVISION

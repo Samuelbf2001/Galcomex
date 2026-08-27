@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z, ZodError } from "zod";
 
-import { requireSession } from "@/lib/auth/session";
+import { requireRole } from "@/lib/auth/session";
 import { jsonResponse } from "@/lib/http/json";
 import {
   createPresignedDownloadUrl,
@@ -54,7 +54,7 @@ function validationError(error: ZodError | StorageValidationError) {
 }
 
 export async function GET(request: NextRequest) {
-  const session = await requireSession();
+  const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO"]);
 
   if (session instanceof NextResponse) {
     return session;
@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await requireSession();
+  const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO"]);
 
   if (session instanceof NextResponse) {
     return session;
@@ -111,7 +111,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const session = await requireSession();
+  const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO"]);
 
   if (session instanceof NextResponse) {
     return session;

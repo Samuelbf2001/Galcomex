@@ -1,7 +1,7 @@
 "use client";
 
-import { AlertTriangle, Download, Eye, ImageIcon, Loader2, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, Download, Eye, ImageIcon, Loader2, RefreshCw, Share2, Trash2 } from "lucide-react";
+import { useRef, useState } from "react";
 
 import {
   CATEGORIAS_DOCUMENTO,
@@ -10,15 +10,26 @@ import {
   DocumentosApiError,
   eliminarDocumento,
   formatBytes,
+  puedeCompartirDocumentoUI,
+  puedeEliminarDocumentoUI,
+  puedeReemplazarDocumentoUI,
   refrescarUrl,
+  reemplazarDocumento,
+  solicitarUploadUrl,
+  subirArchivoDirecto,
+  validarArchivo,
 } from "@/components/documentos/documentos-api";
+import { EnlaceDocumentoModal } from "@/components/documentos/enlace-documento-modal";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 type ListaDocumentosProps = {
   tramiteId: string;
   documentos: DocumentosPorCategoria;
+  currentUserId: string;
+  currentUserRol: string;
   onDocumentoEliminado: (documentoId: string, categoria: string) => void;
+  onDocumentoReemplazado: (documento: DocumentoRow) => void;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -53,14 +64,32 @@ function esPdf(mimeType: string): boolean {
 type TarjetaDocumentoProps = {
   doc: DocumentoRow;
   tramiteId: string;
+  currentUserId: string;
+  currentUserRol: string;
   onEliminado: (documentoId: string, categoria: string) => void;
+  onReemplazado: (documento: DocumentoRow) => void;
   esGaleria?: boolean;
 };
 
-function TarjetaDocumento({ doc, tramiteId, onEliminado, esGaleria }: TarjetaDocumentoProps) {
+function TarjetaDocumento({
+  doc,
+  tramiteId,
+  currentUserId,
+  currentUserRol,
+  onEliminado,
+  onReemplazado,
+  esGaleria,
+}: TarjetaDocumentoProps) {
   const [eliminando, setEliminando] = useState(false);
+  const [reemplazando, setReemplazando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [abriendo, setAbriendo] = useState(false);
+  const [mostrarCompartir, setMostrarCompartir] = useState(false);
+  const inputReemplazoRef = useRef<HTMLInputElement>(null);
+
+  const puedeEliminar = puedeEliminarDocumentoUI(currentUserRol);
+  const puedeReemplazar = puedeReemplazarDocumentoUI(currentUserRol, doc.subidoPorId, currentUserId);
+  const puedeCompartir = puedeCompartirDocumentoUI(currentUserRol);
 
   async function abrirDocumento() {
     if (!doc.downloadUrl) {
@@ -98,9 +127,85 @@ function TarjetaDocumento({ doc, tramiteId, onEliminado, esGaleria }: TarjetaDoc
     }
   }
 
+  function handleReemplazarClick() {
+    inputReemplazoRef.current?.click();
+  }
+
+  async function handleArchivoReemplazo(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    const errorValidacion = validarArchivo(file);
+    if (errorValidacion) {
+      setError(errorValidacion);
+      return;
+    }
+
+    if (
+      !confirm(
+        `¿Reemplazar "${doc.nombreArchivo}" por "${file.name}"? El archivo anterior dejará de estar disponible.`,
+      )
+    ) {
+      return;
+    }
+
+    setReemplazando(true);
+    setError(null);
+
+    try {
+      const urlResult = await solicitarUploadUrl(tramiteId, {
+        categoria: doc.categoria,
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+
+      await subirArchivoDirecto(urlResult.uploadUrl, file);
+
+      const actualizado = await reemplazarDocumento(tramiteId, doc.id, {
+        storageKey: urlResult.storageKey,
+        nombreArchivo: file.name,
+        mimeType: file.type,
+        tamanoBytes: file.size,
+      });
+
+      onReemplazado(actualizado);
+    } catch (caught) {
+      setError(
+        caught instanceof DocumentosApiError ? caught.message : "Error al reemplazar el documento.",
+      );
+    } finally {
+      setReemplazando(false);
+    }
+  }
+
+  const inputReemplazo = puedeReemplazar ? (
+    <input
+      ref={inputReemplazoRef}
+      type="file"
+      accept=".pdf,.jpg,.jpeg,.png,.xlsx"
+      onChange={(e) => void handleArchivoReemplazo(e)}
+      className="sr-only"
+      aria-hidden="true"
+      tabIndex={-1}
+    />
+  ) : null;
+
+  const modalCompartir = mostrarCompartir ? (
+    <EnlaceDocumentoModal
+      tramiteId={tramiteId}
+      documentoId={doc.id}
+      nombreArchivo={doc.nombreArchivo}
+      onClose={() => setMostrarCompartir(false)}
+    />
+  ) : null;
+
   if (esGaleria && esImagen(doc.mimeType)) {
     return (
       <div className="relative group overflow-hidden border border-slate-200 bg-slate-50">
+        {inputReemplazo}
+        {modalCompartir}
         {/* Vista previa de imagen */}
         {doc.downloadUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -131,20 +236,49 @@ function TarjetaDocumento({ doc, tramiteId, onEliminado, esGaleria }: TarjetaDoc
               <Eye className="h-4 w-4" aria-hidden="true" />
             )}
           </button>
-          <button
-            type="button"
-            onClick={handleEliminar}
-            disabled={eliminando}
-            className="inline-flex h-9 w-9 items-center justify-center bg-rose-600 text-white transition hover:bg-rose-700 disabled:opacity-60"
-            aria-label={`Eliminar ${doc.nombreArchivo}`}
-            title="Eliminar"
-          >
-            {eliminando ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Trash2 className="h-4 w-4" aria-hidden="true" />
-            )}
-          </button>
+          {puedeCompartir && (
+            <button
+              type="button"
+              onClick={() => setMostrarCompartir(true)}
+              className="inline-flex h-9 w-9 items-center justify-center bg-white/90 text-slate-900 transition hover:bg-white"
+              aria-label={`Compartir ${doc.nombreArchivo}`}
+              title="Compartir"
+            >
+              <Share2 className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+          {puedeReemplazar && (
+            <button
+              type="button"
+              onClick={handleReemplazarClick}
+              disabled={reemplazando}
+              className="inline-flex h-9 w-9 items-center justify-center bg-white/90 text-slate-900 transition hover:bg-white"
+              aria-label={`Reemplazar ${doc.nombreArchivo}`}
+              title="Reemplazar"
+            >
+              {reemplazando ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              )}
+            </button>
+          )}
+          {puedeEliminar && (
+            <button
+              type="button"
+              onClick={handleEliminar}
+              disabled={eliminando}
+              className="inline-flex h-9 w-9 items-center justify-center bg-rose-600 text-white transition hover:bg-rose-700 disabled:opacity-60"
+              aria-label={`Eliminar ${doc.nombreArchivo}`}
+              title="Eliminar"
+            >
+              {eliminando ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              )}
+            </button>
+          )}
         </div>
         <div className="border-t border-slate-200 px-2 py-1.5">
           <p className="truncate text-xs font-medium text-slate-700" title={doc.nombreArchivo}>
@@ -165,6 +299,8 @@ function TarjetaDocumento({ doc, tramiteId, onEliminado, esGaleria }: TarjetaDoc
   // Vista en lista (para no imágenes o categorías normales)
   return (
     <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 hover:bg-slate-50">
+      {inputReemplazo}
+      {modalCompartir}
       {/* Icono tipo */}
       <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-slate-200 bg-slate-100 text-xs font-bold uppercase text-slate-500">
         {esPdf(doc.mimeType) ? "PDF" : esImagen(doc.mimeType) ? "IMG" : "XLS"}
@@ -206,20 +342,49 @@ function TarjetaDocumento({ doc, tramiteId, onEliminado, esGaleria }: TarjetaDoc
             <Download className="h-4 w-4" aria-hidden="true" />
           )}
         </button>
-        <button
-          type="button"
-          onClick={handleEliminar}
-          disabled={eliminando}
-          className="inline-flex h-8 w-8 items-center justify-center border border-slate-200 text-slate-400 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
-          aria-label={`Eliminar ${doc.nombreArchivo}`}
-          title="Eliminar"
-        >
-          {eliminando ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          ) : (
-            <Trash2 className="h-4 w-4" aria-hidden="true" />
-          )}
-        </button>
+        {puedeCompartir && (
+          <button
+            type="button"
+            onClick={() => setMostrarCompartir(true)}
+            className="inline-flex h-8 w-8 items-center justify-center border border-slate-200 text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:opacity-50"
+            aria-label={`Compartir ${doc.nombreArchivo}`}
+            title="Compartir"
+          >
+            <Share2 className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
+        {puedeReemplazar && (
+          <button
+            type="button"
+            onClick={handleReemplazarClick}
+            disabled={reemplazando}
+            className="inline-flex h-8 w-8 items-center justify-center border border-slate-200 text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:opacity-50"
+            aria-label={`Reemplazar ${doc.nombreArchivo}`}
+            title="Reemplazar"
+          >
+            {reemplazando ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            )}
+          </button>
+        )}
+        {puedeEliminar && (
+          <button
+            type="button"
+            onClick={handleEliminar}
+            disabled={eliminando}
+            className="inline-flex h-8 w-8 items-center justify-center border border-slate-200 text-slate-400 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
+            aria-label={`Eliminar ${doc.nombreArchivo}`}
+            title="Eliminar"
+          >
+            {eliminando ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+            )}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -227,7 +392,14 @@ function TarjetaDocumento({ doc, tramiteId, onEliminado, esGaleria }: TarjetaDoc
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 
-export function ListaDocumentos({ tramiteId, documentos, onDocumentoEliminado }: ListaDocumentosProps) {
+export function ListaDocumentos({
+  tramiteId,
+  documentos,
+  currentUserId,
+  currentUserRol,
+  onDocumentoEliminado,
+  onDocumentoReemplazado,
+}: ListaDocumentosProps) {
   const categorias = Object.keys(documentos).filter((cat) => documentos[cat].length > 0);
 
   if (categorias.length === 0) {
@@ -263,7 +435,10 @@ export function ListaDocumentos({ tramiteId, documentos, onDocumentoEliminado }:
                     key={doc.id}
                     doc={doc}
                     tramiteId={tramiteId}
+                    currentUserId={currentUserId}
+                    currentUserRol={currentUserRol}
                     onEliminado={onDocumentoEliminado}
+                    onReemplazado={onDocumentoReemplazado}
                     esGaleria
                   />
                 ))}
@@ -276,7 +451,10 @@ export function ListaDocumentos({ tramiteId, documentos, onDocumentoEliminado }:
                     key={doc.id}
                     doc={doc}
                     tramiteId={tramiteId}
+                    currentUserId={currentUserId}
+                    currentUserRol={currentUserRol}
                     onEliminado={onDocumentoEliminado}
+                    onReemplazado={onDocumentoReemplazado}
                   />
                 ))}
               </div>

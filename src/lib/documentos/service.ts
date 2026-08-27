@@ -9,7 +9,7 @@
  * a MinIO usando la URL prefirmada obtenida con solicitarSubida().
  */
 
-import { CategoriaDocumento, type Documento, Prisma } from "@prisma/client";
+import { CategoriaDocumento, type Documento, Prisma, type Rol } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -18,6 +18,7 @@ import {
   softDeleteStorageObject,
   validateStorageFile,
 } from "@/lib/storage/service";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
 
@@ -48,6 +49,16 @@ export type RegistrarDocumentoInput = {
   subidoPorId: string;
 };
 
+export type ReemplazarDocumentoInput = {
+  documentoId: string;
+  usuarioId: string;
+  rol: Rol;
+  storageKey: string;
+  nombreArchivo: string;
+  mimeType: string;
+  tamanoBytes: number;
+};
+
 export type DocumentoConUrl = Documento & {
   downloadUrl: string;
   subidoPor: { id: string; name: string };
@@ -75,6 +86,40 @@ export class DocumentoYaEliminadoError extends Error {
   }
 }
 
+/**
+ * Documento no cuenta con permiso suficiente para eliminar o reemplazar,
+ * según la matriz de roles (ver puedeEliminarDocumento / puedeReemplazarDocumento).
+ */
+export class DocumentoPermisoError extends Error {
+  public readonly status = 403;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "DocumentoPermisoError";
+  }
+}
+
+// ─── Matriz de roles: eliminar/reemplazar documentos ─────────────────────────
+// Decisión confirmada por el usuario (reunión 1-jul, confirmada 2026-08-26):
+//  - ADMIN y REVISOR: eliminan y reemplazan cualquier documento.
+//  - OPERATIVO: sube, y reemplaza SOLO documentos que él mismo subió
+//    (Documento.subidoPorId). No puede eliminar.
+//  - SOCIO: solo sube. No reemplaza ni elimina.
+
+export function puedeEliminarDocumento(rol: Rol): boolean {
+  return rol === "ADMIN" || rol === "REVISOR";
+}
+
+export function puedeReemplazarDocumento(
+  rol: Rol,
+  documento: { subidoPorId: string },
+  usuarioId: string,
+): boolean {
+  if (rol === "ADMIN" || rol === "REVISOR") return true;
+  if (rol === "OPERATIVO") return documento.subidoPorId === usuarioId;
+  return false;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const CATEGORIA_KEYWORDS: Record<CategoriaDocumento, string[]> = {
@@ -85,6 +130,7 @@ const CATEGORIA_KEYWORDS: Record<CategoriaDocumento, string[]> = {
   SOPORTE_FACTURACION: ["soporte"],
   FOTO_RECONOCIMIENTO: ["foto", "reconocimiento"],
   COMPROBANTE_BANCARIO: ["comprobante", "bancario"],
+  COMPROBANTE_COMERCIO: ["comercio", "pse"],
   FACTURA_PROVEEDOR: ["factura proveedor"],
   OTRO: [],
 };
@@ -171,6 +217,8 @@ export async function registrarDocumento(
   input: RegistrarDocumentoInput,
 ): Promise<Documento> {
   return prisma.$transaction(async (tx) => {
+    await assertTramiteModificable(tx, input.tramiteId);
+
     const documento = await tx.documento.create({
       data: {
         tramiteId: input.tramiteId,
@@ -258,11 +306,22 @@ export async function listarDocumentos(
  * Elimina lógicamente un documento (eliminado=true) y mueve el objeto
  * en MinIO al prefijo deleted/.
  * Genera AuditLog del soft-delete.
+ *
+ * Solo ADMIN o REVISOR pueden eliminar (ver puedeEliminarDocumento). El
+ * permiso no depende de datos del documento, así que se valida ANTES de
+ * consultar la BD.
  */
 export async function eliminarDocumento(
   documentoId: string,
   usuarioId: string,
+  rol: Rol,
 ): Promise<void> {
+  if (!puedeEliminarDocumento(rol)) {
+    throw new DocumentoPermisoError(
+      "No tienes permiso para eliminar documentos. Solo ADMIN o REVISOR pueden hacerlo.",
+    );
+  }
+
   const doc = await prisma.documento.findUnique({
     where: { id: documentoId },
   });
@@ -276,6 +335,8 @@ export async function eliminarDocumento(
   }
 
   await prisma.$transaction(async (tx) => {
+    await assertTramiteModificable(tx, doc.tramiteId);
+
     const updated = await tx.documento.update({
       where: { id: documentoId },
       data: { eliminado: true },
@@ -300,6 +361,86 @@ export async function eliminarDocumento(
   } catch {
     // No revertir el soft-delete de BD; el objeto MinIO puede limpiarse manualmente
   }
+}
+
+/**
+ * Reemplaza el archivo de un documento EXISTENTE (mismo id) por uno nuevo ya
+ * subido a MinIO (el cliente ya hizo el PUT prefirmado, igual que en el flujo
+ * de subida normal — ver solicitarSubida()).
+ *
+ * Decisión de diseño (no hay migraciones de schema disponibles en esta tarea):
+ * "reemplazar" ACTUALIZA el registro Documento en sitio (mismo id; nuevo
+ * storageKey/nombreArchivo/mimeType/tamanoBytes) en lugar de hacer
+ * "eliminar + subir uno nuevo". Motivo: Documento tiene relaciones ENTRANTES
+ * (PagoTramite.soporteDocumento, PagoTramite.comprobanteComercio,
+ * FacturaProveedor.documento) que apuntan por documentoId; crear un id nuevo
+ * dejaría esas referencias apuntando al documento viejo ya marcado
+ * eliminado=true. subidoPorId se conserva (representa la procedencia
+ * original); quién reemplazó y cuándo queda registrado en el AuditLog
+ * (antes/después). El archivo anterior en MinIO se mueve al prefijo
+ * deleted/ con el mismo mecanismo que eliminarDocumento (no se pierde el
+ * histórico).
+ */
+export async function reemplazarDocumento(
+  input: ReemplazarDocumentoInput,
+): Promise<Documento> {
+  const doc = await prisma.documento.findUnique({
+    where: { id: input.documentoId },
+  });
+
+  if (!doc) {
+    throw new DocumentoNoEncontradoError(input.documentoId);
+  }
+
+  if (doc.eliminado) {
+    throw new DocumentoYaEliminadoError(input.documentoId);
+  }
+
+  if (!puedeReemplazarDocumento(input.rol, doc, input.usuarioId)) {
+    throw new DocumentoPermisoError(
+      "No tienes permiso para reemplazar este documento. Solo quien lo subió, ADMIN o REVISOR pueden reemplazarlo.",
+    );
+  }
+
+  const storageKeyAnterior = doc.storageKey;
+
+  const actualizado = await prisma.$transaction(async (tx) => {
+    await assertTramiteModificable(tx, doc.tramiteId);
+
+    const updated = await tx.documento.update({
+      where: { id: input.documentoId },
+      data: {
+        storageKey: input.storageKey,
+        nombreArchivo: input.nombreArchivo,
+        mimeType: input.mimeType,
+        tamanoBytes: input.tamanoBytes,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "Documento",
+        entidadId: input.documentoId,
+        accion: "REPLACE",
+        usuarioId: input.usuarioId,
+        tramiteId: doc.tramiteId,
+        antes: normalizeSerializable(doc),
+        despues: normalizeSerializable(updated),
+      },
+    });
+
+    return updated;
+  });
+
+  // Soft-delete del archivo anterior en MinIO (fuera de la transacción de BD
+  // para no bloquearla; igual que eliminarDocumento).
+  try {
+    await softDeleteStorageObject({ storageKey: storageKeyAnterior, deletedBy: input.usuarioId });
+  } catch {
+    // No revertir el reemplazo en BD; el objeto viejo puede limpiarse manualmente.
+  }
+
+  return actualizado;
 }
 
 /**

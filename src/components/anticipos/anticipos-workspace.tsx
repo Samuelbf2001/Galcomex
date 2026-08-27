@@ -5,7 +5,10 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Download,
+  FileCheck2,
   Loader2,
+  Paperclip,
   Plus,
   RotateCcw,
   Wallet,
@@ -30,7 +33,34 @@ import {
   fetchTramiteOptions,
   formatCOP,
   formatDate,
+  obtenerUrlDescargaSoporte,
+  solicitarUploadUrlSoporte,
+  subirComprobante,
+  validarArchivoSoporte,
 } from "@/components/anticipos/anticipos-api";
+
+// ─── Hook: rol del usuario actual (mismo patrón que clientes-workspace.tsx) ────
+
+function isRecordUnknown(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function useUserRol(): string {
+  const [rol, setRol] = useState<string>("OPERATIVO");
+
+  useEffect(() => {
+    fetch("/api/auth/get-session", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (isRecordUnknown(data) && isRecordUnknown(data.user) && typeof data.user.rol === "string") {
+          setRol(data.user.rol);
+        }
+      })
+      .catch(() => {/* silencioso */});
+  }, []);
+
+  return rol;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,13 +104,58 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [montoRaw, setMontoRaw] = useState("");
+  const [clienteId, setClienteId] = useState("");
+
+  // Soporte del anticipo (comprobante bancario) — obligatorio.
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [soporteKey, setSoporteKey] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    setUploadError(null);
+    setSoporteKey(null);
+    setFileName(null);
+    if (!f) return;
+
+    if (!clienteId) {
+      setUploadError("Selecciona un cliente antes de adjuntar el comprobante.");
+      return;
+    }
+
+    const problema = validarArchivoSoporte(f);
+    if (problema) {
+      setUploadError(problema);
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const { storageKey, uploadUrl } = await solicitarUploadUrlSoporte({
+        consecutivo: clienteId,
+        fileName: f.name,
+        contentType: f.type,
+        sizeBytes: f.size,
+      });
+      await subirComprobante(uploadUrl, f);
+      setSoporteKey(storageKey);
+      setFileName(f.name);
+    } catch (caught) {
+      setUploadError(
+        caught instanceof AnticiposApiError ? caught.message : "Error al subir el comprobante.",
+      );
+    } finally {
+      setUploading(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
 
     const formData = new FormData(e.currentTarget);
-    const clienteId = String(formData.get("clienteId") ?? "").trim();
     const fecha = String(formData.get("fecha") ?? "").trim();
     const tipoRecaudo = String(formData.get("tipoRecaudo") ?? "") as TipoRecaudo;
 
@@ -90,6 +165,11 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
     const montoBig = parseBigIntInput(montoRaw);
     if (!montoBig) { setError("El monto debe ser un número entero mayor a 0."); return; }
 
+    if (!soporteKey) {
+      setError("Adjunta el comprobante del anticipo antes de continuar.");
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const anticipo = await createAnticipo({
@@ -98,6 +178,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
         fecha: new Date(`${fecha}T00:00:00.000Z`).toISOString(),
         tipoRecaudo,
         verificadoBanco: false,
+        soporteKey,
       });
       onCreated(anticipo);
     } catch (caught) {
@@ -128,6 +209,8 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
             <select
               name="clienteId"
               required
+              value={clienteId}
+              onChange={(e) => setClienteId(e.target.value)}
               className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
             >
               <option value="">Seleccionar cliente</option>
@@ -187,6 +270,46 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
             </select>
           </label>
 
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Comprobante de pago (soporte) *</span>
+            <div className="flex items-center gap-2">
+              <label
+                className={`inline-flex h-10 cursor-pointer items-center gap-2 border px-3 text-sm font-medium transition ${
+                  !clienteId
+                    ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                <Paperclip className="h-4 w-4" aria-hidden="true" />
+                Adjuntar archivo
+                <input
+                  type="file"
+                  accept="application/pdf,image/jpeg,image/png"
+                  className="hidden"
+                  disabled={!clienteId || uploading}
+                  onChange={(e) => void handleFileChange(e)}
+                />
+              </label>
+              {uploading ? (
+                <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  Subiendo…
+                </span>
+              ) : soporteKey && fileName ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                  <FileCheck2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  {fileName}
+                </span>
+              ) : null}
+            </div>
+            {!clienteId ? (
+              <p className="text-xs text-slate-500">Selecciona un cliente primero.</p>
+            ) : null}
+            {uploadError ? (
+              <p className="text-xs font-medium text-rose-600">{uploadError}</p>
+            ) : null}
+          </label>
+
           {error ? (
             <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
@@ -204,7 +327,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || uploading || !soporteKey}
               className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
             >
               {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
@@ -363,15 +486,34 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
 
 type AnticipoFilaProps = {
   anticipo: AnticipoRow;
+  esAdmin: boolean;
   onAplicar: (anticipo: AnticipoRow) => void;
   onEliminarAplicacion: (anticipoId: string, aplicacionId: string) => void;
   onVerificar: (id: string) => Promise<void>;
   deletingAplicacionId: string | null;
 };
 
-function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, onVerificar, deletingAplicacionId }: AnticipoFilaProps) {
+function AnticipoFila({ anticipo, esAdmin, onAplicar, onEliminarAplicacion, onVerificar, deletingAplicacionId }: AnticipoFilaProps) {
   const [expanded, setExpanded] = useState(false);
+  const [descargando, setDescargando] = useState(false);
+  const [descargaError, setDescargaError] = useState<string | null>(null);
   const hasAplicaciones = anticipo.aplicaciones.length > 0;
+
+  async function handleDescargar() {
+    if (!anticipo.soporteKey) return;
+    setDescargando(true);
+    setDescargaError(null);
+    try {
+      const url = await obtenerUrlDescargaSoporte(anticipo.soporteKey);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (caught) {
+      setDescargaError(
+        caught instanceof AnticiposApiError ? caught.message : "Error al obtener el comprobante.",
+      );
+    } finally {
+      setDescargando(false);
+    }
+  }
 
   return (
     <>
@@ -448,7 +590,7 @@ function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, onVerificar, 
                 BORRADOR
               </span>
             )}
-            {anticipo.estado === "REALIZADO" && (
+            {anticipo.estado === "REALIZADO" && esAdmin && (
               <button
                 type="button"
                 onClick={() => void onVerificar(anticipo.id)}
@@ -467,7 +609,26 @@ function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, onVerificar, 
               <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
               Aplicar
             </button>
+            {anticipo.soporteKey ? (
+              <button
+                type="button"
+                onClick={() => void handleDescargar()}
+                disabled={descargando}
+                className="inline-flex h-7 items-center gap-1.5 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
+                title="Ver comprobante"
+              >
+                {descargando ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                Comprobante
+              </button>
+            ) : null}
           </div>
+          {descargaError ? (
+            <p className="mt-1 text-[10px] font-medium text-rose-600">{descargaError}</p>
+          ) : null}
         </td>
       </tr>
 
@@ -532,6 +693,8 @@ function AnticipoFila({ anticipo, onAplicar, onEliminarAplicacion, onVerificar, 
 // ---------------------------------------------------------------------------
 
 export function AnticiposWorkspace() {
+  const userRol = useUserRol();
+  const esAdmin = userRol === "ADMIN";
   const [anticipos, setAnticipos] = useState<AnticipoRow[]>([]);
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
   const [tramites, setTramites] = useState<TramiteOption[]>([]);
@@ -844,6 +1007,7 @@ export function AnticiposWorkspace() {
                   <AnticipoFila
                     key={anticipo.id}
                     anticipo={anticipo}
+                    esAdmin={esAdmin}
                     onAplicar={(a) => setAplicarTarget(a)}
                     onEliminarAplicacion={handleEliminarAplicacion}
                     onVerificar={handleVerificar}

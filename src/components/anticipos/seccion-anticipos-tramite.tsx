@@ -3,7 +3,10 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  Download,
+  FileCheck2,
   Loader2,
+  Paperclip,
   Plus,
   Wallet,
   X,
@@ -13,6 +16,7 @@ import { useEffect, useState } from "react";
 import {
   TIPOS_RECAUDO,
   type AnticipoRow,
+  type EstadoMovimiento,
   type TipoRecaudo,
   AnticiposApiError,
   aplicarAnticipo,
@@ -20,6 +24,10 @@ import {
   fetchAnticipos,
   formatCOP,
   formatDate,
+  obtenerUrlDescargaSoporte,
+  solicitarUploadUrlSoporte,
+  subirComprobante,
+  validarArchivoSoporte,
 } from "@/components/anticipos/anticipos-api";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -34,10 +42,35 @@ export type AplicacionAnticipoEntry = {
     tipoRecaudo: string;
     costoRecaudo: string;
     verificadoBanco: boolean;
+    estado: EstadoMovimiento;
+    soporteKey: string | null;
   };
 };
 
 type Cliente = { id: string; nombre: string; nit: string };
+
+// ─── Hook: rol del usuario actual (mismo patrón que clientes-workspace.tsx) ────
+
+function isRecordUnknown(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function useUserRol(): string {
+  const [rol, setRol] = useState<string>("OPERATIVO");
+
+  useEffect(() => {
+    fetch("/api/auth/get-session", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (isRecordUnknown(data) && isRecordUnknown(data.user) && typeof data.user.rol === "string") {
+          setRol(data.user.rol);
+        }
+      })
+      .catch(() => {/* silencioso */});
+  }, []);
+
+  return rol;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -82,6 +115,46 @@ export function RegistrarAnticipoTramiteModal({
   const [aplicarTodo, setAplicarTodo] = useState(true);
   const [montoAplicarRaw, setMontoAplicarRaw] = useState("");
 
+  // Soporte del anticipo (comprobante bancario) — obligatorio.
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [soporteKey, setSoporteKey] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    setUploadError(null);
+    setSoporteKey(null);
+    setFileName(null);
+    if (!f) return;
+
+    const problema = validarArchivoSoporte(f);
+    if (problema) {
+      setUploadError(problema);
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const { storageKey, uploadUrl } = await solicitarUploadUrlSoporte({
+        consecutivo: cliente.id,
+        fileName: f.name,
+        contentType: f.type,
+        sizeBytes: f.size,
+      });
+      await subirComprobante(uploadUrl, f);
+      setSoporteKey(storageKey);
+      setFileName(f.name);
+    } catch (caught) {
+      setUploadError(
+        caught instanceof AnticiposApiError ? caught.message : "Error al subir el comprobante.",
+      );
+    } finally {
+      setUploading(false);
+    }
+  }
+
   const montoBig = parseBigIntInput(montoRaw);
   const montoAplicarBig = aplicarTodo ? montoBig : parseBigIntInput(montoAplicarRaw);
   const sobreAplicando =
@@ -118,6 +191,11 @@ export function RegistrarAnticipoTramiteModal({
       return;
     }
 
+    if (!soporteKey) {
+      setError("Adjunta el comprobante del anticipo antes de continuar.");
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const anticipo = await createAnticipo({
@@ -126,6 +204,7 @@ export function RegistrarAnticipoTramiteModal({
         fecha: new Date(`${fecha}T00:00:00.000Z`).toISOString(),
         tipoRecaudo,
         verificadoBanco: false,
+        soporteKey,
       });
 
       try {
@@ -233,6 +312,36 @@ export function RegistrarAnticipoTramiteModal({
             </select>
           </label>
 
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Comprobante de pago (soporte) *</span>
+            <div className="flex items-center gap-2">
+              <label className="inline-flex h-10 cursor-pointer items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
+                <Paperclip className="h-4 w-4" aria-hidden="true" />
+                Adjuntar archivo
+                <input
+                  type="file"
+                  accept="application/pdf,image/jpeg,image/png"
+                  className="hidden"
+                  disabled={uploading}
+                  onChange={(e) => void handleFileChange(e)}
+                />
+              </label>
+              {uploading ? (
+                <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  Subiendo…
+                </span>
+              ) : soporteKey && fileName ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                  <FileCheck2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  {fileName}
+                </span>
+              ) : null}
+            </div>
+            {uploadError ? (
+              <p className="text-xs font-medium text-rose-600">{uploadError}</p>
+            ) : null}
+          </label>
 
           {/* Aplicación a este DO */}
           <div className="space-y-2 border-t border-slate-200 pt-4">
@@ -283,7 +392,7 @@ export function RegistrarAnticipoTramiteModal({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || sobreAplicando}
+              disabled={isSubmitting || sobreAplicando || uploading || !soporteKey}
               className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
             >
               {isSubmitting ? (
@@ -502,6 +611,134 @@ function AplicarExistenteModal({
   );
 }
 
+// ─── Fila de aplicación: badge de verificación + acción Verificar + comprobante ─
+
+type FilaAplicacionProps = {
+  ap: AplicacionAnticipoEntry;
+  esAdmin: boolean;
+  onVerificado: () => void;
+};
+
+function FilaAplicacion({ ap, esAdmin, onVerificado }: FilaAplicacionProps) {
+  const [verificando, setVerificando] = useState(false);
+  const [verificarError, setVerificarError] = useState<string | null>(null);
+  const [descargando, setDescargando] = useState(false);
+  const [descargaError, setDescargaError] = useState<string | null>(null);
+
+  const verificado = ap.anticipo.estado === "VERIFICADO";
+
+  async function handleVerificar() {
+    setVerificando(true);
+    setVerificarError(null);
+    try {
+      const response = await fetch(`/api/anticipos/${ap.anticipo.id}/verificar`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ estado: "VERIFICADO" as EstadoMovimiento }),
+      });
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => null);
+        const msg =
+          isRecordUnknown(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `Error al verificar (${response.status}).`;
+        setVerificarError(msg);
+        return;
+      }
+      onVerificado();
+    } catch {
+      setVerificarError("Error de red al verificar.");
+    } finally {
+      setVerificando(false);
+    }
+  }
+
+  async function handleDescargar() {
+    if (!ap.anticipo.soporteKey) return;
+    setDescargando(true);
+    setDescargaError(null);
+    try {
+      const url = await obtenerUrlDescargaSoporte(ap.anticipo.soporteKey);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (caught) {
+      setDescargaError(
+        caught instanceof AnticiposApiError ? caught.message : "Error al obtener el comprobante.",
+      );
+    } finally {
+      setDescargando(false);
+    }
+  }
+
+  return (
+    <tr className="border-b border-slate-100 last:border-b-0">
+      <td className="px-4 py-3 text-slate-600">{formatDate(ap.anticipo.fecha)}</td>
+      <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
+        {formatCOP(ap.anticipo.monto)}
+      </td>
+      <td className="px-4 py-3 text-right font-mono font-semibold text-cyan-700">
+        {formatCOP(ap.montoAplicado)}
+      </td>
+      <td className="px-4 py-3 text-xs text-slate-600">
+        {tipoRecaudoLabel(ap.anticipo.tipoRecaudo)}
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {verificado ? (
+            <span className="inline-flex items-center gap-1 border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+              <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+              Verificado
+            </span>
+          ) : (
+            <span className="inline-flex items-center border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+              Pendiente de verificar
+            </span>
+          )}
+          {!verificado && esAdmin ? (
+            <button
+              type="button"
+              onClick={() => void handleVerificar()}
+              disabled={verificando}
+              className="inline-flex h-6 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-[10px] font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
+              title="Marcar como verificado"
+            >
+              {verificando ? (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              ) : null}
+              Verificar
+            </button>
+          ) : null}
+        </div>
+        {verificarError ? (
+          <p className="mt-1 text-[10px] font-medium text-rose-600">{verificarError}</p>
+        ) : null}
+      </td>
+      <td className="px-4 py-3">
+        {ap.anticipo.soporteKey ? (
+          <button
+            type="button"
+            onClick={() => void handleDescargar()}
+            disabled={descargando}
+            className="inline-flex h-6 items-center gap-1 border border-slate-300 bg-white px-2 text-[10px] font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            title="Ver comprobante"
+          >
+            {descargando ? (
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+            ) : (
+              <Download className="h-3 w-3" aria-hidden="true" />
+            )}
+            Ver
+          </button>
+        ) : (
+          <span className="text-xs text-slate-400">—</span>
+        )}
+        {descargaError ? (
+          <p className="mt-1 text-[10px] font-medium text-rose-600">{descargaError}</p>
+        ) : null}
+      </td>
+    </tr>
+  );
+}
+
 // ─── Sección Anticipos del DO (interactiva) ─────────────────────────────────────
 
 type SeccionAnticiposTramiteProps = {
@@ -519,6 +756,8 @@ export function SeccionAnticiposTramite({
   puedeEditar,
   onRefresh,
 }: SeccionAnticiposTramiteProps) {
+  const userRol = useUserRol();
+  const esAdmin = userRol === "ADMIN";
   const [modal, setModal] = useState<null | "crear" | "aplicar">(null);
 
   function handleDone() {
@@ -577,36 +816,12 @@ export function SeccionAnticiposTramite({
                 </th>
                 <th className="border-b border-slate-200 px-4 py-3">Recaudo</th>
                 <th className="border-b border-slate-200 px-4 py-3">Verificado</th>
+                <th className="border-b border-slate-200 px-4 py-3">Comprobante</th>
               </tr>
             </thead>
             <tbody>
               {aplicaciones.map((ap) => (
-                <tr key={ap.id} className="border-b border-slate-100 last:border-b-0">
-                  <td className="px-4 py-3 text-slate-600">
-                    {formatDate(ap.anticipo.fecha)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
-                    {formatCOP(ap.anticipo.monto)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono font-semibold text-cyan-700">
-                    {formatCOP(ap.montoAplicado)}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-slate-600">
-                    {tipoRecaudoLabel(ap.anticipo.tipoRecaudo)}
-                  </td>
-                  <td className="px-4 py-3">
-                    {ap.anticipo.verificadoBanco ? (
-                      <CheckCircle2
-                        className="h-4 w-4 text-emerald-600"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <span className="inline-flex items-center border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
-                        Pendiente verificar
-                      </span>
-                    )}
-                  </td>
-                </tr>
+                <FilaAplicacion key={ap.id} ap={ap} esAdmin={esAdmin} onVerificado={onRefresh} />
               ))}
             </tbody>
           </table>
