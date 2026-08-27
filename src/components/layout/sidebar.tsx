@@ -4,10 +4,12 @@ import {
   ClipboardList,
   FileCheck2,
   Gauge,
+  Handshake,
   Receipt,
   Settings,
   Ship,
   TrendingUp,
+  UploadCloud,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -40,6 +42,12 @@ const navItems = [
     roles: ["ADMIN", "REVISOR"] satisfies Rol[],
   },
   {
+    href: "/liquidacion-lm",
+    label: "Liquidacion LM",
+    icon: Handshake,
+    roles: ["ADMIN", "REVISOR"] satisfies Rol[],
+  },
+  {
     href: "/anticipos",
     label: "Anticipos",
     icon: ClipboardList,
@@ -67,6 +75,12 @@ const navItems = [
     href: "/configuracion",
     label: "Configuracion",
     icon: Settings,
+    roles: ["ADMIN"] satisfies Rol[],
+  },
+  {
+    href: "/configuracion/importar",
+    label: "Importar Excel",
+    icon: UploadCloud,
     roles: ["ADMIN"] satisfies Rol[],
   },
 ];

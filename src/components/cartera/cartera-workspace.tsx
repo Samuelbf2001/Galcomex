@@ -17,8 +17,9 @@ import {
   X,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ConciliarLoteModal } from "@/components/cartera/conciliar-lote-modal";
 import { ModuleState } from "@/components/layout/module-state";
 import {
   OPCIONES_RECAUDO_PAGO,
@@ -660,6 +661,9 @@ function PagosList({ pagos, destino, facturaId, onAnulado, onVerificar }: PagosL
 type FilaFacturaProps = {
   factura: FacturaRow;
   vista: VistaMode;
+  selected: boolean;
+  selectable: boolean;
+  onToggleSelect: () => void;
   onRegistrarAbono: (factura: FacturaRow, destino: "CLIENTE" | "LM") => void;
   onRegistrarDevolucion: (factura: FacturaRow, destino: "CLIENTE" | "LM") => void;
   onAnulado: () => void;
@@ -669,6 +673,9 @@ type FilaFacturaProps = {
 function FilaFactura({
   factura,
   vista,
+  selected,
+  selectable,
+  onToggleSelect,
   onRegistrarAbono,
   onRegistrarDevolucion,
   onAnulado,
@@ -694,6 +701,18 @@ function FilaFactura({
             : "hover:bg-slate-50"
         }`}
       >
+        {/* Checkbox selección batch */}
+        <td className="px-3 py-3 whitespace-nowrap">
+          <input
+            type="checkbox"
+            checked={selected}
+            disabled={!selectable}
+            onChange={onToggleSelect}
+            aria-label="Seleccionar trámite"
+            className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
+          />
+        </td>
+
         {/* DO */}
         <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
           {factura.borrador?.tramite.consecutivo ?? "—"}
@@ -792,7 +811,7 @@ function FilaFactura({
       {/* Fila expandible de pagos */}
       {expandido && (
         <tr>
-          <td colSpan={8} className="p-0">
+          <td colSpan={9} className="p-0">
             <PagosList
               pagos={factura.pagos}
               destino={destino}
@@ -885,8 +904,6 @@ export function CarteraWorkspace() {
 
   const initialClienteId = searchParams.get("clienteId") ?? "";
   const initialPendientes = searchParams.get("pendientes") === "true";
-  const initialFechaDesde = searchParams.get("fechaDesde") ?? "";
-  const initialFechaHasta = searchParams.get("fechaHasta") ?? "";
 
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
   const [clientesLoading, setClientesLoading] = useState(true);
@@ -894,8 +911,8 @@ export function CarteraWorkspace() {
 
   const [clienteId, setClienteId] = useState<string>(initialClienteId);
   const [soloPendientes, setSoloPendientes] = useState(initialPendientes);
-  const [fechaDesde, setFechaDesde] = useState<string>(initialFechaDesde);
-  const [fechaHasta, setFechaHasta] = useState<string>(initialFechaHasta);
+  const [desde, setDesde] = useState<string>(searchParams.get("desde") ?? "");
+  const [hasta, setHasta] = useState<string>(searchParams.get("hasta") ?? "");
   const [vista, setVista] = useState<VistaMode>("cliente");
 
   const [cartera, setCartera] = useState<CarteraData | null>(null);
@@ -907,6 +924,34 @@ export function CarteraWorkspace() {
   // Modal state
   type ModalTarget = { factura: FacturaRow; destino: "CLIENTE" | "LM"; tipo: TipoModal };
   const [modalTarget, setModalTarget] = useState<ModalTarget | null>(null);
+
+  // ── Selección batch ──────────────────────────────────────────────────────
+  const [selectedFacturas, setSelectedFacturas] = useState<Set<string>>(new Set());
+  const [loteModalOpen, setLoteModalOpen] = useState(false);
+
+  const destinoActivo: "CLIENTE" | "LM" = vista === "cliente" ? "CLIENTE" : "LM";
+
+  // Toggle vista: limpia selección porque el destino cambia
+  const handleVistaChange = useCallback((next: VistaMode) => {
+    setVista((prev) => {
+      if (prev !== next) {
+        setSelectedFacturas(new Set());
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleFactura = useCallback((id: string) => {
+    setSelectedFacturas((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   // ── Cargar clientes ──────────────────────────────────────────────────────
 
@@ -936,12 +981,12 @@ export function CarteraWorkspace() {
   // ── Actualizar URL ───────────────────────────────────────────────────────
 
   const syncUrl = useCallback(
-    (cid: string, pendientes: boolean, desde: string, hasta: string) => {
+    (cid: string, pendientes: boolean, d: string, h: string) => {
       const params = new URLSearchParams();
       if (cid) params.set("clienteId", cid);
       params.set("pendientes", String(pendientes));
-      if (desde) params.set("fechaDesde", desde);
-      if (hasta) params.set("fechaHasta", hasta);
+      if (d) params.set("desde", d);
+      if (h) params.set("hasta", h);
       const next =
         params.toString() ? `?${params.toString()}` : window.location.pathname;
       router.replace(next, { scroll: false });
@@ -969,7 +1014,13 @@ export function CarteraWorkspace() {
       }
       setLoadState("loading");
       setLoadError(null);
-      const data = await fetchCartera(clienteId, soloPendientes, controller.signal);
+      const data = await fetchCartera(
+        clienteId,
+        soloPendientes,
+        desde || undefined,
+        hasta || undefined,
+        controller.signal,
+      );
       setCartera(data);
       setLoadState("ready");
     }
@@ -985,33 +1036,33 @@ export function CarteraWorkspace() {
     });
 
     return () => controller.abort();
-  }, [clienteId, soloPendientes, reloadKey]);
+  }, [clienteId, soloPendientes, desde, hasta, reloadKey]);
 
   // ── Handlers ────────────────────────────────────────────────────────────
 
   function handleClienteChange(id: string) {
     setClienteId(id);
-    syncUrl(id, soloPendientes, fechaDesde, fechaHasta);
+    syncUrl(id, soloPendientes, desde, hasta);
   }
 
   function handlePendientesChange(val: boolean) {
     setSoloPendientes(val);
-    syncUrl(clienteId, val, fechaDesde, fechaHasta);
+    syncUrl(clienteId, val, desde, hasta);
   }
 
-  function handleFechaDesdeChange(val: string) {
-    setFechaDesde(val);
-    syncUrl(clienteId, soloPendientes, val, fechaHasta);
+  function handleDesdeChange(val: string) {
+    setDesde(val);
+    syncUrl(clienteId, soloPendientes, val, hasta);
   }
 
-  function handleFechaHastaChange(val: string) {
-    setFechaHasta(val);
-    syncUrl(clienteId, soloPendientes, fechaDesde, val);
+  function handleHastaChange(val: string) {
+    setHasta(val);
+    syncUrl(clienteId, soloPendientes, desde, val);
   }
 
   function handleLimpiarFechas() {
-    setFechaDesde("");
-    setFechaHasta("");
+    setDesde("");
+    setHasta("");
     syncUrl(clienteId, soloPendientes, "", "");
   }
 
@@ -1063,23 +1114,88 @@ export function CarteraWorkspace() {
 
   // ── Render ───────────────────────────────────────────────────────────────
 
-  const facturas = cartera?.facturas ?? [];
+  const facturas = useMemo<FacturaRow[]>(
+    () => cartera?.facturas ?? [],
+    [cartera],
+  );
+
+  // ── Selección batch: helpers derivados ──────────────────────────────────
+  const isElegible = useCallback(
+    (f: FacturaRow) => {
+      const saldo = vista === "cliente" ? f.saldoNetoCliente : f.saldoNetoLM;
+      try {
+        return BigInt(saldo) !== 0n;
+      } catch {
+        return false;
+      }
+    },
+    [vista],
+  );
+
+  const facturasElegibles = useMemo(
+    () => facturas.filter(isElegible),
+    [facturas, isElegible],
+  );
+
+  const allElegiblesSelected = useMemo(
+    () =>
+      facturasElegibles.length > 0 &&
+      facturasElegibles.every((f) => selectedFacturas.has(f.id)),
+    [facturasElegibles, selectedFacturas],
+  );
+
+  const pendienteTotalSeleccionado = useMemo(() => {
+    let total = 0n;
+    for (const f of facturas) {
+      if (!selectedFacturas.has(f.id)) continue;
+      const saldoStr = vista === "cliente" ? f.saldoNetoCliente : f.saldoNetoLM;
+      try {
+        const v = BigInt(saldoStr);
+        total += v < 0n ? -v : v;
+      } catch {
+        // ignore
+      }
+    }
+    return total;
+  }, [facturas, selectedFacturas, vista]);
+
+  const toggleAll = useCallback(() => {
+    setSelectedFacturas((prev) => {
+      if (
+        facturasElegibles.length > 0 &&
+        facturasElegibles.every((f) => prev.has(f.id))
+      ) {
+        return new Set();
+      }
+      return new Set(facturasElegibles.map((f) => f.id));
+    });
+  }, [facturasElegibles]);
+
+  // Poda automática tras recarga: quita de la selección facturas que ya no están en la lista
+  useEffect(() => {
+    setSelectedFacturas((prev) => {
+      if (prev.size === 0) return prev;
+      const ids = new Set(facturas.map((f) => f.id));
+      const filtered = new Set(Array.from(prev).filter((id) => ids.has(id)));
+      return filtered.size === prev.size ? prev : filtered;
+    });
+  }, [facturas]);
   const nombreCliente = clientes.find((c) => c.id === clienteId)?.nombre ?? "";
 
-  // Filtro de rango de fechas — client-side: getCarteraCliente() ya trae todas
-  // las facturas del cliente (sin paginar), así que filtrar en el navegador
-  // evita tocar el contrato de /api/cartera (compartido con PDF y Excel).
+  // Filtro de rango de fechas: el servidor ya filtra por desde/hasta (feature
+  // VPS); este pase client-side se mantiene como consistencia visual (feature
+  // ola 2) y como respaldo si el payload trae facturas fuera de rango.
   // Las tarjetas de cruce (CruceTarjetas) siguen mostrando el saldo oficial
   // completo del cliente, sin acotar por fecha, para no sugerir que el saldo
   // real cambia según el rango elegido; solo la tabla y su total "real a LM"
   // se acotan al rango visible.
   const facturasVisibles = facturas.filter((f) => {
     const fechaStr = f.fecha.slice(0, 10);
-    if (fechaDesde && fechaStr < fechaDesde) return false;
-    if (fechaHasta && fechaStr > fechaHasta) return false;
+    if (desde && fechaStr < desde) return false;
+    if (hasta && fechaStr > hasta) return false;
     return true;
   });
-  const hayFiltroFecha = Boolean(fechaDesde || fechaHasta);
+  const hayFiltroFecha = Boolean(desde || hasta);
 
   return (
     <>
@@ -1185,42 +1301,45 @@ export function CarteraWorkspace() {
             </div>
           </div>
 
-          {/* Filtro rango de fechas */}
+          {/* Filtro por periodo de fechas (fecha de emisión de la factura) */}
           <div className="flex flex-col gap-1">
             <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
-              Rango de fechas
+              Desde
             </span>
-            <div className="flex items-center gap-1.5">
-              <input
-                type="date"
-                value={fechaDesde}
-                onChange={(e) => handleFechaDesdeChange(e.target.value)}
-                max={fechaHasta || undefined}
-                aria-label="Fecha desde"
-                className="h-10 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
-              />
-              <span className="text-xs text-slate-400">a</span>
-              <input
-                type="date"
-                value={fechaHasta}
-                onChange={(e) => handleFechaHastaChange(e.target.value)}
-                min={fechaDesde || undefined}
-                aria-label="Fecha hasta"
-                className="h-10 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
-              />
-              {hayFiltroFecha && (
-                <button
-                  type="button"
-                  onClick={handleLimpiarFechas}
-                  title="Limpiar rango de fechas"
-                  aria-label="Limpiar rango de fechas"
-                  className="inline-flex h-10 w-10 items-center justify-center border border-slate-300 bg-white text-slate-500 transition hover:bg-slate-50"
-                >
-                  <X className="h-4 w-4" aria-hidden="true" />
-                </button>
-              )}
-            </div>
+            <input
+              type="date"
+              value={desde}
+              max={hasta || undefined}
+              onChange={(e) => handleDesdeChange(e.target.value)}
+              className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
+            />
           </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+              Hasta
+            </span>
+            <input
+              type="date"
+              value={hasta}
+              min={desde || undefined}
+              onChange={(e) => handleHastaChange(e.target.value)}
+              className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
+            />
+          </div>
+          {(desde || hasta) && (
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-transparent uppercase tracking-wide select-none">
+                Limpiar
+              </span>
+              <button
+                type="button"
+                onClick={handleLimpiarFechas}
+                className="h-10 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                Limpiar fechas
+              </button>
+            </div>
+          )}
 
           {/* Vista cliente / LM */}
           <div className="flex flex-col gap-1">
@@ -1230,7 +1349,7 @@ export function CarteraWorkspace() {
             <div className="flex gap-1.5">
               <button
                 type="button"
-                onClick={() => setVista("cliente")}
+                onClick={() => handleVistaChange("cliente")}
                 className={`h-10 border px-3 text-xs font-semibold transition ${
                   vista === "cliente"
                     ? "border-cyan-700 bg-cyan-700 text-white"
@@ -1241,7 +1360,7 @@ export function CarteraWorkspace() {
               </button>
               <button
                 type="button"
-                onClick={() => setVista("lm")}
+                onClick={() => handleVistaChange("lm")}
                 className={`h-10 border px-3 text-xs font-semibold transition ${
                   vista === "lm"
                     ? "border-violet-700 bg-violet-700 text-white"
@@ -1339,10 +1458,57 @@ export function CarteraWorkspace() {
                   </p>
                 </div>
 
+                {/* Bulk actions bar (selección batch) */}
+                {selectedFacturas.size > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-indigo-200 bg-indigo-50 px-4 py-2.5">
+                    <div className="text-xs text-indigo-900">
+                      <span className="font-semibold">
+                        {selectedFacturas.size}
+                      </span>{" "}
+                      trámite{selectedFacturas.size !== 1 ? "s" : ""} seleccionado
+                      {selectedFacturas.size !== 1 ? "s" : ""} ·{" "}
+                      <span className="text-indigo-700">
+                        Pendiente total{" "}
+                        ({vista === "cliente" ? "cliente" : "LM"}):
+                      </span>{" "}
+                      <span className="font-semibold">
+                        {formatCOP(pendienteTotalSeleccionado.toString())}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFacturas(new Set())}
+                        className="h-8 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Limpiar selección
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLoteModalOpen(true)}
+                        className="h-8 border border-indigo-700 bg-indigo-700 px-3 text-xs font-semibold text-white transition hover:bg-indigo-800"
+                      >
+                        Conciliar {selectedFacturas.size} trámite
+                        {selectedFacturas.size !== 1 ? "s" : ""}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+                  <table className="w-full min-w-[860px] border-collapse text-left text-sm">
                     <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                       <tr>
+                        <th className="border-b border-slate-200 px-3 py-2.5">
+                          <input
+                            type="checkbox"
+                            checked={allElegiblesSelected}
+                            disabled={facturasElegibles.length === 0}
+                            onChange={toggleAll}
+                            aria-label="Seleccionar todos los elegibles"
+                            className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
+                          />
+                        </th>
                         <th className="border-b border-slate-200 px-4 py-2.5">DO</th>
                         <th className="border-b border-slate-200 px-4 py-2.5">Factura</th>
                         <th className="border-b border-slate-200 px-4 py-2.5">Fecha</th>
@@ -1362,6 +1528,9 @@ export function CarteraWorkspace() {
                           key={f.id}
                           factura={f}
                           vista={vista}
+                          selected={selectedFacturas.has(f.id)}
+                          selectable={isElegible(f)}
+                          onToggleSelect={() => toggleFactura(f.id)}
                           onRegistrarAbono={(factura, destino) =>
                             setModalTarget({ factura, destino, tipo: "ABONO" })
                           }
@@ -1428,6 +1597,28 @@ export function CarteraWorkspace() {
           tipo={modalTarget.tipo}
           onClose={() => setModalTarget(null)}
           onRegistrado={handlePagoRegistrado}
+        />
+      ) : null}
+
+      {/* Modal conciliación batch */}
+      {loteModalOpen && selectedFacturas.size > 0 ? (
+        <ConciliarLoteModal
+          facturas={facturas.filter((f) => selectedFacturas.has(f.id))}
+          destino={destinoActivo}
+          onClose={() => setLoteModalOpen(false)}
+          onCompletado={(result) => {
+            const okIds = new Set(
+              result.results.filter((r) => r.ok).map((r) => r.facturaId),
+            );
+            setSelectedFacturas((prev) => {
+              const next = new Set(
+                Array.from(prev).filter((id) => !okIds.has(id)),
+              );
+              return next;
+            });
+            setLoteModalOpen(false);
+            recargar();
+          }}
         />
       ) : null}
     </>

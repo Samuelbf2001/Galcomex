@@ -25,6 +25,7 @@ import { assertTramiteModificable } from "@/lib/tramites/guard";
 export type SolicitarSubidaInput = {
   tramiteId: string;
   categoria: CategoriaDocumento;
+  carpeta?: string;
   fileName: string;
   contentType: string;
   sizeBytes: number;
@@ -155,6 +156,7 @@ function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
 async function getUploadUrl(input: {
   consecutivo: string;
   categoria: string;
+  carpeta?: string;
   fileName: string;
   contentType: string;
   sizeBytes: number;
@@ -193,6 +195,7 @@ export async function solicitarSubida(
   const result = await getUploadUrl({
     consecutivo: tramite.consecutivo,
     categoria: input.categoria,
+    carpeta: input.carpeta,
     fileName: input.fileName,
     contentType: input.contentType,
     sizeBytes: input.sizeBytes,

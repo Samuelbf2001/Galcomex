@@ -23,6 +23,7 @@ export type StorageFileInput = {
 export type StorageKeyInput = {
   consecutivo: string;
   categoria: string;
+  carpeta?: string;
   fileName?: string;
   contentType: string;
 };
@@ -83,15 +84,16 @@ export function generateStorageKey(input: StorageKeyInput): string {
     sizeBytes: 1,
   });
   const consecutivo = sanitizePathSegment(input.consecutivo, "consecutivo");
-  const categoria = sanitizePathSegment(input.categoria, "categoria");
+  const carpeta = sanitizePathSegment(input.carpeta ?? input.categoria, "carpeta");
   const extension = ALLOWED_STORAGE_FILE_TYPES[contentType];
 
-  return `tramites/${consecutivo}/${categoria}/${randomUUID()}.${extension}`;
+  return `tramites/${consecutivo}/${carpeta}/${randomUUID()}.${extension}`;
 }
 
 export async function createPresignedUploadUrl(input: {
   consecutivo: string;
   categoria: string;
+  carpeta?: string;
   fileName?: string;
   contentType: string;
   sizeBytes: number;

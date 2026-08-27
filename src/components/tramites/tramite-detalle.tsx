@@ -1561,7 +1561,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       {/* Contenido de pestañas */}
       <div className="mt-5">
         {activeTab === "hoja" ? (
-          <HojaTramite tramiteId={tramiteId} />
+          <HojaTramite tramiteId={tramiteId} userRol={userRol} />
         ) : null}
         {activeTab === "resumen" ? (
           <TabResumen

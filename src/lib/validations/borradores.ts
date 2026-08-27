@@ -2,8 +2,11 @@
  * Esquemas Zod para endpoints de borradores y facturas — Galcomex
  */
 
-import { EstadoBorrador, SeccionLinea } from "@prisma/client";
+import { CanalPago, EstadoBorrador, SeccionLinea, TipoRecaudo } from "@prisma/client";
 import { z } from "zod";
+
+/** Comisión interna Galcomex→Lucho: piso del acuerdo, valida en API y servicio. */
+export const COMISION_INTERNA_LM_MINIMO = 150_000n;
 
 // ── Generar borrador ──────────────────────────────────────────────────────────
 
@@ -76,6 +79,36 @@ export const actualizarComisionPayloadSchema = z.object({
 
 export type ActualizarComisionPayload = z.infer<typeof actualizarComisionPayloadSchema>;
 
+// ── Actualizar comisión interna LM (cruce) ────────────────────────────────────
+
+export const actualizarComisionInternaLMPayloadSchema = z
+  .object({
+    /** Comisión interna Galcomex→Lucho (COP, BigInt). Solo afecta el cruce interno.
+     *  Piso del acuerdo: COMISION_INTERNA_LM_MINIMO (150.000). */
+    comisionInternaLM: z.coerce
+      .bigint()
+      .refine((v) => v >= COMISION_INTERNA_LM_MINIMO, {
+        message: `La comisión interna LM no puede ser menor a ${COMISION_INTERNA_LM_MINIMO} COP`,
+      }),
+    /** Tipo de pago: exactamente uno de (tipoRecaudo, canalPago) debe estar set. */
+    tipoRecaudoComisionInternaLM: z.nativeEnum(TipoRecaudo).optional(),
+    canalPagoComisionInternaLM: z.nativeEnum(CanalPago).optional(),
+  })
+  .refine(
+    (d) =>
+      (d.tipoRecaudoComisionInternaLM !== undefined) !==
+      (d.canalPagoComisionInternaLM !== undefined),
+    {
+      message:
+        "Debe especificarse exactamente uno de tipoRecaudoComisionInternaLM o canalPagoComisionInternaLM.",
+      path: ["tipoRecaudoComisionInternaLM"],
+    },
+  );
+
+export type ActualizarComisionInternaLMPayload = z.infer<
+  typeof actualizarComisionInternaLMPayloadSchema
+>;
+
 // ── Transición de estado ──────────────────────────────────────────────────────
 
 export const transicionBorradorPayloadSchema = z
@@ -122,10 +155,26 @@ export type RegistrarPagoFacturaPayload = z.infer<typeof registrarPagoFacturaPay
 
 // ── Cartera query ─────────────────────────────────────────────────────────────
 
+const fechaIso = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha debe tener formato YYYY-MM-DD")
+  .optional();
+
 export const carteraQuerySchema = z.object({
   clienteId: z.string().min(1, "clienteId es obligatorio"),
   pendientes: z
     .string()
     .optional()
     .transform((v) => v === "true"),
+  desde: fechaIso,
+  hasta: fechaIso,
 });
+
+// ── Liquidación por lotes LM (cuenta Lucho) ───────────────────────────────────
+
+export const liquidacionLMQuerySchema = z.object({
+  desde: fechaIso,
+  hasta: fechaIso,
+});
+
+export type LiquidacionLMQuery = z.infer<typeof liquidacionLMQuerySchema>;
