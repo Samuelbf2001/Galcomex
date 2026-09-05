@@ -100,21 +100,44 @@ factura que no se le cobra al cliente.
 - **142/142 tests puros** verdes, incluidos los 79 casos dorados del motor de
   factura (tolerancia 0 pesos) — el refactor no tocó la matemática.
 
-### ⚠️ Pendiente de aplicar (requiere Postgres arriba)
+### ✅ Verificado contra la BD real (2026-09-05)
 
-Docker Desktop estaba abajo durante la implementación, así que **las seis
-migraciones no se han aplicado** y los tests de integración quedan en `skip`.
-Al levantar el stack:
+Postgres arriba, las 5 migraciones aplicadas y todo comprobado de punta a punta:
 
-```bash
-docker compose up -d postgres
-npx prisma migrate deploy
-npm run db:seed          # sincroniza el catálogo de capacidades
-npm run test             # la suite completa, incl. los 12 tests de capacidades
-```
+- `prisma migrate deploy` → 5 migraciones nuevas sobre las 30 previas, sin incidentes.
+- `prisma migrate diff` → **"No difference detected"**. Las migraciones escritas a
+  mano coinciden exactamente con el schema: cero drift.
+- `npm run test` → **506/506 tests**. La única suite roja es
+  `src/lib/import/__tests__/grupo-e-papis.test.ts`, que ni siquiera arranca porque
+  falta la carpeta `documentos referencia/` en este equipo — pre-existente, viene
+  del commit de reconciliación con el VPS y no la tocó este trabajo.
+- `npx tsx scripts/demo-configurabilidad.ts` → verde entero, dos veces seguidas
+  (la limpieza es idempotente).
 
-El test de capacidades se auto-omite con un mensaje explícito si el catálogo
-está vacío, para que un olvido de `migrate deploy` no pase como verde.
+Estado real de la base tras aplicar:
+
+| Comprobación | Resultado |
+|---|---|
+| Capacidades sembradas | 13, solo `anticipos_cliente` en `true` por defecto |
+| Tipos de trámite | 2 — IMPORTACION (DO, por ciudad y año) y CLASIFICACION (CLAS, por año, factura aparte) |
+| Tablas nuevas | `capacidad`, `empresa_capacidad`, `grupo_empresa`, `grupo_empresa_capacidad`, `tipo_tramite`, `movimiento_cuenta` |
+| Columnas nuevas | `cliente.esCliente/esProveedor/grupoEmpresaId`, `beneficiario.empresaId`, `factura_proveedor.repercutible`, `tramite_do.tipoTramiteCodigo/referenciaExterna` |
+| `tramite_do.agenciaAduanas` | nullable |
+| Trámites históricos | 9, todos quedaron como IMPORTACION |
+| **Backfill de la regla de agencia** | **LITOPLAS S.A. real quedó con `regla_agencia_fija` encendida y la config que replica el `if` retirado** |
+
+Ese último punto es el que importa: la regla que estaba escrita contra el nombre
+de la empresa se retiró del código y el comportamiento quedó idéntico, con el
+dato en la ficha.
+
+### Dos bugs encontrados durante la verificación (corregidos)
+
+1. **La demo podía borrar datos ajenos.** Usaba el prefijo `DEMO-`, que ya existía
+   en la BD de desarrollo con datos de otra prueba (una empresa y el DO
+   `DO.CTG26-9009` con anticipo aplicado). Su limpieza los habría borrado. Ahora
+   usa `DEMO-CFG-` y recorre las FK completas en orden.
+2. **Etiqueta engañosa en el cruce.** La tabla marcaba `no — no se le cobra al
+   cliente` también cuando la factura sí se cobra y simplemente cuadra.
 
 ---
 
