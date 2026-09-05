@@ -1331,14 +1331,19 @@ export function RevisorBorrador({
                   <div className="space-y-2">
                     {cruce.map((fp) => {
                       const dif = globalThis.BigInt(fp.diferencia);
-                      const cuadra = dif === 0n;
+                      // Una factura que no se traslada al cliente (asesoría a
+                      // nombre de Galcomex) nunca tiene línea de venta: su
+                      // desfase no es un problema y no se pinta como alerta.
+                      const cuadra = !fp.esDesviacion;
                       return (
                         <div
                           key={fp.id}
                           className={`border px-3 py-2.5 text-sm ${
-                            cuadra
-                              ? "border-emerald-200 bg-emerald-50"
-                              : "border-amber-200 bg-amber-50"
+                            !fp.repercutible
+                              ? "border-slate-200 bg-slate-50"
+                              : cuadra
+                                ? "border-emerald-200 bg-emerald-50"
+                                : "border-amber-200 bg-amber-50"
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
@@ -1352,12 +1357,18 @@ export function RevisorBorrador({
                             </div>
                             <span
                               className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 border ${
-                                cuadra
-                                  ? "border-emerald-300 bg-emerald-100 text-emerald-700"
-                                  : "border-amber-300 bg-amber-100 text-amber-700"
+                                !fp.repercutible
+                                  ? "border-slate-300 bg-slate-100 text-slate-600"
+                                  : cuadra
+                                    ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                                    : "border-amber-300 bg-amber-100 text-amber-700"
                               }`}
                             >
-                              {cuadra ? "Cuadra" : "Desfase"}
+                              {!fp.repercutible
+                                ? "No se cobra al cliente"
+                                : cuadra
+                                  ? "Cuadra"
+                                  : "Desfase"}
                             </span>
                           </div>
 
@@ -1378,14 +1389,16 @@ export function RevisorBorrador({
                               <dt className="text-slate-500">Diferencia</dt>
                               <dd
                                 className={`font-bold ${
-                                  cuadra
-                                    ? "text-emerald-700"
-                                    : dif > 0n
-                                      ? "text-amber-700"
-                                      : "text-rose-700"
+                                  !fp.repercutible
+                                    ? "text-slate-500"
+                                    : cuadra
+                                      ? "text-emerald-700"
+                                      : dif > 0n
+                                        ? "text-amber-700"
+                                        : "text-rose-700"
                                 }`}
                               >
-                                {cuadra
+                                {dif === 0n
                                   ? formatCOP("0")
                                   : dif > 0n
                                     ? `+${formatCOP(fp.diferencia)}`

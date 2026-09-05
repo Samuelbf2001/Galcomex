@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { calcularCruceFacturas } from "../cruce-facturas";
+import { calcularCruceFacturas, desviacionesDelCruce } from "../cruce-facturas";
 
 const fp1 = { id: "fp-1", proveedorNombre: "DIAN", numFactura: "D-001", valor: 17_299_000n };
 const fp2 = { id: "fp-2", proveedorNombre: "CONTECAR", numFactura: "C-002", valor: 7_024_869n };
@@ -75,5 +75,61 @@ describe("calcularCruceFacturas", () => {
     expect(result[0]!.montoPagado).toBe("17299000");
     expect(result[0]!.montoFacturado).toBe("17299000");
     expect(result[0]!.diferencia).toBe("0");
+  });
+});
+
+describe("calcularCruceFacturas — repercusión al cliente (M6)", () => {
+  const asesoria = {
+    id: "fp-asesoria",
+    proveedorNombre: "ASCINTER",
+    numFactura: "A-900",
+    valor: 250_000n,
+    repercutible: false,
+  };
+
+  it("por defecto una factura es repercutible", () => {
+    const result = calcularCruceFacturas([fp1], [], []);
+
+    expect(result[0]!.repercutible).toBe(true);
+  });
+
+  it("marca desviación cuando una factura repercutible no cuadra", () => {
+    const result = calcularCruceFacturas(
+      [fp1],
+      [{ facturaId: "fp-1", pago: { valor: 17_299_000n } }],
+      [],
+    );
+
+    expect(result[0]!.diferencia).toBe("-17299000");
+    expect(result[0]!.esDesviacion).toBe(true);
+  });
+
+  it("la factura que no se traslada al cliente nunca es desviación", () => {
+    const result = calcularCruceFacturas(
+      [asesoria],
+      [{ facturaId: "fp-asesoria", pago: { valor: 250_000n } }],
+      [],
+    );
+
+    expect(result[0]!.repercutible).toBe(false);
+    expect(result[0]!.montoFacturado).toBe("0");
+    expect(result[0]!.diferencia).toBe("-250000");
+    expect(result[0]!.esDesviacion).toBe(false);
+  });
+
+  it("desviacionesDelCruce deja solo lo que el revisor debe mirar", () => {
+    const result = calcularCruceFacturas(
+      [fp1, asesoria],
+      [
+        { facturaId: "fp-1", pago: { valor: 17_299_000n } },
+        { facturaId: "fp-asesoria", pago: { valor: 250_000n } },
+      ],
+      [],
+    );
+
+    const desviaciones = desviacionesDelCruce(result);
+
+    expect(desviaciones).toHaveLength(1);
+    expect(desviaciones[0]!.id).toBe("fp-1");
   });
 });

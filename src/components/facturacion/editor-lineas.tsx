@@ -1000,7 +1000,12 @@ export function EditorLineas({
   useEffect(() => {
     const controller = new AbortController();
     fetchFacturasProveedor(tramiteId, controller.signal)
-      .then(setFacturas)
+      .then((filas) =>
+        // Las facturas que no se le cobran al cliente (asesoría a nombre de
+        // Galcomex) no se pueden vincular a una línea de la factura de venta:
+        // ni siquiera se ofrecen en el selector (M6).
+        setFacturas(filas.filter((f) => f.repercutible)),
+      )
       .catch((e) => {
         if (e instanceof DOMException && e.name === "AbortError") return;
         // Sin facturas no se bloquea la edición de líneas.

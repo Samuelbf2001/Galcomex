@@ -107,6 +107,10 @@ export type CruceFacturaRow = {
   montoPagado: string; // BigInt serializado
   montoFacturado: string; // BigInt serializado
   diferencia: string; // BigInt serializado (montoFacturado − montoPagado)
+  /** ¿Se traslada al cliente en la factura de venta? (M6) */
+  repercutible: boolean;
+  /** Diferencia que el revisor debe mirar. Falso si no se traslada al cliente. */
+  esDesviacion: boolean;
 };
 
 /** Cruce por proveedor/beneficiario: Σ facturas de proveedor vs Σ pagos vinculados. */
@@ -766,6 +770,8 @@ export async function fetchCruceFacturas(borradorId: string): Promise<CruceFactu
       montoPagado: String(r.montoPagado ?? "0"),
       montoFacturado: String(r.montoFacturado ?? "0"),
       diferencia: String(r.diferencia ?? "0"),
+      repercutible: r.repercutible !== false,
+      esDesviacion: r.esDesviacion === true,
     }),
   );
 }

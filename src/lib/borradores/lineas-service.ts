@@ -68,6 +68,21 @@ export class FacturasDeBeneficiariosDistintosError extends Error {
   }
 }
 
+/**
+ * Se lanza al intentar vincular a la factura de venta una factura de proveedor
+ * marcada como "no se le cobra al cliente" (M6): esas facturas van a nombre de
+ * Galcomex y no pueden trasladarse al cliente.
+ */
+export class FacturaNoRepercutibleError extends Error {
+  public readonly status = 422;
+  constructor(numFactura: string) {
+    super(
+      `La factura ${numFactura} está marcada como "no se le cobra al cliente" y no puede vincularse a una línea de la factura de venta.`,
+    );
+    this.name = "FacturaNoRepercutibleError";
+  }
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
@@ -171,6 +186,25 @@ async function validarFacturasMismoBeneficiario(
   }
 }
 
+/**
+ * Impide vincular a la factura de venta una factura de proveedor marcada como
+ * NO repercutible (M6): esa factura va a nombre de Galcomex y el cliente no
+ * debe verla nunca. La UI ya no las ofrece; esta es la barrera real.
+ */
+async function validarFacturasRepercutibles(
+  tx: Tx,
+  facturaIds: string[],
+): Promise<void> {
+  if (facturaIds.length === 0) return;
+  const noRepercutibles = await tx.facturaProveedor.findMany({
+    where: { id: { in: facturaIds }, repercutible: false },
+    select: { id: true, numFactura: true },
+  });
+  if (noRepercutibles.length > 0) {
+    throw new FacturaNoRepercutibleError(noRepercutibles[0]!.numFactura);
+  }
+}
+
 // ─── API pública ──────────────────────────────────────────────────────────────
 
 type CrearLineaInput = {
@@ -199,6 +233,7 @@ export async function crearLineaManual(input: CrearLineaInput) {
     const borrador = await cargarBorradorEditable(tx, borradorId);
     await validarFacturasDelTramite(tx, borrador.tramiteId, facturaIds);
     await validarFacturasMismoBeneficiario(tx, facturaIds);
+    await validarFacturasRepercutibles(tx, facturaIds);
 
     const ultima = await tx.lineaRevision.findFirst({
       where: { borradorId },
@@ -285,6 +320,7 @@ export async function actualizarLinea(input: ActualizarLineaInput) {
     if (input.facturaIds !== undefined) {
       await validarFacturasDelTramite(tx, borrador.tramiteId, input.facturaIds);
       await validarFacturasMismoBeneficiario(tx, input.facturaIds);
+      await validarFacturasRepercutibles(tx, input.facturaIds);
       await tx.lineaRevisionFactura.deleteMany({ where: { lineaId } });
       await tx.lineaRevisionFactura.createMany({
         data: input.facturaIds.map((facturaId) => ({ lineaId, facturaId })),

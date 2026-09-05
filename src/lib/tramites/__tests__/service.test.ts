@@ -12,11 +12,21 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/db/prisma";
 import {
-  createTramite,
   formatConsecutivo,
-  listTramites,
-  transitionTramite,
-} from "../service";
+  type ConfigConsecutivo,
+} from "@/lib/tramites/consecutivo";
+import { createTramite, listTramites, transitionTramite } from "../service";
+
+/**
+ * Config del tipo IMPORTACION (M4). El formato del consecutivo ya no está
+ * quemado en el servicio: sale de `TipoTramite`. Estos son los valores que la
+ * migración siembra para el trámite de siempre.
+ */
+const IMPORTACION: ConfigConsecutivo = {
+  prefijoConsecutivo: "DO",
+  secuenciaPor: "CIUDAD_ANIO",
+  incluyeCiudadEnConsecutivo: true,
+};
 
 const TEST_PREFIX = "vitest-tramites";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -181,9 +191,9 @@ function createInput(overrides: Partial<Parameters<typeof createTramite>[0]> = {
 
 describe("formatConsecutivo", () => {
   it("formatea ciudad, ultimos dos digitos del anio y numero con cuatro digitos", () => {
-    expect(formatConsecutivo(Ciudad.CTG, 2026, 1)).toBe("DO.CTG26-0001");
-    expect(formatConsecutivo(Ciudad.BUN, 2026, 26)).toBe("DO.BUN26-0026");
-    expect(formatConsecutivo(Ciudad.SMR, 2099, 1234)).toBe(
+    expect(formatConsecutivo(IMPORTACION, Ciudad.CTG, 2026, 1)).toBe("DO.CTG26-0001");
+    expect(formatConsecutivo(IMPORTACION, Ciudad.BUN, 2026, 26)).toBe("DO.BUN26-0026");
+    expect(formatConsecutivo(IMPORTACION, Ciudad.SMR, 2099, 1234)).toBe(
       "DO.SMR99-1234",
     );
   });
@@ -318,7 +328,7 @@ describe("tramites service con Postgres local", () => {
     );
     expect(ordered.map((tramite) => tramite.consecutivo)).toEqual(
       ordered.map((tramite) =>
-        formatConsecutivo(ciudad, concurrencyYear, tramite.numero),
+        formatConsecutivo(IMPORTACION, ciudad, concurrencyYear, tramite.numero),
       ),
     );
   });

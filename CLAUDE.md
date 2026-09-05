@@ -108,6 +108,35 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 - BL/Guía + Factura Comercial son obligatorios al crear el DO para clientes SOCIO_LM.
 - Detalle implementado en `src/lib/borradores/lineas-fijas.ts`, `src/lib/calculations/total-lineas.ts` y `src/lib/siigo/envio-factura-service.ts`.
 
+## Capacidades por empresa (M1) — cómo se configura el comportamiento
+
+Toda diferencia de comportamiento **entre empresas** es dato, no código. Vive en
+`src/lib/capacidades/`:
+
+- `catalogo.ts` — fuente de verdad de los códigos (`CodigoCapacidad`). Agregar una
+  capacidad es agregar una entrada aquí + su consumidor + su fila en el seed.
+- `resolver.ts` — **función pura, sin BD**. Cascada
+  `Capacidad.porDefecto → GrupoEmpresaCapacidad → EmpresaCapacidad`.
+  `habilitado` y `config` se resuelven por separado: cada uno toma el nivel más
+  específico que lo define.
+- `service.ts` — `capacidadesDeEmpresa(empresaId)`, `setCapacidadesEmpresa(...)`
+  (transaccional + `AuditLog` por capacidad tocada).
+
+Uso en dominio:
+
+```ts
+const capacidades = await capacidadesDeEmpresa(tramite.clienteId);
+if (tiene(capacidades, "base_cif")) { ... }
+const config = configDe<{ valor: string }>(capacidades, "umbral_saldo_tramite");
+```
+
+UI: pestaña **Funciones** en la ficha de empresa (`seccion-capacidades.tsx`),
+editable solo por ADMIN. API: `GET|PUT /api/clientes/[id]/capacidades`.
+
+`Cliente.manejaAnticipo` quedó **deprecado**: se mantiene en espejo con la
+capacidad `anticipos_cliente` hasta retirar la columna. Plan completo y orden de
+fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
+
 ## Invariantes de código — NUNCA violar
 
 1. **Dinero SIEMPRE como `BigInt` (COP enteros).** Cero flotantes en cálculos financieros.
@@ -116,6 +145,10 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 4. Autorización en middleware, no en componentes React.
 5. Toda mutación crítica (DOs, pagos, borradores, facturas) genera registro en `AuditLog` con snapshot JSON antes/después.
 6. Tests de cálculo con tolerancia **0 pesos** (exactos, sin redondeos).
+7. **Cero ramas por empresa.** Prohibido ramificar por `TipoCliente`, por NIT o
+   por nombre de empresa para decidir comportamiento de negocio: eso es una
+   capacidad (ver arriba). Tampoco se agrega un tercer valor a `TipoCliente`.
+   El enum queda como dato descriptivo mientras se migran las 131 ramas vivas.
 
 ## Roles y permisos
 

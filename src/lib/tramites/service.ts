@@ -9,20 +9,62 @@ import {
   type TramiteDO,
 } from "@prisma/client";
 
+import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
+import { configDe, tiene } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
+import {
+  validateReglaAgenciaFija,
+  type ConfigReglaAgencia,
+} from "@/lib/tramites/reglas";
+import {
+  claveSecuencia,
+  filtroSecuencia,
+  formatConsecutivo,
+} from "@/lib/tramites/consecutivo";
 
 type CreateTramiteInput = {
   ciudad: Ciudad;
   anio?: number;
   clienteId: string;
+  /** Código de `TipoTramite`. Por defecto IMPORTACION (el trámite de siempre). */
+  tipoTramiteCodigo?: string;
+  /** N° que asigna un tercero (informe de la clasificadora, p. ej. 2140). */
+  referenciaExterna?: string | null;
   proveedorCliente?: string | null;
-  agenciaAduanas: AgenciaAduanas;
+  /** Opcional: los tipos con `requiereAgenciaAduanas = false` usan el default del tipo. */
+  agenciaAduanas?: AgenciaAduanas;
   doAgencia?: string | null;
   doCliente?: string | null;
   eta?: Date | null;
   comentarios?: string | null;
   creadoPorId: string;
 };
+
+export class TipoTramiteNoEncontradoError extends Error {
+  public readonly status = 422;
+  constructor(codigo: string) {
+    super(`El tipo de trámite ${codigo} no existe o está inactivo`);
+    this.name = "TipoTramiteNoEncontradoError";
+  }
+}
+
+export class TipoTramiteNoHabilitadoError extends Error {
+  public readonly status = 422;
+  constructor(nombreTipo: string, nombreEmpresa: string) {
+    super(
+      `${nombreEmpresa} no tiene habilitada la función "${nombreTipo}". Actívala en la ficha de la empresa, pestaña Funciones.`,
+    );
+    this.name = "TipoTramiteNoHabilitadoError";
+  }
+}
+
+export class AgenciaAduanasRequeridaError extends Error {
+  public readonly status = 422;
+  constructor(nombreTipo: string) {
+    super(`Los trámites de tipo "${nombreTipo}" requieren agencia de aduanas`);
+    this.name = "AgenciaAduanasRequeridaError";
+  }
+}
 
 type TransitionResult =
   | { ok: true; tramite: TramiteDO }
@@ -40,9 +82,34 @@ const transitionMap: Record<EstadoTramite, EstadoTramite[]> = {
   CERRADO: [],
 };
 
-function formatConsecutivo(ciudad: Ciudad, anio: number, numero: number) {
-  const shortYear = String(anio).slice(-2);
-  return `DO.${ciudad}${shortYear}-${String(numero).padStart(4, "0")}`;
+const TIPO_TRAMITE_POR_DEFECTO = "IMPORTACION";
+
+/**
+ * Carga el tipo de trámite y valida que la empresa pueda abrir trámites de ese
+ * tipo. La clasificación arancelaria, por ejemplo, exige que el cliente tenga
+ * encendida la capacidad `clasificacion_arancelaria` (M1 + M4).
+ */
+async function resolverTipoTramite(codigo: string, clienteId: string) {
+  const tipo = await prisma.tipoTramite.findFirst({
+    where: { codigo, activo: true },
+  });
+
+  if (!tipo) {
+    throw new TipoTramiteNoEncontradoError(codigo);
+  }
+
+  if (tipo.capacidadRequerida) {
+    const [capacidades, cliente] = await Promise.all([
+      capacidadesDeEmpresa(clienteId),
+      prisma.cliente.findUnique({ where: { id: clienteId }, select: { nombre: true } }),
+    ]);
+
+    if (!tiene(capacidades, tipo.capacidadRequerida)) {
+      throw new TipoTramiteNoHabilitadoError(tipo.nombre, cliente?.nombre ?? "La empresa");
+    }
+  }
+
+  return tipo;
 }
 
 function shouldRetryPrisma(error: unknown) {
@@ -63,7 +130,23 @@ function normalizeSerializable<T>(value: T): T {
 export async function createTramite(input: CreateTramiteInput) {
   const anio = input.anio ?? new Date().getFullYear();
   const attempts = 5;
-  const lockKey = `tramite-do:${input.ciudad}:${anio}`;
+
+  const tipo = await resolverTipoTramite(
+    input.tipoTramiteCodigo ?? TIPO_TRAMITE_POR_DEFECTO,
+    input.clienteId,
+  );
+
+  // Cada tipo decide si pide agencia de aduanas. La clasificación arancelaria
+  // no la necesita y queda en null, en vez de inventar un valor para llenar la
+  // columna.
+  const agenciaAduanas =
+    input.agenciaAduanas ?? tipo.agenciaAduanasPorDefecto ?? null;
+
+  if (tipo.requiereAgenciaAduanas && !agenciaAduanas) {
+    throw new AgenciaAduanasRequeridaError(tipo.nombre);
+  }
+
+  const lockKey = claveSecuencia(tipo, tipo.codigo, input.ciudad, anio);
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -72,36 +155,37 @@ export async function createTramite(input: CreateTramiteInput) {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
           const ultimo = await tx.tramiteDO.findFirst({
-            where: {
-              ciudad: input.ciudad,
-              anio,
-            },
+            where: filtroSecuencia(tipo, tipo.codigo, input.ciudad, anio),
             orderBy: { numero: "desc" },
             select: { numero: true },
           });
           const numero = (ultimo?.numero ?? 0) + 1;
-          const consecutivo = formatConsecutivo(input.ciudad, anio, numero);
-          const plantilla = await tx.plantillaChecklist.findFirst({
-            orderBy: { nombre: "asc" },
-            include: {
-              items: {
-                orderBy: { orden: "asc" },
-              },
-            },
-          });
+          const consecutivo = formatConsecutivo(tipo, input.ciudad, anio, numero);
+          const plantilla = tipo.usaChecklist
+            ? await tx.plantillaChecklist.findFirst({
+                orderBy: { nombre: "asc" },
+                include: {
+                  items: {
+                    orderBy: { orden: "asc" },
+                  },
+                },
+              })
+            : null;
 
           const tramite = await tx.tramiteDO.create({
             data: {
               consecutivo,
+              tipoTramiteCodigo: tipo.codigo,
+              referenciaExterna: input.referenciaExterna ?? null,
               ciudad: input.ciudad,
               anio,
               numero,
               clienteId: input.clienteId,
               proveedorCliente: input.proveedorCliente,
-              agenciaAduanas: input.agenciaAduanas,
+              agenciaAduanas,
               doAgencia: input.doAgencia,
               doCliente: input.doCliente,
-              eta: input.eta,
+              eta: tipo.requiereEta ? input.eta : null,
               comentarios: input.comentarios,
               creadoPorId: input.creadoPorId,
               checklistItems: plantilla
@@ -278,6 +362,15 @@ export const tramiteDetalleInclude = {
       tipo: true,
     },
   },
+  tipoTramite: {
+    select: {
+      codigo: true,
+      nombre: true,
+      etiquetaReferenciaExterna: true,
+      facturacionSeparada: true,
+      lineaServicio: true,
+    },
+  },
   creadoPor: {
     select: {
       name: true,
@@ -321,30 +414,6 @@ export const tramiteDetalleInclude = {
     },
   },
 } satisfies Prisma.TramiteDOInclude;
-
-function isLitoplas(clienteNombre: string) {
-  return clienteNombre.toLowerCase().includes("litoplas");
-}
-
-function validateLitoplasRule(tramite: {
-  cliente: { nombre: string };
-  agenciaAduanas: AgenciaAduanas;
-  doAgencia: string | null;
-}) {
-  if (!isLitoplas(tramite.cliente.nombre)) {
-    return null;
-  }
-
-  if (tramite.agenciaAduanas !== AgenciaAduanas.MOVIADUANAS) {
-    return "Litoplas debe operar con Moviaduanas";
-  }
-
-  if (!tramite.doAgencia || !/^I\d{8}$/.test(tramite.doAgencia)) {
-    return "Litoplas requiere DO de agencia con formato I########";
-  }
-
-  return null;
-}
 
 export async function transitionTramite(
   tramiteId: string,
@@ -445,13 +514,17 @@ export async function transitionTramite(
         }
       }
 
-      const litoplasError = validateLitoplasRule(actual);
+      const capacidades = await capacidadesDeEmpresa(actual.clienteId);
+      const reglaError = validateReglaAgenciaFija(
+        actual,
+        configDe<ConfigReglaAgencia>(capacidades, "regla_agencia_fija"),
+      );
 
-      if (litoplasError) {
+      if (reglaError) {
         return {
           ok: false,
           status: 422,
-          message: litoplasError,
+          message: reglaError,
         };
       }
     }

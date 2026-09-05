@@ -59,6 +59,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       beneficiarioId: true,
       numFactura: true,
       valor: true,
+      repercutible: true,
       pagos: {
         select: {
           pagoId: true,

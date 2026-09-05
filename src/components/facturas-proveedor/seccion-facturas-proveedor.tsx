@@ -410,6 +410,9 @@ export function ModalFacturaProveedor({
   const [documentoId, setDocumentoId] = useState<string | null>(
     facturaExistente?.documentoId ?? null,
   );
+  const [repercutible, setRepercutible] = useState<boolean>(
+    facturaExistente?.repercutible !== false,
+  );
   const [documentoNombre, setDocumentoNombre] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
@@ -465,6 +468,7 @@ export function ModalFacturaProveedor({
           valor: valorBig,
           fecha: dateInputToIso(fecha) ?? undefined,
           documentoId,
+          repercutible,
         };
 
         const response = await fetch(`/api/facturas-proveedor/${facturaExistente.id}`, {
@@ -498,6 +502,7 @@ export function ModalFacturaProveedor({
           fecha: typeof updated.fecha === "string" ? updated.fecha : "",
           estado: (updated.estado as EstadoFacturaProveedor) ?? "REGISTRADA",
           documentoId: typeof updated.documentoId === "string" ? updated.documentoId : null,
+          repercutible: updated.repercutible !== false,
           subidaPorId: String(updated.subidaPorId ?? ""),
           createdAt: String(updated.createdAt ?? ""),
           updatedAt: String(updated.updatedAt ?? ""),
@@ -513,6 +518,7 @@ export function ModalFacturaProveedor({
           valor: valorBig,
           fecha: dateInputToIso(fecha) ?? "",
           documentoId,
+          repercutible,
         };
 
         const factura = await createFacturaProveedor(tramiteId, input);
@@ -602,6 +608,24 @@ export function ModalFacturaProveedor({
               />
             </label>
           </div>
+
+          {/* Repercusión al cliente (M6) */}
+          <label className="flex items-start gap-2.5 border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <input
+              type="checkbox"
+              checked={repercutible}
+              onChange={(e) => setRepercutible(e.target.checked)}
+              className="mt-0.5 h-4 w-4"
+            />
+            <span className="text-sm">
+              <span className="font-medium text-slate-800">Se le cobra al cliente</span>
+              <span className="mt-0.5 block text-xs text-slate-500">
+                Desmárcalo cuando la factura va a nombre de Galcomex y el cliente no debe
+                verla (por ejemplo una asesoría). Se registra y se paga igual, pero no pasa a
+                la factura de venta ni cuenta como desfase en la revisión.
+              </span>
+            </span>
+          </label>
 
           {/* Adjuntar PDF */}
           <div>
@@ -1074,6 +1098,14 @@ export function SeccionFacturasProveedor({
                     </td>
                     <td className="px-3 py-2.5 font-mono text-xs text-slate-800">
                       {f.numFactura}
+                      {!f.repercutible ? (
+                        <span
+                          className="ml-1.5 border border-slate-300 bg-slate-100 px-1 py-0.5 font-sans text-[10px] font-semibold text-slate-600"
+                          title="No se traslada al cliente: no pasa a la factura de venta"
+                        >
+                          NO SE COBRA
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2.5 text-slate-600">{formatDate(f.fecha)}</td>
                     <td className="px-3 py-2.5 text-right font-mono font-semibold text-slate-900">

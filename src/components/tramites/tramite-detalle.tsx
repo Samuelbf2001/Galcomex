@@ -136,6 +136,15 @@ type TramiteDetalleData = {
     nit: string;
     tipo?: string;
   };
+  /** Tipo de trámite (M4). Ausente en respuestas viejas = importación. */
+  referenciaExterna?: string | null;
+  tipoTramite?: {
+    codigo: string;
+    nombre: string;
+    etiquetaReferenciaExterna: string | null;
+    facturacionSeparada: boolean;
+    lineaServicio: string;
+  } | null;
   checklistItems: ChecklistItem[];
   estadoLogs?: EstadoLogEntry[];
   auditLogs?: AuditLogEntry[];
@@ -835,7 +844,25 @@ function TabResumen({
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Consecutivo Galcomex</p>
           <p className="mt-0.5 text-lg font-bold text-slate-950">{tramite.consecutivo}</p>
+          {/* El tipo solo se anuncia cuando NO es el trámite de importación:
+              para el flujo de siempre sería ruido. */}
+          {tramite.tipoTramite && tramite.tipoTramite.codigo !== "IMPORTACION" ? (
+            <span className="mt-1 inline-flex h-5 items-center border border-cyan-200 bg-cyan-50 px-1.5 text-[11px] font-semibold text-cyan-700">
+              {tramite.tipoTramite.nombre}
+              {tramite.tipoTramite.facturacionSeparada ? " · factura aparte" : ""}
+            </span>
+          ) : null}
         </div>
+        {tramite.referenciaExterna ? (
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              {tramite.tipoTramite?.etiquetaReferenciaExterna ?? "Referencia externa"}
+            </p>
+            <p className="mt-0.5 font-mono font-semibold text-slate-800">
+              {tramite.referenciaExterna}
+            </p>
+          </div>
+        ) : null}
         <div>
           {puedeEditar ? (
             <InlineTextField

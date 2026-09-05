@@ -1,6 +1,7 @@
 import "dotenv/config";
-import { CanalPago, TipoRecaudo, Rol } from "@prisma/client";
+import { CanalPago, Prisma, SecuenciaTramite, TipoRecaudo, Rol } from "@prisma/client";
 import { hashPassword } from "better-auth/crypto";
+import { CAPACIDADES } from "../src/lib/capacidades/catalogo";
 import { prisma } from "../src/lib/db/prisma";
 
 async function main() {
@@ -69,6 +70,81 @@ async function main() {
       where: { clave: p.clave },
       update: { valor: p.valor, descripcion: p.descripcion },
       create: { clave: p.clave, valor: p.valor, descripcion: p.descripcion },
+    });
+  }
+
+  // Catálogo de capacidades (interruptores de función por empresa).
+  // La fuente de verdad es src/lib/capacidades/catalogo.ts: aquí solo se
+  // sincroniza a BD. Idempotente — respeta `activa` si un admin la apagó.
+  for (const capacidad of CAPACIDADES) {
+    await prisma.capacidad.upsert({
+      where: { codigo: capacidad.codigo },
+      update: {
+        nombre: capacidad.nombre,
+        descripcion: capacidad.descripcion,
+        grupo: capacidad.grupo,
+        ambito: capacidad.ambito,
+        porDefecto: capacidad.porDefecto,
+        configPorDefecto: capacidad.configPorDefecto ?? Prisma.DbNull,
+        orden: capacidad.orden,
+      },
+      create: {
+        codigo: capacidad.codigo,
+        nombre: capacidad.nombre,
+        descripcion: capacidad.descripcion,
+        grupo: capacidad.grupo,
+        ambito: capacidad.ambito,
+        porDefecto: capacidad.porDefecto,
+        configPorDefecto: capacidad.configPorDefecto ?? Prisma.DbNull,
+        orden: capacidad.orden,
+      },
+    });
+  }
+
+  // Tipos de trámite (M4). IMPORTACION reproduce el comportamiento histórico;
+  // CLASIFICACION lleva consecutivo y facturación aparte y exige que la empresa
+  // tenga encendida la capacidad `clasificacion_arancelaria`.
+  const tiposTramite = [
+    {
+      codigo: "IMPORTACION",
+      nombre: "Trámite de importación",
+      descripcion: "Trámite completo de importación. Consecutivo por ciudad y año.",
+      prefijoConsecutivo: "DO",
+      secuenciaPor: SecuenciaTramite.CIUDAD_ANIO,
+      incluyeCiudadEnConsecutivo: true,
+      lineaServicio: "TRAMITE",
+      facturacionSeparada: false,
+      capacidadRequerida: null,
+      requiereAgenciaAduanas: true,
+      requiereEta: true,
+      usaChecklist: true,
+      etiquetaReferenciaExterna: null,
+      orden: 10,
+    },
+    {
+      codigo: "CLASIFICACION",
+      nombre: "Clasificación arancelaria",
+      descripcion:
+        "Servicio de clasificación, previo e independiente del trámite. Consecutivo y facturación aparte.",
+      prefijoConsecutivo: "CLAS",
+      secuenciaPor: SecuenciaTramite.ANIO,
+      incluyeCiudadEnConsecutivo: false,
+      lineaServicio: "CLASIFICACION",
+      facturacionSeparada: true,
+      capacidadRequerida: "clasificacion_arancelaria",
+      requiereAgenciaAduanas: false,
+      requiereEta: false,
+      usaChecklist: false,
+      etiquetaReferenciaExterna: "N° de informe de la clasificadora",
+      orden: 20,
+    },
+  ];
+
+  for (const tipo of tiposTramite) {
+    await prisma.tipoTramite.upsert({
+      where: { codigo: tipo.codigo },
+      update: tipo,
+      create: tipo,
     });
   }
 

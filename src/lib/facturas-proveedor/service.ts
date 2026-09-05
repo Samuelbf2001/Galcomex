@@ -30,6 +30,8 @@ export type CrearFacturaProveedorInput = {
   // La obligatoriedad del archivo (p.4) se valida en la capa API (Zod del endpoint).
   // El servicio lo acepta opcional para scripts de importación histórica y generación interna.
   documentoId?: string | null;
+  /** ¿Se traslada al cliente en la factura de venta? (M6). Default `true`. */
+  repercutible?: boolean;
   subidaPorId: string;
 };
 
@@ -43,6 +45,7 @@ export type ActualizarFacturaProveedorInput = {
   valor?: bigint;
   fecha?: Date;
   documentoId?: string | null;
+  repercutible?: boolean;
 };
 
 export type GenerarPagoInput = {
@@ -141,7 +144,7 @@ async function resolverCostoBancario(canal: CanalPago): Promise<bigint> {
  * Valida unicidad (tramiteId, numFactura).
  */
 export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
-  const { tramiteId, proveedorNombre, proveedorNit, beneficiarioId, concepto, siigoProductoId, numFactura, valor, fecha, documentoId, subidaPorId } =
+  const { tramiteId, proveedorNombre, proveedorNit, beneficiarioId, concepto, siigoProductoId, numFactura, valor, fecha, documentoId, repercutible, subidaPorId } =
     input;
 
   return prisma.$transaction(async (tx) => {
@@ -167,6 +170,7 @@ export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
         valor,
         fecha,
         documentoId,
+        repercutible: repercutible ?? true,
         subidaPorId,
       },
     });

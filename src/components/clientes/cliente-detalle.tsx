@@ -12,6 +12,8 @@ import {
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
+import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
 import { ModuleState } from "@/components/layout/module-state";
 import {
   ClientesApiError,
@@ -851,6 +853,10 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
           Refrescar
         </button>
       </div>
+
+      <SeccionCapacidades clienteId={cliente.id} />
+
+      <SeccionCuentaCorriente clienteId={cliente.id} />
 
       <SeccionTarifas
         clienteId={cliente.id}

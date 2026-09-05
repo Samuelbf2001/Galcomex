@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { createTramite, listTramites } from "@/lib/tramites/service";
 import {
@@ -66,6 +66,12 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);
+    }
+
+    // Tipo de trámite inexistente, no habilitado para la empresa o sin agencia
+    // de aduanas: errores de dominio con `status` (422).
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
 
     if (

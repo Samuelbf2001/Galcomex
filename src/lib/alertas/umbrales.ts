@@ -13,6 +13,7 @@
  * usa el default sembrado en prisma/seed.ts en vez de romper la vista.
  */
 
+import { configDe, type MapaCapacidades } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
 
 const CLAVE_UMBRAL_TRAMITE_PROPIO = "UMBRAL_ALERTA_SALDO_TRAMITE_PROPIO";
@@ -57,12 +58,43 @@ export async function getUmbralesAlertaTramite(): Promise<UmbralesAlertaTramite>
 /**
  * Umbral aplicable a un trámite según el tipo de cliente del DO.
  * SOCIO_LM → umbral socio; PROPIO (o cualquier otro valor) → umbral propio.
+ *
+ * Es el fallback global: la empresa puede sobrescribirlo con la capacidad
+ * `umbral_saldo_tramite` (ver `umbralParaEmpresa`).
  */
 export function umbralPorTipoCliente(
   tipoCliente: string | null | undefined,
   umbrales: UmbralesAlertaTramite,
 ): bigint {
   return tipoCliente === "SOCIO_LM" ? umbrales.socio : umbrales.propio;
+}
+
+/**
+ * Umbral efectivo de un trámite (primer consumidor de las capacidades, M1).
+ *
+ * Cascada: capacidad `umbral_saldo_tramite` de la empresa → parámetro global
+ * por tipo de cliente. Mientras ninguna empresa encienda la capacidad, el
+ * resultado es idéntico al de `umbralPorTipoCliente`, que es justo lo que se
+ * quiere de una migración a capacidades: cambia de dónde sale el dato, no el
+ * comportamiento.
+ */
+export function umbralParaEmpresa(
+  capacidades: MapaCapacidades,
+  tipoCliente: string | null | undefined,
+  umbrales: UmbralesAlertaTramite,
+): bigint {
+  const config = configDe<{ valor?: unknown }>(capacidades, "umbral_saldo_tramite");
+  const valor = config?.valor;
+
+  if (typeof valor === "string" || typeof valor === "number") {
+    try {
+      return BigInt(valor);
+    } catch {
+      // Config inválida cargada a mano: no rompemos la vista por una alerta.
+    }
+  }
+
+  return umbralPorTipoCliente(tipoCliente, umbrales);
 }
 
 /** Lee el umbral de alerta de cartera por cliente desde Parametro. */

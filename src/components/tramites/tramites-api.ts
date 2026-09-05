@@ -69,12 +69,25 @@ function buildTramitesQuery(filters?: TramiteFilters): string {
   return query ? `?${query}` : "";
 }
 
+export type TipoTramiteOption = {
+  codigo: string;
+  nombre: string;
+  descripcion: string | null;
+  prefijoConsecutivo: string;
+  requiereAgenciaAduanas: boolean;
+  requiereEta: boolean;
+  etiquetaReferenciaExterna: string | null;
+};
+
 export type CreateTramiteInput = {
   ciudad: string;
   anio?: number;
   clienteId: string;
+  /** Código de TipoTramite. Ausente = IMPORTACION. */
+  tipoTramiteCodigo?: string;
+  referenciaExterna?: string | null;
   proveedorCliente?: string | null;
-  agenciaAduanas: string;
+  agenciaAduanas?: string;
   doAgencia?: string | null;
   doCliente?: string | null;
   eta?: string | null;
@@ -302,6 +315,47 @@ export async function fetchClienteOptions(signal?: AbortSignal): Promise<Cliente
       tipo: readText(cliente, ["tipo"]),
     }))
     .filter((cliente) => cliente.id && cliente.nombre);
+}
+
+/**
+ * Tipos de trámite que la empresa puede abrir (M4). Con `clienteId` el backend
+ * ya filtra por capacidad, así que el formulario nunca ofrece algo que luego
+ * vaya a rechazar.
+ */
+export async function fetchTiposTramite(
+  clienteId: string,
+  signal?: AbortSignal,
+): Promise<TipoTramiteOption[]> {
+  const response = await fetch(
+    `/api/tipos-tramite?clienteId=${encodeURIComponent(clienteId)}`,
+    { cache: "no-store", headers: { Accept: "application/json" }, signal },
+  );
+
+  if (!response.ok) {
+    throw new TramitesApiError(
+      "No fue posible cargar los tipos de tramite.",
+      response.status,
+    );
+  }
+
+  const payload: unknown = await response.json();
+
+  if (!isRecord(payload) || !Array.isArray(payload.tipos)) {
+    return [];
+  }
+
+  return payload.tipos.filter(isRecord).map((tipo) => ({
+    codigo: readText(tipo, ["codigo"]),
+    nombre: readText(tipo, ["nombre"]),
+    descripcion: typeof tipo.descripcion === "string" ? tipo.descripcion : null,
+    prefijoConsecutivo: readText(tipo, ["prefijoConsecutivo"]),
+    requiereAgenciaAduanas: tipo.requiereAgenciaAduanas !== false,
+    requiereEta: tipo.requiereEta !== false,
+    etiquetaReferenciaExterna:
+      typeof tipo.etiquetaReferenciaExterna === "string"
+        ? tipo.etiquetaReferenciaExterna
+        : null,
+  }));
 }
 
 export async function createTramite(input: CreateTramiteInput): Promise<TramiteRow> {

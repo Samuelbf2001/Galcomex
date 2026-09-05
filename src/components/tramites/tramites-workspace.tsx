@@ -26,10 +26,12 @@ import { KanbanTramites } from "@/components/tramites/kanban-tramites";
 import {
   createTramite,
   fetchClienteOptions,
+  fetchTiposTramite,
   fetchTramites,
   type ClienteOption,
   type CreateTramiteInput,
   type FacturadoFilter,
+  type TipoTramiteOption,
   type TramiteFilters,
   type TramiteRow,
 } from "@/components/tramites/tramites-api";
@@ -209,6 +211,15 @@ function CreateTramiteDialog({
   const [tipoCliente, setTipoCliente] = useState<ClienteTipo>("PROPIO");
   const [clienteId, setClienteId] = useState("");
   const [stagedFiles, setStagedFiles] = useState<Record<string, File | null>>({});
+  // Tipos de trámite disponibles PARA ESTA EMPRESA (M4): el backend ya filtra
+  // por capacidad, así que aquí solo llegan los que se pueden abrir. Se guarda
+  // junto al clienteId que los produjo para no mostrar los del cliente anterior
+  // mientras llega la respuesta nueva.
+  const [tiposCargados, setTiposCargados] = useState<{
+    clienteId: string;
+    tipos: TipoTramiteOption[];
+  }>({ clienteId: "", tipos: [] });
+  const [tipoElegido, setTipoElegido] = useState("");
 
   const CATEGORIAS: { key: string; label: string }[] = [
     { key: "FACTURA_COMERCIAL",  label: "Factura comercial" },
@@ -231,6 +242,30 @@ function CreateTramiteDialog({
     () => clientesFiltrados.find((cliente) => cliente.id === clienteId) ?? null,
     [clientesFiltrados, clienteId],
   );
+
+  const tiposTramite = useMemo(
+    () => (tiposCargados.clienteId === clienteId ? tiposCargados.tipos : []),
+    [tiposCargados, clienteId],
+  );
+
+  // El tipo efectivo se DERIVA: si lo elegido ya no está disponible (cambió la
+  // empresa), cae al primero de la lista. Así no hay que sincronizar estado
+  // desde un efecto.
+  const tipoTramiteSeleccionado = useMemo(
+    () =>
+      tiposTramite.find((tipo) => tipo.codigo === tipoElegido) ??
+      tiposTramite[0] ??
+      null,
+    [tiposTramite, tipoElegido],
+  );
+
+  const tipoTramiteCodigo = tipoTramiteSeleccionado?.codigo ?? "IMPORTACION";
+
+  // Qué campos pide el formulario lo decide el tipo de trámite, no un if por
+  // cliente. Sin tipo cargado todavía se asume el comportamiento histórico.
+  const pideAgencia = tipoTramiteSeleccionado?.requiereAgenciaAduanas ?? true;
+  const pideEta = tipoTramiteSeleccionado?.requiereEta ?? true;
+  const etiquetaReferencia = tipoTramiteSeleccionado?.etiquetaReferenciaExterna ?? null;
 
   function handleTipoClienteChange(next: ClienteTipo) {
     if (next === tipoCliente) {
@@ -272,6 +307,26 @@ function CreateTramiteDialog({
     return () => controller.abort();
   }, [open]);
 
+  // Los tipos disponibles dependen de la empresa: la clasificación arancelaria
+  // solo aparece si esa empresa tiene la capacidad encendida.
+  useEffect(() => {
+    if (!open || !clienteId) {
+      return;
+    }
+
+    const controller = new AbortController();
+
+    fetchTiposTramite(clienteId, controller.signal)
+      .then((tipos) => setTiposCargados({ clienteId, tipos }))
+      .catch((caught: unknown) => {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+        // Sin tipos cargados el formulario se comporta como siempre (importación).
+        setTiposCargados({ clienteId, tipos: [] });
+      });
+
+    return () => controller.abort();
+  }, [open, clienteId]);
+
   if (!open) {
     return null;
   }
@@ -300,10 +355,19 @@ function CreateTramiteDialog({
       ciudad: String(formData.get("ciudad") ?? ""),
       anio: rawAnio ? Number(rawAnio) : undefined,
       clienteId: String(formData.get("clienteId") ?? ""),
-      agenciaAduanas: String(formData.get("agenciaAduanas") ?? ""),
+      tipoTramiteCodigo,
+      referenciaExterna: etiquetaReferencia
+        ? optionalText(formData.get("referenciaExterna"))
+        : undefined,
+      agenciaAduanas: pideAgencia
+        ? String(formData.get("agenciaAduanas") ?? "")
+        : undefined,
       doAgencia: optionalText(formData.get("doAgencia")),
       doCliente: optionalText(formData.get("doCliente")),
-      eta: clienteSeleccionado?.tipo !== "SOCIO_LM" ? formatDateInputAsIso(formData.get("eta")) : undefined,
+      eta:
+        pideEta && clienteSeleccionado?.tipo !== "SOCIO_LM"
+          ? formatDateInputAsIso(formData.get("eta"))
+          : undefined,
     };
 
     try {
@@ -371,7 +435,9 @@ function CreateTramiteDialog({
           <div>
             <h2 className="text-lg font-semibold text-slate-950">Crear tramite</h2>
             <p className="mt-1 text-sm text-slate-500">
-              El consecutivo se asigna automaticamente por ciudad y ano.
+              {tipoTramiteSeleccionado && tipoTramiteSeleccionado.codigo !== "IMPORTACION"
+                ? `Consecutivo propio con prefijo ${tipoTramiteSeleccionado.prefijoConsecutivo}: no consume numeracion de importacion.`
+                : "El consecutivo se asigna automaticamente por ciudad y ano."}
             </p>
           </div>
           <button
@@ -487,19 +553,57 @@ function CreateTramiteDialog({
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Agencia aduanas</span>
-              <select
-                name="agenciaAduanas"
-                required
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+          {/* Tipo de trámite (M4): solo aparece si la empresa puede abrir más
+              de uno. Decide qué campos pide el resto del formulario. */}
+          {tiposTramite.length > 1 ? (
+            <div className="space-y-1.5">
+              <span className="block text-sm font-medium text-slate-700" id="tipo-tramite-label">
+                Tipo de tramite
+              </span>
+              <div
+                className="flex border border-slate-300 bg-white"
+                role="group"
+                aria-labelledby="tipo-tramite-label"
               >
-                <option value="COLDEX">Coldex</option>
-                <option value="MOVIADUANAS">Moviaduanas</option>
-                <option value="AR_LOGISTY">AR Logisty</option>
-              </select>
-            </label>
+                {tiposTramite.map((tipo) => (
+                  <button
+                    key={tipo.codigo}
+                    type="button"
+                    onClick={() => setTipoElegido(tipo.codigo)}
+                    aria-pressed={tipoTramiteCodigo === tipo.codigo}
+                    className={`inline-flex h-10 flex-1 items-center justify-center px-3 text-sm font-semibold transition first:border-l-0 border-l border-slate-300 ${
+                      tipoTramiteCodigo === tipo.codigo
+                        ? "bg-slate-950 text-white"
+                        : "text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    {tipo.nombre}
+                  </button>
+                ))}
+              </div>
+              {tipoTramiteSeleccionado?.descripcion ? (
+                <p className="text-xs text-slate-500">
+                  {tipoTramiteSeleccionado.descripcion}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="grid gap-4 md:grid-cols-3">
+            {pideAgencia ? (
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Agencia aduanas</span>
+                <select
+                  name="agenciaAduanas"
+                  required
+                  className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+                >
+                  <option value="COLDEX">Coldex</option>
+                  <option value="MOVIADUANAS">Moviaduanas</option>
+                  <option value="AR_LOGISTY">AR Logisty</option>
+                </select>
+              </label>
+            ) : null}
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">DO agencia</span>
               <input
@@ -515,9 +619,21 @@ function CreateTramiteDialog({
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
+            {etiquetaReferencia ? (
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">
+                  {etiquetaReferencia}
+                </span>
+                <input
+                  name="referenciaExterna"
+                  placeholder="2140"
+                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                />
+              </label>
+            ) : null}
           </div>
 
-          {clienteSeleccionado?.tipo !== "SOCIO_LM" ? (
+          {pideEta && clienteSeleccionado?.tipo !== "SOCIO_LM" ? (
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">ETA</span>
               <input
