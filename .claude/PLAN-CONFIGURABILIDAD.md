@@ -143,6 +143,63 @@ dato en la ficha.
 
 ---
 
+## Paridad agente ↔ UI y empresas reales (2026-09-07)
+
+### Chequeo automático de paridad API ↔ MCP
+
+`src/lib/mcp/paridad.ts` (puro) compara cada `export` de `src/app/api/**/route.ts`
+contra las llamadas `api("METODO", ruta)` de `galcomex-mcp/server.mjs`. Corre en
+`npm test` como trinquete: un endpoint nuevo sin tool y sin excepción declarada
+rompe la suite; una tool que apunte a una ruta que ya no existe, también.
+
+- Reporte: `npx tsx scripts/verificar-paridad-mcp.ts`
+- Excepciones en `src/lib/mcp/paridad-excepciones.ts`, de dos tipos: **INTENCIONAL**
+  (auth, landings públicas, binarios que cubre `exportar_archivo`, alias) y
+  **PENDIENTE** (deuda visible que puede bajar pero no subir sin declararla).
+- Estado al crearlo: **64/111 endpoints con tool dedicada (58%)**, 24 intencionales,
+  23 pendientes. Sin huecos sin declarar, sin tools rotas.
+
+Los 23 pendientes, agrupados: pago en bloque multi-DO (GET/POST `/api/pagos/multi`),
+liquidación LM, conciliar lote de cartera, cruce-facturas del revisor, comisión
+interna LM, `siigo-enviar` / `siigo-sincronizar`, libro de pagos por trámite,
+reemplazo y enlaces públicos de documentos, y los 11 endpoints de catálogos de
+`/api/configuracion/siigo/*`.
+
+### Empresas de la reunión configuradas en la BD
+
+`npx tsx scripts/configurar-clientes-reunion.ts --ejemplos` — idempotente. Reutiliza
+la empresa si ya existe (una sola coincidencia por nombre; nunca toca NIT ni
+`tipo`), la crea con `PENDIENTE-NIT-<CLAVE>` si no, y salta si hay ambigüedad.
+
+| Empresa | Roles | Funciones activas |
+|---|---|---|
+| LITOPLAS S.A. (real, NIT 802009663-3) | cliente | anticipos, tarifario, clasificación, eventos, BL+factura obligatorios, regla Moviaduanas |
+| CW EXPRESS | cliente+proveedor | tarifario, base CIF, eventos |
+| POLIRED SAS · POLIRED ZONA FRANCA | cliente · grupo Polired | tarifario; del grupo: contenedores obligatorio, eventos, orden de compra |
+| SESDERMA | cliente | tarifario |
+| COLDEX | cliente+proveedor | cargos manuales |
+| ELTRANS | cliente+proveedor | contenedores obligatorio, comisión por contenedor (valor **0**: no se dijo) |
+| ASCINTER | cliente+proveedor | — (anticipos apagados) |
+| ALMACARGA | proveedor | — |
+
+Ejemplos cargados: `CLAS26-0001` para Litoplas con el informe 2140 que se vio en
+pantalla (generador de aire caliente a gas, subpartida 7322.90.00.00) y el cargo
+manual de 4.000.000 a favor de Coldex.
+
+**Ojo:** en la BD local Litoplas está con `tipo = SOCIO_LM` (viene del import de
+Lucho); en producción es PROPIO. No se tocó a propósito: el comportamiento ya no
+sale de `tipo`, sale de las capacidades.
+
+### Smoke test en vivo del MCP (stdio JSON-RPC contra :3003)
+
+11/11 verde: las 7 tools nuevas listadas; `capacidades_ver` con origen y config;
+`tipos_tramite_listar` filtrando por capacidad; ciclo completo `capacidad_set`
+encender → aparece CLASIFICACION → heredar → desaparece; config de comisión;
+grupo con 2 empresas; duplicado de grupo → 409; cuenta corriente de Coldex con el
+cargo de 4M; cargo manual rechazado (422) donde no hay capacidad; `tramite_crear`
+CLASIFICACION por MCP sin agencia; rechazado (422) donde no hay capacidad;
+`repercutible` viaja y Zod sigue exigiendo el documento.
+
 ## 0. Diagnóstico
 
 | Hecho | Evidencia |
