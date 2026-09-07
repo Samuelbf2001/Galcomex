@@ -14,6 +14,9 @@ export type ClienteRow = {
   contactoTel: string | null;
   manejaAnticipo: boolean;
   activo: boolean;
+  esCliente: boolean;
+  esProveedor: boolean;
+  grupoEmpresaId: string | null;
   tarifas: TarifaCliente[];
 };
 
@@ -57,6 +60,9 @@ export type CreateClienteInput = {
   contactoEmail?: string | null;
   contactoTel?: string | null;
   manejaAnticipo: boolean;
+  esCliente?: boolean;
+  esProveedor?: boolean;
+  grupoEmpresaId?: string | null;
   tarifas: TarifaCliente[];
 };
 
@@ -110,6 +116,10 @@ function normalizeCliente(row: unknown): ClienteRow | null {
     contactoTel: typeof row.contactoTel === "string" ? row.contactoTel : null,
     manejaAnticipo: row.manejaAnticipo !== false,
     activo: row.activo !== false,
+    esCliente: row.esCliente !== false,
+    esProveedor: row.esProveedor === true,
+    grupoEmpresaId:
+      typeof row.grupoEmpresaId === "string" ? row.grupoEmpresaId : null,
     tarifas,
   };
 }

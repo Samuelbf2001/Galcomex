@@ -112,6 +112,8 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
       contactoTel: (String(fd.get("contactoTel") ?? "").trim()) || null,
       manejaAnticipo: fd.get("manejaAnticipo") === "on",
       activo: fd.get("activo") === "on",
+      esCliente: fd.get("esCliente") === "on",
+      esProveedor: fd.get("esProveedor") === "on",
     };
 
     try {
@@ -228,6 +230,25 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
                 className="h-4 w-4"
               />
               <span className="text-sm text-slate-700">Activo</span>
+            </label>
+            {/* Roles simultáneos (M5): Ascinter, Coldex y Eltrans son las dos cosas. */}
+            <label className="flex items-center gap-2">
+              <input
+                name="esCliente"
+                type="checkbox"
+                defaultChecked={cliente.esCliente !== false}
+                className="h-4 w-4"
+              />
+              <span className="text-sm text-slate-700">Es cliente</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                name="esProveedor"
+                type="checkbox"
+                defaultChecked={cliente.esProveedor === true}
+                className="h-4 w-4"
+              />
+              <span className="text-sm text-slate-700">Es proveedor</span>
             </label>
           </div>
 

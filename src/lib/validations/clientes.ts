@@ -29,6 +29,14 @@ export const clientePayloadSchema = z.object({
   contactoTel: z.string().trim().min(1).optional().nullable(),
   manejaAnticipo: z.boolean().default(true),
   activo: z.boolean().default(true),
+  /**
+   * Roles simultáneos de la contraparte (M5): una misma empresa puede ser
+   * cliente y proveedor a la vez (Ascinter, Coldex, Eltrans).
+   */
+  esCliente: z.boolean().default(true),
+  esProveedor: z.boolean().default(false),
+  /** Grupo económico (Polired / Polired Zona Franca bajo una casa). */
+  grupoEmpresaId: z.string().min(1).optional().nullable(),
   tarifas: z.array(tarifaClienteSchema).default([]),
 });
 

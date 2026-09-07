@@ -9,6 +9,8 @@ lista y solamente activamos o desactivamos para los clientes"_.
 > configuración, cero commits.
 
 Documento visual para el cliente: `../analisis-reunion-tarifario-un-sistema-muchas-empresas.html`
+Pendientes del lado del cliente (bloqueantes que NO resuelve desarrollo): `../PENDIENTES-MARIA-CAMILA.md`
+Mientras llegan, se trabaja con datos de demo: `scripts/demo-configurabilidad.ts`
 
 ---
 
