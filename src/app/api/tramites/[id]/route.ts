@@ -6,6 +6,7 @@ import { getUmbralesAlertaTramite, umbralParaEmpresa } from "@/lib/alertas/umbra
 import { requireRole } from "@/lib/auth/session";
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
@@ -90,8 +91,8 @@ export async function PUT(request: NextRequest, context: RouteContext) {
           accion: "UPDATE",
           usuarioId: session.user.id,
           tramiteId: id,
-          antes: before,
-          despues: updated,
+          antes: normalizeSerializable(before),
+          despues: normalizeSerializable(updated),
         },
       });
 

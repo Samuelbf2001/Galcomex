@@ -2,6 +2,7 @@ import {
   AgenciaAduanas,
   Ciudad,
   EstadoTramite,
+  TipoCarga,
   TipoCliente,
 } from "@prisma/client";
 import { z } from "zod";
@@ -30,7 +31,26 @@ export const tramiteCreateSchema = z.object({
   comentarios: z.string().trim().min(1).optional().nullable(),
 });
 
-export const tramiteUpdateSchema = z.object({
+const enteroOpcional = z.number().int().min(0).max(100_000).optional().nullable();
+
+/**
+ * Base de cálculo del tarifario (M3). Todos opcionales: el motor de tarifas
+ * reporta lo que falta en vez de asumir cero.
+ */
+export const atributosTramiteSchema = z.object({
+  valorCif: z.coerce
+    .bigint()
+    .refine((v) => v >= 0n, { message: "El valor CIF no puede ser negativo" })
+    .optional()
+    .nullable(),
+  tipoCarga: z.nativeEnum(TipoCarga).optional().nullable(),
+  numContenedores: enteroOpcional,
+  numDeclaraciones: enteroOpcional,
+  numDocumentos: enteroOpcional,
+  numItems: enteroOpcional,
+});
+
+export const tramiteUpdateSchema = atributosTramiteSchema.extend({
   referenciaExterna: z.string().trim().min(1).optional().nullable(),
   proveedorCliente: z.string().trim().min(1).optional().nullable(),
   agenciaAduanas: z.nativeEnum(AgenciaAduanas).optional(),

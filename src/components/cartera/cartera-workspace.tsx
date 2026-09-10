@@ -54,6 +54,15 @@ import {
 // ─── Tipos locales ────────────────────────────────────────────────────────────
 
 type LoadState = "idle" | "loading" | "ready" | "error";
+
+/** Espejo de `TipoTramite.lineaServicio`. Vacío = todas las líneas. */
+const LINEAS_SERVICIO: { value: string; label: string }[] = [
+  { value: "", label: "Todas las líneas" },
+  { value: "TRAMITE", label: "Trámites" },
+  { value: "CLASIFICACION", label: "Clasificación arancelaria" },
+  { value: "PLAN_VALLEJO", label: "Plan Vallejo" },
+  { value: "EXPORTACION", label: "Exportación" },
+];
 type VistaMode = "cliente" | "lm";
 type TipoModal = "ABONO" | "DEVOLUCION";
 
@@ -1003,6 +1012,8 @@ export function CarteraWorkspace() {
   const [soloPendientes, setSoloPendientes] = useState(initialPendientes);
   const [desde, setDesde] = useState<string>(searchParams.get("desde") ?? "");
   const [hasta, setHasta] = useState<string>(searchParams.get("hasta") ?? "");
+  // Cartera separada por línea de servicio (trámites / clasificación / Plan Vallejo).
+  const [lineaServicio, setLineaServicio] = useState<string>(searchParams.get("linea") ?? "");
   const [vista, setVista] = useState<VistaMode>("cliente");
 
   const [cartera, setCartera] = useState<CarteraData | null>(null);
@@ -1072,12 +1083,13 @@ export function CarteraWorkspace() {
   // ── Actualizar URL ───────────────────────────────────────────────────────
 
   const syncUrl = useCallback(
-    (cid: string, pendientes: boolean, d: string, h: string) => {
+    (cid: string, pendientes: boolean, d: string, h: string, linea: string) => {
       const params = new URLSearchParams();
       if (cid) params.set("clienteId", cid);
       params.set("pendientes", String(pendientes));
       if (d) params.set("desde", d);
       if (h) params.set("hasta", h);
+      if (linea) params.set("linea", linea);
       const next =
         params.toString() ? `?${params.toString()}` : window.location.pathname;
       router.replace(next, { scroll: false });
@@ -1111,6 +1123,7 @@ export function CarteraWorkspace() {
         desde || undefined,
         hasta || undefined,
         controller.signal,
+        lineaServicio || undefined,
       );
       setCartera(data);
       setLoadState("ready");
@@ -1127,34 +1140,39 @@ export function CarteraWorkspace() {
     });
 
     return () => controller.abort();
-  }, [clienteId, soloPendientes, desde, hasta, reloadKey]);
+  }, [clienteId, soloPendientes, desde, hasta, lineaServicio, reloadKey]);
 
   // ── Handlers ────────────────────────────────────────────────────────────
 
   function handleClienteChange(id: string) {
     setClienteId(id);
-    syncUrl(id, soloPendientes, desde, hasta);
+    syncUrl(id, soloPendientes, desde, hasta, lineaServicio);
   }
 
   function handlePendientesChange(val: boolean) {
     setSoloPendientes(val);
-    syncUrl(clienteId, val, desde, hasta);
+    syncUrl(clienteId, val, desde, hasta, lineaServicio);
   }
 
   function handleDesdeChange(val: string) {
     setDesde(val);
-    syncUrl(clienteId, soloPendientes, val, hasta);
+    syncUrl(clienteId, soloPendientes, val, hasta, lineaServicio);
   }
 
   function handleHastaChange(val: string) {
     setHasta(val);
-    syncUrl(clienteId, soloPendientes, desde, val);
+    syncUrl(clienteId, soloPendientes, desde, val, lineaServicio);
   }
 
   function handleLimpiarFechas() {
     setDesde("");
     setHasta("");
-    syncUrl(clienteId, soloPendientes, "", "");
+    syncUrl(clienteId, soloPendientes, "", "", lineaServicio);
+  }
+
+  function handleLineaChange(val: string) {
+    setLineaServicio(val);
+    syncUrl(clienteId, soloPendientes, desde, hasta, val);
   }
 
   function handlePagoRegistrado() {
@@ -1396,6 +1414,25 @@ export function CarteraWorkspace() {
                 Solo pendientes
               </button>
             </div>
+          </div>
+
+          {/* Línea de servicio: la cartera de trámites y la de clasificaciones van separadas */}
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+              Línea
+            </span>
+            <select
+              value={lineaServicio}
+              onChange={(e) => handleLineaChange(e.target.value)}
+              aria-label="Línea de servicio"
+              className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
+            >
+              {LINEAS_SERVICIO.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Filtro por periodo de fechas (fecha de emisión de la factura) */}

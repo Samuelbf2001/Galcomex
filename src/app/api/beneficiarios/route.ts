@@ -12,7 +12,8 @@ export async function GET(request: NextRequest) {
   if (session instanceof NextResponse) return session;
 
   const q = request.nextUrl.searchParams.get("q") ?? undefined;
-  const beneficiarios = await listarBeneficiarios(q);
+  const empresaId = request.nextUrl.searchParams.get("empresaId") ?? undefined;
+  const beneficiarios = await listarBeneficiarios(q, empresaId);
 
   return jsonResponse({ beneficiarios });
 }

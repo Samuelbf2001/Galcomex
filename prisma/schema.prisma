@@ -30,6 +30,8 @@ model User {
   pagosFactura             PagoFactura[]      @relation("PagosFacturaRegistrados")
   enlacesDocumento         DocumentoEnlace[]  @relation("EnlaceCreadoPor")
   movimientosCuenta        MovimientoCuenta[] @relation("MovimientosCuentaRegistrados")
+  tarifariosCreados        Tarifario[]        @relation("TarifarioCreadoPor")
+  eventosMarcados          TramiteEvento[]    @relation("EventoMarcadoPor")
 
   @@map("user")
 }
@@ -123,6 +125,7 @@ model Cliente {
   updatedAt DateTime @updatedAt
 
   tarifas       TarifaCliente[]
+  tarifarios    Tarifario[]
   tramites      TramiteDO[]
   anticipos     Anticipo[]
   facturas      Factura[]
@@ -391,11 +394,21 @@ model TramiteDO {
   fechaDocumentosOk          DateTime?
   fechaSalidaCarga           DateTime?
 
+  // Base de cálculo del tarifario (M3). Todos opcionales: el motor reporta
+  // qué falta en vez de inventar un cero.
+  valorCif         BigInt? // valor en aduana, COP sin decimales
+  tipoCarga        TipoCarga?
+  numContenedores  Int?
+  numDeclaraciones Int?
+  numDocumentos    Int?
+  numItems         Int? // ítems clasificados
+
   creadoPorId String
   creadoPor   User     @relation("CreadoPor", fields: [creadoPorId], references: [id])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  eventos              TramiteEvento[]
   checklistItems       ChecklistItem[]
   documentos           Documento[]
   aplicacionesAnticipo AplicacionAnticipo[]
@@ -805,6 +818,11 @@ model BorradorFactura {
   formaPagoSiigoId Int?
   formaPago        SiigoFormaPago? @relation(fields: [formaPagoSiigoId], references: [id], onDelete: SetNull)
 
+  /// Tarifario con el que se calcularon los conceptos operacionales (M2).
+  /// Null = comisión manual, como antes.
+  tarifarioId String?
+  tarifario   Tarifario? @relation(fields: [tarifarioId], references: [id], onDelete: SetNull)
+
   // Envío como borrador a la API de Siigo. La factura se crea como DRAFT en
   // Siigo (stamp.send=false); un usuario superior la valida y la sella desde
   // Siigo. siigoDraftId guarda el id devuelto por Siigo en la creación del
@@ -1084,4 +1102,158 @@ model AuditLog {
   @@index([tramiteId])
   @@index([createdAt])
   @@map("audit_log")
+}
+
+// ─── M2: Tarifario versionado por empresa ─────────────────────────────────────
+// La propuesta comercial de Guillermo (Word con incisos) pasa a ser datos: un
+// tarifario por empresa y alcance, con vigencia real (Litoplas: 2-feb → 31-ene)
+// y una lista de ítems con su forma de cálculo. El motor puro vive en
+// `lib/tarifas/motor.ts`. Ninguna regla de precio se escribe en código.
+enum EstadoTarifario {
+  BORRADOR
+  VIGENTE
+  VENCIDO
+  REEMPLAZADO
+}
+
+/// Cómo se calcula el ítem. Ver `lib/tarifas/motor.ts`.
+enum TipoCalculoTarifa {
+  FIJO // mismo valor siempre (gastos de trámite por embarque)
+  POR_UNIDAD // valor × cantidad (10.000 por declaración, 100.000 por contenedor)
+  PORCENTAJE_MIN // % sobre el CIF con mínimo por tipo de carga (CW: 0,37 %)
+  PRIMERO_MAS_ADICIONAL // primero a un precio y cada adicional a otro (clasificación)
+  ESPEJO_DE_COSTO // se cobra lo mismo que costó (pago del registro VUCE)
+}
+
+/// Cuándo entra a la factura.
+enum DisparadorTarifa {
+  SIEMPRE // en todo trámite
+  EVENTO // solo si se marcó el evento del trámite (contenedor abierto, etc.)
+  MANUAL // el revisor lo agrega a mano
+}
+
+enum UnidadTarifa {
+  TRAMITE
+  CONTENEDOR
+  DECLARACION
+  DOCUMENTO
+  ITEM
+  MES
+}
+
+/// Base de cálculo del trámite para tarifas con mínimo por tipo de carga.
+enum TipoCarga {
+  SUELTA
+  CONTENEDOR_20
+  CONTENEDOR_40
+}
+
+model Tarifario {
+  id        String  @id @default(cuid())
+  empresaId String
+  empresa   Cliente @relation(fields: [empresaId], references: [id], onDelete: Restrict)
+
+  nombre       String // "Tarifas 2026 importaciones"
+  /// Línea de servicio que cubre: TRAMITE | CLASIFICACION | PLAN_VALLEJO | EXPORTACION.
+  /// Una empresa puede tener un tarifario vigente por cada alcance.
+  alcance      String          @default("TRAMITE")
+  vigenteDesde DateTime
+  vigenteHasta DateTime
+  estado       EstadoTarifario @default(BORRADOR)
+  version      Int             @default(1)
+  notas        String?
+
+  pdfKey    String?
+  enviadoAt DateTime?
+
+  creadoPorId String
+  creadoPor   User     @relation("TarifarioCreadoPor", fields: [creadoPorId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items      TarifaItem[]
+  borradores BorradorFactura[]
+
+  @@unique([empresaId, alcance, version])
+  @@index([empresaId, estado])
+  @@map("tarifario")
+}
+
+model TarifaItem {
+  id          String    @id @default(cuid())
+  tarifarioId String
+  tarifario   Tarifario @relation(fields: [tarifarioId], references: [id], onDelete: Cascade)
+
+  orden         Int     @default(0)
+  /// Código estable del concepto (GASTOS_TRAMITE, SISTEMATIZACION…). Se conserva
+  /// entre versiones y permite comparar tarifarios.
+  concepto      String
+  /// Nombre tal como sale en la propuesta y en la factura del cliente. Puede
+  /// diferir del nombre del producto Siigo.
+  nombrePublico String
+  /// Código del producto Siigo al que se lleva la línea (sin FK: el catálogo se
+  /// sincroniza aparte y puede no estar cargado en todos los entornos).
+  siigoCodigo   String?
+
+  tipoCalculo  TipoCalculoTarifa
+  disparador   DisparadorTarifa  @default(SIEMPRE)
+  /// Evento del catálogo que dispara el ítem cuando `disparador = EVENTO`.
+  eventoCodigo String?
+  evento       CatalogoEvento?   @relation(fields: [eventoCodigo], references: [codigo], onDelete: SetNull)
+  unidad       UnidadTarifa      @default(TRAMITE)
+
+  /// COP sin decimales. FIJO/POR_UNIDAD: valor unitario. PRIMERO_MAS_ADICIONAL: el primero.
+  valor          BigInt  @default(0)
+  /// PRIMERO_MAS_ADICIONAL: cada unidad adicional.
+  valorAdicional BigInt?
+  /// PORCENTAJE_MIN: puntos básicos (37 = 0,37 %).
+  porcentajeBps  Int?
+  /// PORCENTAJE_MIN: mínimos por tipo de carga `{ SUELTA, CONTENEDOR_20, CONTENEDOR_40 }` en COP string.
+  minimos        Json?
+  /// ESPEJO_DE_COSTO: texto que identifica el pago/factura de proveedor que se espeja.
+  conceptoCosto  String?
+
+  aplicaIva Boolean @default(true)
+  notas     String?
+
+  @@unique([tarifarioId, concepto])
+  @@map("tarifa_item")
+}
+
+// ─── M3: Eventos del trámite ──────────────────────────────────────────────────
+// Lo "circunstancial" de la reunión: solo se cobra si pasó (se abrió el
+// contenedor, hubo entrega directa, se elaboró el registro). Marcar el evento
+// deja rastro, exige sus documentos en el checklist y, si el tarifario de la
+// empresa tiene un ítem con ese evento, lo lleva a la factura.
+model CatalogoEvento {
+  codigo               String  @id
+  nombre               String
+  descripcion          String?
+  /// Etiquetas de documentos que el evento exige en el checklist del DO.
+  documentosRequeridos Json    @default("[]")
+  /// El evento puede repetirse (despacho parcial ×2, modificación de registro ×N).
+  permiteCantidad      Boolean @default(false)
+  orden                Int     @default(0)
+  activo               Boolean @default(true)
+
+  tramites    TramiteEvento[]
+  tarifaItems TarifaItem[]
+
+  @@map("catalogo_evento")
+}
+
+model TramiteEvento {
+  id           String         @id @default(cuid())
+  tramiteId    String
+  tramite      TramiteDO      @relation(fields: [tramiteId], references: [id], onDelete: Cascade)
+  eventoCodigo String
+  evento       CatalogoEvento @relation(fields: [eventoCodigo], references: [codigo], onDelete: Restrict)
+  cantidad     Int            @default(1)
+  observacion  String?
+  marcadoPorId String
+  marcadoPor   User           @relation("EventoMarcadoPor", fields: [marcadoPorId], references: [id])
+  createdAt    DateTime       @default(now())
+
+  @@unique([tramiteId, eventoCodigo])
+  @@map("tramite_evento")
 }

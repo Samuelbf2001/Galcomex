@@ -12,6 +12,7 @@ import {
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { configDe, tiene } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 import {
   validateReglaAgenciaFija,
   type ConfigReglaAgencia,
@@ -119,13 +120,6 @@ function shouldRetryPrisma(error: unknown) {
   );
 }
 
-function normalizeSerializable<T>(value: T): T {
-  return JSON.parse(
-    JSON.stringify(value, (_, nestedValue) =>
-      typeof nestedValue === "bigint" ? nestedValue.toString() : nestedValue,
-    ),
-  ) as T;
-}
 
 export async function createTramite(input: CreateTramiteInput) {
   const anio = input.anio ?? new Date().getFullYear();

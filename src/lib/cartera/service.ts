@@ -71,6 +71,8 @@ type GetCarteraClienteInput = {
   /** Filtro por fecha de emisión de la factura (inclusivo), formato YYYY-MM-DD. */
   desde?: string;
   hasta?: string;
+  /** Línea de servicio del tipo de trámite (TRAMITE, CLASIFICACION, PLAN_VALLEJO…). */
+  lineaServicio?: string;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -410,7 +412,7 @@ export async function eliminarPagoFactura(pagoId: string, usuarioId: string) {
  *         generados por pagos del cliente y pagos a LM.
  */
 export async function getCarteraCliente(input: GetCarteraClienteInput) {
-  const { clienteId, soloPendientes = false, desde, hasta } = input;
+  const { clienteId, soloPendientes = false, desde, hasta, lineaServicio } = input;
 
   // Filtro por periodo sobre la fecha de emisión de la factura (inclusivo en ambos extremos).
   const fechaFilter: Prisma.DateTimeFilter = {};
@@ -418,14 +420,20 @@ export async function getCarteraCliente(input: GetCarteraClienteInput) {
   if (hasta) fechaFilter.lte = new Date(`${hasta}T23:59:59.999Z`);
   const fechaWhere = desde || hasta ? { fecha: fechaFilter } : {};
 
+  // Cartera separada por línea de servicio (trámites / clasificación / Plan Vallejo):
+  // la línea vive en el tipo de trámite del DO que originó la factura.
+  const lineaWhere = lineaServicio
+    ? { borrador: { tramite: { tipoTramite: { lineaServicio } } } }
+    : {};
+
   const facturas = await prisma.factura.findMany({
-    where: { clienteId, ...fechaWhere },
+    where: { clienteId, ...fechaWhere, ...lineaWhere },
     include: {
       borrador: {
         select: {
           tramiteId: true,
           tramite: {
-            select: { consecutivo: true },
+            select: { consecutivo: true, tipoTramite: { select: { lineaServicio: true } } },
           },
         },
       },
@@ -483,6 +491,7 @@ export async function getCarteraCliente(input: GetCarteraClienteInput) {
 
     return {
       ...f,
+      lineaServicio: f.borrador.tramite.tipoTramite.lineaServicio,
       // Ledger CLIENTE
       abonosCliente,
       devolucionesCliente,

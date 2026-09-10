@@ -25,6 +25,7 @@ export async function GET(request: NextRequest) {
       pendientes: request.nextUrl.searchParams.get("pendientes") ?? undefined,
       desde: request.nextUrl.searchParams.get("desde") ?? undefined,
       hasta: request.nextUrl.searchParams.get("hasta") ?? undefined,
+      lineaServicio: request.nextUrl.searchParams.get("lineaServicio") ?? undefined,
     });
 
     const cartera = await getCarteraCliente({
@@ -32,6 +33,7 @@ export async function GET(request: NextRequest) {
       soloPendientes: query.pendientes,
       desde: query.desde,
       hasta: query.hasta,
+      lineaServicio: query.lineaServicio,
     });
 
     return jsonResponse({ cartera });

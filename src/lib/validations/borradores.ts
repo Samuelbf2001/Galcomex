@@ -168,6 +168,8 @@ export const carteraQuerySchema = z.object({
     .transform((v) => v === "true"),
   desde: fechaIso,
   hasta: fechaIso,
+  /** Línea de servicio del tipo de trámite (TRAMITE, CLASIFICACION, PLAN_VALLEJO…). Sin valor = todas. */
+  lineaServicio: z.string().trim().min(1).max(40).optional(),
 });
 
 // ── Liquidación por lotes LM (cuenta Lucho) ───────────────────────────────────

@@ -26,7 +26,8 @@ const intencional = (
   razon: string,
 ): ExcepcionTipada => ({ metodo, ruta, razon, tipo: "INTENCIONAL" });
 
-const pendiente = (
+/** Exportado para que siga disponible (y sin warning de lint) mientras la lista de deuda esté vacía. */
+export const pendiente = (
   metodo: Excepcion["metodo"],
   ruta: string,
   razon: string,
@@ -61,27 +62,7 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
   intencional("GET", "/api/facturacion/borradores", "Lote de GET /api/tramites/[param]/borrador para la pantalla de facturación (elimina el N+1 del cliente); el MCP usa borrador_ver por trámite"),
 
   // ── Pendientes (deuda visible) ──────────────────────────────────────────────
-  pendiente("GET", "/api/pagos/multi", "Pago en bloque multi-DO: listar facturas elegibles de un beneficiario"),
-  pendiente("POST", "/api/pagos/multi", "Pago en bloque multi-DO: un comprobante cubre facturas de varios DOs"),
-  pendiente("GET", "/api/liquidacion-lm", "Liquidación del socio Lucho"),
-  pendiente("POST", "/api/cartera/conciliar-lote", "Conciliar varias facturas de cartera de una vez"),
-  pendiente("GET", "/api/borradores/[param]/cruce-facturas", "Panel de validaciones del revisor (cruce facturas ↔ pagos)"),
-  pendiente("PATCH", "/api/borradores/[param]/comision-interna-lm", "Comisión interna LM del borrador"),
-  pendiente("POST", "/api/borradores/[param]/siigo-enviar", "Enviar la factura a Siigo como borrador"),
-  pendiente("POST", "/api/borradores/[param]/siigo-sincronizar", "Traer el consecutivo estampado desde Siigo"),
-  pendiente("GET", "/api/tramites/[param]/pagos", "Libro de pagos de un trámite (hoy se lee vía tramite_ver / pagos_listar global)"),
-  pendiente("PUT", "/api/tramites/[param]/documentos/[param]", "Reemplazar un documento"),
-  pendiente("POST", "/api/tramites/[param]/documentos/[param]/enlace", "Crear enlace público de un documento"),
-  pendiente("DELETE", "/api/tramites/[param]/documentos/[param]/enlace", "Revocar enlace público"),
-  pendiente("GET", "/api/configuracion/siigo/parametros", "Parámetros de la integración Siigo"),
-  pendiente("PUT", "/api/configuracion/siigo/parametros", "Editar parámetros de la integración Siigo"),
-  pendiente("GET", "/api/configuracion/siigo/formas-pago", "Catálogo Siigo: formas de pago"),
-  pendiente("POST", "/api/configuracion/siigo/formas-pago/sync", "Sincronizar formas de pago"),
-  pendiente("GET", "/api/configuracion/siigo/impuestos", "Catálogo Siigo: impuestos"),
-  pendiente("POST", "/api/configuracion/siigo/impuestos/sync", "Sincronizar impuestos"),
-  pendiente("PUT", "/api/configuracion/siigo/productos/[param]/impuestos", "Asociar impuestos a un producto Siigo"),
-  pendiente("GET", "/api/configuracion/siigo/tipos-comprobante", "Catálogo Siigo: tipos de comprobante"),
-  pendiente("POST", "/api/configuracion/siigo/tipos-comprobante/sync", "Sincronizar tipos de comprobante"),
-  pendiente("GET", "/api/configuracion/siigo/vendedores", "Catálogo Siigo: vendedores"),
-  pendiente("POST", "/api/configuracion/siigo/vendedores/sync", "Sincronizar vendedores"),
+  // Vacía desde 2026-09-10: los 23 endpoints que vivían aquí ya tienen tool
+  // dedicada en galcomex-mcp/server.mjs. Para declarar deuda nueva:
+  //   pendiente("GET", "/api/ruta/[param]", "por qué debería tener tool y aún no"),
 ];

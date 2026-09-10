@@ -305,10 +305,12 @@ export async function fetchCartera(
   desde?: string,
   hasta?: string,
   signal?: AbortSignal,
+  lineaServicio?: string,
 ): Promise<CarteraData> {
   let url = `/api/cartera?clienteId=${encodeURIComponent(clienteId)}&pendientes=${soloPendientes ? "true" : "false"}`;
   if (desde) url += `&desde=${encodeURIComponent(desde)}`;
   if (hasta) url += `&hasta=${encodeURIComponent(hasta)}`;
+  if (lineaServicio) url += `&lineaServicio=${encodeURIComponent(lineaServicio)}`;
   let res: Response;
   try {
     res = await fetch(url, {
