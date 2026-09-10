@@ -20,5 +20,13 @@ export const registrarDocumentoSchema = z.object({
   tamanoBytes: z.number().int().positive(),
 });
 
+export const reemplazarDocumentoSchema = z.object({
+  storageKey: z.string().min(1),
+  nombreArchivo: z.string().min(1),
+  mimeType: z.string().min(1),
+  tamanoBytes: z.number().int().positive(),
+});
+
 export type SolicitarSubidaInput = z.infer<typeof solicitarSubidaSchema>;
 export type RegistrarDocumentoInput = z.infer<typeof registrarDocumentoSchema>;
+export type ReemplazarDocumentoInput = z.infer<typeof reemplazarDocumentoSchema>;

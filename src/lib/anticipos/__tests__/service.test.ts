@@ -19,6 +19,7 @@ import {
   eliminarAplicacion,
   getAnticipoConSaldo,
   listarAnticipos,
+  SoporteAnticipoRequeridoError,
 } from "../service";
 
 const TEST_PREFIX = "vitest-anticipos";
@@ -190,12 +191,16 @@ describe("anticipos service con Postgres local", () => {
   it("crea un anticipo y lo recupera con saldo correcto", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const anticipo = await crearAnticipo({
-      clienteId: db.clienteId,
-      monto: 10_000_000n,
-      fecha: new Date("3001-01-15"),
-      tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-    });
+    const anticipo = await crearAnticipo(
+      {
+        clienteId: db.clienteId,
+        monto: 10_000_000n,
+        fecha: new Date("3001-01-15"),
+        tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+        soporteKey: "vitest-soporte-dummy.pdf",
+      },
+      db.userId,
+    );
 
     expect(anticipo.monto).toBe(10_000_000n);
     expect(anticipo.clienteId).toBe(db.clienteId);
@@ -210,35 +215,48 @@ describe("anticipos service con Postgres local", () => {
   it("anticipo 34.369.000 aplicado a 3 DOs; 4o excede restante → 422", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const anticipo = await crearAnticipo({
-      clienteId: db.clienteId,
-      monto: 34_369_000n,
-      fecha: new Date("3001-02-01"),
-      tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-    });
+    const anticipo = await crearAnticipo(
+      {
+        clienteId: db.clienteId,
+        monto: 34_369_000n,
+        fecha: new Date("3001-02-01"),
+        tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+        soporteKey: "vitest-soporte-dummy.pdf",
+      },
+      db.userId,
+    );
 
     // Aplicar al primer DO: 10.000.000
-    const r1 = await aplicarAnticipo({
-      anticipoId: anticipo.id,
-      tramiteId: db.tramiteIds[0],
-      montoAplicado: 10_000_000n,
-    });
+    const r1 = await aplicarAnticipo(
+      {
+        anticipoId: anticipo.id,
+        tramiteId: db.tramiteIds[0],
+        montoAplicado: 10_000_000n,
+      },
+      db.userId,
+    );
     expect(r1.ok).toBe(true);
 
     // Aplicar al segundo DO: 15.000.000
-    const r2 = await aplicarAnticipo({
-      anticipoId: anticipo.id,
-      tramiteId: db.tramiteIds[1],
-      montoAplicado: 15_000_000n,
-    });
+    const r2 = await aplicarAnticipo(
+      {
+        anticipoId: anticipo.id,
+        tramiteId: db.tramiteIds[1],
+        montoAplicado: 15_000_000n,
+      },
+      db.userId,
+    );
     expect(r2.ok).toBe(true);
 
     // Aplicar al tercer DO: 9.000.000 → total aplicado = 34.000.000, restante = 369.000
-    const r3 = await aplicarAnticipo({
-      anticipoId: anticipo.id,
-      tramiteId: db.tramiteIds[2],
-      montoAplicado: 9_000_000n,
-    });
+    const r3 = await aplicarAnticipo(
+      {
+        anticipoId: anticipo.id,
+        tramiteId: db.tramiteIds[2],
+        montoAplicado: 9_000_000n,
+      },
+      db.userId,
+    );
     expect(r3.ok).toBe(true);
 
     const conSaldo = await getAnticipoConSaldo(anticipo.id);
@@ -247,11 +265,14 @@ describe("anticipos service con Postgres local", () => {
     expect(conSaldo!.aplicaciones).toHaveLength(3);
 
     // Intentar aplicar al cuarto DO: 500.000 → excede restante (369.000) → debe fallar 422
-    const r4 = await aplicarAnticipo({
-      anticipoId: anticipo.id,
-      tramiteId: db.tramiteIds[3],
-      montoAplicado: 500_000n,
-    });
+    const r4 = await aplicarAnticipo(
+      {
+        anticipoId: anticipo.id,
+        tramiteId: db.tramiteIds[3],
+        montoAplicado: 500_000n,
+      },
+      db.userId,
+    );
     expect(r4.ok).toBe(false);
     if (!r4.ok) {
       expect(r4.status).toBe(422);
@@ -269,31 +290,45 @@ describe("anticipos service con Postgres local", () => {
     const db = ensureDb(ctx);
 
     // Anticipo totalmente aplicado
-    const anticipoAgotado = await crearAnticipo({
-      clienteId: db.clienteId,
-      monto: 5_000_000n,
-      fecha: new Date("3001-03-01"),
-      tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-    });
+    const anticipoAgotado = await crearAnticipo(
+      {
+        clienteId: db.clienteId,
+        monto: 5_000_000n,
+        fecha: new Date("3001-03-01"),
+        tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+        soporteKey: "vitest-soporte-dummy.pdf",
+      },
+      db.userId,
+    );
     // Aplicar el monto completo
-    await aplicarAnticipo({
-      anticipoId: anticipoAgotado.id,
-      tramiteId: db.tramiteIds[0],
-      montoAplicado: 5_000_000n,
-    });
+    await aplicarAnticipo(
+      {
+        anticipoId: anticipoAgotado.id,
+        tramiteId: db.tramiteIds[0],
+        montoAplicado: 5_000_000n,
+      },
+      db.userId,
+    );
 
     // Anticipo con saldo disponible
-    const anticipoConSaldo = await crearAnticipo({
-      clienteId: db.clienteId,
-      monto: 8_000_000n,
-      fecha: new Date("3001-03-05"),
-      tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-    });
-    await aplicarAnticipo({
-      anticipoId: anticipoConSaldo.id,
-      tramiteId: db.tramiteIds[1],
-      montoAplicado: 3_000_000n,
-    });
+    const anticipoConSaldo = await crearAnticipo(
+      {
+        clienteId: db.clienteId,
+        monto: 8_000_000n,
+        fecha: new Date("3001-03-05"),
+        tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+        soporteKey: "vitest-soporte-dummy.pdf",
+      },
+      db.userId,
+    );
+    await aplicarAnticipo(
+      {
+        anticipoId: anticipoConSaldo.id,
+        tramiteId: db.tramiteIds[1],
+        montoAplicado: 3_000_000n,
+      },
+      db.userId,
+    );
 
     const todos = await listarAnticipos({ clienteId: db.clienteId });
     const conSaldoFiltrado = await listarAnticipos({
@@ -331,19 +366,26 @@ describe("anticipos service con Postgres local", () => {
   it("eliminar una aplicacion recalcula el restante correctamente (test de reversa)", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const anticipo = await crearAnticipo({
-      clienteId: db.clienteId,
-      monto: 20_000_000n,
-      fecha: new Date("3001-04-01"),
-      tipoRecaudo: TipoRecaudo.OTROS_BANCOS,
-    });
+    const anticipo = await crearAnticipo(
+      {
+        clienteId: db.clienteId,
+        monto: 20_000_000n,
+        fecha: new Date("3001-04-01"),
+        tipoRecaudo: TipoRecaudo.OTROS_BANCOS,
+        soporteKey: "vitest-soporte-dummy.pdf",
+      },
+      db.userId,
+    );
 
     // Aplicar 12.000.000
-    const r1 = await aplicarAnticipo({
-      anticipoId: anticipo.id,
-      tramiteId: db.tramiteIds[0],
-      montoAplicado: 12_000_000n,
-    });
+    const r1 = await aplicarAnticipo(
+      {
+        anticipoId: anticipo.id,
+        tramiteId: db.tramiteIds[0],
+        montoAplicado: 12_000_000n,
+      },
+      db.userId,
+    );
     expect(r1.ok).toBe(true);
     if (!r1.ok) throw new Error("Aplicacion fallida");
 
@@ -352,7 +394,7 @@ describe("anticipos service con Postgres local", () => {
     expect(saldoDespuesAplicar!.restante).toBe(8_000_000n);
 
     // Eliminar la aplicacion
-    await eliminarAplicacion(r1.aplicacion.id);
+    await eliminarAplicacion(r1.aplicacion.id, db.userId);
 
     // El restante debe volver a 20.000.000
     const saldoDespuesEliminar = await getAnticipoConSaldo(anticipo.id);
@@ -383,6 +425,50 @@ describe("anticipos service con Postgres local", () => {
       monto: 0,
       fecha: "3001-01-01",
       tipoRecaudo: "BANCOLOMBIA",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("crearAnticipo rechaza soporteKey ausente (soporte obligatorio)", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    await expect(
+      crearAnticipo(
+        {
+          clienteId: db.clienteId,
+          monto: 1_000_000n,
+          fecha: new Date("3001-05-01"),
+          tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+        },
+        db.userId,
+      ),
+    ).rejects.toBeInstanceOf(SoporteAnticipoRequeridoError);
+  });
+
+  it("crearAnticipo rechaza soporteKey vacio o solo espacios", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    await expect(
+      crearAnticipo(
+        {
+          clienteId: db.clienteId,
+          monto: 1_000_000n,
+          fecha: new Date("3001-05-01"),
+          tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+          soporteKey: "   ",
+        },
+        db.userId,
+      ),
+    ).rejects.toBeInstanceOf(SoporteAnticipoRequeridoError);
+  });
+
+  it("crearAnticipoSchema rechaza soporteKey vacio explicito", () => {
+    const result = crearAnticipoSchema.safeParse({
+      clienteId: "some-id",
+      monto: 1000,
+      fecha: "3001-01-01",
+      tipoRecaudo: "BANCOLOMBIA",
+      soporteKey: "",
     });
     expect(result.success).toBe(false);
   });

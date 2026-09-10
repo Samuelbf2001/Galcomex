@@ -43,14 +43,25 @@ export type ActividadRecienteRow = {
   createdAt: string;
 };
 
+export type ClienteAlertaCarteraRow = {
+  clienteId: string;
+  clienteNombre: string;
+  saldoNeto: string; // BigInt as string; negativo = el cliente debe a Galcomex
+};
+
 export type DashboardApiData = {
   dosActivos: number;
   dosPorEstado: DosPorEstado[];
+  /** Las listas vienen limitadas (20 filas); los KPI usan los contadores totales. */
   pendientesFacturar: PendienteFacturarRow[];
+  cantidadPendientesFacturar: number;
+  cantidadPendientesConAlerta: number;
   carteraVencida: CarteraVencidaRow[];
+  cantidadFacturasVencidas: number;
   totalCarteraVencida: string;
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
+  alertasCartera: ClienteAlertaCarteraRow[];
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -123,6 +134,14 @@ function mapActividadRow(r: Record<string, unknown>): ActividadRecienteRow {
   };
 }
 
+function mapAlertaCarteraRow(r: Record<string, unknown>): ClienteAlertaCarteraRow {
+  return {
+    clienteId: String(r.clienteId ?? ""),
+    clienteNombre: String(r.clienteNombre ?? ""),
+    saldoNeto: String(r.saldoNeto ?? "0"),
+  };
+}
+
 // ─── API pública ──────────────────────────────────────────────────────────────
 
 export async function fetchDashboard(
@@ -155,6 +174,12 @@ export async function fetchDashboard(
   const anticipos = isRecord(payload.anticiposConSaldo)
     ? payload.anticiposConSaldo
     : {};
+  const pendientesFacturar = Array.isArray(payload.pendientesFacturar)
+    ? payload.pendientesFacturar.filter(isRecord).map(mapPendienteRow)
+    : [];
+  const carteraVencida = Array.isArray(payload.carteraVencida)
+    ? payload.carteraVencida.filter(isRecord).map(mapCarteraVencidaRow)
+    : [];
 
   return {
     dosActivos:
@@ -162,12 +187,20 @@ export async function fetchDashboard(
     dosPorEstado: Array.isArray(payload.dosPorEstado)
       ? mapDosPorEstado(payload.dosPorEstado)
       : [],
-    pendientesFacturar: Array.isArray(payload.pendientesFacturar)
-      ? payload.pendientesFacturar.filter(isRecord).map(mapPendienteRow)
-      : [],
-    carteraVencida: Array.isArray(payload.carteraVencida)
-      ? payload.carteraVencida.filter(isRecord).map(mapCarteraVencidaRow)
-      : [],
+    pendientesFacturar,
+    cantidadPendientesFacturar:
+      typeof payload.cantidadPendientesFacturar === "number"
+        ? payload.cantidadPendientesFacturar
+        : pendientesFacturar.length,
+    cantidadPendientesConAlerta:
+      typeof payload.cantidadPendientesConAlerta === "number"
+        ? payload.cantidadPendientesConAlerta
+        : pendientesFacturar.filter((p) => p.alerta).length,
+    carteraVencida,
+    cantidadFacturasVencidas:
+      typeof payload.cantidadFacturasVencidas === "number"
+        ? payload.cantidadFacturasVencidas
+        : carteraVencida.length,
     totalCarteraVencida: String(payload.totalCarteraVencida ?? "0"),
     anticiposConSaldo: {
       cantidad:
@@ -176,6 +209,9 @@ export async function fetchDashboard(
     },
     actividadReciente: Array.isArray(payload.actividadReciente)
       ? payload.actividadReciente.filter(isRecord).map(mapActividadRow)
+      : [],
+    alertasCartera: Array.isArray(payload.alertasCartera)
+      ? payload.alertasCartera.filter(isRecord).map(mapAlertaCarteraRow)
       : [],
   };
 }

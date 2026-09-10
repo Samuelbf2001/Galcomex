@@ -27,7 +27,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   }
 
   try {
-    const beneficiario = await actualizarBeneficiario(id, payload);
+    const beneficiario = await actualizarBeneficiario(id, payload, session.user.id);
     return jsonResponse({ beneficiario });
   } catch (error) {
     if (error instanceof BeneficiarioNoEncontradoError) {

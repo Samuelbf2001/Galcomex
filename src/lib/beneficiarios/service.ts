@@ -1,8 +1,18 @@
-import { type Beneficiario } from "@prisma/client";
+import { Prisma, type Beneficiario } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 
 export type { Beneficiario };
+
+/**
+ * Serializa un snapshot a JSON apto para columnas Json de Prisma, convirtiendo
+ * BigInt → string. Mismo replacer usado en el resto de services.
+ */
+function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(
+    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
+  ) as Prisma.InputJsonValue;
+}
 
 export type CrearBeneficiarioInput = {
   nombre: string;
@@ -33,31 +43,64 @@ export async function listarBeneficiarios(query?: string): Promise<Beneficiario[
   });
 }
 
-export async function crearBeneficiario(input: CrearBeneficiarioInput): Promise<Beneficiario> {
-  return prisma.beneficiario.create({
-    data: {
-      nombre: input.nombre.trim(),
-      nit: input.nit?.trim() || null,
-      banco: input.banco?.trim() || null,
-      numCuenta: input.numCuenta?.trim() || null,
-    },
+export async function crearBeneficiario(
+  input: CrearBeneficiarioInput,
+  usuarioId: string,
+): Promise<Beneficiario> {
+  return prisma.$transaction(async (tx) => {
+    const beneficiario = await tx.beneficiario.create({
+      data: {
+        nombre: input.nombre.trim(),
+        nit: input.nit?.trim() || null,
+        banco: input.banco?.trim() || null,
+        numCuenta: input.numCuenta?.trim() || null,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "Beneficiario",
+        entidadId: beneficiario.id,
+        accion: "CREATE_BENEFICIARIO",
+        usuarioId,
+        despues: normalizeSerializable(beneficiario),
+      },
+    });
+
+    return beneficiario;
   });
 }
 
 export async function actualizarBeneficiario(
   id: string,
   input: Partial<CrearBeneficiarioInput>,
+  usuarioId: string,
 ): Promise<Beneficiario> {
   const existe = await prisma.beneficiario.findUnique({ where: { id } });
   if (!existe) throw new BeneficiarioNoEncontradoError(id);
 
-  return prisma.beneficiario.update({
-    where: { id },
-    data: {
-      ...(input.nombre !== undefined ? { nombre: input.nombre.trim() } : {}),
-      ...(input.nit !== undefined ? { nit: input.nit?.trim() || null } : {}),
-      ...(input.banco !== undefined ? { banco: input.banco?.trim() || null } : {}),
-      ...(input.numCuenta !== undefined ? { numCuenta: input.numCuenta?.trim() || null } : {}),
-    },
+  return prisma.$transaction(async (tx) => {
+    const actualizado = await tx.beneficiario.update({
+      where: { id },
+      data: {
+        ...(input.nombre !== undefined ? { nombre: input.nombre.trim() } : {}),
+        ...(input.nit !== undefined ? { nit: input.nit?.trim() || null } : {}),
+        ...(input.banco !== undefined ? { banco: input.banco?.trim() || null } : {}),
+        ...(input.numCuenta !== undefined ? { numCuenta: input.numCuenta?.trim() || null } : {}),
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "Beneficiario",
+        entidadId: id,
+        accion: "UPDATE_BENEFICIARIO",
+        usuarioId,
+        antes: normalizeSerializable(existe),
+        despues: normalizeSerializable(actualizado),
+      },
+    });
+
+    return actualizado;
   });
 }

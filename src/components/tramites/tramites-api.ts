@@ -19,12 +19,98 @@ export type ClienteOption = {
   tipo: string;
 };
 
+export type FacturadoFilter = "todos" | "si" | "no";
+
+export type TramiteFilters = {
+  q?: string;
+  estado?: string;
+  ciudad?: string;
+  clienteId?: string;
+  tipoCliente?: string;
+  facturado?: FacturadoFilter;
+};
+
+const allFilterValue = "todos";
+
+/** Tamaño de página por defecto de la lista maestra (el API admite hasta 200). */
+export const TRAMITES_PAGE_SIZE = 100;
+
+export type TramitesPageOptions = {
+  take?: number;
+  skip?: number;
+};
+
+export type TramitesPage = {
+  rows: TramiteRow[];
+  /** Total de trámites que cumplen los filtros (para "Mostrando X de Y"). */
+  total: number;
+};
+
+function buildTramitesQuery(filters?: TramiteFilters, page?: TramitesPageOptions): string {
+  const params = new URLSearchParams();
+  const q = filters?.q?.trim();
+
+  if (page?.take !== undefined) {
+    params.set("take", String(page.take));
+  }
+
+  if (page?.skip !== undefined && page.skip > 0) {
+    params.set("skip", String(page.skip));
+  }
+
+  if (!filters) {
+    const soloPagina = params.toString();
+    return soloPagina ? `?${soloPagina}` : "";
+  }
+
+  if (q) {
+    params.set("q", q);
+  }
+
+  if (filters.estado && filters.estado !== allFilterValue) {
+    params.set("estado", filters.estado);
+  }
+
+  if (filters.ciudad && filters.ciudad !== allFilterValue) {
+    params.set("ciudad", filters.ciudad);
+  }
+
+  if (filters.clienteId && filters.clienteId !== allFilterValue) {
+    params.set("clienteId", filters.clienteId);
+  }
+
+  if (filters.tipoCliente && filters.tipoCliente !== allFilterValue) {
+    params.set("tipoCliente", filters.tipoCliente);
+  }
+
+  if (filters.facturado && filters.facturado !== "todos") {
+    params.set("facturado", filters.facturado === "si" ? "true" : "false");
+  }
+
+  const query = params.toString();
+
+  return query ? `?${query}` : "";
+}
+
+export type TipoTramiteOption = {
+  codigo: string;
+  nombre: string;
+  descripcion: string | null;
+  prefijoConsecutivo: string;
+  requiereAgenciaAduanas: boolean;
+  requiereEta: boolean;
+  etiquetaReferenciaExterna: string | null;
+};
+
 export type CreateTramiteInput = {
   ciudad: string;
   anio?: number;
   clienteId: string;
+  /** Código de TipoTramite. Ausente = IMPORTACION. */
+  tipoTramiteCodigo?: string;
+  referenciaExterna?: string | null;
   proveedorCliente?: string | null;
-  agenciaAduanas: string;
+  agenciaAduanas?: string;
   doAgencia?: string | null;
   doCliente?: string | null;
   eta?: string | null;
@@ -185,11 +271,19 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
   };
 }
 
-export async function fetchTramites(signal?: AbortSignal): Promise<TramiteRow[]> {
+/**
+ * Página de trámites con `take`/`skip` y el `total` que devuelve el API
+ * (`{ tramites, total }`). Sin `take` el servidor recorta a 50 en silencio.
+ */
+export async function fetchTramitesPage(
+  signal?: AbortSignal,
+  filters?: TramiteFilters,
+  page: TramitesPageOptions = { take: TRAMITES_PAGE_SIZE, skip: 0 },
+): Promise<TramitesPage> {
   let response: Response;
 
   try {
-    response = await fetch("/api/tramites", {
+    response = await fetch(`/api/tramites${buildTramitesQuery(filters, page)}`, {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal,
@@ -204,10 +298,10 @@ export async function fetchTramites(signal?: AbortSignal): Promise<TramiteRow[]>
 
   if (!response.ok) {
     if (response.status === 404) {
-      throw new TramitesApiError("La API /api/tramites aun no esta disponible.", 404);
+      throw new TramitesApiError("La API /api/tramites aún no está disponible.", 404);
     }
 
-    throw new TramitesApiError("No fue posible cargar los tramites.", response.status);
+    throw new TramitesApiError("No fue posible cargar los trámites.", response.status);
   }
 
   let payload: unknown;
@@ -215,12 +309,28 @@ export async function fetchTramites(signal?: AbortSignal): Promise<TramiteRow[]>
   try {
     payload = await response.json();
   } catch {
-    throw new TramitesApiError("La respuesta de /api/tramites no es JSON valido.");
+    throw new TramitesApiError("La respuesta de /api/tramites no es JSON válido.");
   }
 
-  return extractRows(payload)
+  const rows = extractRows(payload)
     .map(normalizeRow)
     .filter((row): row is TramiteRow => row !== null);
+
+  const total =
+    isRecord(payload) && typeof payload.total === "number" && Number.isFinite(payload.total)
+      ? payload.total
+      : rows.length;
+
+  return { rows, total };
+}
+
+export async function fetchTramites(
+  signal?: AbortSignal,
+  filters?: TramiteFilters,
+  page?: TramitesPageOptions,
+): Promise<TramiteRow[]> {
+  const { rows } = await fetchTramitesPage(signal, filters, page);
+  return rows;
 }
 
 export async function fetchClienteOptions(signal?: AbortSignal): Promise<ClienteOption[]> {
@@ -251,6 +361,47 @@ export async function fetchClienteOptions(signal?: AbortSignal): Promise<Cliente
     .filter((cliente) => cliente.id && cliente.nombre);
 }
 
+/**
+ * Tipos de trámite que la empresa puede abrir (M4). Con `clienteId` el backend
+ * ya filtra por capacidad, así que el formulario nunca ofrece algo que luego
+ * vaya a rechazar.
+ */
+export async function fetchTiposTramite(
+  clienteId: string,
+  signal?: AbortSignal,
+): Promise<TipoTramiteOption[]> {
+  const response = await fetch(
+    `/api/tipos-tramite?clienteId=${encodeURIComponent(clienteId)}`,
+    { cache: "no-store", headers: { Accept: "application/json" }, signal },
+  );
+
+  if (!response.ok) {
+    throw new TramitesApiError(
+      "No fue posible cargar los tipos de trámite.",
+      response.status,
+    );
+  }
+
+  const payload: unknown = await response.json();
+
+  if (!isRecord(payload) || !Array.isArray(payload.tipos)) {
+    return [];
+  }
+
+  return payload.tipos.filter(isRecord).map((tipo) => ({
+    codigo: readText(tipo, ["codigo"]),
+    nombre: readText(tipo, ["nombre"]),
+    descripcion: typeof tipo.descripcion === "string" ? tipo.descripcion : null,
+    prefijoConsecutivo: readText(tipo, ["prefijoConsecutivo"]),
+    requiereAgenciaAduanas: tipo.requiereAgenciaAduanas !== false,
+    requiereEta: tipo.requiereEta !== false,
+    etiquetaReferenciaExterna:
+      typeof tipo.etiquetaReferenciaExterna === "string"
+        ? tipo.etiquetaReferenciaExterna
+        : null,
+  }));
+}
+
 export async function createTramite(input: CreateTramiteInput): Promise<TramiteRow> {
   const response = await fetch("/api/tramites", {
     method: "POST",
@@ -267,19 +418,19 @@ export async function createTramite(input: CreateTramiteInput): Promise<TramiteR
     const message =
       isRecord(payload) && typeof payload.error === "string"
         ? payload.error
-        : "No fue posible crear el tramite.";
+        : "No fue posible crear el trámite.";
 
     throw new TramitesApiError(message, response.status);
   }
 
   if (!isRecord(payload)) {
-    throw new TramitesApiError("La respuesta de creacion no es valida.");
+    throw new TramitesApiError("La respuesta de creación no es válida.");
   }
 
   const row = normalizeRow(payload.tramite, 0);
 
   if (!row) {
-    throw new TramitesApiError("No fue posible leer el tramite creado.");
+    throw new TramitesApiError("No fue posible leer el trámite creado.");
   }
 
   return row;

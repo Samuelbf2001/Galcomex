@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ModuleState } from "@/components/layout/module-state";
 import {
   type BorradorRow,
+  type BorradoresLoteItem,
   type EstadoBorrador,
   type TramiteParaFacturacion,
   FacturacionApiError,
@@ -22,12 +23,18 @@ import {
   descargarSiigoImport,
   estadoBorradorColorClass,
   fetchBorradoresDeTramite,
+  fetchBorradoresPorLote,
   fetchTramitesParaFacturacion,
   formatCOP,
+  formatDate,
   generarBorrador,
   parseBigIntInput,
 } from "@/components/facturacion/facturacion-api";
 import { RevisorBorrador } from "@/components/facturacion/revisor-borrador";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useRol } from "@/lib/auth/rol-context";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +43,12 @@ type LoadState = "loading" | "ready" | "error";
 type TramiteConBorradores = TramiteParaFacturacion & {
   borradores: BorradorRow[];
   cargandoBorradores: boolean;
+  /**
+   * Mensaje si la carga de borradores de ESTE trámite falló. Mientras exista,
+   * la fila no puede asegurar "sin borrador" y no ofrece "Generar borrador"
+   * (evita crear un duplicado sobre un falso vacío).
+   */
+  errorBorradores: string | null;
 };
 
 type FiltroEstado = EstadoBorrador | "TODOS";
@@ -55,6 +68,7 @@ function GenerarBorradorModal({
   onClose,
   onGenerado,
 }: GenerarBorradorModalProps) {
+  const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [comisionRaw, setComisionRaw] = useState("150000");
@@ -131,12 +145,17 @@ function GenerarBorradorModal({
         retenciones: retencionesBig ?? undefined,
         conceptosOperacionales: conceptosPayload,
       });
+      toast({
+        title: "Borrador generado",
+        description: `${tramite.consecutivo} · ${formatCOP(borrador.totalFactura)}`,
+        variant: "success",
+      });
       onGenerado(borrador);
     } catch (caught) {
       setError(
         caught instanceof FacturacionApiError
           ? caught.message
-          : "Error al generar el borrador.",
+          : describirError(caught, "Error al generar el borrador."),
       );
     } finally {
       setSubmitting(false);
@@ -146,24 +165,15 @@ function GenerarBorradorModal({
   const conceptosErr = getConceptosError();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-lg border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Generar borrador</h2>
-            <p className="mt-0.5 text-xs text-slate-500">{tramite.consecutivo}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Generar borrador"
+      description={tramite.consecutivo}
+      size="md"
+      dismissible={!submitting}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <p className="text-sm text-slate-600">
             El sistema calculará automáticamente el 4×1000, IVA, costos bancarios
             y saldos desde los pagos registrados en el trámite.
@@ -308,8 +318,7 @@ function GenerarBorradorModal({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -334,12 +343,89 @@ function ultimoBorrador(borradores: BorradorRow[]): BorradorRow | null {
   return borradores[0]; // ordenados desc por createdAt
 }
 
+// ─── Alerta: aprobados pendientes de enviar a SIIGO ───────────────────────────
+
+type PendienteEnvioSiigo = {
+  tramite: TramiteConBorradores;
+  borrador: BorradorRow;
+};
+
+/**
+ * Borradores APROBADOS que todavía no se enviaron a SIIGO como draft
+ * (siigoDraftId null). Separa "Aprobar" de "Enviar" en la UI: aprobar solo
+ * cambia el estado; el envío a SIIGO es una acción explícita de ADMIN. Esta
+ * lista es la alerta para que Camila no olvide enviarlos.
+ */
+function calcularPendientesEnvioSiigo(
+  tramites: TramiteConBorradores[],
+): PendienteEnvioSiigo[] {
+  const pendientes: PendienteEnvioSiigo[] = [];
+  for (const tramite of tramites) {
+    const borrador = ultimoBorrador(tramite.borradores);
+    if (borrador && borrador.estado === "APROBADO" && !borrador.siigoDraftId) {
+      pendientes.push({ tramite, borrador });
+    }
+  }
+  return pendientes;
+}
+
+type AlertaPendientesEnvioProps = {
+  pendientes: PendienteEnvioSiigo[];
+  onRevisar: (tramite: TramiteConBorradores, borrador: BorradorRow) => void;
+};
+
+function AlertaPendientesEnvio({ pendientes, onRevisar }: AlertaPendientesEnvioProps) {
+  if (pendientes.length === 0) return null;
+
+  return (
+    <div className="border border-amber-300 bg-amber-50">
+      <div className="flex items-center gap-2 border-b border-amber-200 px-4 py-2.5">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+        <p className="text-sm font-semibold text-amber-900">
+          {pendientes.length} borrador{pendientes.length !== 1 ? "es" : ""} aprobado
+          {pendientes.length !== 1 ? "s" : ""} pendiente{pendientes.length !== 1 ? "s" : ""} de
+          enviar a SIIGO
+        </p>
+      </div>
+      <ul className="divide-y divide-amber-200">
+        {pendientes.map(({ tramite, borrador }) => (
+          <li key={borrador.id}>
+            <button
+              type="button"
+              onClick={() => onRevisar(tramite, borrador)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm transition hover:bg-amber-100"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="font-mono font-semibold text-slate-900">
+                  {tramite.consecutivo}
+                </span>
+                <span className="truncate text-slate-600">{tramite.cliente.nombre}</span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="font-semibold text-slate-900">
+                  {formatCOP(borrador.totalFactura)}
+                </span>
+                <span className="text-xs text-amber-700">
+                  Aprobado{" "}
+                  {borrador.fechaAprobacion ? formatDate(borrador.fechaAprobacion) : ""}
+                </span>
+                <ChevronRight className="h-4 w-4 text-amber-500" aria-hidden="true" />
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ─── Fila de trámite en la tabla ──────────────────────────────────────────────
 
 type FilaTramiteProps = {
   tramite: TramiteConBorradores;
   onGenerar: () => void;
   onRevisar: (borrador: BorradorRow) => void;
+  onReintentarBorradores: () => void;
   puedeGenerarBorrador: boolean;
   puedeExportarSiigo: boolean;
 };
@@ -348,10 +434,12 @@ function FilaTramite({
   tramite,
   onGenerar,
   onRevisar,
+  onReintentarBorradores,
   puedeGenerarBorrador,
   puedeExportarSiigo,
 }: FilaTramiteProps) {
   const borrador = ultimoBorrador(tramite.borradores);
+  const conError = tramite.errorBorradores !== null && !tramite.cargandoBorradores;
   // El archivo SIIGO se genera solo desde un borrador ya aprobado/facturado.
   const puedeDescargarSiigo =
     puedeExportarSiigo &&
@@ -377,7 +465,26 @@ function FilaTramite({
 
       <td className="px-4 py-3">
         {tramite.cargandoBorradores ? (
-          <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
+          <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
+            Cargando…
+          </span>
+        ) : conError ? (
+          <span
+            className="inline-flex flex-wrap items-center gap-1.5 text-xs text-rose-700"
+            title={tramite.errorBorradores ?? undefined}
+          >
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            No se pudo cargar el borrador
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              onClick={onReintentarBorradores}
+              className="font-semibold underline underline-offset-2 hover:text-rose-900"
+            >
+              Reintentar
+            </button>
+          </span>
         ) : borrador ? (
           <div className="flex items-center gap-2">
             <span
@@ -459,7 +566,9 @@ function FilaTramite({
               SIIGO
             </button>
           ) : null}
-          {puedeGenerarBorrador ? (
+          {/* Sin lectura confirmada (cargando o con error) no se ofrece
+              generar: podría duplicar un borrador que sí existe. */}
+          {puedeGenerarBorrador && !tramite.cargandoBorradores && !conError ? (
             <button
               type="button"
               onClick={onGenerar}
@@ -502,46 +611,60 @@ export function FacturacionWorkspace() {
     borrador: BorradorRow;
   } | null>(null);
 
-  // Rol — asumimos que el backend bloquea si no tiene permiso; mostramos el error 403 legible
-  // Para el render condicional de botones: leemos el rol desde la sesión
-  const [userRol, setUserRol] = useState<string>("OPERATIVO");
+  // Rol real desde el primer render (contexto del layout). Cada permiso refleja
+  // el `requireRole` del endpoint que dispara la acción:
+  //   PATCH /api/borradores/[id] → APROBADO: ADMIN/REVISOR · FACTURADO: ADMIN ·
+  //   EN_REVISION: ADMIN/OPERATIVO · POST /api/tramites/[id]/borrador: ADMIN.
+  const rol = useRol();
+  const puedeAprobar = rol === "ADMIN" || rol === "REVISOR";
+  const puedeFacturar = rol === "ADMIN";
+  const puedeGenerarBorrador = rol === "ADMIN";
+  const puedeEnviarRevision = rol === "ADMIN" || rol === "OPERATIVO";
 
-  // Cargar rol desde /api/auth/get-session (endpoint real de Better Auth)
-  useEffect(() => {
-    fetch("/api/auth/get-session", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data: unknown) => {
-        if (
-          typeof data === "object" &&
-          data !== null &&
-          "user" in data &&
-          typeof (data as Record<string, unknown>).user === "object" &&
-          (data as Record<string, unknown>).user !== null
-        ) {
-          const user = (data as Record<string, unknown>).user as Record<string, unknown>;
-          if (typeof user.rol === "string") {
-            setUserRol(user.rol);
-          }
-        }
-      })
-      .catch(() => {
-        // silencioso — el backend guardará los 403
-      });
-  }, []);
-
-  const puedeAprobar = userRol === "ADMIN" || userRol === "REVISOR";
-  const puedeFacturar = userRol === "ADMIN";
-  const puedeGenerarBorrador = userRol === "ADMIN";
-
+  /**
+   * Carga los borradores de UN trámite y nunca lanza: devuelve el resultado
+   * tipado (ok / error) para que la fila distinga "sin borrador" de "no se
+   * pudo leer". Es el método de reserva cuando no existe el endpoint por lote
+   * y también el que usa "Reintentar" en una fila.
+   */
   const cargarBorradoresDeTramite = useCallback(
-    async (tramiteId: string, signal?: AbortSignal) => {
+    async (tramiteId: string, signal?: AbortSignal): Promise<BorradoresLoteItem> => {
       try {
-        return await fetchBorradoresDeTramite(tramiteId, signal);
-      } catch {
-        return [];
+        const borradores = await fetchBorradoresDeTramite(tramiteId, signal);
+        return { ok: true, borradores };
+      } catch (caught) {
+        if (caught instanceof DOMException && caught.name === "AbortError") throw caught;
+        return { ok: false, error: describirError(caught, "No se pudo cargar el borrador.") };
       }
     },
     [],
+  );
+
+  const aplicarResultado = useCallback(
+    (tramiteId: string, resultado: BorradoresLoteItem) => {
+      setTramites((prev) =>
+        prev.map((t) => {
+          if (t.id !== tramiteId) return t;
+          return resultado.ok
+            ? { ...t, borradores: resultado.borradores, cargandoBorradores: false, errorBorradores: null }
+            : { ...t, borradores: [], cargandoBorradores: false, errorBorradores: resultado.error };
+        }),
+      );
+    },
+    [],
+  );
+
+  const reintentarBorradores = useCallback(
+    async (tramiteId: string) => {
+      setTramites((prev) =>
+        prev.map((t) =>
+          t.id === tramiteId ? { ...t, cargandoBorradores: true, errorBorradores: null } : t,
+        ),
+      );
+      const resultado = await cargarBorradoresDeTramite(tramiteId);
+      aplicarResultado(tramiteId, resultado);
+    },
+    [cargarBorradoresDeTramite, aplicarResultado],
   );
 
   // ── Carga inicial de trámites ──────────────────────────────────────────────
@@ -560,11 +683,53 @@ export function FacturacionWorkspace() {
           ...t,
           borradores: [],
           cargandoBorradores: true,
+          errorBorradores: null,
         }));
         setTramites(iniciales);
         setLoadState("ready");
 
-        // Cargar borradores en segundo plano (por lotes para no saturar la API)
+        if (rawTramites.length === 0) return;
+
+        // 1) Una sola llamada con todos los ids (troceada a 100 por el helper).
+        //    Si el endpoint aún no está desplegado (404) devuelve null.
+        let lote: Map<string, BorradoresLoteItem> | null = null;
+        try {
+          lote = await fetchBorradoresPorLote(
+            rawTramites.map((t) => t.id),
+            controller.signal,
+          );
+        } catch (caught) {
+          if (caught instanceof DOMException && caught.name === "AbortError") return;
+          // Error del lote completo: cada fila queda con error + Reintentar.
+          const mensaje = describirError(caught, "No se pudo cargar el borrador.");
+          setTramites((prev) =>
+            prev.map((t) => ({ ...t, cargandoBorradores: false, errorBorradores: mensaje })),
+          );
+          return;
+        }
+
+        if (lote !== null) {
+          if (controller.signal.aborted) return;
+          const resultados = lote;
+          setTramites((prev) =>
+            prev.map((t) => {
+              const r = resultados.get(t.id);
+              if (!r) {
+                return {
+                  ...t,
+                  cargandoBorradores: false,
+                  errorBorradores: "El servidor no devolvió este trámite.",
+                };
+              }
+              return r.ok
+                ? { ...t, borradores: r.borradores, cargandoBorradores: false, errorBorradores: null }
+                : { ...t, borradores: [], cargandoBorradores: false, errorBorradores: r.error };
+            }),
+          );
+          return;
+        }
+
+        // 2) Fallback (endpoint por lote no desplegado): lotes de 5 por trámite.
         const BATCH = 5;
         for (let i = 0; i < rawTramites.length; i += BATCH) {
           if (controller.signal.aborted) break;
@@ -572,30 +737,22 @@ export function FacturacionWorkspace() {
           const results = await Promise.all(
             batch.map((t) => cargarBorradoresDeTramite(t.id, controller.signal)),
           );
-          setTramites((prev) =>
-            prev.map((t) => {
-              const batchIdx = batch.findIndex((b) => b.id === t.id);
-              if (batchIdx === -1) return t;
-              return {
-                ...t,
-                borradores: results[batchIdx] ?? [],
-                cargandoBorradores: false,
-              };
-            }),
-          );
+          if (controller.signal.aborted) break;
+          batch.forEach((t, idx) => {
+            const r = results[idx];
+            if (r) aplicarResultado(t.id, r);
+          });
         }
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setLoadError(
-          caught instanceof Error ? caught.message : "Error al cargar los datos.",
-        );
+        setLoadError(describirError(caught, "Error al cargar los datos."));
         setLoadState("error");
       }
     }
 
     void load();
     return () => controller.abort();
-  }, [reloadKey, cargarBorradoresDeTramite]);
+  }, [reloadKey, cargarBorradoresDeTramite, aplicarResultado]);
 
   // ── Filtrado ───────────────────────────────────────────────────────────────
 
@@ -604,6 +761,10 @@ export function FacturacionWorkspace() {
     const borrador = ultimoBorrador(t.borradores);
     return borrador?.estado === filtro;
   });
+
+  // Alerta "Aprobados pendientes de enviar a SIIGO" — independiente del filtro
+  // activo, para que Camila (ADMIN) siempre la vea al entrar al módulo.
+  const pendientesEnvioSiigo = calcularPendientesEnvioSiigo(tramites);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -615,6 +776,7 @@ export function FacturacionWorkspace() {
               ...t,
               borradores: [borrador, ...t.borradores],
               cargandoBorradores: false,
+              errorBorradores: null,
             }
           : t,
       ),
@@ -667,6 +829,15 @@ export function FacturacionWorkspace() {
           </button>
         </div>
 
+        {/* Alerta: aprobados pendientes de enviar a SIIGO — solo ADMIN, que es
+            quien puede ejecutar el envío. */}
+        {puedeFacturar ? (
+          <AlertaPendientesEnvio
+            pendientes={pendientesEnvioSiigo}
+            onRevisar={(tramite, borrador) => setRevisionState({ tramite, borrador })}
+          />
+        ) : null}
+
         {/* Filtros */}
         <div className="flex flex-wrap gap-2">
           {FILTROS.map((f) => (
@@ -692,23 +863,14 @@ export function FacturacionWorkspace() {
 
         {/* Estados de carga */}
         {loadState === "loading" ? (
-          <ModuleState type="loading" title="Cargando trámites…" />
+          <TableSkeleton rows={8} cols={6} rowHeight={64} />
         ) : loadState === "error" ? (
-          <div className="flex items-start gap-3 border border-dashed border-rose-300 bg-rose-50 px-4 py-5 text-sm text-rose-700">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-            <div>
-              <p className="font-medium">No fue posible cargar los trámites</p>
-              {loadError ? <p className="mt-1">{loadError}</p> : null}
-              <button
-                type="button"
-                onClick={() => setReloadKey((k) => k + 1)}
-                className="mt-3 inline-flex h-9 items-center gap-2 border border-rose-300 bg-white px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
-              >
-                <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                Reintentar
-              </button>
-            </div>
-          </div>
+          <ModuleState
+            type="error"
+            title="No fue posible cargar los trámites"
+            detail={loadError ?? undefined}
+            action={{ label: "Reintentar", onClick: () => setReloadKey((k) => k + 1) }}
+          />
         ) : tramitesFiltrados.length === 0 ? (
           <ModuleState
             type="empty"
@@ -751,6 +913,7 @@ export function FacturacionWorkspace() {
                       onRevisar={(borrador) =>
                         setRevisionState({ tramite, borrador })
                       }
+                      onReintentarBorradores={() => void reintentarBorradores(tramite.id)}
                     />
                   ))}
                 </tbody>
@@ -778,6 +941,7 @@ export function FacturacionWorkspace() {
           borrador={revisionState.borrador}
           puedeAprobar={puedeAprobar}
           puedeFacturar={puedeFacturar}
+          puedeEnviarRevision={puedeEnviarRevision}
           onClose={() => setRevisionState(null)}
           onBorradorActualizado={(borrador) =>
             handleBorradorActualizado(revisionState.tramite.id, borrador)

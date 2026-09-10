@@ -241,14 +241,17 @@ async function main() {
   });
 
   if (!anticipo) {
-    anticipo = await crearAnticipo({
-      clienteId: cliente.id,
-      monto: p.anticipo,
-      fecha: new Date(p.fecha),
-      tipoRecaudo: TipoRecaudo.BANCOLOMBIA, // Tipo desconocido; usamos BANCOLOMBIA (digital)
-      soporteKey: SOPORTEKEY_MARKER,
-      verificadoBanco: true,
-    });
+    anticipo = await crearAnticipo(
+      {
+        clienteId: cliente.id,
+        monto: p.anticipo,
+        fecha: new Date(p.fecha),
+        tipoRecaudo: TipoRecaudo.BANCOLOMBIA, // Tipo desconocido; usamos BANCOLOMBIA (digital)
+        soporteKey: SOPORTEKEY_MARKER,
+        verificadoBanco: true,
+      },
+      admin.id,
+    );
     console.log(`  Creado anticipo id=${anticipo.id}`);
   } else {
     console.log(`  Anticipo ya existe id=${anticipo.id}`);
@@ -259,11 +262,14 @@ async function main() {
     where: { anticipoId: anticipo.id, tramiteId },
   });
   if (!aplicExistente) {
-    const res = await aplicarAnticipo({
-      anticipoId: anticipo.id,
-      tramiteId,
-      montoAplicado: p.anticipo,
-    });
+    const res = await aplicarAnticipo(
+      {
+        anticipoId: anticipo.id,
+        tramiteId,
+        montoAplicado: p.anticipo,
+      },
+      admin.id,
+    );
     if (!res.ok) {
       throw new Error(`Error al aplicar anticipo: ${res.message}`);
     }

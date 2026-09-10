@@ -1,7 +1,11 @@
 "use client";
 
-import { KeyRound } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { KeyRound, Loader2 } from "lucide-react";
+import { FormEvent, useId, useState } from "react";
+
+import { leerErrorRespuesta } from "@/components/configuracion/respuesta-api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { describirError, useToast } from "@/components/ui/toast";
 
 export type UsuarioRow = {
   id: string;
@@ -11,6 +15,9 @@ export type UsuarioRow = {
 };
 
 export function UsuariosConfig({ usuarios }: { usuarios: UsuarioRow[] }) {
+  const { toast } = useToast();
+  const confirmar = useConfirm();
+  const errorId = useId();
   const [activo, setActivo] = useState<string | null>(null);
   const [valor, setValor] = useState("");
   const [guardando, setGuardando] = useState(false);
@@ -36,25 +43,47 @@ export function UsuariosConfig({ usuarios }: { usuarios: UsuarioRow[] }) {
     setExito(null);
 
     if (valor.length < 8) {
-      setError("Minimo 8 caracteres");
+      setError("Mínimo 8 caracteres");
       return;
     }
+
+    // Irreversible: cierra todas las sesiones del usuario.
+    const ok = await confirmar({
+      title: `¿Restablecer la contraseña de ${usuario.name}?`,
+      description:
+        "Se cerrarán todas sus sesiones activas y tendrá que entrar con la nueva contraseña.",
+      confirmText: "Sí, restablecer",
+      variant: "danger",
+    });
+    if (!ok) return;
 
     setGuardando(true);
-    const res = await fetch(`/api/usuarios/${usuario.id}/reset-password`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nuevaPassword: valor }),
-    });
-    setGuardando(false);
+    try {
+      const res = await fetch(`/api/usuarios/${usuario.id}/reset-password`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ nuevaPassword: valor }),
+      });
+      const payload: unknown = await res.json().catch(() => null);
 
-    if (!res.ok) {
-      setError("No fue posible restablecer la contraseña");
-      return;
+      if (!res.ok) {
+        // Muestra el mensaje real del servidor (Zod o dominio), no uno genérico.
+        throw new Error(
+          leerErrorRespuesta(payload, "No fue posible restablecer la contraseña"),
+        );
+      }
+
+      const mensaje = `Contraseña de ${usuario.name} restablecida`;
+      setExito(mensaje);
+      toast({ title: mensaje, variant: "success" });
+      cerrar();
+    } catch (caught) {
+      const mensaje = describirError(caught, "No fue posible restablecer la contraseña");
+      setError(mensaje);
+      toast({ title: "No se pudo restablecer la contraseña", description: mensaje, variant: "error" });
+    } finally {
+      setGuardando(false);
     }
-
-    setExito(`Contrasena de ${usuario.name} restablecida`);
-    cerrar();
   }
 
   return (
@@ -67,7 +96,10 @@ export function UsuariosConfig({ usuarios }: { usuarios: UsuarioRow[] }) {
         </p>
       </div>
       {exito ? (
-        <p className="border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+        <p
+          role="status"
+          className="border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700"
+        >
           {exito}
         </p>
       ) : null}
@@ -99,29 +131,41 @@ export function UsuariosConfig({ usuarios }: { usuarios: UsuarioRow[] }) {
                         type="password"
                         autoComplete="new-password"
                         placeholder="Nueva contraseña"
+                        aria-label={`Nueva contraseña para ${usuario.name}`}
+                        aria-invalid={error ? true : undefined}
+                        aria-describedby={error ? errorId : undefined}
                         value={valor}
                         onChange={(e) => setValor(e.target.value)}
                         minLength={8}
                         autoFocus
-                        className="h-9 w-48 border border-slate-300 px-2 text-sm outline-none focus:border-cyan-600"
+                        disabled={guardando}
+                        className={`h-9 w-48 border px-2 text-sm outline-none focus:border-cyan-600 ${
+                          error ? "border-rose-500" : "border-slate-300"
+                        }`}
                       />
                       {error ? (
-                        <span className="text-xs text-red-600">{error}</span>
+                        <span id={errorId} role="alert" className="text-xs text-red-600">
+                          {error}
+                        </span>
                       ) : null}
                       <div className="flex gap-2">
                         <button
                           type="button"
                           onClick={cerrar}
-                          className="h-8 border border-slate-300 px-3 text-xs text-slate-600 hover:bg-slate-100"
+                          disabled={guardando}
+                          className="h-8 border border-slate-300 px-3 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-60"
                         >
                           Cancelar
                         </button>
                         <button
                           type="submit"
                           disabled={guardando}
-                          className="h-8 bg-slate-950 px-3 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                          className="inline-flex h-8 items-center gap-1.5 bg-slate-950 px-3 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
                         >
-                          {guardando ? "Guardando" : "Guardar"}
+                          {guardando ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                          ) : null}
+                          {guardando ? "Guardando…" : "Guardar"}
                         </button>
                       </div>
                     </form>

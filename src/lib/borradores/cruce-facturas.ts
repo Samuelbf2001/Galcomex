@@ -10,6 +10,11 @@ export type FacturaProveedorInput = {
   proveedorNombre: string;
   numFactura: string;
   valor: bigint;
+  /**
+   * ¿Se traslada al cliente en la factura de venta? (M6). Ausente = `true`,
+   * que es el default de la columna y el caso normal.
+   */
+  repercutible?: boolean;
 };
 
 export type PagoTramiteFacturaInput = {
@@ -30,6 +35,14 @@ export type CruceFacturaProveedor = {
   montoPagado: string;
   montoFacturado: string;
   diferencia: string;
+  /** Copia del flag de la factura, para que la UI pueda etiquetarla. */
+  repercutible: boolean;
+  /**
+   * `true` solo si la diferencia es un problema real. Una factura que NO se
+   * traslada al cliente (asesoría a nombre de Galcomex) siempre tiene
+   * `montoFacturado = 0` y no debe ensuciar el panel de validaciones.
+   */
+  esDesviacion: boolean;
 };
 
 /**
@@ -56,6 +69,7 @@ export function calcularCruceFacturas(
       .reduce((sum, l) => sum + l.linea.valor, 0n);
 
     const diferencia = montoFacturado - montoPagado;
+    const repercutible = fp.repercutible !== false;
 
     return {
       id: fp.id,
@@ -65,6 +79,15 @@ export function calcularCruceFacturas(
       montoPagado: montoPagado.toString(),
       montoFacturado: montoFacturado.toString(),
       diferencia: diferencia.toString(),
+      repercutible,
+      esDesviacion: repercutible && diferencia !== 0n,
     };
   });
+}
+
+/** Filas que el revisor debe mirar: descarta las que no se trasladan al cliente. */
+export function desviacionesDelCruce(
+  cruce: CruceFacturaProveedor[],
+): CruceFacturaProveedor[] {
+  return cruce.filter((fila) => fila.esDesviacion);
 }

@@ -8,7 +8,7 @@ import {
   crearFacturaProveedor,
   listarPorTramite,
 } from "@/lib/facturas-proveedor/service";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { prisma } from "@/lib/db/prisma";
 import { crearFacturaProveedorSchema } from "@/lib/validations/facturas-proveedor";
@@ -89,6 +89,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
     if (error instanceof FacturaProveedorDuplicadaError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }

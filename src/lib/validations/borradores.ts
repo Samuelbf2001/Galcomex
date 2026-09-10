@@ -178,3 +178,35 @@ export const liquidacionLMQuerySchema = z.object({
 });
 
 export type LiquidacionLMQuery = z.infer<typeof liquidacionLMQuerySchema>;
+
+// ── Consulta por lote (GET /api/facturacion/borradores) ─────────────────────
+
+/** Máximo de trámites por llamada al endpoint de lote. */
+export const BORRADORES_LOTE_MAXIMO = 100;
+
+/**
+ * `?tramiteIds=id1,id2,...` → array de ids únicos, sin vacíos, 1..100.
+ * Los duplicados se colapsan antes de validar el máximo.
+ */
+export const borradoresLoteQuerySchema = z.object({
+  tramiteIds: z
+    .string({ error: "tramiteIds es obligatorio (ids separados por coma)" })
+    .transform((raw) =>
+      Array.from(
+        new Set(
+          raw
+            .split(",")
+            .map((id) => id.trim())
+            .filter((id) => id.length > 0),
+        ),
+      ),
+    )
+    .pipe(
+      z
+        .array(z.string().min(1))
+        .min(1, "Indica al menos un tramiteId")
+        .max(BORRADORES_LOTE_MAXIMO, `Máximo ${BORRADORES_LOTE_MAXIMO} trámites por llamada`),
+    ),
+});
+
+export type BorradoresLoteQuery = z.infer<typeof borradoresLoteQuerySchema>;

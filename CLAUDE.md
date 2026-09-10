@@ -101,16 +101,41 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 - `NIT_BANCO_4X1000` = `890300279` (Banco de Occidente — tercero fijo del 4x1000 en facturas Siigo, Sprint 11)
 
 ### Flujo SOCIO_LM (cliente Lucho) — diferencias clave vs PROPIO
-- **Dos comisiones distintas (NO confundir):**
-  - **Comisión de factura** = lo que el cliente paga (ej. 400.000). Va en la factura vía `LineaRevision`/`total-lineas` y manda el saldo a favor del cliente (`Anticipo − Total factura`). Es line-driven y NO se toca desde el cruce.
-  - **Comisión interna Galcomex→Lucho** = la mínima del acuerdo (ej. 150.000, default `COMISION_LM`). Dato propio editable, solo afecta el **cruce interno** con Lucho. Campo `BorradorFactura.comisionInternaLM`, editable en la pestaña Cruce de la Hoja (ADMIN/REVISOR) vía `PATCH /api/borradores/[id]/comision-interna-lm`. La diferencia (400k−150k) es el margen de Lucho — por eso las dos comisiones NO se cancelan en el saldo LM.
-  - Cruce: `saldoLMInterno = anticipo − Σpagos − comisiónInternaLM − IVA − 4x1000interno − costos`; `saldoLM = saldoLMInterno − saldoAFavorCliente` (negativo ⇒ Lucho debe a Galcomex). Helper puro en `src/lib/calculations/cruce-lm.ts`. Caso dorado BAQ-18453 con comisión interna 150k ⇒ `saldoLMInterno = 1.766.766`, `saldoLM = −179.734`.
 - Las líneas fijas **COMISION** y **COSTOS_BANCARIOS** NO se materializan como `LineaRevision` (deducciones internas únicamente; se reflejan en el cruce LM). `IVA_COMISION` sí (ingreso operacional).
 - Dos cálculos de 4x1000: el **interno** (base = anticipo, para cruce LM) sigue en `motor-factura.ts`; el **de factura** (base = Σ líneas TERCEROS, round-half-up `(base×4+500)/1000`) materializa la línea `IMPUESTO_4X1000` que se envía a Siigo.
 - Tercero del 4x1000 SIEMPRE Banco de Occidente (NIT `890300279`) — `resolverNit4x1000` lo retorna de forma incondicional.
 - Observación de cabecera "NO PRACTICAR RETEFUENTE NI RETEICA" se siembra automáticamente en `comentariosCabecera` al generar borrador SOCIO_LM (sale en col AE del export Excel y en `observations` del envío Siigo).
 - BL/Guía + Factura Comercial son obligatorios al crear el DO para clientes SOCIO_LM.
 - Detalle implementado en `src/lib/borradores/lineas-fijas.ts`, `src/lib/calculations/total-lineas.ts` y `src/lib/siigo/envio-factura-service.ts`.
+
+## Capacidades por empresa (M1) — cómo se configura el comportamiento
+
+Toda diferencia de comportamiento **entre empresas** es dato, no código. Vive en
+`src/lib/capacidades/`:
+
+- `catalogo.ts` — fuente de verdad de los códigos (`CodigoCapacidad`). Agregar una
+  capacidad es agregar una entrada aquí + su consumidor + su fila en el seed.
+- `resolver.ts` — **función pura, sin BD**. Cascada
+  `Capacidad.porDefecto → GrupoEmpresaCapacidad → EmpresaCapacidad`.
+  `habilitado` y `config` se resuelven por separado: cada uno toma el nivel más
+  específico que lo define.
+- `service.ts` — `capacidadesDeEmpresa(empresaId)`, `setCapacidadesEmpresa(...)`
+  (transaccional + `AuditLog` por capacidad tocada).
+
+Uso en dominio:
+
+```ts
+const capacidades = await capacidadesDeEmpresa(tramite.clienteId);
+if (tiene(capacidades, "base_cif")) { ... }
+const config = configDe<{ valor: string }>(capacidades, "umbral_saldo_tramite");
+```
+
+UI: pestaña **Funciones** en la ficha de empresa (`seccion-capacidades.tsx`),
+editable solo por ADMIN. API: `GET|PUT /api/clientes/[id]/capacidades`.
+
+`Cliente.manejaAnticipo` quedó **deprecado**: se mantiene en espejo con la
+capacidad `anticipos_cliente` hasta retirar la columna. Plan completo y orden de
+fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
 
 ## Invariantes de código — NUNCA violar
 
@@ -120,6 +145,10 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 4. Autorización en middleware, no en componentes React.
 5. Toda mutación crítica (DOs, pagos, borradores, facturas) genera registro en `AuditLog` con snapshot JSON antes/después.
 6. Tests de cálculo con tolerancia **0 pesos** (exactos, sin redondeos).
+7. **Cero ramas por empresa.** Prohibido ramificar por `TipoCliente`, por NIT o
+   por nombre de empresa para decidir comportamiento de negocio: eso es una
+   capacidad (ver arriba). Tampoco se agrega un tercer valor a `TipoCliente`.
+   El enum queda como dato descriptivo mientras se migran las 131 ramas vivas.
 
 ## Roles y permisos
 
@@ -168,7 +197,7 @@ Los tests del archivo real están en `src/lib/calculations/__tests__/`.
 - 4x1000 factura: 130.088 (base Σ terceros 32.521.912, round-half-up)
 - 4x1000 interno: 140.298 (base anticipo)
 - Total factura: 33.128.000 · Saldo a favor cliente: 1.946.500
-- **Cruce LM (comisión interna 150.000, `cruce-lm.test.ts`):** `saldoLMInterno = 1.766.766` · **Saldo LM: −179.734** (Lucho debe a Galcomex). Con el modelo viejo de comisión única (400k) daba −429.734; ya no aplica.
+- Restante interno: 1.516.766 · **Saldo LM: −429.734** (Lucho debe a Galcomex)
 
 CI falla si estos tests no pasan. Tolerancia = 0 pesos.
 
@@ -187,6 +216,17 @@ npx prisma migrate dev --name nombre     # Nueva migración
 npx prisma migrate reset                 # Reset completo (dev)
 docker compose up --build               # Stack completo
 ```
+
+## Convenciones de UI (desde la auditoría 2026-09-07)
+
+- **Acceso por rol a módulos:** un solo mapa `RUTAS_DASHBOARD` en `src/lib/auth/rutas-roles.ts` alimenta el sidebar, el guard de página y la redirección tras login. Cada `page.tsx` del dashboard empieza con `await exigirAccesoPagina("/ruta")` (`src/lib/auth/page-guard.ts`); si el rol no puede, va a `/sin-acceso`. El middleware solo comprueba que exista cookie. Al añadir un módulo: entrada en el mapa + guard en su page.
+- **Rol en cliente:** `useRol()` / `usePermiso([...])` de `src/lib/auth/rol-context.tsx` (provisto por el layout). Prohibido `fetch("/api/auth/get-session")` en componentes. Un botón solo se muestra si el `requireRole` del endpoint que llama admite el rol.
+- **Feedback de mutaciones:** `useToast()` (`src/components/ui/toast.tsx`) para éxito y error (`describirError(e)`); toda mutación va en `try/catch/finally` y el estado pendiente siempre vuelve a `false`.
+- **Acciones destructivas:** `useConfirm()` (`src/components/ui/confirm-dialog.tsx`, `variant: "danger"`). Prohibido `window.confirm`.
+- **Modales:** `ModalShell` (`src/components/ui/modal-shell.tsx`, `<dialog>` nativo con foco, Escape y `aria-labelledby`). No crear overlays `fixed inset-0` nuevos.
+- **Estados:** carga inicial con `TableSkeleton`/`CardsSkeleton` (reservan altura, evitan CLS); error con `ModuleState type="error" action={{ label: "Reintentar" }}`; vacío con `type="empty"` y CTA cuando el rol pueda actuar.
+- **Rutas especiales:** `(dashboard)/loading.tsx`, `error.tsx`, `not-found.tsx` y `sin-acceso/page.tsx` ya existen; `app/not-found.tsx`, `error.tsx`, `global-error.tsx` cubren fuera del dashboard. Textos en español con tildes.
+- **Sesión:** `getCurrentSession` está envuelto en `React.cache` y Better Auth usa `cookieCache` (5 min): no volver a consultar la sesión a mano.
 
 ## Sprint actual y progreso
 

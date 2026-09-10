@@ -2,10 +2,13 @@ import { Prisma, TipoCliente } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
+import { getUmbralesAlertaTramite, umbralParaEmpresa } from "@/lib/alertas/umbrales";
 import { requireRole } from "@/lib/auth/session";
+import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
 import { tramiteDetalleInclude, tramiteInclude } from "@/lib/tramites/service";
 import { tramiteUpdateSchema } from "@/lib/validations/tramites";
 
@@ -35,7 +38,21 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: "Tramite no encontrado" }, { status: 404 });
   }
 
-  return jsonResponse({ tramite });
+  // Umbral de alerta de saldo aplicable a este DO. Sale de la capacidad
+  // `umbral_saldo_tramite` de la empresa si la tiene encendida y, si no, del
+  // parámetro global por tipo de cliente (SOCIO_LM → socio; PROPIO → propio).
+  // Alimenta el banner de la Hoja del trámite (components/tramites/hoja-tramite.tsx).
+  const [umbrales, capacidades] = await Promise.all([
+    getUmbralesAlertaTramite(),
+    capacidadesDeEmpresa(tramite.clienteId),
+  ]);
+  const umbralAlertaSaldo = umbralParaEmpresa(
+    capacidades,
+    tramite.cliente.tipo,
+    umbrales,
+  );
+
+  return jsonResponse({ tramite, umbralAlertaSaldo: umbralAlertaSaldo.toString() });
 }
 
 /** PATCH: alias of PUT — permite edición parcial de fechas clave desde el detalle. */
@@ -58,6 +75,8 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     }
 
     const tramite = await prisma.$transaction(async (tx) => {
+      await assertTramiteModificable(tx, before);
+
       const updated = await tx.tramiteDO.update({
         where: { id },
         data: payload,
@@ -90,6 +109,10 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       error.code === "P2025"
     ) {
       return NextResponse.json({ error: "Tramite no encontrado" }, { status: 404 });
+    }
+
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
 
     throw error;

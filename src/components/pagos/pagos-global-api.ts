@@ -4,9 +4,15 @@
  * BigInt serializado como string desde el backend — parsear con BigInt().
  */
 
-import type { CanalPago } from "@/components/pagos/pagos-api";
+import type { CanalPago, GrupoPagoDOInfo } from "@/components/pagos/pagos-api";
 
-export type { CanalPago, CreatePagoInput, UpdatePagoInput } from "@/components/pagos/pagos-api";
+export type {
+  CanalPago,
+  CreatePagoInput,
+  GrupoPagoDOInfo,
+  PagoComprobanteCategoria,
+  UpdatePagoInput,
+} from "@/components/pagos/pagos-api";
 export {
   CANALES_PAGO,
   PagosApiError,
@@ -14,6 +20,7 @@ export {
   updatePago,
   deletePago,
   formatCOP,
+  subirComprobante,
 } from "@/components/pagos/pagos-api";
 
 import { PagosApiError } from "@/components/pagos/pagos-api";
@@ -31,6 +38,12 @@ export type PagoGlobalRow = {
   /** Nombres de beneficiarios vinculados (display). */
   beneficiarios: string;
   numSoporte: string | null;
+  /** Comprobante bancario (Bancolombia). null = sin comprobante (badge de advertencia, no bloquea). */
+  documentoId: string | null;
+  /** Id del grupo de pago multi-DO (null = pago normal de un solo DO). */
+  grupoPagoId: string | null;
+  /** Otros DOs del mismo grupoPagoId (vacío si no es un pago multi-DO). */
+  grupoOtrosDOs: GrupoPagoDOInfo[];
   valor: string; // BigInt serializado
   canalPago: CanalPago;
   costoBancario: string; // BigInt serializado
@@ -99,6 +112,17 @@ function normalizePago(raw: unknown): PagoGlobalRow | null {
         .join(", ");
     })(),
     numSoporte: typeof raw.numSoporte === "string" ? raw.numSoporte : null,
+    documentoId: typeof raw.documentoId === "string" ? raw.documentoId : null,
+    grupoPagoId: typeof raw.grupoPagoId === "string" ? raw.grupoPagoId : null,
+    grupoOtrosDOs: (() => {
+      const arr = Array.isArray(raw.grupoOtrosDOs) ? raw.grupoOtrosDOs : [];
+      return arr
+        .filter((x): x is Record<string, unknown> => typeof x === "object" && x !== null)
+        .map((g) => ({
+          tramiteId: String(g.tramiteId ?? ""),
+          consecutivo: String(g.consecutivo ?? ""),
+        }));
+    })(),
     valor: String(raw.valor ?? "0"),
     canalPago: (raw.canalPago as CanalPago) ?? "OTRO",
     costoBancario: String(raw.costoBancario ?? "0"),
@@ -173,13 +197,28 @@ export async function fetchClienteOptions(signal?: AbortSignal): Promise<Cliente
     .filter((c) => c.id && c.nombre);
 }
 
+/** Máximo que admite `GET /api/tramites?take=` para los selectores de DO. */
+const TRAMITE_OPTIONS_TAKE = 200;
+
+/**
+ * Opciones de DO para los selectores (nuevo pago, multi-DO). Pide `take=200`
+ * porque sin `take` el API recorta a 50 en silencio; si el servidor aún no
+ * admite ese máximo (400 de validación) reintenta con 100.
+ */
 export async function fetchTramiteOptions(signal?: AbortSignal): Promise<TramiteOption[]> {
-  const response = await fetch("/api/tramites", {
+  let response = await fetch(`/api/tramites?take=${TRAMITE_OPTIONS_TAKE}`, {
     cache: "no-store",
     headers: { Accept: "application/json" },
     signal,
   });
-  if (!response.ok) throw new PagosApiError("Error al cargar tramites.", response.status);
+  if (response.status === 400) {
+    response = await fetch("/api/tramites?take=100", {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  }
+  if (!response.ok) throw new PagosApiError("Error al cargar trámites.", response.status);
 
   const payload: unknown = await response.json().catch(() => null);
 
@@ -215,4 +254,115 @@ export function formatDate(iso: string | null): string {
     month: "2-digit",
     year: "numeric",
   }).format(d);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pago multi-DO (caso Karina/Occidente) — POST /api/pagos/multi
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Una FacturaProveedor REGISTRADA de un beneficiario, con datos de su DO. */
+export type FacturaElegibleMultiDORow = {
+  id: string;
+  numFactura: string;
+  valor: string; // BigInt serializado
+  fecha: string; // ISO
+  tramiteId: string;
+  tramiteConsecutivo: string;
+  clienteNombre: string;
+  /** false = el DO no tiene anticipo aplicado; la UI debe marcarlo (regla "sin anticipo no hay pagos"). */
+  tieneAnticipoAplicado: boolean;
+};
+
+/** Lista TODAS las FacturaProveedor REGISTRADA de un beneficiario, de todos los DOs. */
+export async function fetchFacturasElegiblesMultiDO(
+  beneficiarioId: string,
+  signal?: AbortSignal,
+): Promise<FacturaElegibleMultiDORow[]> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `/api/pagos/multi?beneficiarioId=${encodeURIComponent(beneficiarioId)}`,
+      { cache: "no-store", headers: { Accept: "application/json" }, signal },
+    );
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new PagosApiError("No fue posible conectar con /api/pagos/multi.");
+  }
+
+  if (!response.ok) {
+    const msg = await parseErrorMessage(response);
+    throw new PagosApiError(msg, response.status);
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  const rawFacturas = isRecord(payload) && Array.isArray(payload.facturas) ? payload.facturas : [];
+
+  return rawFacturas.filter(isRecord).map((f) => ({
+    id: String(f.id ?? ""),
+    numFactura: String(f.numFactura ?? ""),
+    valor: String(f.valor ?? "0"),
+    fecha: typeof f.fecha === "string" ? f.fecha : "",
+    tramiteId: String(f.tramiteId ?? ""),
+    tramiteConsecutivo: String(f.tramiteConsecutivo ?? ""),
+    clienteNombre: String(f.clienteNombre ?? ""),
+    tieneAnticipoAplicado: f.tieneAnticipoAplicado === true,
+  }));
+}
+
+export type CrearPagoMultiDOInput = {
+  beneficiarioId: string;
+  facturas: { facturaProveedorId: string; monto: string }[];
+  canalPago: CanalPago;
+  fechaRealPago?: string | null;
+  concepto?: string;
+  documentoId?: string | null;
+  comprobanteComercioId?: string | null;
+  bancoBeneficiarioId?: string | null;
+};
+
+export type PagoMultiDOCreado = {
+  id: string;
+  tramiteId: string;
+  valor: string;
+  costoBancario: string;
+};
+
+export type CrearPagoMultiDOResult = {
+  grupoPagoId: string;
+  pagos: PagoMultiDOCreado[];
+};
+
+/** Crea el pago multi-DO — ver crearPagoMultiDO() en src/lib/pagos/service.ts. */
+export async function crearPagoMultiDO(
+  input: CrearPagoMultiDOInput,
+): Promise<CrearPagoMultiDOResult> {
+  const response = await fetch("/api/pagos/multi", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `No fue posible crear el pago multi-DO (${response.status}).`;
+    throw new PagosApiError(message, response.status);
+  }
+
+  if (!isRecord(payload) || typeof payload.grupoPagoId !== "string" || !Array.isArray(payload.pagos)) {
+    throw new PagosApiError("Respuesta de pago multi-DO no válida.");
+  }
+
+  return {
+    grupoPagoId: payload.grupoPagoId,
+    pagos: payload.pagos.filter(isRecord).map((p) => ({
+      id: String(p.id ?? ""),
+      tramiteId: String(p.tramiteId ?? ""),
+      valor: String(p.valor ?? "0"),
+      costoBancario: String(p.costoBancario ?? "0"),
+    })),
+  };
 }

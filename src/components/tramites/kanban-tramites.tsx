@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { type TramiteRow } from "@/components/tramites/tramites-api";
+import { describirError, useToast } from "@/components/ui/toast";
+import { usePermiso } from "@/lib/auth/rol-context";
 
 // ─── Pipeline de estados ──────────────────────────────────────────────────────
 
@@ -20,13 +22,14 @@ const PIPELINE: string[] = [
   "CERRADO",
 ];
 
-function nextEstadoKanban(current: string): string | null {
-  const idx = PIPELINE.indexOf(current);
-  if (idx === -1 || idx >= PIPELINE.length - 1) return null;
-  return PIPELINE[idx + 1] ?? null;
-}
+/** POST /api/tramites/[id]/estado exige ADMIN/REVISOR/OPERATIVO. */
+const ROLES_MOVER_ESTADO = ["ADMIN", "REVISOR", "OPERATIVO"] as const;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function columnColor(estado: string): {
   header: string;
@@ -91,43 +94,51 @@ function formatKanbanDate(value: string): string {
 function KanbanCard({
   tramite,
   cardBorder,
+  puedeMover,
   onEstadoChanged,
 }: {
   tramite: TramiteRow;
   cardBorder: string;
+  puedeMover: boolean;
   onEstadoChanged?: () => void;
 }) {
   const [moving, setMoving] = useState(false);
   const [selected, setSelected] = useState("");
   const [advError, setAdvError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   const otrosEstados = PIPELINE.filter((s) => s !== tramite.estado);
 
   async function handleMover(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (!selected) return;
+    if (!selected || moving) return;
     setMoving(true);
     setAdvError(null);
     try {
       const res = await fetch(`/api/tramites/${tramite.id}/estado`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ estado: selected }),
       });
       if (!res.ok) {
         const payload: unknown = await res.json().catch(() => null);
         const msg =
-          typeof payload === "object" && payload !== null && "error" in payload
-            ? String((payload as Record<string, unknown>).error)
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
             : `Error ${res.status}`;
         setAdvError(msg);
-      } else {
-        setSelected("");
-        onEstadoChanged?.();
+        return;
       }
-    } catch {
-      setAdvError("Sin conexión");
+      toast({
+        title: "Estado actualizado",
+        description: `${tramite.doNumber} → ${selected.replace(/_/g, " ")}`,
+        variant: "success",
+      });
+      setSelected("");
+      onEstadoChanged?.();
+    } catch (caught) {
+      setAdvError(describirError(caught, "Sin conexión"));
     } finally {
       setMoving(false);
     }
@@ -139,7 +150,7 @@ function KanbanCard({
         <p className="font-semibold text-cyan-700 hover:underline">{tramite.doNumber}</p>
         <p className="mt-1 truncate text-xs text-slate-600">{tramite.cliente}</p>
         {tramite.fechaApertura && tramite.fechaApertura !== "-" ? (
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="mt-1 text-xs text-slate-500">
             ETA: {formatKanbanDate(tramite.fechaApertura)}
           </p>
         ) : null}
@@ -150,36 +161,41 @@ function KanbanCard({
           </span>
         ) : null}
       </Link>
-      <div className="border-t border-slate-100 px-2 pb-2 pt-1.5">
-        <div className="flex items-center gap-1">
-          <select
-            value={selected}
-            onChange={(e) => { setSelected(e.target.value); setAdvError(null); }}
-            disabled={moving}
-            onClick={(e) => e.preventDefault()}
-            className="h-6 min-w-0 flex-1 border border-slate-200 bg-white px-1 text-xs text-slate-600 outline-none focus:border-cyan-400 disabled:opacity-60"
-          >
-            <option value="">Mover a...</option>
-            {otrosEstados.map((s) => (
-              <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={(e) => void handleMover(e)}
-            disabled={moving || !selected}
-            className="inline-flex h-6 items-center border border-slate-200 bg-white px-1.5 text-xs font-medium text-slate-600 transition hover:border-cyan-400 hover:text-cyan-700 disabled:opacity-50"
-          >
-            {moving ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : <ChevronRight className="h-3 w-3" aria-hidden="true" />}
-          </button>
+      {puedeMover ? (
+        <div className="border-t border-slate-100 px-2 pb-2 pt-1.5">
+          <div className="flex items-center gap-1">
+            <select
+              value={selected}
+              onChange={(e) => { setSelected(e.target.value); setAdvError(null); }}
+              disabled={moving}
+              onClick={(e) => e.preventDefault()}
+              aria-label={`Mover ${tramite.doNumber} a otro estado`}
+              className="h-6 min-w-0 flex-1 border border-slate-200 bg-white px-1 text-xs text-slate-600 outline-none focus:border-cyan-400 disabled:opacity-60"
+            >
+              <option value="">Mover a...</option>
+              {otrosEstados.map((s) => (
+                <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={(e) => void handleMover(e)}
+              disabled={moving || !selected}
+              aria-label={`Confirmar cambio de estado de ${tramite.doNumber}`}
+              title="Confirmar cambio de estado"
+              className="inline-flex h-6 items-center border border-slate-200 bg-white px-1.5 text-xs font-medium text-slate-600 transition hover:border-cyan-400 hover:text-cyan-700 disabled:opacity-50"
+            >
+              {moving ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : <ChevronRight className="h-3 w-3" aria-hidden="true" />}
+            </button>
+          </div>
+          {advError ? (
+            <p className="mt-0.5 flex items-center gap-1 text-xs text-rose-600" role="alert">
+              <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+              {advError}
+            </p>
+          ) : null}
         </div>
-        {advError ? (
-          <p className="mt-0.5 flex items-center gap-1 text-xs text-rose-600">
-            <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-            {advError}
-          </p>
-        ) : null}
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -189,10 +205,12 @@ function KanbanCard({
 function KanbanColumn({
   estado,
   tarjetas,
+  puedeMover,
   onEstadoChanged,
 }: {
   estado: string;
   tarjetas: TramiteRow[];
+  puedeMover: boolean;
   onEstadoChanged?: () => void;
 }) {
   const colors = columnColor(estado);
@@ -211,12 +229,18 @@ function KanbanColumn({
       {/* Tarjetas */}
       <div className="mt-2 flex flex-col gap-2 overflow-y-auto" style={{ maxHeight: "72vh" }}>
         {tarjetas.length === 0 ? (
-          <div className="border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400">
+          <div className="border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-500">
             Sin DOs
           </div>
         ) : (
           tarjetas.map((t) => (
-            <KanbanCard key={t.id} tramite={t} cardBorder={colors.card} onEstadoChanged={onEstadoChanged} />
+            <KanbanCard
+              key={t.id}
+              tramite={t}
+              cardBorder={colors.card}
+              puedeMover={puedeMover}
+              onEstadoChanged={onEstadoChanged}
+            />
           ))
         )}
       </div>
@@ -232,6 +256,8 @@ type KanbanTramitesProps = {
 };
 
 export function KanbanTramites({ rows, onEstadoChanged }: KanbanTramitesProps) {
+  const puedeMover = usePermiso(ROLES_MOVER_ESTADO);
+
   // Group rows by estado; estados desconocidos van a una columna extra
   const grouped = new Map<string, TramiteRow[]>();
 
@@ -258,6 +284,7 @@ export function KanbanTramites({ rows, onEstadoChanged }: KanbanTramitesProps) {
             key={estado}
             estado={estado}
             tarjetas={grouped.get(estado) ?? []}
+            puedeMover={puedeMover}
             onEstadoChanged={onEstadoChanged}
           />
         ))}

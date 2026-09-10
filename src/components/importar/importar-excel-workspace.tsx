@@ -15,12 +15,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchClientes, type ClienteRow } from "@/components/clientes/clientes-api";
 import {
   type EstadoHoja,
-  ImportarApiError,
   importarGrupoEPapis,
   type ResultadoHoja,
   type ResultadoImport,
   validarArchivoImport,
 } from "@/components/importar/importar-api";
+import { ModuleState } from "@/components/layout/module-state";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useEsAdmin } from "@/lib/auth/rol-context";
 
 // ─── Helpers de presentación ────────────────────────────────────────────────
 
@@ -59,9 +62,15 @@ function formatBytes(bytes: number): string {
 type EstadoEjecucion = "idle" | "preview" | "import";
 
 export function ImportarExcelWorkspace() {
+  // `POST /api/importar/grupo-e-papis` → requireRole(["ADMIN"]).
+  const esAdmin = useEsAdmin();
+  const { toast } = useToast();
+  const confirmar = useConfirm();
+
   const [clientes, setClientes] = useState<ClienteRow[]>([]);
   const [cargandoClientes, setCargandoClientes] = useState(true);
   const [clientesError, setClientesError] = useState<string | null>(null);
+  const [reloadClientes, setReloadClientes] = useState(0);
 
   const [clienteId, setClienteId] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -72,25 +81,38 @@ export function ImportarExcelWorkspace() {
   const [reporte, setReporte] = useState<ResultadoImport | null>(null);
   const [esPreview, setEsPreview] = useState(false);
   const [previewOk, setPreviewOk] = useState(false);
-  const [confirmando, setConfirmando] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
   // ─── Carga de clientes ───────────────────────────────────────────────────
   useEffect(() => {
     const controller = new AbortController();
+    let cancelado = false;
     fetchClientes(controller.signal)
       .then((rows) => {
+        if (cancelado) return;
         setClientes(rows.filter((c) => c.activo !== false));
         setClientesError(null);
       })
-      .catch((caught) => {
+      .catch((caught: unknown) => {
+        if (cancelado) return;
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setClientesError("No fue posible cargar los clientes.");
+        setClientesError(describirError(caught, "No fue posible cargar los clientes."));
       })
-      .finally(() => setCargandoClientes(false));
-    return () => controller.abort();
-  }, []);
+      .finally(() => {
+        if (!cancelado) setCargandoClientes(false);
+      });
+    return () => {
+      cancelado = true;
+      controller.abort();
+    };
+  }, [reloadClientes]);
+
+  function recargarClientes() {
+    setCargandoClientes(true);
+    setClientesError(null);
+    setReloadClientes((k) => k + 1);
+  }
 
   // ─── Selección de archivo ──────────────────────────────────────────────────
   const seleccionarArchivo = useCallback((seleccionado: File | null) => {
@@ -104,7 +126,6 @@ export function ImportarExcelWorkspace() {
     setFile(validacion ? null : seleccionado);
     // Cualquier cambio de insumo invalida una previsualización anterior.
     setPreviewOk(false);
-    setConfirmando(false);
     setReporte(null);
   }, []);
 
@@ -121,7 +142,6 @@ export function ImportarExcelWorkspace() {
   function handleClienteChange(e: React.ChangeEvent<HTMLSelectElement>) {
     setClienteId(e.target.value);
     setPreviewOk(false);
-    setConfirmando(false);
     setReporte(null);
   }
 
@@ -137,28 +157,52 @@ export function ImportarExcelWorkspace() {
         setEsPreview(dryRun);
         if (dryRun) {
           setPreviewOk(true);
+          toast({
+            title: "Previsualización lista",
+            description: `${resultado.importadas} hoja${resultado.importadas === 1 ? "" : "s"} a importar · ${resultado.omitidas} omitidas · ${resultado.errores} con error.`,
+            variant: resultado.errores > 0 ? "info" : "success",
+          });
         } else {
           // Tras importar de verdad, vuelve a requerir una nueva previsualización.
           setPreviewOk(false);
+          toast({
+            title: "Importación completada",
+            description: `${resultado.importadas} hoja${resultado.importadas === 1 ? "" : "s"} importada${resultado.importadas === 1 ? "" : "s"} · ${resultado.errores} con error.`,
+            variant: resultado.errores > 0 ? "info" : "success",
+          });
         }
       } catch (caught) {
-        const msg =
-          caught instanceof ImportarApiError
-            ? caught.message
-            : "Error inesperado durante la importación.";
+        const msg = describirError(caught, "Error inesperado durante la importación.");
         setError(msg);
         setReporte(null);
         if (dryRun) setPreviewOk(false);
+        toast({
+          title: dryRun ? "No se pudo previsualizar" : "No se pudo importar",
+          description: msg,
+          variant: "error",
+        });
       } finally {
         setEjecutando("idle");
-        setConfirmando(false);
       }
     },
-    [file, clienteId],
+    [file, clienteId, toast],
   );
 
+  async function confirmarImportacion() {
+    const cliente = clientes.find((c) => c.id === clienteId);
+    // Irreversible: escribe DOs, anticipos y facturas en la base de datos.
+    const ok = await confirmar({
+      title: "¿Importar el archivo a la base de datos?",
+      description: `Se crearán los trámites, anticipos y facturas de ${cliente?.nombre ?? "el cliente seleccionado"} a partir de ${file?.name ?? "el Excel"}. Esta acción no se puede deshacer.`,
+      confirmText: "Sí, importar",
+      variant: "danger",
+    });
+    if (!ok) return;
+    await ejecutar(false);
+  }
+
   const ocupado = ejecutando !== "idle";
-  const puedeEjecutar = Boolean(file) && Boolean(clienteId) && !ocupado;
+  const puedeEjecutar = Boolean(file) && Boolean(clienteId) && !ocupado && esAdmin;
 
   return (
     <div className="space-y-6">
@@ -172,7 +216,12 @@ export function ImportarExcelWorkspace() {
             Cliente destino
           </label>
           {clientesError ? (
-            <p className="text-sm text-rose-600">{clientesError}</p>
+            <ModuleState
+              type="error"
+              title="No se pudieron cargar los clientes"
+              detail={clientesError}
+              action={{ label: "Reintentar", onClick: recargarClientes }}
+            />
           ) : (
             <select
               id="cliente-import"
@@ -263,46 +312,24 @@ export function ImportarExcelWorkspace() {
             Previsualizar
           </button>
 
-          {confirmando ? (
-            <div className="inline-flex items-center gap-2">
-              <span className="text-sm text-slate-600">
-                ¿Confirmas? Esto escribirá en la base de datos.
-              </span>
-              <button
-                type="button"
-                onClick={() => void ejecutar(false)}
-                disabled={ocupado}
-                className="inline-flex h-9 items-center gap-2 bg-rose-600 px-4 text-sm font-medium text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {ejecutando === "import" && (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                )}
-                Sí, importar
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmando(false)}
-                disabled={ocupado}
-                className="inline-flex h-9 items-center px-3 text-sm font-medium text-slate-500 transition hover:text-slate-700 disabled:opacity-50"
-              >
-                Cancelar
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setConfirmando(true)}
-              disabled={!puedeEjecutar || !previewOk}
-              title={
-                previewOk
+          <button
+            type="button"
+            onClick={() => void confirmarImportacion()}
+            disabled={!puedeEjecutar || !previewOk}
+            title={
+              !esAdmin
+                ? "Solo ADMIN puede importar."
+                : previewOk
                   ? undefined
                   : "Previsualiza primero para habilitar la importación."
-              }
-              className="inline-flex h-9 items-center gap-2 bg-cyan-600 px-4 text-sm font-medium text-white transition hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Confirmar importación
-            </button>
-          )}
+            }
+            className="inline-flex h-9 items-center gap-2 bg-cyan-600 px-4 text-sm font-medium text-white transition hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {ejecutando === "import" && (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            )}
+            Confirmar importación
+          </button>
 
           {ocupado && (
             <span
@@ -343,7 +370,10 @@ export function ImportarExcelWorkspace() {
 
       {/* ── Banner de error ── */}
       {error && (
-        <div className="flex items-start gap-3 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+        <div
+          role="alert"
+          className="flex items-start gap-3 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+        >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <p>{error}</p>
         </div>

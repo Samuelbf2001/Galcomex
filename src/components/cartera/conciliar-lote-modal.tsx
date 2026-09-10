@@ -1,7 +1,11 @@
 "use client";
 
-import { Loader2, Paperclip, X } from "lucide-react";
+import { Loader2, Paperclip } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { describirError, useToast } from "@/components/ui/toast";
 
 import {
   CarteraApiError,
@@ -85,6 +89,8 @@ export function ConciliarLoteModal({
   onClose,
   onCompletado,
 }: ConciliarLoteModalProps) {
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [filas, setFilas] = useState<FilaDerivada[]>(() =>
     facturas.map((f) => filaDesdeFactura(f, destino)),
   );
@@ -201,6 +207,23 @@ export function ConciliarLoteModal({
   // ── Submit ───────────────────────────────────────────────────────────────
 
   async function handleSubmit() {
+    if (submitting) return;
+
+    const abonos = filasActivas.filter((f) => f.tipo === "ABONO").length;
+    const devoluciones = filasActivas.filter((f) => f.tipo === "DEVOLUCION").length;
+    const detalle = [
+      abonos > 0 ? `${abonos} abono${abonos !== 1 ? "s" : ""}` : null,
+      devoluciones > 0 ? `${devoluciones} devolución${devoluciones !== 1 ? "es" : ""}` : null,
+    ]
+      .filter((s): s is string => s !== null)
+      .join(" y ");
+    const ok = await confirmar({
+      title: `¿Registrar el pago de ${filasActivas.length} trámite${filasActivas.length !== 1 ? "s" : ""}?`,
+      description: `Se registrarán ${detalle} con fecha ${fecha}, por un neto de ${formatCOP(totalNetoConsolidado.toString())}. Cada movimiento queda en la cartera de su factura.`,
+      confirmText: "Registrar pago",
+    });
+    if (!ok) return;
+
     setGlobalError(null);
     setSubmitting(true);
 
@@ -232,14 +255,26 @@ export function ConciliarLoteModal({
         })),
       );
       setResumen(result);
+      if (result.failed > 0) {
+        toast({
+          title: `Lote procesado con ${result.failed} error${result.failed !== 1 ? "es" : ""}`,
+          description: `${result.ok} de ${result.total} pagos registrados. Revisa la columna Resultado.`,
+          variant: "error",
+        });
+      } else {
+        toast({
+          title: "Lote conciliado",
+          description: `${result.ok} pago${result.ok !== 1 ? "s" : ""} registrado${result.ok !== 1 ? "s" : ""} · ${formatCOP(totalNetoConsolidado.toString())}`,
+          variant: "success",
+        });
+      }
     } catch (err) {
       const msg =
         err instanceof CarteraApiError
           ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Error inesperado";
+          : describirError(err, "Error inesperado al registrar el lote.");
       setGlobalError(msg);
+      toast({ title: "No se pudo registrar el lote", description: msg, variant: "error" });
     } finally {
       setSubmitting(false);
     }
@@ -286,27 +321,77 @@ export function ConciliarLoteModal({
     bannerMontoClass = "text-slate-700";
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden bg-white shadow-xl">
-        {/* Mini-header con título y cerrar */}
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-2">
-          <div className="flex items-baseline gap-2">
-            <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              Conciliar lote
-            </h2>
-            <span className="text-[11px] text-slate-500">· {tituloCorto}</span>
-          </div>
+  const footer = (
+    <div className="flex w-full items-center justify-between gap-3">
+      <div className="text-xs text-slate-600">
+        {resumen ? (
+          <>
+            <span className="font-semibold">{resumen.total}</span> ítems
+            procesados ·{" "}
+            <span className="text-emerald-700">{resumen.ok} ok</span> ·{" "}
+            <span className={resumen.failed > 0 ? "text-rose-700" : ""}>
+              {resumen.failed} con error
+            </span>
+          </>
+        ) : (
+          <>
+            {filasActivas.length} trámite
+            {filasActivas.length !== 1 ? "s" : ""} se compensan en un solo
+            pago
+          </>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        {resumen ? (
           <button
             type="button"
-            onClick={onClose}
-            aria-label="Cerrar"
-            className="flex h-7 w-7 items-center justify-center text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+            onClick={() => onCompletado(resumen)}
+            className="h-9 border border-indigo-700 bg-indigo-700 px-4 text-xs font-semibold text-white transition hover:bg-indigo-800"
           >
-            <X className="h-4 w-4" aria-hidden="true" />
+            Cerrar y recargar
           </button>
-        </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="h-9 border border-slate-300 bg-white px-4 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSubmit()}
+              disabled={submitDisabled}
+              className="inline-flex h-9 items-center gap-2 border border-indigo-700 bg-indigo-700 px-4 text-xs font-semibold text-white transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-300"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  Registrando…
+                </>
+              ) : (
+                `Registrar pago (${filasActivas.length})`
+              )}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
 
+  return (
+    <ModalShell
+      open
+      onClose={resumen ? () => onCompletado(resumen) : onClose}
+      title="Conciliar lote"
+      description={tituloCorto}
+      size="xl"
+      dismissible={!submitting && uploadState !== "uploading"}
+      footer={footer}
+    >
+      <div className="-mx-5 -my-4 flex flex-col">
         {/* Banner protagonista del saldo consolidado */}
         {resumen ? (
           <div className="border-b border-slate-200 bg-slate-50 px-6 py-4">
@@ -428,7 +513,7 @@ export function ConciliarLoteModal({
                 <div className="text-[10px]">
                   {uploadState === "uploading" ? (
                     <span className="inline-flex items-center gap-1 text-slate-600">
-                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                       {uploadProgress}%
                     </span>
                   ) : uploadState === "done" ? (
@@ -458,7 +543,7 @@ export function ConciliarLoteModal({
         </div>
 
         {/* Tabla de trámites (read-only) */}
-        <div className="flex-1 overflow-auto">
+        <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] border-collapse text-left text-xs">
             <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase text-slate-500">
               <tr>
@@ -585,66 +670,7 @@ export function ConciliarLoteModal({
             {validationError}
           </div>
         ) : null}
-
-        {/* Footer */}
-        <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3">
-          <div className="text-xs text-slate-600">
-            {resumen ? (
-              <>
-                <span className="font-semibold">{resumen.total}</span> ítems
-                procesados ·{" "}
-                <span className="text-emerald-700">{resumen.ok} ok</span> ·{" "}
-                <span className={resumen.failed > 0 ? "text-rose-700" : ""}>
-                  {resumen.failed} con error
-                </span>
-              </>
-            ) : (
-              <>
-                {filasActivas.length} trámite
-                {filasActivas.length !== 1 ? "s" : ""} se compensan en un solo
-                pago
-              </>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {resumen ? (
-              <button
-                type="button"
-                onClick={() => onCompletado(resumen)}
-                className="h-9 border border-indigo-700 bg-indigo-700 px-4 text-xs font-semibold text-white transition hover:bg-indigo-800"
-              >
-                Cerrar y recargar
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  disabled={submitting}
-                  className="h-9 border border-slate-300 bg-white px-4 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSubmit}
-                  disabled={submitDisabled}
-                  className="inline-flex h-9 items-center gap-2 border border-indigo-700 bg-indigo-700 px-4 text-xs font-semibold text-white transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-300"
-                >
-                  {submitting ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      Registrando…
-                    </>
-                  ) : (
-                    `Registrar pago (${filasActivas.length})`
-                  )}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
       </div>
-    </div>
+    </ModalShell>
   );
 }

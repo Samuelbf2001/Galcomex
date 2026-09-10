@@ -1,11 +1,21 @@
 import { Suspense } from "react";
 
 import { CarteraWorkspace } from "@/components/cartera/cartera-workspace";
-import { ModuleState } from "@/components/layout/module-state";
+import { WorkspaceFallback } from "@/components/layout/workspace-fallback";
+import { exigirAccesoPagina } from "@/lib/auth/page-guard";
 
-export default function CarteraPage() {
+export default async function CarteraPage() {
+  await exigirAccesoPagina("/cartera");
   return (
-    <Suspense fallback={<ModuleState type="loading" title="Cargando cartera…" />}>
+    <Suspense
+      fallback={
+        <WorkspaceFallback
+          titulo="Cartera"
+          subtitulo="Relación de facturas, abonos, devoluciones y estados de cuenta por cliente."
+          filtros={4}
+        />
+      }
+    >
       <CarteraWorkspace />
     </Suspense>
   );

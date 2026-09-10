@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { calcularDiasYAlerta } from "../service";
+import { calcularDiasYAlerta, seleccionarClientesEnAlertaCartera } from "../service";
 
 // ─── Función auxiliar ─────────────────────────────────────────────────────────
 
@@ -84,5 +84,65 @@ describe("calcularDiasYAlerta", () => {
     const result = calcularDiasYAlerta(fechaFutura, HOY);
     expect(result.dias).toBe(0);
     expect(result.alerta).toBe(false);
+  });
+});
+
+/**
+ * Tests de seleccionarClientesEnAlertaCartera — alerta de cartera por cliente
+ * (reunión 1-jul: saldo neto de cliente por debajo de −$20.000.000 → Guillermo
+ * decide si da otro anticipo).
+ */
+describe("seleccionarClientesEnAlertaCartera", () => {
+  const UMBRAL = -20_000_000n;
+
+  it("sin clientes → lista vacía", () => {
+    expect(seleccionarClientesEnAlertaCartera([], UMBRAL)).toEqual([]);
+  });
+
+  it("cliente con saldo neto por encima del umbral (deuda menor) → no aparece", () => {
+    const result = seleccionarClientesEnAlertaCartera(
+      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -5_000_000n }],
+      UMBRAL,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("cliente con saldo neto exactamente en el umbral → no aparece (estrictamente menor)", () => {
+    const result = seleccionarClientesEnAlertaCartera(
+      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: UMBRAL }],
+      UMBRAL,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("cliente con saldo neto positivo (Galcomex le debe) → no aparece", () => {
+    const result = seleccionarClientesEnAlertaCartera(
+      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: 10_000_000n }],
+      UMBRAL,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("cliente con saldo neto por debajo del umbral → aparece con saldoNeto serializado", () => {
+    const result = seleccionarClientesEnAlertaCartera(
+      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -25_000_000n }],
+      UMBRAL,
+    );
+    expect(result).toEqual([
+      { clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: "-25000000" },
+    ]);
+  });
+
+  it("varios clientes en alerta → ordena de peor (más negativo) a mejor saldo", () => {
+    const result = seleccionarClientesEnAlertaCartera(
+      [
+        { clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -21_000_000n },
+        { clienteId: "c2", clienteNombre: "Cliente B", saldoNeto: -50_000_000n },
+        { clienteId: "c3", clienteNombre: "Cliente C", saldoNeto: -5_000_000n }, // fuera de alerta
+        { clienteId: "c4", clienteNombre: "Cliente D", saldoNeto: -30_000_000n },
+      ],
+      UMBRAL,
+    );
+    expect(result.map((r) => r.clienteId)).toEqual(["c2", "c4", "c1"]);
   });
 });

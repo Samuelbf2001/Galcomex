@@ -6,7 +6,10 @@ export const crearPagoSchema = z.object({
   /** IDs de beneficiarios (N↔N). Vacío = sin beneficiario. */
   beneficiarioIds: z.array(z.string().min(1)).optional().default([]),
   numSoporte: z.string().trim().min(1).optional().nullable(),
+  /** Comprobante bancario (Bancolombia) — opcional, no bloquea el pago. */
   documentoId: z.string().min(1).optional().nullable(),
+  /** Comprobante de la página del comercio (puerto/PSE) — opcional. */
+  comprobanteComercioId: z.string().min(1).optional().nullable(),
   valor: z.coerce
     .bigint()
     .refine((v) => v >= 0n, { message: "El valor no puede ser negativo" }),
@@ -45,8 +48,38 @@ export const actualizarPagoSchema = z.object({
   fechaRealPago: z.coerce.date().optional().nullable(),
   /** Banco (Beneficiario) usado como tercero del 4x1000. Null = limpia. */
   bancoBeneficiarioId: z.string().min(1).optional().nullable(),
+  /** Comprobante bancario (Bancolombia). Null = limpia. */
+  documentoId: z.string().min(1).optional().nullable(),
+  /** Comprobante de la página del comercio (puerto/PSE). Null = limpia. */
+  comprobanteComercioId: z.string().min(1).optional().nullable(),
 });
 
 export const verificarMovimientoSchema = z.object({
   estado: z.nativeEnum(EstadoMovimiento),
+});
+
+// ─── Pago multi-DO (caso Karina/Occidente) ─────────────────────────────────────
+
+export const crearPagoMultiDOSchema = z.object({
+  beneficiarioId: z.string().min(1, "Selecciona el beneficiario"),
+  facturas: z
+    .array(
+      z.object({
+        facturaProveedorId: z.string().min(1),
+        monto: z.coerce
+          .bigint()
+          .refine((v) => v > 0n, { message: "El monto debe ser mayor a 0" }),
+      }),
+    )
+    .min(1, "Selecciona al menos una factura"),
+  canalPago: z.nativeEnum(CanalPago),
+  fechaRealPago: z.coerce.date().optional().nullable(),
+  concepto: z.string().trim().min(1).optional(),
+  documentoId: z.string().min(1).optional().nullable(),
+  comprobanteComercioId: z.string().min(1).optional().nullable(),
+  bancoBeneficiarioId: z.string().min(1).optional().nullable(),
+});
+
+export const listarFacturasElegiblesMultiDOQuerySchema = z.object({
+  beneficiarioId: z.string().min(1, "beneficiarioId es requerido"),
 });

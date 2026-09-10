@@ -4,13 +4,20 @@ import { LogIn } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useState } from "react";
 
-import { authClient } from "@/lib/auth/client";
+import { destinoInternoSeguro } from "@/lib/auth/rutas-roles";
 
+/**
+ * Login. Envía SIEMPRE por /api/login (que aplica el límite de intentos);
+ * antes el cliente llamaba directo a Better Auth y el rate-limit solo actuaba
+ * sin JavaScript. El destino `?next=` se valida contra redirecciones abiertas
+ * y, si no hay destino, el servidor decide la pantalla inicial según el rol.
+ */
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") ?? "/dashboard";
-  const [error, setError] = useState<string | null>(null);
+  const next = destinoInternoSeguro(searchParams.get("next")) ?? "/";
+  const errorInicial = searchParams.get("error") === "credenciales" ? "Correo o contraseña inválidos." : null;
+  const [error, setError] = useState<string | null>(errorInicial);
   const [isPending, setIsPending] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -19,23 +26,34 @@ export function LoginForm() {
     setIsPending(true);
 
     const formData = new FormData(event.currentTarget);
-    const email = String(formData.get("email") ?? "");
-    const password = String(formData.get("password") ?? "");
 
-    const result = await authClient.signIn.email({
-      email,
-      password,
-    });
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        body: formData,
+        headers: { accept: "application/json" },
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { ok?: boolean; redirectTo?: string; error?: string }
+        | null;
 
-    setIsPending(false);
+      if (!response.ok) {
+        setError(
+          payload?.error ??
+            (response.status === 401
+              ? "Correo o contraseña inválidos."
+              : "No se pudo iniciar sesión. Inténtalo de nuevo."),
+        );
+        return;
+      }
 
-    if (result.error) {
-      setError("Correo o contrasena invalidos");
-      return;
+      router.push(payload?.redirectTo ?? next);
+      router.refresh();
+    } catch {
+      setError("Sin conexión con el servidor. Revisa tu red e inténtalo de nuevo.");
+    } finally {
+      setIsPending(false);
     }
-
-    router.push(next);
-    router.refresh();
   }
 
   return (
@@ -44,6 +62,7 @@ export function LoginForm() {
       method="post"
       action="/api/login"
       className="space-y-4"
+      noValidate={false}
     >
       <input type="hidden" name="callbackURL" value={next} />
       <div className="space-y-1.5">
@@ -55,14 +74,15 @@ export function LoginForm() {
           name="email"
           type="email"
           autoComplete="email"
-          defaultValue="camila@galcomex.com"
+          autoFocus
+          placeholder="nombre@galcomex.com"
           className="h-10 w-full border border-slate-300 px-3 text-sm outline-none transition focus:border-cyan-600"
           required
         />
       </div>
       <div className="space-y-1.5">
         <label htmlFor="password" className="text-sm font-medium text-slate-700">
-          Contrasena
+          Contraseña
         </label>
         <input
           id="password"
@@ -74,17 +94,18 @@ export function LoginForm() {
         />
       </div>
       {error ? (
-        <p className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p role="alert" className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {error}
         </p>
       ) : null}
       <button
         type="submit"
         disabled={isPending}
+        aria-busy={isPending}
         className="inline-flex h-10 w-full items-center justify-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
       >
         <LogIn className="h-4 w-4" aria-hidden="true" />
-        {isPending ? "Ingresando" : "Ingresar"}
+        {isPending ? "Ingresando…" : "Ingresar"}
       </button>
     </form>
   );

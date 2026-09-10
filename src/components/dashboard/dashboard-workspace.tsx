@@ -14,12 +14,15 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError } from "@/components/ui/toast";
 
 import {
   type DashboardApiData,
   type PendienteFacturarRow,
   type CarteraVencidaRow,
   type ActividadRecienteRow,
+  type ClienteAlertaCarteraRow,
   DashboardApiError,
   fetchDashboard,
   formatCOP,
@@ -190,7 +193,220 @@ function TablaCarteraVencida({ rows }: { rows: CarteraVencidaRow[] }) {
   );
 }
 
-// ─── Lista actividad reciente ─────────────────────────────────────────────────
+// ─── Tabla alertas de cartera por cliente ─────────────────────────────────────
+
+function TablaAlertasCartera({ rows }: { rows: ClienteAlertaCarteraRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <p className="py-4 text-center text-sm text-slate-500">
+        Ningún cliente está por debajo del umbral de alerta de cartera.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[420px] border-collapse text-left text-sm">
+        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+          <tr>
+            <th className="border-b border-slate-200 px-4 py-2.5">Cliente</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Saldo neto</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Ver cartera</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const negativo = BigInt(row.saldoNeto) < 0n;
+            const absStr = negativo ? (-BigInt(row.saldoNeto)).toString() : row.saldoNeto;
+            return (
+              <tr
+                key={row.clienteId}
+                className="border-b border-slate-100 bg-rose-50/40 last:border-b-0 transition-colors hover:bg-rose-50"
+              >
+                <td className="px-4 py-3 text-xs font-medium text-slate-800 whitespace-nowrap">
+                  {row.clienteNombre}
+                </td>
+                <td className="px-4 py-3 text-right text-sm font-bold text-rose-600 whitespace-nowrap">
+                  {negativo ? "−" : ""}
+                  {formatCOP(absStr)}
+                </td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <Link
+                    href={`/cartera?clienteId=${row.clienteId}`}
+                    className="inline-flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+                  >
+                    Cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
+                  </Link>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Actividad reciente en lenguaje humano ────────────────────────────────────
+
+/**
+ * Traducción `entidad:accion` → frase. Los códigos vienen de los `AuditLog`
+ * que escriben los servicios (`grep -rn "accion:" src/lib`): CREATE/UPDATE/
+ * DELETE son genéricos y solo tienen sentido junto a la entidad, por eso la
+ * clave compuesta va primero y `ACCIONES_GENERICAS` es el segundo intento.
+ */
+const ACTIVIDAD_POR_ENTIDAD: Record<string, string> = {
+  // Trámites (DO)
+  "TramiteDO:CREATE": "creó el DO",
+  "TramiteDO:CREATE_TRAMITE": "creó el DO",
+  "TramiteDO:CREAR_TRAMITE": "creó el DO",
+  "TramiteDO:UPDATE": "editó el DO",
+  "TramiteDO:UPDATE_ESTADO": "cambió el estado del DO",
+  "TramiteDO:CAMBIO_ESTADO": "cambió el estado del DO",
+  "TramiteDO:REAPERTURA": "reabrió el DO",
+  // Borradores de factura de venta
+  "BorradorFactura:CREATE": "generó un borrador de factura",
+  "BorradorFactura:UPDATE": "actualizó un borrador de factura",
+  "BorradorFactura:UPDATE_ESTADO": "cambió el estado de un borrador de factura",
+  "BorradorFactura:FACTURAR": "marcó como facturado un borrador",
+  "BorradorFactura:UPDATE_COMISION": "actualizó la comisión de un borrador",
+  "BorradorFactura:UPDATE_COMISION_INTERNA_LM": "actualizó la comisión interna LM de un borrador",
+  "BorradorFactura:UPDATE_COMENTARIOS": "editó las observaciones de un borrador",
+  "BorradorFactura:SIIGO_ENVIAR_OK": "envió una factura a SIIGO",
+  "BorradorFactura:SIIGO_ENVIAR_ERROR": "intentó enviar una factura a SIIGO (falló)",
+  "BorradorFactura:SIIGO_SINCRONIZAR": "sincronizó una factura desde SIIGO",
+  "LineaRevision:CREATE": "agregó una línea al borrador",
+  "LineaRevision:UPDATE": "editó una línea del borrador",
+  "LineaRevision:DELETE": "eliminó una línea del borrador",
+  // Cartera
+  "Factura:UPDATE": "actualizó una factura",
+  "PagoFactura:CREATE": "registró un abono o devolución de factura",
+  "PagoFactura:CREATE_PAGO": "registró un abono o devolución de factura",
+  "PagoFactura:DELETE": "anuló un pago de factura",
+  "PagoFactura:VERIFICAR": "verificó en banco un pago de factura",
+  "ConciliacionBatchCartera:CREATE": "concilió un lote de cartera",
+  // Anticipos
+  "Anticipo:CREATE": "registró un anticipo",
+  "Anticipo:CREATE_ANTICIPO": "registró un anticipo",
+  "Anticipo:VERIFICAR": "verificó en banco un anticipo",
+  "AplicacionAnticipo:APLICAR_ANTICIPO": "aplicó un anticipo a un DO",
+  "AplicacionAnticipo:ELIMINAR_APLICACION_ANTICIPO": "quitó la aplicación de un anticipo",
+  // Pagos a proveedores / facturas de proveedor
+  "PagoTramite:CREATE": "registró un pago a proveedor",
+  "PagoTramite:CREATE_PAGO": "registró un pago a proveedor",
+  "PagoTramite:UPDATE": "editó un pago a proveedor",
+  "PagoTramite:DELETE": "eliminó un pago a proveedor",
+  "PagoTramiteGrupo:CREATE": "registró un grupo de pagos a proveedores",
+  "FacturaProveedor:CREATE": "registró una factura de proveedor",
+  "FacturaProveedor:UPDATE": "editó una factura de proveedor",
+  "FacturaProveedor:DELETE": "eliminó una factura de proveedor",
+  "FacturaProveedor:UPDATE_ESTADO": "cambió el estado de una factura de proveedor",
+  // Beneficiarios y cuenta corriente
+  "Beneficiario:CREATE_BENEFICIARIO": "creó un beneficiario",
+  "Beneficiario:UPDATE_BENEFICIARIO": "editó un beneficiario",
+  "MovimientoCuenta:CREATE_MOVIMIENTO_CUENTA": "registró un movimiento de cuenta corriente",
+  "MovimientoCuenta:DELETE_MOVIMIENTO_CUENTA": "eliminó un movimiento de cuenta corriente",
+  // Documentos
+  "Documento:CREATE": "subió un documento",
+  "Documento:DELETE": "eliminó un documento",
+  "Documento:REPLACE": "reemplazó un documento",
+  "DocumentoEnlace:CREATE": "creó un enlace para compartir un documento",
+  "DocumentoEnlace:REVOKE": "revocó un enlace de documento",
+  // Configuración
+  "EmpresaCapacidad:SET_CAPACIDAD_EMPRESA": "activó o desactivó una función de la empresa",
+  "EmpresaCapacidad:RESET_CAPACIDAD_EMPRESA": "restableció una función de la empresa",
+  "Parametro:UPDATE": "editó un parámetro del sistema",
+  "MatrizRecaudo:UPDATE": "editó la matriz de recaudo",
+  "MatrizPago:UPDATE": "editó la matriz de pagos",
+  "SiigoProducto:SYNC": "sincronizó los productos de SIIGO",
+  "SiigoImpuesto:SYNC": "sincronizó los impuestos de SIIGO",
+  "SiigoFormaPago:SYNC": "sincronizó las formas de pago de SIIGO",
+  "SiigoTipoComprobante:SYNC": "sincronizó los tipos de comprobante de SIIGO",
+  "SiigoVendedor:SYNC": "sincronizó los vendedores de SIIGO",
+  "SiigoProductoImpuesto:UPDATE": "asoció impuestos a un producto de SIIGO",
+  "User:RESET_PASSWORD": "restableció la contraseña de un usuario",
+};
+
+/** Segundo intento: solo por acción (para entidades nuevas o no listadas). */
+const ACCIONES_GENERICAS: Record<string, string> = {
+  CREATE: "creó",
+  CREATE_TRAMITE: "creó el DO",
+  CREAR_TRAMITE: "creó el DO",
+  UPDATE: "editó",
+  UPDATE_ESTADO: "cambió el estado de",
+  CAMBIO_ESTADO: "cambió el estado de",
+  DELETE: "eliminó",
+  REPLACE: "reemplazó",
+  REVOKE: "revocó",
+  SYNC: "sincronizó",
+  VERIFICAR: "verificó",
+  FACTURAR: "marcó como facturado",
+  REAPERTURA: "reabrió",
+  CREATE_PAGO: "registró un pago",
+  CREATE_ANTICIPO: "registró un anticipo",
+  APLICAR_ANTICIPO: "aplicó un anticipo",
+  ELIMINAR_APLICACION_ANTICIPO: "quitó la aplicación de un anticipo",
+  SET_CAPACIDAD_EMPRESA: "activó o desactivó una función de la empresa",
+  RESET_CAPACIDAD_EMPRESA: "restableció una función de la empresa",
+  RESET_PASSWORD: "restableció una contraseña",
+};
+
+/** Nombre legible de la entidad, para las acciones genéricas y el fallback. */
+const ENTIDAD_LEGIBLE: Record<string, string> = {
+  TramiteDO: "el DO",
+  BorradorFactura: "un borrador de factura",
+  LineaRevision: "una línea de borrador",
+  Factura: "una factura",
+  PagoFactura: "un pago de factura",
+  ConciliacionBatchCartera: "un lote de cartera",
+  Anticipo: "un anticipo",
+  AplicacionAnticipo: "una aplicación de anticipo",
+  PagoTramite: "un pago a proveedor",
+  PagoTramiteGrupo: "un grupo de pagos",
+  FacturaProveedor: "una factura de proveedor",
+  Beneficiario: "un beneficiario",
+  MovimientoCuenta: "un movimiento de cuenta corriente",
+  Documento: "un documento",
+  DocumentoEnlace: "un enlace de documento",
+  EmpresaCapacidad: "una función de la empresa",
+  Parametro: "un parámetro",
+  MatrizRecaudo: "la matriz de recaudo",
+  MatrizPago: "la matriz de pagos",
+  User: "un usuario",
+};
+
+/** "SET_CAPACIDAD_EMPRESA" → "Set capacidad empresa". */
+function humanizarCodigo(codigo: string): string {
+  const texto = codigo.replace(/_/g, " ").trim().toLowerCase();
+  return texto ? texto.charAt(0).toUpperCase() + texto.slice(1) : codigo;
+}
+
+/**
+ * Frase para la actividad, sin el nombre del usuario: "creó el DO",
+ * "registró un anticipo", …  Orden: entidad+acción → acción+entidad legible →
+ * fallback legible del código.
+ */
+export function describirActividad(row: Pick<ActividadRecienteRow, "accion" | "entidad">): string {
+  const porEntidad = ACTIVIDAD_POR_ENTIDAD[`${row.entidad}:${row.accion}`];
+  if (porEntidad) return porEntidad;
+
+  const generica = ACCIONES_GENERICAS[row.accion];
+  const entidad = ENTIDAD_LEGIBLE[row.entidad];
+  if (generica && entidad) {
+    // "creó" + "un anticipo" → "creó un anticipo"; "cambió el estado de" + "el DO"
+    return `${generica} ${entidad}`;
+  }
+  if (generica) return `${generica} ${humanizarCodigo(row.entidad).toLowerCase()}`;
+
+  const accion = humanizarCodigo(row.accion).toLowerCase();
+  return entidad ? `${accion} · ${entidad}` : `${accion} · ${humanizarCodigo(row.entidad)}`;
+}
+
+/** Inicial para el avatar de la fila. */
+function inicialUsuario(nombre: string): string {
+  const limpio = nombre.trim();
+  return limpio ? limpio.charAt(0).toUpperCase() : "?";
+}
 
 function ListaActividad({ rows }: { rows: ActividadRecienteRow[] }) {
   if (rows.length === 0) {
@@ -203,22 +419,28 @@ function ListaActividad({ rows }: { rows: ActividadRecienteRow[] }) {
 
   return (
     <ul className="divide-y divide-slate-100">
-      {rows.map((row) => (
-        <li key={row.id} className="flex items-start gap-3 px-4 py-3">
-          <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
-            {row.accion.slice(0, 2)}
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm text-slate-800">
-              <span className="font-medium">{row.accion}</span>{" "}
-              <span className="text-slate-500">{row.entidad}</span>
-            </p>
-            <p className="mt-0.5 text-xs text-slate-500">
-              {row.usuarioNombre} · {formatDate(row.createdAt)}
-            </p>
-          </div>
-        </li>
-      ))}
+      {rows.map((row) => {
+        const usuario = row.usuarioNombre.trim() || "Alguien";
+        return (
+          <li key={row.id} className="flex items-start gap-3 px-4 py-3">
+            <span
+              className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600"
+              aria-hidden="true"
+            >
+              {inicialUsuario(usuario)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p
+                className="truncate text-sm text-slate-800"
+                title={`${row.entidad} · ${row.accion}`}
+              >
+                <span className="font-medium">{usuario}</span> {describirActividad(row)}
+                <span className="text-slate-400"> · {formatDate(row.createdAt)}</span>
+              </p>
+            </div>
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -246,7 +468,7 @@ export function DashboardWorkspace() {
         setErrorMsg(
           err instanceof DashboardApiError
             ? err.message
-            : "Error al cargar el dashboard.",
+            : describirError(err, "Error al cargar el dashboard."),
         );
         setLoadState("error");
       }
@@ -260,12 +482,18 @@ export function DashboardWorkspace() {
     setRefreshKey((k) => k + 1);
   }
 
-  // ── Loading ──────────────────────────────────────────────────────────────
+  // ── Loading: mismas alturas que el contenido real para evitar el salto ───
   if (loadState === "loading") {
     return (
-      <section className="space-y-5">
+      <section className="space-y-6" aria-busy="true">
         <DashboardHeader onRefresh={handleRefresh} refreshing />
-        <ModuleState type="loading" title="Cargando datos operativos…" />
+        <CardsSkeleton count={4} height={136} />
+        <TableSkeleton rows={5} cols={5} rowHeight={45} />
+        <TableSkeleton rows={2} cols={3} rowHeight={45} />
+        <div className="grid gap-4 lg:grid-cols-2">
+          <TableSkeleton rows={4} cols={5} rowHeight={45} />
+          <TableSkeleton rows={4} cols={2} rowHeight={53} />
+        </div>
       </section>
     );
   }
@@ -275,19 +503,19 @@ export function DashboardWorkspace() {
     return (
       <section className="space-y-5">
         <DashboardHeader onRefresh={handleRefresh} refreshing={false} />
-        <div className="flex items-start gap-3 border border-dashed border-rose-300 bg-rose-50 px-4 py-5 text-sm text-rose-700">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-          <div>
-            <p className="font-medium">No fue posible cargar el dashboard</p>
-            {errorMsg ? <p className="mt-1">{errorMsg}</p> : null}
-          </div>
-        </div>
+        <ModuleState
+          type="error"
+          title="No fue posible cargar el dashboard"
+          detail={errorMsg ?? undefined}
+          action={{ label: "Reintentar", onClick: handleRefresh }}
+        />
       </section>
     );
   }
 
   // ── Ready ────────────────────────────────────────────────────────────────
-  const alertaPendientes = data.pendientesFacturar.some((p) => p.alerta);
+  // Los KPI usan los contadores totales del API; las listas vienen limitadas a 20 filas.
+  const alertaPendientes = data.cantidadPendientesConAlerta > 0;
 
   return (
     <section className="space-y-6">
@@ -304,10 +532,10 @@ export function DashboardWorkspace() {
         />
         <MetricCard
           label="Pendientes de facturar"
-          value={String(data.pendientesFacturar.length)}
+          value={String(data.cantidadPendientesFacturar)}
           sub={
             alertaPendientes
-              ? `${data.pendientesFacturar.filter((p) => p.alerta).length} con alerta SLA`
+              ? `${data.cantidadPendientesConAlerta} con alerta SLA`
               : "Sin alertas SLA"
           }
           href="/tramites"
@@ -317,18 +545,18 @@ export function DashboardWorkspace() {
         <MetricCard
           label="Cartera vencida"
           value={
-            data.carteraVencida.length > 0
+            data.cantidadFacturasVencidas > 0
               ? formatCOP(data.totalCarteraVencida)
               : "$0"
           }
           sub={
-            data.carteraVencida.length > 0
-              ? `${data.carteraVencida.length} factura${data.carteraVencida.length !== 1 ? "s" : ""} sin cobrar`
+            data.cantidadFacturasVencidas > 0
+              ? `${data.cantidadFacturasVencidas} factura${data.cantidadFacturasVencidas !== 1 ? "s" : ""} sin cobrar`
               : "Al día"
           }
           href="/cartera?pendientes=true"
           icon={<Wallet className="h-4 w-4" aria-hidden="true" />}
-          alert={data.carteraVencida.length > 0}
+          alert={data.cantidadFacturasVencidas > 0}
         />
         <MetricCard
           label="Anticipos con saldo"
@@ -369,6 +597,23 @@ export function DashboardWorkspace() {
           </Link>
         </div>
         <TablaPendientesFacturar rows={data.pendientesFacturar} />
+      </div>
+
+      {/* Sección alertas de cartera — clientes bajo el umbral configurado */}
+      <div className="overflow-hidden border border-rose-200 bg-white">
+        <div className="flex items-center justify-between border-b border-rose-200 bg-rose-50/60 px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-rose-600" aria-hidden="true" />
+            <h2 className="text-sm font-semibold text-rose-900">Alertas de cartera</h2>
+          </div>
+          <Link
+            href="/cartera"
+            className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+          >
+            Ir a cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
+          </Link>
+        </div>
+        <TablaAlertasCartera rows={data.alertasCartera} />
       </div>
 
       {/* Grid: cartera vencida + actividad reciente */}

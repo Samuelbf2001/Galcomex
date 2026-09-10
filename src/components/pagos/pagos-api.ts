@@ -29,6 +29,9 @@ export type FacturaPagoLink = {
   proveedorNombre: string;
 };
 
+/** Otro DO del mismo grupoPagoId (pago multi-DO) — para el badge "Pago multi-DO". */
+export type GrupoPagoDOInfo = { tramiteId: string; consecutivo: string };
+
 export type PagoRow = {
   id: string;
   tramiteId: string;
@@ -36,6 +39,14 @@ export type PagoRow = {
   /** Lista de beneficiarios vinculados (N↔N). */
   beneficiarios: BeneficiarioMinimo[];
   numSoporte: string | null;
+  /** Comprobante bancario (Bancolombia) — el que vale ante reclamos. null = sin comprobante (no bloquea). */
+  documentoId: string | null;
+  /** Comprobante de la página del comercio (puerto/PSE) — opcional. */
+  comprobanteComercioId: string | null;
+  /** Id del grupo de pago multi-DO (null = pago normal de un solo DO). */
+  grupoPagoId: string | null;
+  /** Otros DOs del mismo grupoPagoId (vacío si no es un pago multi-DO). */
+  grupoOtrosDOs: GrupoPagoDOInfo[];
   valor: string; // BigInt serializado
   canalPago: CanalPago;
   costoBancario: string; // BigInt serializado
@@ -109,6 +120,10 @@ export type CreatePagoInput = {
   /** IDs de beneficiarios (N↔N). */
   beneficiarioIds?: string[];
   numSoporte?: string | null;
+  /** Comprobante bancario (Bancolombia) — opcional, no bloquea el pago. */
+  documentoId?: string | null;
+  /** Comprobante de la página del comercio (puerto/PSE) — opcional. */
+  comprobanteComercioId?: string | null;
   valor: string; // BigInt as string
   canalPago: CanalPago;
   fechaRealPago?: string | null;
@@ -189,6 +204,10 @@ export type UpdatePagoInput = {
   fechaRealPago?: string | null;
   /** Banco para 4x1000. null limpia, undefined deja como está. */
   bancoBeneficiarioId?: string | null;
+  /** Comprobante bancario (Bancolombia). null limpia, undefined deja como está. */
+  documentoId?: string | null;
+  /** Comprobante de comercio (puerto/PSE), opcional. null limpia, undefined deja como está. */
+  comprobanteComercioId?: string | null;
 };
 
 export class PagosApiError extends Error {
@@ -277,6 +296,17 @@ function parsePagoRow(p: Record<string, unknown>): PagoRow {
       });
     })(),
     numSoporte: typeof p.numSoporte === "string" ? p.numSoporte : null,
+    documentoId: typeof p.documentoId === "string" ? p.documentoId : null,
+    comprobanteComercioId:
+      typeof p.comprobanteComercioId === "string" ? p.comprobanteComercioId : null,
+    grupoPagoId: typeof p.grupoPagoId === "string" ? p.grupoPagoId : null,
+    grupoOtrosDOs: (() => {
+      const raw = Array.isArray(p.grupoOtrosDOs) ? p.grupoOtrosDOs : [];
+      return raw.filter(isRecord).map((g) => ({
+        tramiteId: String(g.tramiteId ?? ""),
+        consecutivo: String(g.consecutivo ?? ""),
+      }));
+    })(),
     valor: String(p.valor ?? "0"),
     canalPago: (p.canalPago as CanalPago) ?? "TRANSF_BANCOLOMBIA",
     costoBancario: String(p.costoBancario ?? "0"),
@@ -485,6 +515,97 @@ export async function verificarMovimientoPago(
   }
 
   return parsePagoRow(payload.pago);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Subida de comprobantes (doble comprobante: bancario + comercio)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type PagoComprobanteCategoria = "COMPROBANTE_BANCARIO" | "COMPROBANTE_COMERCIO";
+
+export type ComprobanteSubido = {
+  id: string;
+  nombreArchivo: string;
+};
+
+/**
+ * Sube un archivo de comprobante (bancario o de comercio) y registra el
+ * Documento correspondiente en el trámite, reutilizando el endpoint genérico
+ * /api/tramites/[id]/documentos (uploadUrl → PUT directo a MinIO → register).
+ *
+ * NOTA: reimplementa el flujo de 2 pasos localmente en vez de importar
+ * src/components/documentos/documentos-api.ts (fuera de este scope) porque
+ * su tipo `CategoriaDocumento` todavía no incluye "COMPROBANTE_COMERCIO".
+ * El backend (enum Prisma CategoriaDocumento) sí la acepta sin cambios.
+ */
+export async function subirComprobante(
+  tramiteId: string,
+  categoria: PagoComprobanteCategoria,
+  file: File,
+): Promise<ComprobanteSubido> {
+  const uploadUrlResp = await fetch(`/api/tramites/${tramiteId}/documentos`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      action: "uploadUrl",
+      categoria,
+      fileName: file.name,
+      contentType: file.type,
+      sizeBytes: file.size,
+    }),
+  });
+  const uploadUrlPayload: unknown = await uploadUrlResp.json().catch(() => null);
+  if (!uploadUrlResp.ok) {
+    const message =
+      isRecord(uploadUrlPayload) && typeof uploadUrlPayload.error === "string"
+        ? uploadUrlPayload.error
+        : `No fue posible solicitar la URL de subida (${uploadUrlResp.status}).`;
+    throw new PagosApiError(message, uploadUrlResp.status);
+  }
+  if (!isRecord(uploadUrlPayload) || !isRecord(uploadUrlPayload.uploadUrl)) {
+    throw new PagosApiError("Respuesta de URL de subida no válida.");
+  }
+  const u = uploadUrlPayload.uploadUrl;
+  const storageKey = String(u.storageKey ?? "");
+  const putUrl = String(u.uploadUrl ?? "");
+
+  const putResp = await fetch(putUrl, {
+    method: "PUT",
+    body: file,
+    headers: { "content-type": file.type },
+  });
+  if (!putResp.ok) {
+    throw new PagosApiError("Error al subir el archivo del comprobante.");
+  }
+
+  const registerResp = await fetch(`/api/tramites/${tramiteId}/documentos`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      action: "register",
+      categoria,
+      nombreArchivo: file.name,
+      storageKey,
+      mimeType: file.type,
+      tamanoBytes: file.size,
+    }),
+  });
+  const registerPayload: unknown = await registerResp.json().catch(() => null);
+  if (!registerResp.ok) {
+    const message =
+      isRecord(registerPayload) && typeof registerPayload.error === "string"
+        ? registerPayload.error
+        : `No fue posible registrar el comprobante (${registerResp.status}).`;
+    throw new PagosApiError(message, registerResp.status);
+  }
+  if (!isRecord(registerPayload) || !isRecord(registerPayload.documento)) {
+    throw new PagosApiError("Respuesta de registro de comprobante no válida.");
+  }
+  const doc = registerPayload.documento;
+  return {
+    id: String(doc.id ?? ""),
+    nombreArchivo: String(doc.nombreArchivo ?? file.name),
+  };
 }
 
 /** Formatea BigInt serializado como COP: $45.226.000 */

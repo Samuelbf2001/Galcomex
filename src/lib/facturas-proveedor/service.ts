@@ -12,6 +12,7 @@ import { CanalPago, EstadoFacturaProveedor, EstadoTramite, Prisma } from "@prism
 
 import { ensureBorrador } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
 import { transitionTramite } from "@/lib/tramites/service";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -29,6 +30,8 @@ export type CrearFacturaProveedorInput = {
   // La obligatoriedad del archivo (p.4) se valida en la capa API (Zod del endpoint).
   // El servicio lo acepta opcional para scripts de importación histórica y generación interna.
   documentoId?: string | null;
+  /** ¿Se traslada al cliente en la factura de venta? (M6). Default `true`. */
+  repercutible?: boolean;
   subidaPorId: string;
 };
 
@@ -42,6 +45,7 @@ export type ActualizarFacturaProveedorInput = {
   valor?: bigint;
   fecha?: Date;
   documentoId?: string | null;
+  repercutible?: boolean;
 };
 
 export type GenerarPagoInput = {
@@ -140,10 +144,12 @@ async function resolverCostoBancario(canal: CanalPago): Promise<bigint> {
  * Valida unicidad (tramiteId, numFactura).
  */
 export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
-  const { tramiteId, proveedorNombre, proveedorNit, beneficiarioId, concepto, siigoProductoId, numFactura, valor, fecha, documentoId, subidaPorId } =
+  const { tramiteId, proveedorNombre, proveedorNit, beneficiarioId, concepto, siigoProductoId, numFactura, valor, fecha, documentoId, repercutible, subidaPorId } =
     input;
 
   return prisma.$transaction(async (tx) => {
+    await assertTramiteModificable(tx, tramiteId);
+
     // Verificar unicidad
     const existente = await tx.facturaProveedor.findUnique({
       where: { tramiteId_numFactura: { tramiteId, numFactura } },
@@ -164,6 +170,7 @@ export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
         valor,
         fecha,
         documentoId,
+        repercutible: repercutible ?? true,
         subidaPorId,
       },
     });
@@ -219,6 +226,9 @@ export async function actualizarFacturaProveedor(
     if (!actual) {
       throw new FacturaProveedorNoEncontradaError(facturaId);
     }
+
+    await assertTramiteModificable(tx, actual.tramiteId);
+
     if (actual.estado !== EstadoFacturaProveedor.REGISTRADA) {
       throw new FacturaProveedorNoModificableError(facturaId, actual.estado);
     }
@@ -273,6 +283,8 @@ export async function eliminarFacturaProveedor(
       throw new FacturaProveedorNoEncontradaError(facturaId);
     }
 
+    await assertTramiteModificable(tx, actual.tramiteId);
+
     // pagos es ahora PagoTramiteFactura[] (pivot N↔N)
     if (actual.pagos.length > 0) {
       throw new FacturaProveedorConPagosError(facturaId);
@@ -312,6 +324,9 @@ export async function generarPagoDesdeFactura(input: GenerarPagoInput) {
     if (!factura) {
       throw new FacturaProveedorNoEncontradaError(facturaProveedorId);
     }
+
+    await assertTramiteModificable(tx, factura.tramiteId);
+
     if (factura.estado !== EstadoFacturaProveedor.REGISTRADA) {
       throw new FacturaProveedorNoModificableError(facturaProveedorId, factura.estado);
     }

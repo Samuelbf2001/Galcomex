@@ -3,13 +3,15 @@ import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import {
   FacturaProveedorNoEncontradaError,
   FacturaProveedorNoModificableError,
 } from "@/lib/facturas-proveedor/service";
 import {
+  DocumentoDeOtroTramiteError,
+  DocumentoNoEncontradoParaPagoError,
   MatrizCanalNoEncontradoError,
   PagoFacturaDeOtroTramiteError,
   SinAnticipoAplicadoError,
@@ -87,6 +89,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
     if (error instanceof SinAnticipoAplicadoError) {
       return NextResponse.json({ error: error.message }, { status: 422 });
+    }
+
+    if (
+      error instanceof DocumentoNoEncontradoParaPagoError ||
+      error instanceof DocumentoDeOtroTramiteError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
 
     throw error;

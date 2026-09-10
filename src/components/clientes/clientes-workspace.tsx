@@ -1,38 +1,23 @@
 "use client";
 
-import { CheckCircle2, Loader2, Plus, RotateCcw, X } from "lucide-react";
+import { Loader2, Plus, RotateCcw } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function useUserRol(): string {
-  const [rol, setRol] = useState<string>("OPERATIVO");
-
-  useEffect(() => {
-    fetch("/api/auth/get-session", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data: unknown) => {
-        if (isRecord(data) && isRecord(data.user) && typeof data.user.rol === "string") {
-          setRol(data.user.rol);
-        }
-      })
-      .catch(() => {/* silencioso */});
-  }, []);
-
-  return rol;
-}
-
-import { ModuleState } from "@/components/layout/module-state";
 import {
   ClientesApiError,
   createCliente,
+  erroresPorCampo,
   fetchClientes,
   type ClienteRow,
   type CreateClienteInput,
 } from "@/components/clientes/clientes-api";
+import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
+import { ModuleState } from "@/components/layout/module-state";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useEsAdmin } from "@/lib/auth/rol-context";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -42,7 +27,8 @@ function optionalText(value: FormDataEntryValue | null): string | null {
 }
 
 export function ClientesWorkspace() {
-  const userRol = useUserRol();
+  // Solo ADMIN crea clientes (`POST /api/clientes` → requireRole(["ADMIN"])).
+  const esAdmin = useEsAdmin();
   const [clientes, setClientes] = useState<ClienteRow[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -63,7 +49,7 @@ export function ClientesWorkspace() {
         if (caught instanceof DOMException && caught.name === "AbortError") {
           return;
         }
-        setLoadError(caught instanceof Error ? caught.message : "Error al cargar clientes.");
+        setLoadError(describirError(caught, "Error al cargar clientes."));
         setLoadState("error");
       }
     }
@@ -72,25 +58,27 @@ export function ClientesWorkspace() {
     return () => controller.abort();
   }, [reloadKey]);
 
+  const recargar = () => setReloadKey((k) => k + 1);
+
   return (
     <section className="space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Clientes</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Clientes propios y facturacion por socio LM.
+            Clientes propios y facturación por socio LM.
           </p>
         </div>
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => setReloadKey((k) => k + 1)}
+            onClick={recargar}
             className="inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
           >
             <RotateCcw className="h-4 w-4" aria-hidden="true" />
             Refrescar
           </button>
-          {userRol === "ADMIN" ? (
+          {esAdmin ? (
             <button
               type="button"
               onClick={() => setModalOpen(true)}
@@ -104,9 +92,29 @@ export function ClientesWorkspace() {
       </div>
 
       {loadState === "loading" ? (
-        <ModuleState type="loading" title="Cargando clientes" />
+        <TableSkeleton rows={6} cols={6} />
       ) : loadState === "error" ? (
-        <ModuleState type="error" title="No se pudieron cargar los clientes" detail={loadError ?? undefined} />
+        <ModuleState
+          type="error"
+          title="No se pudieron cargar los clientes"
+          detail={loadError ?? undefined}
+          action={{ label: "Reintentar", onClick: recargar }}
+        />
+      ) : clientes.length === 0 ? (
+        <ModuleState
+          type="empty"
+          title="Aún no hay clientes."
+          detail={
+            esAdmin
+              ? "Crea el primero con «Nuevo cliente»."
+              : "Un administrador puede crear el primero con «Nuevo cliente»."
+          }
+          action={
+            esAdmin
+              ? { label: "Nuevo cliente", onClick: () => setModalOpen(true), icon: false }
+              : undefined
+          }
+        />
       ) : (
         <div className="overflow-hidden border border-slate-200 bg-white">
           <table className="w-full border-collapse text-left text-sm">
@@ -121,71 +129,60 @@ export function ClientesWorkspace() {
               </tr>
             </thead>
             <tbody>
-              {clientes.length === 0 ? (
-                <tr>
-                  <td className="px-4 py-8 text-center text-slate-500" colSpan={6}>
-                    Sin clientes registrados
+              {clientes.map((cliente) => (
+                <tr key={cliente.id} className="border-b border-slate-100">
+                  <td className="px-4 py-3 font-medium">
+                    <Link
+                      href={`/clientes/${cliente.id}`}
+                      className="text-slate-900 underline-offset-2 hover:text-cyan-700 hover:underline"
+                    >
+                      {cliente.nombre}
+                    </Link>
                   </td>
+                  <td className="px-4 py-3">{cliente.nit}</td>
+                  <td className="px-4 py-3">
+                    {cliente.tipo === "SOCIO_LM" ? "Socio LM" : "Propio"}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">{cliente.contactoNombre ?? "-"}</td>
+                  <td className="px-4 py-3">{cliente.tarifas.length}</td>
+                  <td className="px-4 py-3">{cliente.activo ? "Activo" : "Inactivo"}</td>
                 </tr>
-              ) : (
-                clientes.map((cliente) => (
-                  <tr key={cliente.id} className="border-b border-slate-100">
-                    <td className="px-4 py-3 font-medium">
-                      <Link
-                        href={`/clientes/${cliente.id}`}
-                        className="text-slate-900 underline-offset-2 hover:text-cyan-700 hover:underline"
-                      >
-                        {cliente.nombre}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3">{cliente.nit}</td>
-                    <td className="px-4 py-3">
-                      {cliente.tipo === "SOCIO_LM" ? "Socio LM" : "Propio"}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">{cliente.contactoNombre ?? "-"}</td>
-                    <td className="px-4 py-3">{cliente.tarifas.length}</td>
-                    <td className="px-4 py-3">{cliente.activo ? "Activo" : "Inactivo"}</td>
-                  </tr>
-                ))
-              )}
+              ))}
             </tbody>
           </table>
         </div>
       )}
 
-      <NuevoClienteModal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onCreated={() => {
-          setModalOpen(false);
-          setReloadKey((k) => k + 1);
-        }}
-      />
+      {modalOpen ? (
+        <NuevoClienteModal
+          onClose={() => setModalOpen(false)}
+          onCreated={() => {
+            setModalOpen(false);
+            recargar();
+          }}
+        />
+      ) : null}
     </section>
   );
 }
 
 function NuevoClienteModal({
-  open,
   onClose,
   onCreated,
 }: {
-  open: boolean;
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const { toast } = useToast();
+  const formId = useId();
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [errores, setErrores] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  if (!open) {
-    return null;
-  }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-    setSuccess(null);
+    setErrores({});
     setIsSubmitting(true);
 
     const form = event.currentTarget;
@@ -216,172 +213,190 @@ function NuevoClienteModal({
 
     try {
       const created = await createCliente(input);
-      setSuccess(`${created.nombre} creado`);
+      toast({ title: "Cliente creado", description: created.nombre, variant: "success" });
       form.reset();
       onCreated();
     } catch (caught) {
+      const mensaje = describirError(caught, "No fue posible crear el cliente.");
       if (caught instanceof ClientesApiError && caught.details?.length) {
-        setError(caught.details.map((d) => `${d.campo}: ${d.mensaje}`).join(" · "));
+        setErrores(erroresPorCampo(caught.details));
+        setError("Revisa los campos marcados.");
       } else {
-        setError(caught instanceof Error ? caught.message : "No fue posible crear el cliente.");
+        setError(mensaje);
       }
+      toast({ title: "No se pudo crear el cliente", description: mensaje, variant: "error" });
     } finally {
       setIsSubmitting(false);
     }
   }
 
+  const campo = (nombre: string) => ({
+    invalido: Boolean(errores[nombre]),
+    describedBy: errores[nombre] ? `${formId}-${nombre}-error` : undefined,
+    errorId: `${formId}-${nombre}-error`,
+  });
+
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-2xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Nuevo cliente</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Cliente propio de Galcomex o del socio Luis Martinez.
-            </p>
-          </div>
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Nuevo cliente"
+      description="Cliente propio de Galcomex o del socio Luis Martínez."
+      size="lg"
+      dismissible={!isSubmitting}
+      footer={
+        <>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-            title="Cerrar"
+            disabled={isSubmitting}
+            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
           >
-            <X className="h-4 w-4" aria-hidden="true" />
+            Cerrar
           </button>
+          <button
+            type="submit"
+            form={formId}
+            disabled={isSubmitting}
+            className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+          >
+            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            {isSubmitting ? "Creando…" : "Crear cliente"}
+          </button>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Nombre / Razón social</span>
+            <input
+              name="nombre"
+              required
+              aria-invalid={campo("nombre").invalido || undefined}
+              aria-describedby={campo("nombre").describedBy}
+              className={claseCampo(campo("nombre").invalido)}
+            />
+            <MensajeCampo id={campo("nombre").errorId} error={errores.nombre} />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">NIT</span>
+            <input
+              name="nit"
+              required
+              aria-invalid={campo("nit").invalido || undefined}
+              aria-describedby={campo("nit").describedBy}
+              className={claseCampo(campo("nit").invalido)}
+            />
+            <MensajeCampo id={campo("nit").errorId} error={errores.nit} />
+          </label>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Nombre / Razon social</span>
-              <input
-                name="nombre"
-                required
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">NIT</span>
-              <input
-                name="nit"
-                required
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-          </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Tipo</span>
+            <select
+              name="tipo"
+              aria-invalid={campo("tipo").invalido || undefined}
+              className={claseCampo(campo("tipo").invalido, "bg-white")}
+            >
+              <option value="PROPIO">Propio</option>
+              <option value="SOCIO_LM">Socio LM</option>
+            </select>
+            <MensajeCampo id={campo("tipo").errorId} error={errores.tipo} />
+          </label>
+          <label className="space-y-1.5 md:col-span-2">
+            <span className="text-sm font-medium text-slate-700">Contacto</span>
+            <input
+              name="contactoNombre"
+              aria-invalid={campo("contactoNombre").invalido || undefined}
+              className={claseCampo(campo("contactoNombre").invalido)}
+            />
+            <MensajeCampo id={campo("contactoNombre").errorId} error={errores.contactoNombre} />
+          </label>
+        </div>
 
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Email contacto</span>
+            <input
+              name="contactoEmail"
+              type="email"
+              aria-invalid={campo("contactoEmail").invalido || undefined}
+              aria-describedby={campo("contactoEmail").describedBy}
+              className={claseCampo(campo("contactoEmail").invalido)}
+            />
+            <MensajeCampo id={campo("contactoEmail").errorId} error={errores.contactoEmail} />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Teléfono contacto</span>
+            <input
+              name="contactoTel"
+              aria-invalid={campo("contactoTel").invalido || undefined}
+              aria-describedby={campo("contactoTel").describedBy}
+              className={claseCampo(campo("contactoTel").invalido)}
+            />
+            <MensajeCampo id={campo("contactoTel").errorId} error={errores.contactoTel} />
+          </label>
+        </div>
+
+        <fieldset
+          className={`space-y-3 border px-4 py-3 ${
+            errores.tarifas ? "border-rose-300" : "border-slate-200"
+          }`}
+        >
+          <legend className="px-1 text-xs font-semibold uppercase text-slate-500">
+            Tarifa anual (opcional)
+          </legend>
           <div className="grid gap-4 md:grid-cols-3">
             <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Tipo</span>
-              <select
-                name="tipo"
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-              >
-                <option value="PROPIO">Propio</option>
-                <option value="SOCIO_LM">Socio LM</option>
+              <span className="text-sm font-medium text-slate-700">Año</span>
+              <input
+                name="tarifaAnio"
+                type="number"
+                min="2020"
+                max="2100"
+                defaultValue={new Date().getFullYear()}
+                className={claseCampo(false)}
+              />
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-sm font-medium text-slate-700">Tipo tarifa</span>
+              <select name="tarifaTipo" className={claseCampo(false, "bg-white")}>
+                <option value="fijo">Fijo</option>
+                <option value="por_contenedor">Por contenedor</option>
+                <option value="porcentaje_cif">% sobre CIF</option>
               </select>
             </label>
-            <label className="space-y-1.5 md:col-span-2">
-              <span className="text-sm font-medium text-slate-700">Contacto</span>
-              <input
-                name="contactoNombre"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
             <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Email contacto</span>
+              <span className="text-sm font-medium text-slate-700">Valor (COP)</span>
               <input
-                name="contactoEmail"
-                type="email"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Telefono contacto</span>
-              <input
-                name="contactoTel"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                name="tarifaValor"
+                inputMode="numeric"
+                placeholder="Dejar vacío si no aplica"
+                aria-invalid={campo("tarifas").invalido || undefined}
+                aria-describedby={campo("tarifas").describedBy}
+                className={claseCampo(campo("tarifas").invalido)}
               />
             </label>
           </div>
+          <MensajeCampo id={campo("tarifas").errorId} error={errores.tarifas} />
+        </fieldset>
 
-          <fieldset className="space-y-3 border border-slate-200 px-4 py-3">
-            <legend className="px-1 text-xs font-semibold uppercase text-slate-500">
-              Tarifa anual (opcional)
-            </legend>
-            <div className="grid gap-4 md:grid-cols-3">
-              <label className="space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">Ano</span>
-                <input
-                  name="tarifaAnio"
-                  type="number"
-                  min="2020"
-                  max="2100"
-                  defaultValue={new Date().getFullYear()}
-                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-                />
-              </label>
-              <label className="space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">Tipo tarifa</span>
-                <select
-                  name="tarifaTipo"
-                  className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-                >
-                  <option value="fijo">Fijo</option>
-                  <option value="por_contenedor">Por contenedor</option>
-                  <option value="porcentaje_cif">% sobre CIF</option>
-                </select>
-              </label>
-              <label className="space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">Valor (COP)</span>
-                <input
-                  name="tarifaValor"
-                  inputMode="numeric"
-                  placeholder="Dejar vacio si no aplica"
-                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-                />
-              </label>
-            </div>
-          </fieldset>
+        <label className="flex items-center gap-2">
+          <input name="manejaAnticipo" type="checkbox" defaultChecked className="h-4 w-4" />
+          <span className="text-sm text-slate-700">Maneja anticipo</span>
+        </label>
 
-          <label className="flex items-center gap-2">
-            <input name="manejaAnticipo" type="checkbox" defaultChecked className="h-4 w-4" />
-            <span className="text-sm text-slate-700">Maneja anticipo</span>
-          </label>
-
-          {error ? (
-            <div className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
-          ) : null}
-          {success ? (
-            <div className="flex items-center gap-2 border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-              {success}
-            </div>
-          ) : null}
-
-          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              Cerrar
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
-            >
-              {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-              Crear cliente
-            </button>
+        {error ? (
+          <div
+            role="alert"
+            className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {error}
           </div>
-        </form>
-      </div>
-    </div>
+        ) : null}
+      </form>
+    </ModalShell>
   );
 }

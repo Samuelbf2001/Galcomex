@@ -1,13 +1,18 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
+import { cache } from "react";
 
 import { auth, type AuthSession, type Rol } from "@/lib/auth/auth";
 
-export async function getCurrentSession(): Promise<AuthSession | null> {
+/**
+ * Sesión actual, deduplicada por request con React.cache: el layout, el guard
+ * de página y la página pueden llamarla y solo se consulta una vez.
+ */
+export const getCurrentSession = cache(async (): Promise<AuthSession | null> => {
   return auth.api.getSession({
     headers: await headers(),
   });
-}
+});
 
 export async function requireSession(): Promise<AuthSession | NextResponse> {
   const session = await getCurrentSession();

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { VerificarMovimientoPermisoError, verificarPago } from "@/lib/pagos/service";
 import { verificarMovimientoSchema } from "@/lib/validations/pagos";
@@ -25,6 +25,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     if (error instanceof ZodError) return validationError(error);
     if (error instanceof VerificarMovimientoPermisoError) {
       return NextResponse.json({ error: error.message }, { status: 403 });
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }

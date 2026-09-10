@@ -18,6 +18,8 @@ import {
   fetchSiigoProductos,
   type SiigoProductoRow,
 } from "@/components/configuracion/siigo-productos-api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { describirError, useToast } from "@/components/ui/toast";
 
 import {
   actualizarComentariosCabecera as apiActualizarComentarios,
@@ -36,6 +38,13 @@ const ETIQUETA_SECCION: Record<SeccionLinea, string> = {
   TERCEROS: "Ingresos recibidos para terceros",
   OPERACIONAL: "Ingresos operacionales",
 };
+
+/**
+ * Ejecuta una mutación del borrador y propaga el resultado al padre.
+ * `exito` es el título del toast de éxito (si se omite, no se muestra —
+ * p. ej. ediciones inline muy frecuentes).
+ */
+type Ejecutar = (accion: () => Promise<BorradorRow>, exito?: string) => Promise<void>;
 
 // Refleja la asociación real producto↔impuesto (tabla SiigoProductoImpuesto).
 // `clasificacionIva` viene de Siigo y es solo descriptivo: "Taxed" significa
@@ -354,7 +363,7 @@ type ComentariosCabeceraProps = {
   borrador: BorradorRow;
   puedeEditar: boolean;
   guardando: boolean;
-  ejecutar: (accion: () => Promise<BorradorRow>) => Promise<void>;
+  ejecutar: Ejecutar;
 };
 
 function ComentariosCabecera({
@@ -366,11 +375,13 @@ function ComentariosCabecera({
   const [borradorLocal, setBorradorLocal] = useState<string[]>(
     borrador.comentariosCabecera,
   );
-
-  // Resincronizar cuando llega un borrador nuevo desde el server
-  useEffect(() => {
+  // Resincronizar cuando llega un borrador nuevo desde el server: patrón
+  // "ajustar estado durante el render" (sin efecto, sin render en cascada).
+  const [comentariosPrevios, setComentariosPrevios] = useState(borrador.comentariosCabecera);
+  if (comentariosPrevios !== borrador.comentariosCabecera) {
+    setComentariosPrevios(borrador.comentariosCabecera);
     setBorradorLocal(borrador.comentariosCabecera);
-  }, [borrador.comentariosCabecera]);
+  }
 
   async function commit(siguiente: string[]) {
     await ejecutar(() => apiActualizarComentarios(borrador.id, siguiente));
@@ -493,8 +504,19 @@ type ComisionEditableProps = {
   borrador: BorradorRow;
   puedeEditar: boolean;
   guardando: boolean;
-  ejecutar: (accion: () => Promise<BorradorRow>) => Promise<void>;
+  ejecutar: Ejecutar;
 };
+
+// Opciones fijas de comisión de servicio logístico (pedido del cliente:
+// desplegable 400.000 / 800.000, o "Otro valor…" que abre el campo libre).
+const OPCIONES_COMISION_FIJA = ["400000", "800000"] as const;
+type OpcionComision = (typeof OPCIONES_COMISION_FIJA)[number] | "otro";
+
+function modoComisionDesde(comision: string): OpcionComision {
+  return (OPCIONES_COMISION_FIJA as readonly string[]).includes(comision)
+    ? (comision as OpcionComision)
+    : "otro";
+}
 
 function ComisionEditable({
   borrador,
@@ -502,6 +524,12 @@ function ComisionEditable({
   guardando,
   ejecutar,
 }: ComisionEditableProps) {
+  // Sin efecto de resincronización: el padre pasa `key={borrador.comision}`
+  // (mismo idioma que el input libre de abajo), así que React remonta este
+  // componente — y reinicializa `modo` desde el valor real — cada vez que
+  // cambia la comisión guardada en el server.
+  const [modo, setModo] = useState<OpcionComision>(() => modoComisionDesde(borrador.comision));
+
   if (!puedeEditar) {
     return (
       <div className="flex w-full max-w-md justify-between">
@@ -511,36 +539,55 @@ function ComisionEditable({
     );
   }
 
-  async function commit(input: HTMLInputElement) {
-    const parsed = parseBigIntInput(input.value);
-    if (parsed === null) {
-      input.value = borrador.comision;
+  async function commitValor(valorRaw: string) {
+    const parsed = parseBigIntInput(valorRaw);
+    if (parsed === null || parsed === borrador.comision) return;
+    await ejecutar(() => apiActualizarComision(borrador.id, parsed));
+  }
+
+  function handleSelectChange(value: string) {
+    if (value === "otro") {
+      // Deja el campo libre visible para que el usuario escriba el valor;
+      // no se guarda nada hasta que lo confirme.
+      setModo("otro");
       return;
     }
-    if (parsed === borrador.comision) return;
-    await ejecutar(() => apiActualizarComision(borrador.id, parsed));
+    setModo(value as OpcionComision);
+    void commitValor(value);
   }
 
   return (
     <div className="flex w-full max-w-md items-center justify-between gap-2">
       <span className="text-slate-500">+ Comisión</span>
-      <input
-        // El `key` fuerza remount cuando cambia el valor del servidor — evita
-        // setState-en-effect para resincronizar y mantiene el input ligero.
-        key={borrador.comision}
-        defaultValue={borrador.comision}
-        onBlur={(e) => void commit(e.currentTarget)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
-          if (e.key === "Escape") {
-            e.currentTarget.value = borrador.comision;
-            e.currentTarget.blur();
-          }
-        }}
-        disabled={guardando}
-        inputMode="numeric"
-        className="w-36 border border-slate-300 px-2 py-1 text-right text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
-      />
+      <div className="flex items-center gap-2">
+        <select
+          value={modo}
+          onChange={(e) => handleSelectChange(e.target.value)}
+          disabled={guardando}
+          className="h-8 border border-slate-300 bg-white px-2 text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
+        >
+          <option value="400000">$400.000</option>
+          <option value="800000">$800.000</option>
+          <option value="otro">Otro valor…</option>
+        </select>
+        {modo === "otro" ? (
+          <input
+            defaultValue={borrador.comision}
+            onBlur={(e) => void commitValor(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                e.currentTarget.value = borrador.comision;
+                e.currentTarget.blur();
+              }
+            }}
+            disabled={guardando}
+            inputMode="numeric"
+            placeholder="Valor en COP"
+            className="w-36 border border-slate-300 px-2 py-1 text-right text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
+          />
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -574,7 +621,7 @@ type SubseccionProps = {
   puedeEditar: boolean;
   guardando: boolean;
   borradorId: string;
-  ejecutar: (accion: () => Promise<BorradorRow>) => Promise<void>;
+  ejecutar: Ejecutar;
   setError: (msg: string) => void;
 };
 
@@ -603,6 +650,18 @@ function SubseccionLineas({
   const [nuevoNitTercero, setNuevoNitTercero] = useState("");
 
   const productoSeleccionado = productos.find((p) => p.id === nuevoSiigoProductoId) ?? null;
+  const confirmar = useConfirm();
+
+  async function handleEliminar(linea: LineaRevisionRow) {
+    const ok = await confirmar({
+      title: "¿Eliminar esta línea del borrador?",
+      description: `${linea.concepto} · ${formatCOP(linea.valor)}. Esta acción no se puede deshacer.`,
+      confirmText: "Eliminar línea",
+      variant: "danger",
+    });
+    if (!ok) return;
+    await ejecutar(() => apiEliminarLinea(borradorId, linea.id), "Línea eliminada");
+  }
 
   async function handleCrear() {
     const valor = parseBigIntInput(nuevoValor);
@@ -614,20 +673,22 @@ function SubseccionLineas({
     // por eso no se envía numSoporte desde el formulario.
     const facturaIds = compacto ? [] : nuevasFacturas;
     const nitTrimmed = nuevoNitTercero.trim();
-    await ejecutar(() =>
-      apiCrearLinea(borradorId, {
-        concepto: nuevoConcepto.trim(),
-        valor,
-        seccion,
-        facturaIds,
-        siigoProductoId: nuevoSiigoProductoId || undefined,
-        // El NIT manual solo aplica a TERCEROS sin factura — en otros casos el
-        // NIT real lo provee la factura del proveedor.
-        nitTercero:
-          !compacto && facturaIds.length === 0 && nitTrimmed.length > 0
-            ? nitTrimmed
-            : undefined,
-      }),
+    await ejecutar(
+      () =>
+        apiCrearLinea(borradorId, {
+          concepto: nuevoConcepto.trim(),
+          valor,
+          seccion,
+          facturaIds,
+          siigoProductoId: nuevoSiigoProductoId || undefined,
+          // El NIT manual solo aplica a TERCEROS sin factura — en otros casos el
+          // NIT real lo provee la factura del proveedor.
+          nitTercero:
+            !compacto && facturaIds.length === 0 && nitTrimmed.length > 0
+              ? nitTrimmed
+              : undefined,
+        }),
+      "Línea agregada",
     );
     setNuevoConcepto("");
     setNuevoValor("");
@@ -784,9 +845,8 @@ function SubseccionLineas({
                     <button
                       type="button"
                       disabled={guardando}
-                      onClick={() =>
-                        ejecutar(() => apiEliminarLinea(borradorId, linea.id))
-                      }
+                      onClick={() => void handleEliminar(linea)}
+                      aria-label={`Eliminar línea ${linea.orden}: ${linea.concepto}`}
                       className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50"
                     >
                       Eliminar
@@ -956,6 +1016,7 @@ export function EditorLineas({
   puedeEditar,
   onBorradorActualizado,
 }: EditorLineasProps) {
+  const { toast } = useToast();
   const [facturas, setFacturas] = useState<FacturaProveedorRow[]>([]);
   const [productos, setProductos] = useState<SiigoProductoRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -964,7 +1025,12 @@ export function EditorLineas({
   useEffect(() => {
     const controller = new AbortController();
     fetchFacturasProveedor(tramiteId, controller.signal)
-      .then(setFacturas)
+      .then((filas) =>
+        // Las facturas que no se le cobran al cliente (asesoría a nombre de
+        // Galcomex) no se pueden vincular a una línea de la factura de venta:
+        // ni siquiera se ofrecen en el selector (M6).
+        setFacturas(filas.filter((f) => f.repercutible)),
+      )
       .catch((e) => {
         if (e instanceof DOMException && e.name === "AbortError") return;
         // Sin facturas no se bloquea la edición de líneas.
@@ -1022,18 +1088,21 @@ export function EditorLineas({
 
   const desviacion = totalLineasVivo - totalMotor;
 
-  async function ejecutar(accion: () => Promise<BorradorRow>) {
+  const ejecutar: Ejecutar = async (accion, exito) => {
     setGuardando(true);
     setError(null);
     try {
       const actualizado = await accion();
       onBorradorActualizado(actualizado);
+      if (exito) toast({ title: exito, variant: "success" });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al guardar la línea.");
+      const mensaje = describirError(e, "Error al guardar la línea.");
+      setError(mensaje);
+      toast({ title: "No se pudo guardar", description: mensaje, variant: "error" });
     } finally {
       setGuardando(false);
     }
-  }
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -1095,6 +1164,9 @@ export function EditorLineas({
             de OPERACIONAL — los mostramos como atajo editable, pero ya están
             sumados en `subtotalOperacional`. */}
         <ComisionEditable
+          // Fuerza remount cuando cambia la comisión guardada en el server —
+          // evita un efecto de resincronización (ver comentario en el componente).
+          key={borrador.comision}
           borrador={borrador}
           puedeEditar={puedeEditar}
           guardando={guardando}

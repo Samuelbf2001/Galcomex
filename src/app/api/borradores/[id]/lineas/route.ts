@@ -16,7 +16,7 @@ import {
   crearLineaManual,
 } from "@/lib/borradores/lineas-service";
 import { prisma } from "@/lib/db/prisma";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { crearLineaPayloadSchema } from "@/lib/validations/borradores";
 
@@ -74,6 +74,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       error instanceof FacturasDeBeneficiariosDistintosError
     ) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }

@@ -12,7 +12,7 @@ import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
 import { transicionarBorrador } from "@/lib/borradores/service";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { transicionBorradorPayloadSchema } from "@/lib/validations/borradores";
 
@@ -58,17 +58,24 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     return session;
   }
 
-  const result = await transicionarBorrador({
-    borradorId,
-    nuevoEstado,
-    usuarioId: session.user.id,
-    numFacturaSiigo: payload.numFacturaSiigo,
-    fechaFactura: payload.fechaFactura,
-  });
+  try {
+    const result = await transicionarBorrador({
+      borradorId,
+      nuevoEstado,
+      usuarioId: session.user.id,
+      numFacturaSiigo: payload.numFacturaSiigo,
+      fechaFactura: payload.fechaFactura,
+    });
 
-  if (!result.ok) {
-    return NextResponse.json({ error: result.message }, { status: result.status });
+    if (!result.ok) {
+      return NextResponse.json({ error: result.message }, { status: result.status });
+    }
+
+    return jsonResponse({ borrador: result.borrador });
+  } catch (error) {
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
+    }
+    throw error;
   }
-
-  return jsonResponse({ borrador: result.borrador });
 }

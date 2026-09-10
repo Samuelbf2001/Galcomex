@@ -12,7 +12,7 @@ import { requireRole } from "@/lib/auth/session";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
 import { actualizarComisionBorrador } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { actualizarComisionPayloadSchema } from "@/lib/validations/borradores";
 
@@ -63,6 +63,9 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }

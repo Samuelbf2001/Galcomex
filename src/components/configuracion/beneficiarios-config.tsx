@@ -1,12 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import {
-  fetchBeneficiarios,
   updateBeneficiario,
   type BeneficiarioRow,
 } from "@/components/beneficiarios/beneficiario-api";
+import {
+  catalogoBeneficiarios,
+  invalidarCatalogos,
+} from "@/components/configuracion/catalogos-cache";
+import { ModuleState } from "@/components/layout/module-state";
+import { TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { usePermiso } from "@/lib/auth/rol-context";
 
 type EditState = {
   id: string;
@@ -14,41 +22,55 @@ type EditState = {
   value: string;
 };
 
+type LoadState = "loading" | "ready" | "error";
+
 export function BeneficiariosConfig() {
+  // `PATCH /api/beneficiarios/[id]` → requireRole(["ADMIN", "OPERATIVO"]).
+  const puedeEditar = usePermiso(["ADMIN", "OPERATIVO"]);
+  const { toast } = useToast();
+
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioRow[]>([]);
-  const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [edit, setEdit] = useState<EditState | null>(null);
   const [guardando, setGuardando] = useState<string | null>(null); // id en guardado
   const [errorGuardado, setErrorGuardado] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const cargar = useCallback(async (signal?: AbortSignal) => {
-    setCargando(true);
-    setError(null);
-    try {
-      const rows = await fetchBeneficiarios(undefined, signal);
-      setBeneficiarios(rows);
-    } catch (e) {
-      if ((e as { name?: string }).name !== "AbortError") {
-        setError("No fue posible cargar los beneficiarios.");
-      }
-    } finally {
-      setCargando(false);
-    }
-  }, []);
-
   useEffect(() => {
-    const ctrl = new AbortController();
-    void cargar(ctrl.signal);
-    return () => ctrl.abort();
-  }, [cargar]);
+    let cancelado = false;
+    // Catálogo compartido con "Configuración de envío Siigo": una sola petición
+    // aunque las dos secciones monten a la vez.
+    catalogoBeneficiarios()
+      .then((rows) => {
+        if (cancelado) return;
+        setBeneficiarios(rows);
+        setLoadState("ready");
+      })
+      .catch((caught: unknown) => {
+        if (cancelado) return;
+        setLoadError(describirError(caught, "No fue posible cargar los beneficiarios."));
+        setLoadState("error");
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [reloadKey]);
 
   useEffect(() => {
     if (edit) inputRef.current?.focus();
   }, [edit]);
 
+  function recargar() {
+    invalidarCatalogos("beneficiarios");
+    setLoadState("loading");
+    setLoadError(null);
+    setReloadKey((k) => k + 1);
+  }
+
   function iniciarEdicion(id: string, field: "nit" | "nombre", valorActual: string | null) {
+    if (!puedeEditar) return;
     setEdit({ id, field, value: valorActual ?? "" });
     setErrorGuardado(null);
   }
@@ -69,17 +91,66 @@ export function BeneficiariosConfig() {
       setBeneficiarios((prev) =>
         prev.map((b) => (b.id === updated.id ? updated : b)),
       );
+      // La otra sección (selects Siigo) debe ver el nombre/NIT nuevo.
+      invalidarCatalogos("beneficiarios");
+      toast({
+        title: edit.field === "nit" ? "NIT actualizado" : "Nombre actualizado",
+        description: updated.nombre,
+        variant: "success",
+      });
       setEdit(null);
-    } catch (e) {
-      setErrorGuardado(
-        e instanceof Error ? e.message : "Error al guardar.",
-      );
+    } catch (caught) {
+      const mensaje = describirError(caught, "Error al guardar.");
+      setErrorGuardado(mensaje);
+      toast({ title: "No se pudo guardar el beneficiario", description: mensaje, variant: "error" });
     } finally {
       setGuardando(null);
     }
   }
 
   const sinNit = beneficiarios.filter((b) => !b.nit).length;
+
+  function renderEditor(b: BeneficiarioRow, field: "nit" | "nombre") {
+    if (!edit || edit.id !== b.id || edit.field !== field) return null;
+    const enGuardado = guardando === b.id;
+    return (
+      <div className="flex items-center gap-2">
+        <input
+          ref={inputRef}
+          value={edit.value}
+          onChange={(e) => setEdit({ ...edit, value: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void guardar();
+            if (e.key === "Escape") cancelarEdicion();
+          }}
+          disabled={enGuardado}
+          placeholder={field === "nit" ? "900123456-7" : undefined}
+          aria-label={field === "nit" ? `NIT de ${b.nombre}` : `Nombre del beneficiario ${b.nombre}`}
+          aria-invalid={errorGuardado ? true : undefined}
+          className={`rounded border px-2 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 ${
+            field === "nit" ? "w-36 font-mono" : "w-48"
+          } ${errorGuardado ? "border-rose-500" : "border-slate-300"}`}
+        />
+        <button
+          type="button"
+          onClick={() => void guardar()}
+          disabled={enGuardado}
+          className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 disabled:opacity-50"
+        >
+          {enGuardado ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
+          {enGuardado ? "Guardando…" : "Guardar"}
+        </button>
+        <button
+          type="button"
+          onClick={cancelarEdicion}
+          disabled={enGuardado}
+          className="text-xs text-slate-400 disabled:opacity-50"
+        >
+          Cancelar
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
@@ -88,6 +159,7 @@ export function BeneficiariosConfig() {
           <h2 className="text-base font-semibold">Beneficiarios / Proveedores</h2>
           <p className="text-xs text-slate-500">
             NIT requerido para generar facturas electrónicas en Siigo.
+            {puedeEditar ? " Haz clic en un nombre o NIT para editarlo." : ""}
           </p>
         </div>
         {sinNit > 0 && (
@@ -97,17 +169,22 @@ export function BeneficiariosConfig() {
         )}
       </div>
 
-      {cargando && (
-        <p className="text-sm text-slate-500">Cargando beneficiarios…</p>
-      )}
-      {error && (
-        <p className="text-sm text-red-600">{error}</p>
-      )}
-      {errorGuardado && (
-        <p className="text-sm text-red-600">{errorGuardado}</p>
-      )}
+      {errorGuardado ? (
+        <p role="alert" className="text-sm text-red-600">
+          {errorGuardado}
+        </p>
+      ) : null}
 
-      {!cargando && !error && (
+      {loadState === "loading" ? (
+        <TableSkeleton rows={6} cols={3} rowHeight={37} />
+      ) : loadState === "error" ? (
+        <ModuleState
+          type="error"
+          title="No se pudieron cargar los beneficiarios"
+          detail={loadError ?? undefined}
+          action={{ label: "Reintentar", onClick: recargar }}
+        />
+      ) : (
         <div className="overflow-hidden border border-slate-200 bg-white">
           <table className="w-full border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
@@ -129,85 +206,44 @@ export function BeneficiariosConfig() {
                 <tr key={b.id} className="border-b border-slate-100 last:border-0">
                   {/* Nombre */}
                   <td className="px-4 py-2">
-                    {edit?.id === b.id && edit.field === "nombre" ? (
-                      <div className="flex items-center gap-2">
-                        <input
-                          ref={inputRef}
-                          value={edit.value}
-                          onChange={(e) => setEdit({ ...edit, value: e.target.value })}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void guardar();
-                            if (e.key === "Escape") cancelarEdicion();
-                          }}
-                          className="w-48 rounded border border-slate-300 px-2 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-                        />
+                    {renderEditor(b, "nombre") ??
+                      (puedeEditar ? (
                         <button
-                          onClick={() => void guardar()}
-                          disabled={guardando === b.id}
-                          className="text-xs font-medium text-blue-600 disabled:opacity-50"
+                          type="button"
+                          onClick={() => iniciarEdicion(b.id, "nombre", b.nombre)}
+                          className="text-left hover:underline"
+                          title="Editar nombre"
+                          aria-label={`Editar nombre de ${b.nombre}`}
                         >
-                          Guardar
+                          {b.nombre}
                         </button>
-                        <button
-                          onClick={cancelarEdicion}
-                          className="text-xs text-slate-400"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => iniciarEdicion(b.id, "nombre", b.nombre)}
-                        className="text-left hover:underline"
-                        title="Editar nombre"
-                      >
-                        {b.nombre}
-                      </button>
-                    )}
+                      ) : (
+                        <span>{b.nombre}</span>
+                      ))}
                   </td>
 
                   {/* NIT */}
                   <td className="px-4 py-2">
-                    {edit?.id === b.id && edit.field === "nit" ? (
-                      <div className="flex items-center gap-2">
-                        <input
-                          ref={inputRef}
-                          value={edit.value}
-                          onChange={(e) => setEdit({ ...edit, value: e.target.value })}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void guardar();
-                            if (e.key === "Escape") cancelarEdicion();
-                          }}
-                          placeholder="900123456-7"
-                          className="w-36 rounded border border-slate-300 px-2 py-0.5 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-                        />
+                    {renderEditor(b, "nit") ??
+                      (puedeEditar ? (
                         <button
-                          onClick={() => void guardar()}
-                          disabled={guardando === b.id}
-                          className="text-xs font-medium text-blue-600 disabled:opacity-50"
+                          type="button"
+                          onClick={() => iniciarEdicion(b.id, "nit", b.nit)}
+                          className={`font-mono text-sm ${
+                            b.nit
+                              ? "text-slate-700 hover:underline"
+                              : "text-amber-600 hover:underline"
+                          }`}
+                          title="Editar NIT"
+                          aria-label={`Editar NIT de ${b.nombre}`}
                         >
-                          Guardar
+                          {b.nit ?? "— Sin NIT —"}
                         </button>
-                        <button
-                          onClick={cancelarEdicion}
-                          className="text-xs text-slate-400"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => iniciarEdicion(b.id, "nit", b.nit)}
-                        className={`font-mono text-sm ${
-                          b.nit
-                            ? "text-slate-700 hover:underline"
-                            : "text-amber-600 hover:underline"
-                        }`}
-                        title="Editar NIT"
-                      >
-                        {b.nit ?? "— Sin NIT —"}
-                      </button>
-                    )}
+                      ) : (
+                        <span className={`font-mono text-sm ${b.nit ? "text-slate-700" : "text-amber-600"}`}>
+                          {b.nit ?? "— Sin NIT —"}
+                        </span>
+                      ))}
                   </td>
 
                   {/* Banco */}

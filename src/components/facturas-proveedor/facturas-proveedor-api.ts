@@ -19,6 +19,8 @@ export type FacturaProveedorRow = {
   fecha: string; // ISO string
   estado: EstadoFacturaProveedor;
   documentoId: string | null;
+  /** Se traslada al cliente en la factura de venta (M6). */
+  repercutible: boolean;
   subidaPorId: string;
   createdAt: string;
   updatedAt: string;
@@ -48,6 +50,7 @@ export type CreateFacturaProveedorInput = {
   valor: string; // BigInt as string
   fecha: string; // ISO string
   documentoId?: string | null;
+  repercutible?: boolean;
 };
 
 export type UpdateFacturaProveedorInput = {
@@ -60,6 +63,7 @@ export type UpdateFacturaProveedorInput = {
   valor?: string;
   fecha?: string;
   documentoId?: string | null;
+  repercutible?: boolean;
 };
 
 export type GenerarPagoInput = {
@@ -106,6 +110,7 @@ function normalizeFactura(p: Record<string, unknown>): FacturaProveedorRow {
     fecha: typeof p.fecha === "string" ? p.fecha : "",
     estado: (p.estado as EstadoFacturaProveedor) ?? "REGISTRADA",
     documentoId: typeof p.documentoId === "string" ? p.documentoId : null,
+    repercutible: p.repercutible !== false,
     subidaPorId: String(p.subidaPorId ?? ""),
     createdAt: String(p.createdAt ?? ""),
     updatedAt: String(p.updatedAt ?? ""),

@@ -65,6 +65,8 @@ export type CreateAnticipoInput = {
   fecha: string; // ISO date string
   tipoRecaudo: TipoRecaudo;
   verificadoBanco: boolean;
+  /** Comprobante bancario en MinIO. Obligatorio para anticipos nuevos. */
+  soporteKey: string;
 };
 
 export type AplicarAnticipoInput = {
@@ -321,6 +323,129 @@ export async function eliminarAplicacion(
     const msg = await parseErrorMessage(response);
     throw new AnticiposApiError(msg, response.status);
   }
+}
+
+// ─── Soporte del anticipo (comprobante bancario) ────────────────────────────
+// Reutiliza el endpoint genérico de storage (/api/storage), el mismo mecanismo
+// que usa el repositorio documental del DO (ver src/lib/storage/service.ts):
+//   1. POST /api/storage { action: "uploadUrl", ... } → URL PUT prefirmada
+//   2. PUT directo del archivo contra esa URL (a MinIO)
+//   3. El storageKey resultante se guarda como Anticipo.soporteKey
+// Para descargar: POST /api/storage { action: "downloadUrl", storageKey } → URL GET prefirmada.
+
+export type UploadUrlSoporte = {
+  storageKey: string;
+  uploadUrl: string;
+  contentType: string;
+  maxSizeBytes: number;
+};
+
+export const MIME_TIPOS_SOPORTE_PERMITIDOS = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+];
+
+export const MAX_SIZE_SOPORTE_BYTES = 25 * 1024 * 1024; // 25 MB
+
+/** Valida el archivo de comprobante antes de subirlo. Retorna mensaje de error o null si es válido. */
+export function validarArchivoSoporte(file: File): string | null {
+  if (!MIME_TIPOS_SOPORTE_PERMITIDOS.includes(file.type)) {
+    return `Tipo no permitido (${file.type || "desconocido"}). Use PDF, JPG o PNG.`;
+  }
+  if (file.size > MAX_SIZE_SOPORTE_BYTES) {
+    return `El archivo supera el máximo de 25 MB (${(file.size / (1024 * 1024)).toFixed(1)} MB).`;
+  }
+  if (file.size === 0) {
+    return "El archivo está vacío.";
+  }
+  return null;
+}
+
+/** Paso 1: solicita al backend una URL prefirmada de subida para el comprobante. */
+export async function solicitarUploadUrlSoporte(input: {
+  consecutivo: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+}): Promise<UploadUrlSoporte> {
+  const response = await fetch("/api/storage", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      action: "uploadUrl",
+      consecutivo: input.consecutivo,
+      categoria: "COMPROBANTE_BANCARIO",
+      fileName: input.fileName,
+      contentType: input.contentType,
+      sizeBytes: input.sizeBytes,
+    }),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `No fue posible solicitar la URL de subida (${response.status}).`;
+    throw new AnticiposApiError(message, response.status);
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.uploadUrl)) {
+    throw new AnticiposApiError("Respuesta de subida no válida.");
+  }
+
+  const u = payload.uploadUrl;
+  return {
+    storageKey: String(u.storageKey ?? ""),
+    uploadUrl: String(u.url ?? ""),
+    contentType: String(u.contentType ?? ""),
+    maxSizeBytes: typeof u.maxSizeBytes === "number" ? u.maxSizeBytes : MAX_SIZE_SOPORTE_BYTES,
+  };
+}
+
+/** Paso 2: sube el archivo DIRECTO a MinIO con la URL prefirmada. */
+export async function subirComprobante(uploadUrl: string, file: File): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "content-type": file.type },
+      body: file,
+    });
+  } catch {
+    throw new AnticiposApiError("Error de red al subir el comprobante.");
+  }
+
+  if (!response.ok) {
+    throw new AnticiposApiError(`Fallo al subir el comprobante (${response.status}).`);
+  }
+}
+
+/** Obtiene una URL de descarga prefirmada para el comprobante de un anticipo. */
+export async function obtenerUrlDescargaSoporte(storageKey: string): Promise<string> {
+  const response = await fetch("/api/storage", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ action: "downloadUrl", storageKey }),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `No fue posible obtener el enlace de descarga (${response.status}).`;
+    throw new AnticiposApiError(message, response.status);
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.downloadUrl) || typeof payload.downloadUrl.url !== "string") {
+    throw new AnticiposApiError("Respuesta de descarga no válida.");
+  }
+
+  return payload.downloadUrl.url;
 }
 
 /** Formatea BigInt serializado como COP: $45.226.000 */

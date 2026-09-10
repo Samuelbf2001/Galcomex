@@ -1,12 +1,11 @@
-import { Prisma, TipoCliente } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { prisma } from "@/lib/db/prisma";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import { createTramite, tramiteInclude } from "@/lib/tramites/service";
+import { createTramite, listTramites } from "@/lib/tramites/service";
 import {
   tramiteCreateSchema,
   tramiteQuerySchema,
@@ -26,6 +25,8 @@ export async function GET(request: NextRequest) {
       estado: request.nextUrl.searchParams.get("estado") ?? undefined,
       ciudad: request.nextUrl.searchParams.get("ciudad") ?? undefined,
       clienteId: request.nextUrl.searchParams.get("clienteId") ?? undefined,
+      tipoCliente: request.nextUrl.searchParams.get("tipoCliente") ?? undefined,
+      facturado: request.nextUrl.searchParams.get("facturado") ?? undefined,
       take: request.nextUrl.searchParams.get("take") ?? undefined,
       skip: request.nextUrl.searchParams.get("skip") ?? undefined,
     });
@@ -36,43 +37,12 @@ export async function GET(request: NextRequest) {
     throw error;
   }
 
-  const where: Prisma.TramiteDOWhereInput = {};
-
-  if (query.estado) {
-    where.estado = query.estado;
-  }
-
-  if (query.ciudad) {
-    where.ciudad = query.ciudad;
-  }
-
-  if (query.clienteId) {
-    where.clienteId = query.clienteId;
-  }
-
-  if (query.q) {
-    where.OR = [
-      { consecutivo: { contains: query.q, mode: "insensitive" } },
-      { doAgencia: { contains: query.q, mode: "insensitive" } },
-      { doCliente: { contains: query.q, mode: "insensitive" } },
-      { cliente: { nombre: { contains: query.q, mode: "insensitive" } } },
-    ];
-  }
-
-  if (session.user.rol === "SOCIO") {
-    where.cliente = { tipo: TipoCliente.SOCIO_LM };
-  }
-
-  const [tramites, total] = await prisma.$transaction([
-    prisma.tramiteDO.findMany({
-      where,
-      orderBy: [{ anio: "desc" }, { ciudad: "asc" }, { numero: "desc" }],
-      take: query.take,
-      skip: query.skip,
-      include: tramiteInclude,
-    }),
-    prisma.tramiteDO.count({ where }),
-  ]);
+  // Scoping del rol SOCIO: solo ve tramites de clientes tipo SOCIO_LM.
+  // Se combina (AND) con los filtros de la query dentro de listTramites y
+  // nunca se debilita — ver comentario en TramiteListOptions.socioScope.
+  const { tramites, total } = await listTramites(query, {
+    socioScope: session.user.rol === "SOCIO",
+  });
 
   return jsonResponse({ tramites, total });
 }
@@ -96,6 +66,12 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);
+    }
+
+    // Tipo de trámite inexistente, no habilitado para la empresa o sin agencia
+    // de aduanas: errores de dominio con `status` (422).
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
 
     if (

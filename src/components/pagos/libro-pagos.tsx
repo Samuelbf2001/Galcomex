@@ -5,13 +5,20 @@ import {
   Check,
   CheckCircle2,
   Loader2,
+  Lock,
   Plus,
-  RotateCcw,
   Search,
   Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+
+import { ModuleState } from "@/components/layout/module-state";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { usePermiso } from "@/lib/auth/rol-context";
 
 import {
   CANALES_PAGO,
@@ -22,7 +29,6 @@ import {
   type LibroPagosData,
   type PagoRow,
   type TramiteDetail,
-  PagosApiError,
   calcularSaldosCliente,
   createPago,
   deletePago,
@@ -30,6 +36,7 @@ import {
   fetchLibroPagos,
   fetchTramiteDetail,
   formatCOP,
+  subirComprobante,
   updatePago,
   verificarMovimientoPago,
 } from "@/components/pagos/pagos-api";
@@ -40,6 +47,13 @@ import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/b
 // ---------------------------------------------------------------------------
 
 type LoadState = "loading" | "ready" | "error";
+
+/**
+ * Crear/editar/eliminar/verificar pagos y el flujo PSE exigen ADMIN/OPERATIVO
+ * (`/api/tramites/[id]/pagos*`, `verificar`, `pse-token`, `pse-codigo`).
+ * REVISOR y SOCIO ven el libro en solo lectura.
+ */
+const ROLES_EDITAR_PAGOS = ["ADMIN", "OPERATIVO"] as const;
 
 /** Fila del libro con saldo corriente calculado localmente */
 type FilaLibro = PagoRow & {
@@ -595,7 +609,16 @@ function FacturasProveedorCombobox({
 // ---------------------------------------------------------------------------
 
 type PseStep = "form" | "soporte";
-type PendingSubmit = { concepto: string; numSoporte: string | null; canalPago: CanalPago; valor: string };
+type PendingSubmit = {
+  concepto: string;
+  numSoporte: string | null;
+  canalPago: CanalPago;
+  valor: string;
+  /** Comprobante bancario (Bancolombia) ya subido — opcional, no bloquea el pago. */
+  documentoId?: string | null;
+  /** Comprobante de comercio (puerto/PSE) ya subido — opcional. */
+  comprobanteComercioId?: string | null;
+};
 
 type NuevoPagoModalProps = {
   tramiteId: string;
@@ -618,6 +641,8 @@ export function NuevoPagoModal({
   onClose,
   onCreated,
 }: NuevoPagoModalProps) {
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [valorRaw, setValorRaw] = useState(initialValor ?? "");
@@ -636,10 +661,6 @@ export function NuevoPagoModal({
   const [facturasSeleccionadas, setFacturasSeleccionadas] = useState<string[]>(initialFacturaIds ?? []);
   const [facturasLoadError, setFacturasLoadError] = useState(false);
 
-  // Diálogo de confirmación cuando el valor desvía ±10% del total de facturas seleccionadas
-  const [confirmPending, setConfirmPending] = useState<PendingSubmit | null>(null);
-  const [confirmPct, setConfirmPct] = useState(0);
-
   // PSE: wizard de 2 pasos (form → soporte)
   const [pseStep, setPseStep] = useState<PseStep>("form");
   const [psePendingPayload, setPsePendingPayload] = useState<PendingSubmit | null>(null);
@@ -648,6 +669,13 @@ export function NuevoPagoModal({
   const [pseRetryRemaining, setPseRetryRemaining] = useState(0);
   const [soporteFile, setSoporteFile] = useState<File | null>(null);
   const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+
+  // Doble comprobante (flujo NO-PSE): el bancario (Bancolombia) es el que vale
+  // ante reclamos; el de comercio (puerto/PSE) es opcional. NINGUNO bloquea el
+  // pago — solo se muestra advertencia en el libro si falta el bancario.
+  const [comprobanteBancarioFile, setComprobanteBancarioFile] = useState<File | null>(null);
+  const [comprobanteComercioFile, setComprobanteComercioFile] = useState<File | null>(null);
+  const [isUploadingComprobantes, setIsUploadingComprobantes] = useState(false);
 
   // Polling: espera el código PSE que María Camila ingresa en su landing
   useEffect(() => {
@@ -676,35 +704,49 @@ export function NuevoPagoModal({
     return () => clearTimeout(timeout);
   }, [pseRetryRemaining]);
 
+  // Auto-completar beneficiarios a partir de las facturas seleccionadas. Se
+  // invoca desde los handlers (no desde un efecto) para evitar setState
+  // síncrono dentro de useEffect.
+  const agregarBeneficiariosDeFacturas = useCallback(
+    (ids: string[], facturas: FacturaProveedorOpcion[]) => {
+      if (ids.length === 0) return;
+      setBeneficiariosSel((prev) => {
+        const nuevos: BeneficiarioSeleccion[] = [];
+        for (const id of ids) {
+          const fp = facturas.find((f) => f.id === id);
+          if (!fp?.beneficiarioId) continue;
+          const yaPresente =
+            prev.some((b) => b.id === fp.beneficiarioId) ||
+            nuevos.some((b) => b.id === fp.beneficiarioId);
+          if (!yaPresente) {
+            nuevos.push({ id: fp.beneficiarioId, nombre: fp.proveedorNombre, nit: fp.beneficiarioNit });
+          }
+        }
+        return nuevos.length > 0 ? [...prev, ...nuevos] : prev;
+      });
+    },
+    [],
+  );
+
   useEffect(() => {
     const controller = new AbortController();
     fetchFacturasProveedorTramite(tramiteId, controller.signal)
-      .then((todas) => setFacturasDisponibles(todas))
+      .then((todas) => {
+        setFacturasDisponibles(todas);
+        // Prefill (initialFacturaIds): completa beneficiarios al llegar las facturas.
+        agregarBeneficiariosDeFacturas(initialFacturaIds ?? [], todas);
+      })
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
         setFacturasLoadError(true);
       });
     return () => controller.abort();
-  }, [tramiteId]);
+  }, [tramiteId, initialFacturaIds, agregarBeneficiariosDeFacturas]);
 
-  // Auto-completar beneficiarios al seleccionar facturas
-  useEffect(() => {
-    if (facturasSeleccionadas.length === 0) return;
-    const nuevos: BeneficiarioSeleccion[] = [];
-    for (const id of facturasSeleccionadas) {
-      const fp = facturasDisponibles.find((f) => f.id === id);
-      if (!fp?.beneficiarioId) continue;
-      const yaPresente = beneficiariosSel.some((b) => b.id === fp.beneficiarioId) ||
-        nuevos.some((b) => b.id === fp.beneficiarioId);
-      if (!yaPresente) {
-        nuevos.push({ id: fp.beneficiarioId, nombre: fp.proveedorNombre, nit: fp.beneficiarioNit });
-      }
-    }
-    if (nuevos.length > 0) {
-      setBeneficiariosSel((prev) => [...prev, ...nuevos]);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [facturasSeleccionadas, facturasDisponibles]);
+  function handleFacturasChange(ids: string[]) {
+    setFacturasSeleccionadas(ids);
+    agregarBeneficiariosDeFacturas(ids, facturasDisponibles);
+  }
 
   const sumaFacturas: bigint = facturasDisponibles
     .filter((fp) => facturasSeleccionadas.includes(fp.id))
@@ -713,13 +755,15 @@ export function NuevoPagoModal({
     }, 0n);
 
   async function submitPayload(payload: PendingSubmit) {
+    if (isSubmitting) return;
     setIsSubmitting(true);
-    setConfirmPending(null);
     try {
       const pago = await createPago(tramiteId, {
         concepto: payload.concepto,
         beneficiarioIds: beneficiariosSel.map((b) => b.id),
         numSoporte: payload.numSoporte,
+        documentoId: payload.documentoId ?? null,
+        comprobanteComercioId: payload.comprobanteComercioId ?? null,
         valor: payload.valor,
         canalPago: payload.canalPago,
         fechaRealPago: fechaRealPago || null,
@@ -731,15 +775,21 @@ export function NuevoPagoModal({
             ? bancoSel.id
             : null,
       });
+      toast({
+        title: "Pago guardado",
+        description: `${payload.concepto} · ${formatCOP(payload.valor)} en ${tramiteConsecutivo}`,
+        variant: "success",
+      });
       onCreated(pago);
     } catch (caught) {
-      setError(caught instanceof PagosApiError ? caught.message : "Error al crear el pago.");
+      setError(describirError(caught, "Error al crear el pago."));
     } finally {
       setIsSubmitting(false);
     }
   }
 
   async function notificarCamilaPse(payload: PendingSubmit) {
+    if (isRequestingToken) return;
     setIsRequestingToken(true);
     setError(null);
     try {
@@ -752,8 +802,13 @@ export function NuevoPagoModal({
       setPsePendingPayload(payload);
       setPseStep("soporte");
       setPseRetryRemaining(30);
+      toast({
+        title: "Solicitud PSE enviada",
+        description: "María Camila recibió el enlace para ingresar el código.",
+        variant: "info",
+      });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Error al solicitar el pago PSE.");
+      setError(describirError(caught, "Error al solicitar el pago PSE."));
     } finally {
       setIsRequestingToken(false);
     }
@@ -764,34 +819,19 @@ export function NuevoPagoModal({
     setIsUploadingDoc(true);
     setError(null);
     try {
-      const uploadResp = await fetch("/api/storage", {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({
-          action: "uploadUrl",
-          consecutivo: tramiteConsecutivo,
-          categoria: "soporte-pse",
-          fileName: soporteFile.name,
-          contentType: soporteFile.type,
-          sizeBytes: soporteFile.size,
-        }),
-      });
-      if (!uploadResp.ok) {
-        const err = await uploadResp.json().catch(() => ({})) as Record<string, unknown>;
-        throw new Error(typeof err.error === "string" ? err.error : "Error al obtener URL de subida.");
-      }
-      const { uploadUrl } = await uploadResp.json() as { uploadUrl: { url: string; storageKey: string } };
+      // La captura de la página de PSE ES el comprobante de comercio (el
+      // bancario de Bancolombia es un documento aparte que Camila no tiene
+      // en este flujo — el pago queda con advertencia "sin comprobante
+      // bancario" en el libro, sin bloquearse).
+      const comprobante = await subirComprobante(tramiteId, "COMPROBANTE_COMERCIO", soporteFile);
 
-      const putResp = await fetch(uploadUrl.url, {
-        method: "PUT",
-        body: soporteFile,
-        headers: { "content-type": soporteFile.type },
+      await submitPayload({
+        ...psePendingPayload,
+        numSoporte: pseCodigoRecibido,
+        comprobanteComercioId: comprobante.id,
       });
-      if (!putResp.ok) throw new Error("Error al subir el documento.");
-
-      await submitPayload({ ...psePendingPayload, numSoporte: pseCodigoRecibido });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Error al finalizar el pago PSE.");
+      setError(describirError(caught, "Error al finalizar el pago PSE."));
     } finally {
       setIsUploadingDoc(false);
     }
@@ -810,12 +850,40 @@ export function NuevoPagoModal({
       return;
     }
 
-    const payload: PendingSubmit = { concepto, numSoporte: null, canalPago, valor: valorBig };
+    let payload: PendingSubmit = { concepto, numSoporte: null, canalPago, valor: valorBig };
 
     // Flujo PSE: notifica a María Camila y pasa directo a adjuntar soporte
+    // (esa captura de PSE se registra como comprobante de comercio — ver
+    // finalizarPsePago).
     if (canalPago === "PSE") {
       await notificarCamilaPse(payload);
       return;
+    }
+
+    // Doble comprobante (opcional, no bloquea el pago): si se adjuntó
+    // alguno, se sube ANTES de crear el pago para obtener su documentoId.
+    if (comprobanteBancarioFile || comprobanteComercioFile) {
+      setIsUploadingComprobantes(true);
+      try {
+        const [bancario, comercio] = await Promise.all([
+          comprobanteBancarioFile
+            ? subirComprobante(tramiteId, "COMPROBANTE_BANCARIO", comprobanteBancarioFile)
+            : Promise.resolve(null),
+          comprobanteComercioFile
+            ? subirComprobante(tramiteId, "COMPROBANTE_COMERCIO", comprobanteComercioFile)
+            : Promise.resolve(null),
+        ]);
+        payload = {
+          ...payload,
+          documentoId: bancario?.id ?? null,
+          comprobanteComercioId: comercio?.id ?? null,
+        };
+      } catch (caught) {
+        setError(describirError(caught, "Error al subir el comprobante."));
+        return;
+      } finally {
+        setIsUploadingComprobantes(false);
+      }
     }
 
     // Verificar desviación ±10% solo si hay facturas seleccionadas
@@ -823,9 +891,13 @@ export function NuevoPagoModal({
       const diff = BigInt(valorBig) - sumaFacturas;
       const pct = Number((diff * 1000n) / sumaFacturas) / 10;
       if (Math.abs(pct) > 10) {
-        setConfirmPending(payload);
-        setConfirmPct(pct);
-        return;
+        const seguir = await confirmar({
+          title: "Desviación significativa",
+          description: `El valor ingresado (${formatCOP(payload.valor)}) difiere ${pct > 0 ? "+" : ""}${pct.toFixed(1)}% del total de facturas seleccionadas (${formatCOP(sumaFacturas.toString())}). ¿Deseas continuar de todos modos?`,
+          confirmText: "Confirmar pago",
+          cancelText: "Revisar",
+        });
+        if (!seguir) return;
       }
     }
 
@@ -837,27 +909,22 @@ export function NuevoPagoModal({
     soporte: "Adjuntar soporte",
   };
 
-  return (
-    <>
-      <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-        <div className="w-full max-w-xl border border-slate-300 bg-white shadow-xl">
+  const ocupado = isSubmitting || isRequestingToken || isUploadingComprobantes || isUploadingDoc;
 
-          {/* Cabecera */}
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-            <h2 className="text-lg font-semibold text-slate-950">{titleByStep[pseStep]}</h2>
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-              aria-label="Cerrar"
-            >
-              <X className="h-4 w-4" aria-hidden="true" />
-            </button>
-          </div>
+  return (
+    <ModalShell
+      open
+      onClose={onClose}
+      title={titleByStep[pseStep]}
+      description={`Pago a proveedor del DO ${tramiteConsecutivo}`}
+      size="lg"
+      dismissible={!ocupado}
+    >
+        <div>
 
           {/* Indicador de pasos — visible cuando el canal es PSE o ya avanzó */}
           {(canalPago === "PSE" || pseStep !== "form") ? (
-            <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-5 py-2 text-xs">
+            <div className="-mx-5 -mt-4 mb-4 flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-5 py-2 text-xs">
               {(["form", "soporte"] as PseStep[]).map((step, i) => {
                 const labels = ["1. Datos", "2. Soporte"];
                 const active = step === pseStep;
@@ -876,7 +943,7 @@ export function NuevoPagoModal({
 
           {/* Paso 1: formulario de datos del pago */}
           {pseStep === "form" ? (
-            <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+            <form onSubmit={handleSubmit} className="space-y-4">
               {/* Facturas de proveedor — multiselect (opcional) */}
               <div className="space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">
@@ -897,10 +964,10 @@ export function NuevoPagoModal({
                 ) : (
                   <div className="space-y-2">
                     <FacturasProveedorCombobox
-                    facturas={facturasDisponibles}
-                    selectedIds={facturasSeleccionadas}
-                    onChange={setFacturasSeleccionadas}
-                    placeholder="Buscar y seleccionar facturas…"
+                      facturas={facturasDisponibles}
+                      selectedIds={facturasSeleccionadas}
+                      onChange={handleFacturasChange}
+                      placeholder="Buscar y seleccionar facturas…"
                     />
                     <p className="text-xs text-slate-500">
                       Puedes volver a vincular facturas en estado PAGADA. Solo las facturas FACTURADA CLIENTE quedan bloqueadas.
@@ -987,6 +1054,49 @@ export function NuevoPagoModal({
                 />
               </label>
 
+              {/* Doble comprobante — solo en canales distintos a PSE (PSE tiene
+                  su propio paso 2 de adjuntar comprobante de comercio). Ninguno
+                  de los dos es obligatorio: si falta el bancario, el libro de
+                  pagos muestra advertencia visual pero NO bloquea el registro. */}
+              {canalPago !== "PSE" ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="block space-y-1.5">
+                    <span className="text-sm font-medium text-slate-700">
+                      Comprobante bancario (Bancolombia)
+                      <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                    </span>
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => setComprobanteBancarioFile(e.target.files?.[0] ?? null)}
+                      className="block w-full text-xs text-slate-600 file:mr-2 file:border file:border-slate-300 file:bg-white file:px-2 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-50"
+                    />
+                    {comprobanteBancarioFile ? (
+                      <p className="text-[11px] text-slate-500">{comprobanteBancarioFile.name}</p>
+                    ) : (
+                      <p className="text-[11px] text-amber-600">
+                        Sin comprobante bancario el pago queda con advertencia visual (no se bloquea).
+                      </p>
+                    )}
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-sm font-medium text-slate-700">
+                      Comprobante de comercio
+                      <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                    </span>
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => setComprobanteComercioFile(e.target.files?.[0] ?? null)}
+                      className="block w-full text-xs text-slate-600 file:mr-2 file:border file:border-slate-300 file:bg-white file:px-2 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-50"
+                    />
+                    {comprobanteComercioFile ? (
+                      <p className="text-[11px] text-slate-500">{comprobanteComercioFile.name}</p>
+                    ) : null}
+                  </label>
+                </div>
+              ) : null}
+
               {error ? (
                 <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
@@ -998,16 +1108,17 @@ export function NuevoPagoModal({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                  disabled={ocupado}
+                  className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || isRequestingToken}
+                  disabled={isSubmitting || isRequestingToken || isUploadingComprobantes}
                   className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
                 >
-                  {isSubmitting || isRequestingToken ? (
+                  {isSubmitting || isRequestingToken || isUploadingComprobantes ? (
                     <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                   ) : null}
                   {canalPago === "PSE" ? "Solicitar pago PSE" : "Guardar pago"}
@@ -1018,7 +1129,7 @@ export function NuevoPagoModal({
 
           {/* Paso 2: esperar código PSE de María Camila + adjuntar soporte */}
           {pseStep === "soporte" ? (
-            <div className="space-y-4 px-5 py-5">
+            <div className="space-y-4">
 
               {/* Estado del código */}
               {!pseCodigoRecibido ? (
@@ -1058,9 +1169,10 @@ export function NuevoPagoModal({
                 </div>
               )}
 
-              {/* Soporte — solo habilitado cuando llegó el código */}
+              {/* Soporte — solo habilitado cuando llegó el código. Esta captura
+                  de la página de PSE se registra como comprobante de comercio. */}
               <label className="block space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">Documento de soporte *</span>
+                <span className="text-sm font-medium text-slate-700">Comprobante de comercio (captura de PSE) *</span>
                 <input
                   type="file"
                   accept=".pdf,.jpg,.jpeg,.png"
@@ -1087,7 +1199,8 @@ export function NuevoPagoModal({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                  disabled={ocupado}
+                  className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
                 >
                   Cancelar
                 </button>
@@ -1107,48 +1220,7 @@ export function NuevoPagoModal({
           ) : null}
 
         </div>
-      </div>
-
-      {/* Diálogo de confirmación por desviación ±10% (solo flujo no-PSE) */}
-      {confirmPending ? (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 px-4">
-          <div className="w-full max-w-sm border border-amber-300 bg-white p-5 shadow-2xl">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" aria-hidden="true" />
-              <div>
-                <p className="font-semibold text-slate-900">Desviación significativa</p>
-                <p className="mt-1 text-sm text-slate-600">
-                  El valor ingresado ({formatCOP(confirmPending.valor)}) difiere{" "}
-                  <span className="font-semibold text-amber-700">
-                    {confirmPct > 0 ? "+" : ""}{confirmPct.toFixed(1)}%
-                  </span>{" "}
-                  del total de facturas seleccionadas ({formatCOP(sumaFacturas.toString())}).
-                  ¿Deseas continuar de todos modos?
-                </p>
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmPending(null)}
-                className="h-9 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-              >
-                Revisar
-              </button>
-              <button
-                type="button"
-                onClick={() => void submitPayload(confirmPending)}
-                disabled={isSubmitting}
-                className="inline-flex h-9 items-center gap-2 bg-amber-600 px-3 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:opacity-60"
-              >
-                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-                Confirmar pago
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </>
+    </ModalShell>
   );
 }
 
@@ -1156,7 +1228,16 @@ export function NuevoPagoModal({
 // Componente principal: LibroPagos
 // ---------------------------------------------------------------------------
 
-export function LibroPagos({ tramiteId }: { tramiteId: string }) {
+type LibroPagosProps = {
+  tramiteId: string;
+  /** Cambia cuando el detalle del DO se recargó: vuelve a leer el libro. */
+  refreshToken?: number;
+};
+
+export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
+  const puedeEditar = usePermiso(ROLES_EDITAR_PAGOS);
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [tramite, setTramite] = useState<TramiteDetail | null>(null);
   const [libro, setLibro] = useState<LibroPagosData | null>(null);
   const [filas, setFilas] = useState<FilaLibro[]>([]);
@@ -1164,7 +1245,6 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
-  const [globalError, setGlobalError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -1174,7 +1254,9 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
     const controller = new AbortController();
 
     async function load() {
-      setLoadState("loading");
+      // Solo la primera carga muestra el skeleton; las recargas conservan el
+      // libro visible hasta que llegue la respuesta.
+      setLoadState((prev) => (prev === "ready" ? prev : "loading"));
       setLoadError(null);
 
       const [tramiteData, libroData] = await Promise.all([
@@ -1200,7 +1282,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
     });
 
     return () => controller.abort();
-  }, [tramiteId, reloadKey]);
+  }, [tramiteId, reloadKey, refreshToken]);
 
   // --- Recalcular saldos localmente cuando cambian los valores editados ---
   const recalcularSaldos = useCallback(
@@ -1323,8 +1405,9 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
         const saldoFinal = saldos.length > 0 ? saldos[saldos.length - 1] : prev.totalAnticipoAplicado;
         return { ...prev, totalPagos: totalPagos.toString(), saldos, saldoFinal: saldoFinal ?? "0" };
       });
+      toast({ title: "Pago actualizado", description: updated.concepto, variant: "success" });
     } catch (caught) {
-      const msg = caught instanceof PagosApiError ? caught.message : "Error al guardar.";
+      const msg = describirError(caught, "Error al guardar.");
       // Rollback optimista
       setFilas((prev) =>
         prev.map((f) =>
@@ -1337,13 +1420,22 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
             : f,
         ),
       );
+      toast({ title: "No se pudo guardar el pago", description: msg, variant: "error" });
     }
   }
 
   async function handleDelete(id: string) {
-    if (!confirm("¿Eliminar este pago? Esta acción no se puede deshacer.")) return;
+    const fila = filas.find((f) => f.id === id);
+    const ok = await confirmar({
+      title: "¿Eliminar este pago?",
+      description: fila
+        ? `${fila.concepto} · ${formatCOP(fila.valor)}. Esta acción no se puede deshacer.`
+        : "Esta acción no se puede deshacer.",
+      confirmText: "Eliminar pago",
+      variant: "danger",
+    });
+    if (!ok) return;
     setDeletingId(id);
-    setGlobalError(null);
 
     try {
       await deletePago(tramiteId, id);
@@ -1366,16 +1458,21 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
         const saldoFinal = saldos.length > 0 ? saldos[saldos.length - 1] : prev.totalAnticipoAplicado;
         return { ...prev, totalPagos: totalPagos.toString(), saldos, saldoFinal: saldoFinal ?? "0" };
       });
+      toast({ title: "Pago eliminado", variant: "success" });
     } catch (caught) {
-      setGlobalError(caught instanceof PagosApiError ? caught.message : "Error al eliminar.");
+      toast({
+        title: "No se pudo eliminar el pago",
+        description: describirError(caught, "Error al eliminar."),
+        variant: "error",
+      });
     } finally {
       setDeletingId(null);
     }
   }
 
   async function handleVerificar(id: string) {
+    if (verifyingId) return;
     setVerifyingId(id);
-    setGlobalError(null);
 
     try {
       const updated = await verificarMovimientoPago(tramiteId, id, "VERIFICADO");
@@ -1392,12 +1489,13 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
             : fila,
         ),
       );
+      toast({ title: "Pago verificado", description: updated.concepto, variant: "success" });
     } catch (caught) {
-      setGlobalError(
-        caught instanceof PagosApiError
-          ? caught.message
-          : "No fue posible verificar el pago.",
-      );
+      toast({
+        title: "No fue posible verificar el pago",
+        description: describirError(caught),
+        variant: "error",
+      });
     } finally {
       setVerifyingId(null);
     }
@@ -1413,32 +1511,24 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
   // Render
   // ---------------------------------------------------------------------------
 
-  if (loadState === "loading") {
+  if (loadState === "loading" && (!tramite || !libro)) {
     return (
-      <div className="flex min-h-40 items-center gap-3 border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-600">
-        <Loader2 className="h-5 w-5 animate-spin text-slate-500" aria-hidden="true" />
-        <span className="font-medium text-slate-900">Cargando libro de pagos…</span>
+      <div className="space-y-4" aria-busy="true">
+        <CardsSkeleton count={4} height={72} />
+        <TableSkeleton rows={2} cols={6} rowHeight={40} />
+        <TableSkeleton rows={5} cols={9} rowHeight={44} />
       </div>
     );
   }
 
   if (loadState === "error") {
     return (
-      <div className="flex min-h-40 items-start gap-3 border border-dashed border-rose-300 bg-rose-50 px-4 py-5 text-sm text-rose-700">
-        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-        <div>
-          <p className="font-medium">No fue posible cargar el libro de pagos</p>
-          {loadError ? <p className="mt-1">{loadError}</p> : null}
-          <button
-            type="button"
-            onClick={() => setReloadKey((k) => k + 1)}
-            className="mt-3 inline-flex h-9 items-center gap-2 border border-rose-300 bg-white px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
-          >
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            Reintentar
-          </button>
-        </div>
-      </div>
+      <ModuleState
+        type="error"
+        title="No fue posible cargar el libro de pagos"
+        detail={loadError ?? undefined}
+        action={{ label: "Reintentar", onClick: () => setReloadKey((k) => k + 1) }}
+      />
     );
   }
 
@@ -1448,6 +1538,14 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
     <section className="space-y-4">
       <DoHeader tramite={tramite} />
 
+      {!puedeEditar ? (
+        <p className="flex items-center gap-2 border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          Solo lectura para tu perfil: crear, editar, verificar o eliminar pagos requiere
+          ADMIN u OPERATIVO.
+        </p>
+      ) : null}
+
       <SeccionAnticipos
         aplicaciones={libro.aplicaciones}
         totalAnticipoAplicado={libro.totalAnticipoAplicado}
@@ -1456,27 +1554,12 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
 
       <ResumenLibro libro={libro} filas={filas} />
 
-      {globalError ? (
-        <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          {globalError}
-          <button
-            type="button"
-            onClick={() => setGlobalError(null)}
-            className="ml-auto"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      ) : null}
-
       <div className="overflow-hidden border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <p className="text-sm font-semibold text-slate-900">
             Pagos ({filas.length})
           </p>
-          {libro.aplicaciones.length === 0 ? (
+          {!puedeEditar ? null : libro.aplicaciones.length === 0 ? (
             <span
               title="Se necesita al menos un anticipo aplicado para registrar pagos"
               className="inline-flex h-9 cursor-not-allowed items-center gap-2 bg-slate-300 px-3 text-sm font-semibold text-slate-500"
@@ -1517,7 +1600,8 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
               {filas.length === 0 ? (
                 <tr>
                   <td colSpan={11} className="px-4 py-10 text-center text-sm text-slate-500">
-                    Sin pagos registrados. Usa &quot;Nuevo pago&quot; para agregar el primero.
+                    Sin pagos registrados.
+                    {puedeEditar ? ' Usa "Nuevo pago" para agregar el primero.' : ""}
                   </td>
                 </tr>
               ) : null}
@@ -1526,12 +1610,13 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
                   key={fila.id}
                   fila={fila}
                   index={idx + 1}
+                  readOnly={!puedeEditar}
                   isDeleting={deletingId === fila.id}
                   onChange={handleFieldChange}
                   onBeneficiariosChange={handleBeneficiariosChange}
                   onBlur={handleBlurField}
-                  onDelete={handleDelete}
-                  onVerify={handleVerificar}
+                  onDelete={(id) => void handleDelete(id)}
+                  onVerify={(id) => void handleVerificar(id)}
                   isVerifying={verifyingId === fila.id}
                 />
               ))}
@@ -1540,7 +1625,7 @@ export function LibroPagos({ tramiteId }: { tramiteId: string }) {
         </div>
       </div>
 
-      {modalOpen ? (
+      {modalOpen && puedeEditar ? (
         <NuevoPagoModal
           tramiteId={tramiteId}
           tramiteConsecutivo={tramite.consecutivo}
@@ -1577,6 +1662,8 @@ function estadoMovimientoBadge(estado: EstadoMovimiento) {
 type FilaPagoProps = {
   fila: FilaLibro;
   index: number;
+  /** Solo lectura (REVISOR/SOCIO): sin inputs ni acciones. */
+  readOnly: boolean;
   isDeleting: boolean;
   onChange: (
     id: string,
@@ -1593,9 +1680,14 @@ type FilaPagoProps = {
   isVerifying: boolean;
 };
 
+function canalPagoLabel(canal: CanalPago): string {
+  return CANALES_PAGO.find((c) => c.value === canal)?.label ?? canal;
+}
+
 function FilaPago({
   fila,
   index,
+  readOnly,
   isDeleting,
   onChange,
   onBeneficiariosChange,
@@ -1604,40 +1696,60 @@ function FilaPago({
   onVerify,
   isVerifying,
 }: FilaPagoProps) {
+  const etiqueta = `pago ${index}`;
+
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
-        <td className="px-3 py-2 text-xs text-slate-400">{index}</td>
+        <td className="px-3 py-2 text-xs text-slate-500">{index}</td>
 
         {/* Concepto */}
         <td className="px-3 py-2">
-          <input
-            value={fila.editingConcepto}
-            onChange={(e) => onChange(fila.id, "editingConcepto", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
-          />
+          {readOnly ? (
+            <span className="block min-w-[140px] text-sm text-slate-800">{fila.concepto}</span>
+          ) : (
+            <input
+              value={fila.editingConcepto}
+              onChange={(e) => onChange(fila.id, "editingConcepto", e.target.value)}
+              onBlur={() => onBlur(fila.id)}
+              aria-label={`Concepto del ${etiqueta}`}
+              className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
+            />
+          )}
         </td>
 
         {/* Beneficiarios (multi) */}
         <td className="px-3 py-2 min-w-[200px]">
-          <BeneficiarioCombobox
-            mode="multi"
-            value={fila.editingBeneficiarios}
-            onChange={(b) => onBeneficiariosChange(fila.id, b)}
-            placeholder="—"
-          />
+          {readOnly ? (
+            <span className="text-sm text-slate-700">
+              {fila.beneficiarios.length > 0
+                ? fila.beneficiarios.map((b) => b.nombre).join(", ")
+                : "—"}
+            </span>
+          ) : (
+            <BeneficiarioCombobox
+              mode="multi"
+              value={fila.editingBeneficiarios}
+              onChange={(b) => onBeneficiariosChange(fila.id, b)}
+              placeholder="—"
+            />
+          )}
         </td>
 
         {/* N° soporte */}
         <td className="px-3 py-2">
-          <input
-            value={fila.editingNumSoporte}
-            onChange={(e) => onChange(fila.id, "editingNumSoporte", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            placeholder="—"
-            className="h-8 w-full min-w-[100px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none placeholder:text-slate-300 focus:border-cyan-400 focus:bg-white"
-          />
+          {readOnly ? (
+            <span className="text-sm text-slate-700">{fila.numSoporte ?? "—"}</span>
+          ) : (
+            <input
+              value={fila.editingNumSoporte}
+              onChange={(e) => onChange(fila.id, "editingNumSoporte", e.target.value)}
+              onBlur={() => onBlur(fila.id)}
+              placeholder="—"
+              aria-label={`Número de soporte del ${etiqueta}`}
+              className="h-8 w-full min-w-[100px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-cyan-400 focus:bg-white"
+            />
+          )}
         </td>
 
         {/* Facturas proveedor vinculadas / vía Lucho / estado */}
@@ -1657,55 +1769,93 @@ function FilaPago({
                 vía Lucho
               </span>
             ) : null}
+            {!fila.documentoId ? (
+              <span
+                className="inline-flex items-center gap-1 border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
+                title="Pago sin comprobante bancario"
+              >
+                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                Sin comprobante
+              </span>
+            ) : null}
+            {fila.grupoPagoId ? (
+              <span
+                className="inline-flex items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700"
+                title={
+                  fila.grupoOtrosDOs.length > 0
+                    ? `Pago multi-DO — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
+                    : "Pago multi-DO"
+                }
+              >
+                Pago multi-DO
+              </span>
+            ) : null}
             {estadoMovimientoBadge(fila.estado)}
           </div>
         </td>
 
         {/* Valor */}
         <td className="px-3 py-2 text-right">
-          <input
-            value={fila.editingValor === fila.valor
-              ? formatCOPInput(fila.editingValor)
-              : fila.editingValor}
-            onChange={(e) => onChange(fila.id, "editingValor", e.target.value)}
-            onFocus={(e) => {
-              // Al enfocar, mostrar el número limpio para editar
-              onChange(fila.id, "editingValor", fila.editingValor.replace(/\./g, "").replace(/\$/g, "").replace(/COP/g, "").trim());
-              e.target.select();
-            }}
-            onBlur={() => onBlur(fila.id)}
-            inputMode="numeric"
-            className="h-8 w-full min-w-[110px] border border-transparent bg-transparent px-1 text-right text-sm font-medium text-slate-900 outline-none focus:border-cyan-400 focus:bg-white"
-          />
+          {readOnly ? (
+            <span className="text-sm font-medium text-slate-900">{formatCOP(fila.valor)}</span>
+          ) : (
+            <input
+              value={fila.editingValor === fila.valor
+                ? formatCOPInput(fila.editingValor)
+                : fila.editingValor}
+              onChange={(e) => onChange(fila.id, "editingValor", e.target.value)}
+              onFocus={(e) => {
+                // Al enfocar, mostrar el número limpio para editar
+                onChange(fila.id, "editingValor", fila.editingValor.replace(/\./g, "").replace(/\$/g, "").replace(/COP/g, "").trim());
+                e.target.select();
+              }}
+              onBlur={() => onBlur(fila.id)}
+              inputMode="numeric"
+              aria-label={`Valor del ${etiqueta} (COP)`}
+              className="h-8 w-full min-w-[110px] border border-transparent bg-transparent px-1 text-right text-sm font-medium text-slate-900 outline-none focus:border-cyan-400 focus:bg-white"
+            />
+          )}
         </td>
 
         {/* Canal de pago */}
         <td className="px-3 py-2">
-          <select
-            value={fila.editingCanal}
-            onChange={(e) => {
-              onChange(fila.id, "editingCanal", e.target.value);
-              onBlur(fila.id);
-            }}
-            className="h-8 w-full min-w-[190px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
-          >
-            {CANALES_PAGO.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+          {readOnly ? (
+            <span className="text-sm text-slate-700">{canalPagoLabel(fila.canalPago)}</span>
+          ) : (
+            <select
+              value={fila.editingCanal}
+              onChange={(e) => {
+                onChange(fila.id, "editingCanal", e.target.value);
+                onBlur(fila.id);
+              }}
+              aria-label={`Canal de pago del ${etiqueta}`}
+              className="h-8 w-full min-w-[190px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
+            >
+              {CANALES_PAGO.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          )}
         </td>
 
         {/* Fecha de pago */}
         <td className="px-3 py-2">
-          <input
-            type="date"
-            value={fila.editingFechaReal}
-            onChange={(e) => onChange(fila.id, "editingFechaReal", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            className="h-8 w-full min-w-[120px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
-          />
+          {readOnly ? (
+            <span className="text-sm text-slate-700">
+              {fila.fechaRealPago ? formatDate(fila.fechaRealPago) : "—"}
+            </span>
+          ) : (
+            <input
+              type="date"
+              value={fila.editingFechaReal}
+              onChange={(e) => onChange(fila.id, "editingFechaReal", e.target.value)}
+              onBlur={() => onBlur(fila.id)}
+              aria-label={`Fecha de pago del ${etiqueta}`}
+              className="h-8 w-full min-w-[120px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
+            />
+          )}
         </td>
 
         {/* Costo bancario — de solo lectura (calculado por backend) */}
@@ -1720,50 +1870,53 @@ function FilaPago({
 
         {/* Acciones */}
         <td className="px-3 py-2">
-          <div className="flex items-center gap-1">
-            {fila.estado === "REALIZADO" ? (
+          {readOnly ? null : (
+            <div className="flex items-center gap-1">
+              {fila.estado === "REALIZADO" ? (
+                <button
+                  type="button"
+                  onClick={() => onVerify(fila.id)}
+                  disabled={isVerifying}
+                  className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
+                  title="Marcar como verificado"
+                  aria-label={`Marcar ${etiqueta} como verificado`}
+                >
+                  {isVerifying ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ) : null}
+                  Verificar
+                </button>
+              ) : null}
+              {fila.saving ? (
+                <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
+              ) : fila.dirty ? (
+                <span className="h-2 w-2 rounded-full bg-amber-400" title="Cambios pendientes" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
+              )}
               <button
                 type="button"
-                onClick={() => onVerify(fila.id)}
-                disabled={isVerifying}
-                className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
-                title="Marcar como verificado"
+                onClick={() => onDelete(fila.id)}
+                disabled={isDeleting}
+                className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                aria-label={`Eliminar ${etiqueta}`}
+                title="Eliminar pago"
               >
-                {isVerifying ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                ) : null}
-                Verificar
+                {isDeleting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                )}
               </button>
-            ) : null}
-            {fila.saving ? (
-              <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
-            ) : fila.dirty ? (
-              <span className="h-2 w-2 rounded-full bg-amber-400" title="Cambios pendientes" />
-            ) : (
-              <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
-            )}
-            <button
-              type="button"
-              onClick={() => onDelete(fila.id)}
-              disabled={isDeleting}
-              className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
-              aria-label="Eliminar pago"
-              title="Eliminar pago"
-            >
-              {isDeleting ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <Trash2 className="h-4 w-4" aria-hidden="true" />
-              )}
-            </button>
-          </div>
+            </div>
+          )}
         </td>
       </tr>
 
       {/* Fila de error de la fila */}
       {fila.errorFila ? (
         <tr className="bg-rose-50">
-          <td colSpan={11} className="px-3 py-1.5 text-xs text-rose-700">
+          <td colSpan={11} className="px-3 py-1.5 text-xs text-rose-700" role="alert">
             <AlertTriangle className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
             {fila.errorFila} — los valores anteriores se restauraron.
           </td>

@@ -9,16 +9,21 @@ import {
   Loader2,
   Pencil,
   Plus,
-  RotateCcw,
   Search,
   Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ModuleState } from "@/components/layout/module-state";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { usePermiso } from "@/lib/auth/rol-context";
+
 import {
   type DocumentoRow,
-  DocumentosApiError,
   registrarDocumento,
   solicitarUploadUrl,
   subirArchivoDirecto,
@@ -174,6 +179,11 @@ function SiigoProductoCombobox({ valor, onChange, placeholder = "Opcional" }: Si
 
 type LoadState = "loading" | "ready" | "error";
 
+/** POST /api/tramites/[id]/facturas-proveedor y generar-pago admiten SOCIO. */
+const ROLES_CREAR_PAGAR_FACTURA = ["ADMIN", "OPERATIVO", "SOCIO"] as const;
+/** PATCH/DELETE /api/facturas-proveedor/[id] son solo ADMIN/OPERATIVO. */
+const ROLES_MODIFICAR_FACTURA = ["ADMIN", "OPERATIVO"] as const;
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -277,11 +287,7 @@ function SubidaInlinePDF({ tramiteId, onDocumentoSubido }: SubidaInlineProps) {
       setEstado("done");
       onDocumentoSubido(doc.id, doc.nombreArchivo);
     } catch (caught) {
-      const msg =
-        caught instanceof DocumentosApiError
-          ? caught.message
-          : "Error al subir el archivo.";
-      setError(msg);
+      setError(describirError(caught, "Error al subir el archivo."));
       setEstado("error");
     }
   }
@@ -410,10 +416,14 @@ export function ModalFacturaProveedor({
   const [documentoId, setDocumentoId] = useState<string | null>(
     facturaExistente?.documentoId ?? null,
   );
+  const [repercutible, setRepercutible] = useState<boolean>(
+    facturaExistente?.repercutible !== false,
+  );
   const [documentoNombre, setDocumentoNombre] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   function handleDocumentoSubido(docId: string, nombre: string) {
     setDocumentoId(docId);
@@ -422,6 +432,7 @@ export function ModalFacturaProveedor({
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (submitting) return;
     setError(null);
 
     const valorBig = parseBigIntInput(valorRaw);
@@ -465,6 +476,7 @@ export function ModalFacturaProveedor({
           valor: valorBig,
           fecha: dateInputToIso(fecha) ?? undefined,
           documentoId,
+          repercutible,
         };
 
         const response = await fetch(`/api/facturas-proveedor/${facturaExistente.id}`, {
@@ -485,7 +497,8 @@ export function ModalFacturaProveedor({
           throw new FacturasProveedorApiError("Respuesta de actualización no válida.");
         }
 
-        const updated = payload.factura as Record<string, unknown>;
+        const updated = payload.factura;
+        toast({ title: "Factura actualizada", description: numFactura.trim(), variant: "success" });
         onGuardada({
           id: String(updated.id ?? ""),
           tramiteId: String(updated.tramiteId ?? ""),
@@ -498,6 +511,7 @@ export function ModalFacturaProveedor({
           fecha: typeof updated.fecha === "string" ? updated.fecha : "",
           estado: (updated.estado as EstadoFacturaProveedor) ?? "REGISTRADA",
           documentoId: typeof updated.documentoId === "string" ? updated.documentoId : null,
+          repercutible: updated.repercutible !== false,
           subidaPorId: String(updated.subidaPorId ?? ""),
           createdAt: String(updated.createdAt ?? ""),
           updatedAt: String(updated.updatedAt ?? ""),
@@ -513,40 +527,33 @@ export function ModalFacturaProveedor({
           valor: valorBig,
           fecha: dateInputToIso(fecha) ?? "",
           documentoId,
+          repercutible,
         };
 
         const factura = await createFacturaProveedor(tramiteId, input);
+        toast({
+          title: "Factura de proveedor registrada",
+          description: `${factura.numFactura} · ${formatCOP(factura.valor)}`,
+          variant: "success",
+        });
         onGuardada(factura);
       }
     } catch (caught) {
-      setError(
-        caught instanceof FacturasProveedorApiError
-          ? caught.message
-          : "Error al guardar la factura.",
-      );
+      setError(describirError(caught, "Error al guardar la factura."));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-lg border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-950">
-            {isEdit ? "Editar factura de proveedor" : "Nueva factura de proveedor"}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title={isEdit ? "Editar factura de proveedor" : "Nueva factura de proveedor"}
+      size="md"
+      dismissible={!submitting}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="block space-y-1.5 sm:col-span-2">
               <span className="text-sm font-medium text-slate-700">Proveedor *</span>
@@ -603,6 +610,24 @@ export function ModalFacturaProveedor({
             </label>
           </div>
 
+          {/* Repercusión al cliente (M6) */}
+          <label className="flex items-start gap-2.5 border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <input
+              type="checkbox"
+              checked={repercutible}
+              onChange={(e) => setRepercutible(e.target.checked)}
+              className="mt-0.5 h-4 w-4"
+            />
+            <span className="text-sm">
+              <span className="font-medium text-slate-800">Se le cobra al cliente</span>
+              <span className="mt-0.5 block text-xs text-slate-500">
+                Desmárcalo cuando la factura va a nombre de Galcomex y el cliente no debe
+                verla (por ejemplo una asesoría). Se registra y se paga igual, pero no pasa a
+                la factura de venta ni cuenta como desfase en la revisión.
+              </span>
+            </span>
+          </label>
+
           {/* Adjuntar PDF */}
           <div>
             <p className="mb-1.5 text-sm font-medium text-slate-700">
@@ -636,7 +661,8 @@ export function ModalFacturaProveedor({
             <button
               type="button"
               onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              disabled={submitting}
+              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
             >
               Cancelar
             </button>
@@ -650,8 +676,7 @@ export function ModalFacturaProveedor({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -673,9 +698,11 @@ function ModalGenerarPago({
   const [fechaRealPago, setFechaRealPago] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (submitting) return;
     setError(null);
     setSubmitting(true);
 
@@ -687,39 +714,29 @@ function ModalGenerarPago({
 
     try {
       const result = await generarPagoDesdeFactura(factura.id, input);
+      toast({
+        title: "Pago generado",
+        description: `${factura.numFactura} · ${formatCOP(result.pago.valor)}`,
+        variant: "success",
+      });
       onPagoGenerado(result.factura);
     } catch (caught) {
-      setError(
-        caught instanceof FacturasProveedorApiError
-          ? caught.message
-          : "Error al generar el pago.",
-      );
+      setError(describirError(caught, "Error al generar el pago."));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-md border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Generar pago</h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              {factura.proveedorNombre} · {factura.numFactura} · {formatCOP(factura.valor)}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Generar pago"
+      description={`${factura.proveedorNombre} · ${factura.numFactura} · ${formatCOP(factura.valor)}`}
+      size="sm"
+      dismissible={!submitting}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Canal de pago *</span>
             <select
@@ -774,7 +791,8 @@ function ModalGenerarPago({
             <button
               type="button"
               onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              disabled={submitting}
+              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
             >
               Cancelar
             </button>
@@ -789,8 +807,7 @@ function ModalGenerarPago({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -798,22 +815,29 @@ function ModalGenerarPago({
 
 type SeccionFacturasProveedorProps = {
   tramiteId: string;
-  /** Si true el usuario puede crear/editar/eliminar/generar pagos */
-  puedeEditar?: boolean;
   onPagarFactura?: (factura: FacturaProveedorRow) => void;
+  /** Cambia cuando el detalle del DO se recargó: vuelve a leer las facturas. */
+  refreshToken?: number;
 };
 
 export function SeccionFacturasProveedor({
   tramiteId,
-  puedeEditar = true,
   onPagarFactura,
+  refreshToken = 0,
 }: SeccionFacturasProveedorProps) {
+  // Permisos alineados con cada endpoint (ver constantes arriba). Antes
+  // `puedeEditar = rol !== "REVISOR"` dejaba editar/eliminar a SOCIO.
+  const puedeCrear = usePermiso(ROLES_CREAR_PAGAR_FACTURA);
+  const puedePagar = puedeCrear;
+  const puedeModificar = usePermiso(ROLES_MODIFICAR_FACTURA);
+  const hayAcciones = puedePagar || puedeModificar;
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [facturas, setFacturas] = useState<FacturaProveedorRow[]>([]);
   const [documentos, setDocumentos] = useState<Record<string, DocumentoRow>>({});
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [globalError, setGlobalError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Modales
@@ -871,7 +895,8 @@ export function SeccionFacturasProveedor({
     const controller = new AbortController();
 
     async function load() {
-      setLoadState("loading");
+      // Solo la primera carga muestra el skeleton; las recargas conservan la tabla.
+      setLoadState((prev) => (prev === "ready" ? prev : "loading"));
       setLoadError(null);
 
       try {
@@ -880,24 +905,20 @@ export function SeccionFacturasProveedor({
         setLoadState("ready");
 
         // Cargar URLs de descarga de los documentos adjuntos en background
-        const idsConDoc = data.filter((f) => f.documentoId).map((f) => f.documentoId!);
+        const idsConDoc = data.flatMap((f) => (f.documentoId ? [f.documentoId] : []));
         if (idsConDoc.length > 0) {
           void cargarDocumentos(tramiteId, idsConDoc);
         }
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setLoadError(
-          caught instanceof FacturasProveedorApiError
-            ? caught.message
-            : "Error al cargar facturas de proveedor.",
-        );
+        setLoadError(describirError(caught, "Error al cargar facturas de proveedor."));
         setLoadState("error");
       }
     }
 
     void load();
     return () => controller.abort();
-  }, [tramiteId, reloadKey, cargarDocumentos]);
+  }, [tramiteId, reloadKey, refreshToken, cargarDocumentos]);
 
   const handleFacturaGuardada = useCallback(
     (factura: FacturaProveedorRow) => {
@@ -927,25 +948,26 @@ export function SeccionFacturasProveedor({
   );
 
   async function handleDelete(facturaId: string, numFact: string) {
-    if (
-      !confirm(
-        `¿Eliminar la factura "${numFact}"? Esta acción no se puede deshacer.`,
-      )
-    )
-      return;
+    const ok = await confirmar({
+      title: `¿Eliminar la factura "${numFact}"?`,
+      description: "Esta acción no se puede deshacer.",
+      confirmText: "Eliminar factura",
+      variant: "danger",
+    });
+    if (!ok) return;
 
     setDeletingId(facturaId);
-    setGlobalError(null);
 
     try {
       await deleteFacturaProveedor(facturaId);
       setFacturas((prev) => prev.filter((f) => f.id !== facturaId));
+      toast({ title: "Factura eliminada", description: numFact, variant: "success" });
     } catch (caught) {
-      setGlobalError(
-        caught instanceof FacturasProveedorApiError
-          ? caught.message
-          : "Error al eliminar la factura.",
-      );
+      toast({
+        title: "No se pudo eliminar la factura",
+        description: describirError(caught, "Error al eliminar la factura."),
+        variant: "error",
+      });
     } finally {
       setDeletingId(null);
     }
@@ -954,31 +976,17 @@ export function SeccionFacturasProveedor({
   // ── Render ────────────────────────────────────────────────────────────────
 
   if (loadState === "loading") {
-    return (
-      <div className="flex min-h-40 items-center gap-3 border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-600">
-        <Loader2 className="h-5 w-5 animate-spin text-slate-500" aria-hidden="true" />
-        <span className="font-medium text-slate-900">Cargando facturas de proveedor…</span>
-      </div>
-    );
+    return <TableSkeleton rows={4} cols={hayAcciones ? 8 : 7} rowHeight={44} />;
   }
 
   if (loadState === "error") {
     return (
-      <div className="flex min-h-40 items-start gap-3 border border-dashed border-rose-300 bg-rose-50 px-4 py-5 text-sm text-rose-700">
-        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-        <div>
-          <p className="font-medium">No fue posible cargar las facturas de proveedor</p>
-          {loadError ? <p className="mt-1">{loadError}</p> : null}
-          <button
-            type="button"
-            onClick={() => setReloadKey((k) => k + 1)}
-            className="mt-3 inline-flex h-9 items-center gap-2 border border-rose-300 bg-white px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
-          >
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            Reintentar
-          </button>
-        </div>
-      </div>
+      <ModuleState
+        type="error"
+        title="No fue posible cargar las facturas de proveedor"
+        detail={loadError ?? undefined}
+        action={{ label: "Reintentar", onClick: () => setReloadKey((k) => k + 1) }}
+      />
     );
   }
 
@@ -992,20 +1000,6 @@ export function SeccionFacturasProveedor({
 
   return (
     <section className="space-y-4">
-      {globalError ? (
-        <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <span className="flex-1">{globalError}</span>
-          <button
-            type="button"
-            onClick={() => setGlobalError(null)}
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      ) : null}
-
       <div className="overflow-hidden border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div>
@@ -1018,7 +1012,7 @@ export function SeccionFacturasProveedor({
               </p>
             ) : null}
           </div>
-          {puedeEditar ? (
+          {puedeCrear ? (
             <button
               type="button"
               onClick={() => setModalAltaOpen(true)}
@@ -1041,7 +1035,7 @@ export function SeccionFacturasProveedor({
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Valor</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-center">Estado</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-center">Archivo</th>
-                {puedeEditar ? (
+                {hayAcciones ? (
                   <th className="border-b border-slate-200 px-3 py-2 text-right w-28">Acciones</th>
                 ) : null}
               </tr>
@@ -1050,11 +1044,11 @@ export function SeccionFacturasProveedor({
               {facturas.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={puedeEditar ? 8 : 7}
+                    colSpan={hayAcciones ? 8 : 7}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
                     Sin facturas de proveedor registradas.{" "}
-                    {puedeEditar ? 'Usa "Nueva factura" para agregar la primera.' : ""}
+                    {puedeCrear ? 'Usa "Nueva factura" para agregar la primera.' : ""}
                   </td>
                 </tr>
               ) : null}
@@ -1074,6 +1068,14 @@ export function SeccionFacturasProveedor({
                     </td>
                     <td className="px-3 py-2.5 font-mono text-xs text-slate-800">
                       {f.numFactura}
+                      {!f.repercutible ? (
+                        <span
+                          className="ml-1.5 border border-slate-300 bg-slate-100 px-1 py-0.5 font-sans text-[10px] font-semibold text-slate-600"
+                          title="No se traslada al cliente: no pasa a la factura de venta"
+                        >
+                          NO SE COBRA
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2.5 text-slate-600">{formatDate(f.fecha)}</td>
                     <td className="px-3 py-2.5 text-right font-mono font-semibold text-slate-900">
@@ -1100,11 +1102,11 @@ export function SeccionFacturasProveedor({
                         <span className="text-xs text-slate-300">—</span>
                       )}
                     </td>
-                    {puedeEditar ? (
+                    {hayAcciones ? (
                       <td className="px-3 py-2.5">
                         <div className="flex items-center justify-end gap-1">
                           {/* Generar pago: disponible mientras no esté facturada al cliente */}
-                          {f.estado !== "FACTURADA_CLIENTE" ? (
+                          {puedePagar && f.estado !== "FACTURADA_CLIENTE" ? (
                             <button
                               type="button"
                               onClick={() => {
@@ -1117,31 +1119,34 @@ export function SeccionFacturasProveedor({
                               }}
                               className="inline-flex h-7 items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
                               title="Generar pago"
+                              aria-label={`Generar pago de la factura ${f.numFactura}`}
                             >
                               <CreditCard className="h-3.5 w-3.5" aria-hidden="true" />
                               Pagar
                             </button>
                           ) : null}
 
-                          {/* Editar */}
-                          <button
-                            type="button"
-                            onClick={() => setFacturaParaEditar(f)}
-                            className="inline-flex h-7 w-7 items-center justify-center border border-slate-200 text-slate-400 transition hover:text-slate-700"
-                            aria-label="Editar factura"
-                            title="Editar"
-                          >
-                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                          </button>
+                          {/* Editar: ADMIN/OPERATIVO */}
+                          {puedeModificar ? (
+                            <button
+                              type="button"
+                              onClick={() => setFacturaParaEditar(f)}
+                              className="inline-flex h-7 w-7 items-center justify-center border border-slate-200 text-slate-400 transition hover:text-slate-700"
+                              aria-label={`Editar factura ${f.numFactura}`}
+                              title="Editar"
+                            >
+                              <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                          ) : null}
 
-                          {/* Eliminar: solo si REGISTRADA (sin pagos) */}
-                          {f.estado === "REGISTRADA" ? (
+                          {/* Eliminar: ADMIN/OPERATIVO y solo si REGISTRADA (sin pagos) */}
+                          {puedeModificar && f.estado === "REGISTRADA" ? (
                             <button
                               type="button"
                               onClick={() => void handleDelete(f.id, f.numFactura)}
                               disabled={deletingId === f.id}
                               className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
-                              aria-label="Eliminar factura"
+                              aria-label={`Eliminar factura ${f.numFactura}`}
                               title="Eliminar"
                             >
                               {deletingId === f.id ? (
@@ -1163,7 +1168,7 @@ export function SeccionFacturasProveedor({
       </div>
 
       {/* Modal alta */}
-      {modalAltaOpen ? (
+      {modalAltaOpen && puedeCrear ? (
         <ModalFacturaProveedor
           tramiteId={tramiteId}
           onClose={() => setModalAltaOpen(false)}
@@ -1172,7 +1177,7 @@ export function SeccionFacturasProveedor({
       ) : null}
 
       {/* Modal edición */}
-      {facturaParaEditar ? (
+      {facturaParaEditar && puedeModificar ? (
         <ModalFacturaProveedor
           tramiteId={tramiteId}
           facturaExistente={facturaParaEditar}

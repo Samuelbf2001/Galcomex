@@ -13,17 +13,24 @@
  *              = total 1.322.230; anticipo 1.572.000 → saldo a favor 249.770
  */
 
+import { existsSync } from "node:fs";
+
 import { describe, it, expect } from "vitest";
 
 import { parseBorradorLucho, reconciliar } from "../borrador-lucho";
 
-const EXCEL_1 = "C:\\Users\\samue\\Galcomex\\excel-lucho-1.xls";
-const EXCEL_2 = "C:\\Users\\samue\\Galcomex\\excel-lucho-2.xls";
+const EXCEL_1 = process.env.LUCHO_EXCEL_1 ?? "C:\\Users\\samue\\Galcomex\\excel-lucho-1.xls";
+const EXCEL_2 = process.env.LUCHO_EXCEL_2 ?? "C:\\Users\\samue\\Galcomex\\excel-lucho-2.xls";
+
+const excel1Disponible = existsSync(EXCEL_1);
+const excel2Disponible = existsSync(EXCEL_2);
 
 // ─── BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS ─────────────────────────────────
 
-describe("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", () => {
-  const parsed = parseBorradorLucho(EXCEL_1);
+describe.skipIf(!excel1Disponible)("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", () => {
+  const parsed = excel1Disponible
+    ? parseBorradorLucho(EXCEL_1)
+    : (null as unknown as ReturnType<typeof parseBorradorLucho>);
 
   // Cabecera
   it("extrae nombre del cliente", () => {
@@ -149,8 +156,10 @@ describe("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", () => {
 
 // ─── BAQ-18512 — LITOPLAS S.A. ────────────────────────────────────────────────
 
-describe("BAQ-18512 — LITOPLAS S.A.", () => {
-  const parsed = parseBorradorLucho(EXCEL_2);
+describe.skipIf(!excel2Disponible)("BAQ-18512 — LITOPLAS S.A.", () => {
+  const parsed = excel2Disponible
+    ? parseBorradorLucho(EXCEL_2)
+    : (null as unknown as ReturnType<typeof parseBorradorLucho>);
 
   // Cabecera
   it("extrae nombre del cliente", () => {

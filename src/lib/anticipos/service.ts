@@ -1,6 +1,20 @@
-import { EstadoMovimiento, Rol, TipoRecaudo } from "@prisma/client";
+import { EstadoMovimiento, Prisma, Rol, TipoRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { assertTramiteModificable } from "@/lib/tramites/guard";
+
+// ─── Helpers internos ─────────────────────────────────────────────────────────
+
+/**
+ * Serializa un snapshot a JSON apto para columnas Json de Prisma, convirtiendo
+ * BigInt → string (los montos son BigInt y romperían JSON.stringify crudo).
+ * Mismo replacer usado en el resto de services (borradores, pagos, etc.).
+ */
+function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(
+    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
+  ) as Prisma.InputJsonValue;
+}
 
 export class VerificarAnticipoPermisoError extends Error {
   public readonly status = 403;
@@ -15,6 +29,21 @@ export class AnticipoNoEncontradoError extends Error {
   constructor(id: string) {
     super(`Anticipo ${id} no encontrado`);
     this.name = "AnticipoNoEncontradoError";
+  }
+}
+
+/**
+ * El soporte (comprobante bancario) es obligatorio para registrar un anticipo
+ * NUEVO. Regla de negocio pedida por el cliente (reunión 1-jul): hoy hay
+ * anticipos sin soporte adjunto y Guillermo tiene que preguntarle a Camila
+ * por WhatsApp si la plata entró. Solo aplica a la creación — no afecta
+ * anticipos ya existentes en la BD.
+ */
+export class SoporteAnticipoRequeridoError extends Error {
+  public readonly status = 400;
+  constructor() {
+    super("El soporte del anticipo (comprobante) es obligatorio para registrarlo.");
+    this.name = "SoporteAnticipoRequeridoError";
   }
 }
 
@@ -60,7 +89,14 @@ type AnticipoConSaldo = {
   aplicaciones: DesgloseDO[];
 };
 
-export async function crearAnticipo(input: CrearAnticipoInput) {
+export async function crearAnticipo(
+  input: CrearAnticipoInput,
+  usuarioId: string,
+) {
+  if (!input.soporteKey || input.soporteKey.trim().length === 0) {
+    throw new SoporteAnticipoRequeridoError();
+  }
+
   // Snapshot del costo de recaudo desde la matriz
   const matrizRow = await prisma.matrizRecaudo.findUnique({
     where: { tipoRecaudo: input.tipoRecaudo },
@@ -68,21 +104,36 @@ export async function crearAnticipo(input: CrearAnticipoInput) {
   });
   const costoRecaudo = matrizRow?.costoFijo ?? 0n;
 
-  return prisma.anticipo.create({
-    data: {
-      clienteId: input.clienteId,
-      monto: input.monto,
-      fecha: input.fecha,
-      tipoRecaudo: input.tipoRecaudo,
-      costoRecaudo,
-      soporteKey: input.soporteKey ?? null,
-      verificadoBanco: input.verificadoBanco ?? false,
-    },
+  return prisma.$transaction(async (tx) => {
+    const anticipo = await tx.anticipo.create({
+      data: {
+        clienteId: input.clienteId,
+        monto: input.monto,
+        fecha: input.fecha,
+        tipoRecaudo: input.tipoRecaudo,
+        costoRecaudo,
+        soporteKey: input.soporteKey ?? null,
+        verificadoBanco: input.verificadoBanco ?? false,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "Anticipo",
+        entidadId: anticipo.id,
+        accion: "CREATE_ANTICIPO",
+        usuarioId,
+        despues: normalizeSerializable(anticipo),
+      },
+    });
+
+    return anticipo;
   });
 }
 
 export async function aplicarAnticipo(
   input: AplicarAnticipoInput,
+  usuarioId: string,
 ): Promise<AplicarAnticipoResult> {
   const lockKey = `anticipo:${input.anticipoId}`;
 
@@ -105,12 +156,14 @@ export async function aplicarAnticipo(
 
     const tramite = await tx.tramiteDO.findUnique({
       where: { id: input.tramiteId },
-      select: { id: true },
+      select: { id: true, consecutivo: true, estado: true },
     });
 
     if (!tramite) {
       return { ok: false, status: 404, message: "Tramite no encontrado" };
     }
+
+    await assertTramiteModificable(tx, tramite);
 
     const aplicadoActual = anticipo.aplicaciones.reduce(
       (sum, ap) => sum + ap.montoAplicado,
@@ -134,13 +187,67 @@ export async function aplicarAnticipo(
       },
     });
 
+    await tx.auditLog.create({
+      data: {
+        entidad: "AplicacionAnticipo",
+        entidadId: aplicacion.id,
+        accion: "APLICAR_ANTICIPO",
+        usuarioId,
+        tramiteId: input.tramiteId,
+        despues: normalizeSerializable(aplicacion),
+      },
+    });
+
     return { ok: true, aplicacion };
   });
 }
 
-export async function eliminarAplicacion(aplicacionId: string) {
-  return prisma.aplicacionAnticipo.delete({
-    where: { id: aplicacionId },
+export async function eliminarAplicacion(
+  aplicacionId: string,
+  usuarioId: string,
+) {
+  return prisma.$transaction(async (tx) => {
+    // Snapshot ANTES de borrar (para el AuditLog: la aplicación deja de existir).
+    const aplicacion = await tx.aplicacionAnticipo.findUnique({
+      where: { id: aplicacionId },
+      include: { tramite: { select: { id: true, consecutivo: true, estado: true } } },
+    });
+
+    if (aplicacion) {
+      await assertTramiteModificable(tx, aplicacion.tramite);
+    }
+
+    // Mantiene el comportamiento previo: lanza P2025 si no existe (la ruta lo
+    // traduce a 404) y revierte la transacción.
+    const deleted = await tx.aplicacionAnticipo.delete({
+      where: { id: aplicacionId },
+    });
+
+    // El snapshot de auditoría conserva la forma previa (solo columnas
+    // escalares de AplicacionAnticipo) — `tramite` se cargó solo para el
+    // guard de trámite cerrado, no debe colar en el `antes`.
+    const aplicacionSinTramite: typeof deleted = aplicacion
+      ? {
+          id: aplicacion.id,
+          createdAt: aplicacion.createdAt,
+          tramiteId: aplicacion.tramiteId,
+          anticipoId: aplicacion.anticipoId,
+          montoAplicado: aplicacion.montoAplicado,
+        }
+      : deleted;
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "AplicacionAnticipo",
+        entidadId: aplicacionId,
+        accion: "ELIMINAR_APLICACION_ANTICIPO",
+        usuarioId,
+        tramiteId: (aplicacion ?? deleted).tramiteId,
+        antes: normalizeSerializable(aplicacionSinTramite),
+      },
+    });
+
+    return deleted;
   });
 }
 

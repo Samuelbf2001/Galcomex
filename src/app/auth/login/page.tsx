@@ -1,13 +1,15 @@
 import { redirect } from "next/navigation";
 
 import { LoginForm } from "@/app/auth/login/login-form";
+import type { Rol } from "@/lib/auth/auth";
+import { rutaInicial } from "@/lib/auth/rutas-roles";
 import { getCurrentSession } from "@/lib/auth/session";
 
 export default async function LoginPage() {
   const session = await getCurrentSession();
 
   if (session) {
-    redirect("/dashboard");
+    redirect(rutaInicial(session.user.rol as Rol));
   }
 
   return (
@@ -16,7 +18,7 @@ export default async function LoginPage() {
         <div>
           <p className="text-sm font-semibold text-cyan-300">Galcomex</p>
           <h1 className="mt-4 max-w-xl text-4xl font-semibold leading-tight">
-            Gestion operativa y facturacion interna
+            Gestión operativa y facturación interna
           </h1>
         </div>
         <div className="grid grid-cols-3 gap-3 text-sm">
@@ -34,7 +36,7 @@ export default async function LoginPage() {
             <p className="text-xs font-semibold uppercase text-cyan-700">
               Acceso interno
             </p>
-            <h2 className="mt-2 text-2xl font-semibold">Iniciar sesion</h2>
+            <h2 className="mt-2 text-2xl font-semibold">Iniciar sesión</h2>
           </div>
           <LoginForm />
         </div>

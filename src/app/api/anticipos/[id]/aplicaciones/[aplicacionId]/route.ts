@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { requireRole } from "@/lib/auth/session";
+import { domainErrorResponse, isDomainError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { eliminarAplicacion } from "@/lib/anticipos/service";
 
@@ -18,7 +19,7 @@ export async function DELETE(
   try {
     const { aplicacionId } = await params;
 
-    await eliminarAplicacion(aplicacionId);
+    await eliminarAplicacion(aplicacionId, session.user.id);
 
     return jsonResponse({ ok: true });
   } catch (error) {
@@ -30,6 +31,10 @@ export async function DELETE(
         { error: "Aplicacion no encontrada" },
         { status: 404 },
       );
+    }
+
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
 
     throw error;

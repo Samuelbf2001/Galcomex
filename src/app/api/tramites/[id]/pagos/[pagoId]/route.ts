@@ -2,9 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import {
+  DocumentoDeOtroTramiteError,
+  DocumentoNoEncontradoParaPagoError,
   MatrizCanalNoEncontradoError,
   actualizarPago,
   eliminarPago,
@@ -40,6 +42,17 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
+    if (
+      error instanceof DocumentoNoEncontradoParaPagoError ||
+      error instanceof DocumentoDeOtroTramiteError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
+    }
+
     throw error;
   }
 }
@@ -51,9 +64,17 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     return session;
   }
 
-  const { pagoId } = await context.params;
+  try {
+    const { pagoId } = await context.params;
 
-  await eliminarPago(pagoId, session.user.id);
+    await eliminarPago(pagoId, session.user.id);
 
-  return new NextResponse(null, { status: 204 });
+    return new NextResponse(null, { status: 204 });
+  } catch (error) {
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
+    }
+
+    throw error;
+  }
 }

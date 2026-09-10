@@ -10,7 +10,7 @@ import {
   actualizarFacturaProveedor,
   eliminarFacturaProveedor,
 } from "@/lib/facturas-proveedor/service";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { actualizarFacturaProveedorSchema } from "@/lib/validations/facturas-proveedor";
 
@@ -44,6 +44,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     if (error instanceof FacturaProveedorNoModificableError) {
       return NextResponse.json({ error: error.message }, { status: 422 });
     }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
+    }
     throw error;
   }
 }
@@ -65,6 +68,9 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     }
     if (error instanceof FacturaProveedorConPagosError) {
       return NextResponse.json({ error: error.message }, { status: 422 });
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }

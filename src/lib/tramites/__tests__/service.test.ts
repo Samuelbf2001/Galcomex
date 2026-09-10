@@ -3,6 +3,7 @@ import "dotenv/config";
 import {
   AgenciaAduanas,
   Ciudad,
+  EstadoBorrador,
   EstadoTramite,
   Rol,
   TipoCliente,
@@ -11,10 +12,21 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/db/prisma";
 import {
-  createTramite,
   formatConsecutivo,
-  transitionTramite,
-} from "../service";
+  type ConfigConsecutivo,
+} from "@/lib/tramites/consecutivo";
+import { createTramite, listTramites, transitionTramite } from "../service";
+
+/**
+ * Config del tipo IMPORTACION (M4). El formato del consecutivo ya no está
+ * quemado en el servicio: sale de `TipoTramite`. Estos son los valores que la
+ * migración siembra para el trámite de siempre.
+ */
+const IMPORTACION: ConfigConsecutivo = {
+  prefijoConsecutivo: "DO",
+  secuenciaPor: "CIUDAD_ANIO",
+  incluyeCiudadEnConsecutivo: true,
+};
 
 const TEST_PREFIX = "vitest-tramites";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -77,6 +89,23 @@ async function cleanupTestData() {
   await prisma.checklistItem.deleteMany({
     where: { tramiteId: { in: tramiteIds } },
   });
+
+  // BorradorFactura/Factura referencian TramiteDO con onDelete: Restrict —
+  // hay que limpiarlos antes de borrar los tramites (tests de listTramites
+  // crean borradores directos para simular "factura emitida").
+  const testBorradores = await prisma.borradorFactura.findMany({
+    where: { tramiteId: { in: tramiteIds } },
+    select: { id: true },
+  });
+  const borradorIds = testBorradores.map((borrador) => borrador.id);
+
+  await prisma.factura.deleteMany({
+    where: { borradorId: { in: borradorIds } },
+  });
+  await prisma.borradorFactura.deleteMany({
+    where: { id: { in: borradorIds } },
+  });
+
   await prisma.tramiteDO.deleteMany({
     where: { id: { in: tramiteIds } },
   });
@@ -162,9 +191,9 @@ function createInput(overrides: Partial<Parameters<typeof createTramite>[0]> = {
 
 describe("formatConsecutivo", () => {
   it("formatea ciudad, ultimos dos digitos del anio y numero con cuatro digitos", () => {
-    expect(formatConsecutivo(Ciudad.CTG, 2026, 1)).toBe("DO.CTG26-0001");
-    expect(formatConsecutivo(Ciudad.BUN, 2026, 26)).toBe("DO.BUN26-0026");
-    expect(formatConsecutivo(Ciudad.SMR, 2099, 1234)).toBe(
+    expect(formatConsecutivo(IMPORTACION, Ciudad.CTG, 2026, 1)).toBe("DO.CTG26-0001");
+    expect(formatConsecutivo(IMPORTACION, Ciudad.BUN, 2026, 26)).toBe("DO.BUN26-0026");
+    expect(formatConsecutivo(IMPORTACION, Ciudad.SMR, 2099, 1234)).toBe(
       "DO.SMR99-1234",
     );
   });
@@ -299,8 +328,277 @@ describe("tramites service con Postgres local", () => {
     );
     expect(ordered.map((tramite) => tramite.consecutivo)).toEqual(
       ordered.map((tramite) =>
-        formatConsecutivo(ciudad, concurrencyYear, tramite.numero),
+        formatConsecutivo(IMPORTACION, ciudad, concurrencyYear, tramite.numero),
       ),
     );
+  });
+
+  describe("listTramites - filtros de listado", () => {
+    const listAnio = 2097;
+    let clientePropioId: string | null = null;
+    let clienteSocioId: string | null = null;
+
+    beforeAll(async () => {
+      if (!fixture) {
+        return;
+      }
+
+      const propio = await prisma.cliente.create({
+        data: {
+          nombre: "Cliente Vitest Filtros Propio",
+          nit: `${runId}-list-propio`,
+          tipo: TipoCliente.PROPIO,
+        },
+      });
+      const socio = await prisma.cliente.create({
+        data: {
+          nombre: "Cliente Vitest Filtros Socio",
+          nit: `${runId}-list-socio`,
+          tipo: TipoCliente.SOCIO_LM,
+        },
+      });
+
+      clientePropioId = propio.id;
+      clienteSocioId = socio.id;
+    });
+
+    function crearListInput(
+      overrides: Partial<Parameters<typeof createTramite>[0]> = {},
+    ) {
+      const db = fixture;
+      if (!db || !clientePropioId) {
+        throw new Error("Fixture de filtros no inicializado");
+      }
+
+      return {
+        ciudad: Ciudad.BAQ,
+        anio: listAnio,
+        clienteId: clientePropioId,
+        agenciaAduanas: AgenciaAduanas.COLDEX,
+        creadoPorId: db.userId,
+        comentarios: `${TEST_PREFIX}:${runId}:list`,
+        ...overrides,
+      };
+    }
+
+    it("filtra por estado", async (ctx) => {
+      const db = ensureDb(ctx);
+      const enPuerto = await createTramite(
+        crearListInput({ comentarios: `${TEST_PREFIX}:${runId}:list:estado:en-puerto` }),
+      );
+      await prisma.tramiteDO.update({
+        where: { id: enPuerto.id },
+        data: { estado: EstadoTramite.EN_PUERTO },
+      });
+      const solicitud = await createTramite(
+        crearListInput({ comentarios: `${TEST_PREFIX}:${runId}:list:estado:solicitud` }),
+      );
+
+      const result = await listTramites(
+        { estado: EstadoTramite.EN_PUERTO, clienteId: clientePropioId!, take: 500 },
+        {},
+      );
+      const ids = result.tramites.map((tramite) => tramite.id);
+
+      expect(ids).toContain(enPuerto.id);
+      expect(ids).not.toContain(solicitud.id);
+      void db;
+    });
+
+    it("filtra por ciudad", async (ctx) => {
+      const db = ensureDb(ctx);
+      const baq = await createTramite(
+        crearListInput({
+          ciudad: Ciudad.BAQ,
+          comentarios: `${TEST_PREFIX}:${runId}:list:ciudad:baq`,
+        }),
+      );
+      const ctg = await createTramite(
+        crearListInput({
+          ciudad: Ciudad.CTG,
+          comentarios: `${TEST_PREFIX}:${runId}:list:ciudad:ctg`,
+        }),
+      );
+
+      const result = await listTramites(
+        { ciudad: Ciudad.BAQ, clienteId: clientePropioId!, take: 500 },
+        {},
+      );
+      const ids = result.tramites.map((tramite) => tramite.id);
+
+      expect(ids).toContain(baq.id);
+      expect(ids).not.toContain(ctg.id);
+      void db;
+    });
+
+    it("filtra por clienteId", async (ctx) => {
+      const db = ensureDb(ctx);
+      const propio = await createTramite(
+        crearListInput({ comentarios: `${TEST_PREFIX}:${runId}:list:clienteId:propio` }),
+      );
+      const socio = await createTramite(
+        crearListInput({
+          clienteId: clienteSocioId!,
+          comentarios: `${TEST_PREFIX}:${runId}:list:clienteId:socio`,
+        }),
+      );
+
+      const result = await listTramites(
+        { clienteId: clienteSocioId!, take: 500 },
+        {},
+      );
+      const ids = result.tramites.map((tramite) => tramite.id);
+
+      expect(ids).toContain(socio.id);
+      expect(ids).not.toContain(propio.id);
+      void db;
+    });
+
+    it("filtra por tipoCliente (PROPIO vs SOCIO_LM)", async (ctx) => {
+      const db = ensureDb(ctx);
+      const propio = await createTramite(
+        crearListInput({ comentarios: `${TEST_PREFIX}:${runId}:list:tipoCliente:propio` }),
+      );
+      const socio = await createTramite(
+        crearListInput({
+          clienteId: clienteSocioId!,
+          comentarios: `${TEST_PREFIX}:${runId}:list:tipoCliente:socio`,
+        }),
+      );
+
+      const result = await listTramites(
+        { tipoCliente: TipoCliente.SOCIO_LM, take: 500 },
+        {},
+      );
+      const ids = result.tramites.map((tramite) => tramite.id);
+
+      expect(ids).toContain(socio.id);
+      expect(ids).not.toContain(propio.id);
+      void db;
+    });
+
+    it("filtra por facturado=true cuando el estado ya es terminal (FACTURADO/PAGADO/CERRADO)", async (ctx) => {
+      const db = ensureDb(ctx);
+      const pagado = await createTramite(
+        crearListInput({ comentarios: `${TEST_PREFIX}:${runId}:list:facturado:pagado` }),
+      );
+      await prisma.tramiteDO.update({
+        where: { id: pagado.id },
+        data: { estado: EstadoTramite.PAGADO },
+      });
+      const solicitud = await createTramite(
+        crearListInput({ comentarios: `${TEST_PREFIX}:${runId}:list:facturado:solicitud-a` }),
+      );
+
+      const facturados = await listTramites(
+        { clienteId: clientePropioId!, facturado: true, take: 500 },
+        {},
+      );
+      const noFacturados = await listTramites(
+        { clienteId: clientePropioId!, facturado: false, take: 500 },
+        {},
+      );
+
+      expect(facturados.tramites.map((t) => t.id)).toContain(pagado.id);
+      expect(facturados.tramites.map((t) => t.id)).not.toContain(solicitud.id);
+      expect(noFacturados.tramites.map((t) => t.id)).toContain(solicitud.id);
+      expect(noFacturados.tramites.map((t) => t.id)).not.toContain(pagado.id);
+      void db;
+    });
+
+    it("filtra por facturado=true cuando existe un borrador FACTURADO aunque el estado del tramite no sea terminal", async (ctx) => {
+      const db = ensureDb(ctx);
+      const conBorrador = await createTramite(
+        crearListInput({
+          comentarios: `${TEST_PREFIX}:${runId}:list:facturado:borrador`,
+        }),
+      );
+      await prisma.tramiteDO.update({
+        where: { id: conBorrador.id },
+        data: { estado: EstadoTramite.DESPACHADO },
+      });
+      await prisma.borradorFactura.create({
+        data: {
+          tramiteId: conBorrador.id,
+          comision: 0n,
+          ivaComision: 0n,
+          impuesto4x1000: 0n,
+          costosBancarios: 0n,
+          totalAnticipo: 0n,
+          totalPagos: 0n,
+          totalFactura: 0n,
+          estado: EstadoBorrador.FACTURADO,
+        },
+      });
+
+      const facturados = await listTramites(
+        { clienteId: clientePropioId!, facturado: true, take: 500 },
+        {},
+      );
+      const noFacturados = await listTramites(
+        { clienteId: clientePropioId!, facturado: false, take: 500 },
+        {},
+      );
+
+      expect(facturados.tramites.map((t) => t.id)).toContain(conBorrador.id);
+      expect(noFacturados.tramites.map((t) => t.id)).not.toContain(conBorrador.id);
+      void db;
+    });
+
+    it("busca por q (contains case-insensitive sobre el consecutivo)", async (ctx) => {
+      const db = ensureDb(ctx);
+      const tramite = await createTramite(
+        crearListInput({ comentarios: `${TEST_PREFIX}:${runId}:list:q` }),
+      );
+
+      const result = await listTramites(
+        { q: tramite.consecutivo.toLowerCase(), take: 500 },
+        {},
+      );
+      const ids = result.tramites.map((t) => t.id);
+
+      expect(ids).toContain(tramite.id);
+      void db;
+    });
+
+    it("el scoping SOCIO nunca se debilita: tipoCliente=PROPIO combinado con socioScope da vacio", async (ctx) => {
+      const db = ensureDb(ctx);
+      const propio = await createTramite(
+        crearListInput({
+          comentarios: `${TEST_PREFIX}:${runId}:list:socioscope:propio`,
+        }),
+      );
+
+      const result = await listTramites(
+        { tipoCliente: TipoCliente.PROPIO, take: 500 },
+        { socioScope: true },
+      );
+      const ids = result.tramites.map((t) => t.id);
+
+      expect(ids).not.toContain(propio.id);
+      void db;
+    });
+
+    it("socioScope limita a clientes SOCIO_LM incluso sin filtro explicito de tipoCliente", async (ctx) => {
+      const db = ensureDb(ctx);
+      const propio = await createTramite(
+        crearListInput({
+          comentarios: `${TEST_PREFIX}:${runId}:list:socioscope:sin-filtro-propio`,
+        }),
+      );
+      const socio = await createTramite(
+        crearListInput({
+          clienteId: clienteSocioId!,
+          comentarios: `${TEST_PREFIX}:${runId}:list:socioscope:sin-filtro-socio`,
+        }),
+      );
+
+      const result = await listTramites({ take: 500 }, { socioScope: true });
+      const ids = result.tramites.map((t) => t.id);
+
+      expect(ids).toContain(socio.id);
+      expect(ids).not.toContain(propio.id);
+      void db;
+    });
   });
 });

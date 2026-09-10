@@ -28,6 +28,8 @@ model User {
   borradoresFact           BorradorFactura[]  @relation("FacturadoPor")
   facturasProveedorSubidas FacturaProveedor[] @relation("FacturasProveedorSubidas")
   pagosFactura             PagoFactura[]      @relation("PagosFacturaRegistrados")
+  enlacesDocumento         DocumentoEnlace[]  @relation("EnlaceCreadoPor")
+  movimientosCuenta        MovimientoCuenta[] @relation("MovimientosCuentaRegistrados")
 
   @@map("user")
 }
@@ -43,6 +45,8 @@ model Session {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+  @@index([expiresAt])
   @@map("session")
 }
 
@@ -89,6 +93,11 @@ enum TipoCliente {
   SOCIO_LM
 }
 
+/// Ficha de empresa (contraparte). Se llama `Cliente` por historia; una misma
+/// empresa puede ser cliente y proveedor a la vez (Ascinter, Coldex, Eltrans),
+/// por eso los roles son flags y no un enum. `tipo` queda como dato
+/// descriptivo/legacy: el comportamiento se decide por capacidades
+/// (ver `EmpresaCapacidad` y `src/lib/capacidades/`).
 model Cliente {
   id             String      @id @default(cuid())
   nombre         String
@@ -97,17 +106,172 @@ model Cliente {
   contactoNombre String?
   contactoEmail  String?
   contactoTel    String?
+  /// @deprecated Migrado a la capacidad `anticipos_cliente`. Se mantiene
+  /// sincronizado durante la transición; leer vía `capacidadesDe()`.
   manejaAnticipo Boolean     @default(true)
   activo         Boolean     @default(true)
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
 
-  tarifas   TarifaCliente[]
-  tramites  TramiteDO[]
-  anticipos Anticipo[]
-  facturas  Factura[]
+  // Roles simultáneos de la contraparte
+  esCliente   Boolean @default(true)
+  esProveedor Boolean @default(false)
 
+  // Grupo económico (Polired / Polired Zona Franca / Sesderma bajo una casa)
+  grupoEmpresaId String?
+  grupoEmpresa   GrupoEmpresa? @relation(fields: [grupoEmpresaId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tarifas       TarifaCliente[]
+  tramites      TramiteDO[]
+  anticipos     Anticipo[]
+  facturas      Factura[]
+  capacidades   EmpresaCapacidad[]
+  /// Fichas de pago vinculadas a esta empresa (puente hacia el rol proveedor
+  /// mientras `Beneficiario` y `Cliente` siguen siendo tablas separadas).
+  beneficiarios Beneficiario[]     @relation("BeneficiarioEmpresa")
+  movimientos   MovimientoCuenta[]
+
+  @@index([grupoEmpresaId])
   @@map("cliente")
+}
+
+// ─── Cuenta corriente por contraparte (M5) ────────────────────────────────────
+//
+// Una misma empresa puede debernos como cliente y que le debamos como
+// proveedor. El saldo de las dos puntas se calcula en
+// `src/lib/cuenta-corriente/calculo.ts` (función pura) cruzando lo DERIVADO
+// (facturas de venta, abonos, facturas de proveedor, pagos) con lo que se
+// registra a mano aquí: los importes que no nacen de un trámite.
+//
+//   · Cargos manuales   — la mensualidad variable de Coldex, quincenas, primas.
+//   · Comisiones        — lo que Eltrans le paga a Galcomex por contenedor.
+//   · Ajustes           — correcciones puntuales, siempre auditadas.
+
+enum RolCuenta {
+  CLIENTE // la empresa nos debe
+  PROVEEDOR // le debemos a la empresa
+}
+
+enum TipoMovimientoCuenta {
+  CARGO // aumenta lo que la empresa nos debe
+  ABONO // aumenta lo que nosotros le debemos
+}
+
+enum OrigenMovimientoCuenta {
+  CARGO_MANUAL
+  COMISION
+  AJUSTE
+}
+
+model MovimientoCuenta {
+  id        String  @id @default(cuid())
+  empresaId String
+  empresa   Cliente @relation(fields: [empresaId], references: [id], onDelete: Restrict)
+
+  rol    RolCuenta
+  tipo   TipoMovimientoCuenta
+  origen OrigenMovimientoCuenta
+
+  /// Dimensión de cartera, espejo de `TipoTramite.lineaServicio`:
+  /// "TRAMITE" | "CLASIFICACION" | "PLAN_VALLEJO" | "COMISION" | "ASESORIA".
+  lineaServicio String @default("TRAMITE")
+
+  concepto String
+  valor    BigInt // COP enteros, SIEMPRE positivo: el signo lo da `tipo`
+  fecha    DateTime
+
+  /// Trámite que originó el movimiento (una comisión por contenedor, p. ej.).
+  tramiteId String?
+  tramite   TramiteDO? @relation(fields: [tramiteId], references: [id], onDelete: SetNull)
+
+  registradoPorId String
+  registradoPor   User   @relation("MovimientosCuentaRegistrados", fields: [registradoPorId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([empresaId, rol])
+  @@index([tramiteId])
+  @@map("movimiento_cuenta")
+}
+
+// ─── Grupo económico ──────────────────────────────────────────────────────────
+model GrupoEmpresa {
+  id        String   @id @default(cuid())
+  nombre    String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  empresas    Cliente[]
+  capacidades GrupoEmpresaCapacidad[]
+
+  @@map("grupo_empresa")
+}
+
+// ─── Capacidades (interruptores de función por empresa) ───────────────────────
+//
+// Toda diferencia de comportamiento entre empresas se declara aquí como dato,
+// nunca como rama en el código. Resolución en cascada (ver
+// `src/lib/capacidades/resolver.ts`):
+//
+//     Capacidad.porDefecto  →  GrupoEmpresaCapacidad  →  EmpresaCapacidad
+//
+// `habilitado` y `config` se resuelven de forma INDEPENDIENTE: cada uno toma el
+// nivel más específico que lo define. Así un grupo puede fijar la config y una
+// empresa limitarse a encender o apagar la función.
+
+enum AmbitoCapacidad {
+  EMPRESA // se resuelve por empresa (con override de grupo)
+  GLOBAL // interruptor del sistema, sin override por empresa
+}
+
+model Capacidad {
+  codigo           String          @id // "tarifario_propio", "base_cif", ...
+  nombre           String
+  descripcion      String?
+  grupo            String // agrupador visual en la UI: "Comercial" | "Operacion" | "Cartera" | "Documentos"
+  ambito           AmbitoCapacidad @default(EMPRESA)
+  porDefecto       Boolean         @default(false)
+  /// Config por defecto de la capacidad (forma libre por capacidad; los
+  /// consumidores la validan con Zod al leerla).
+  configPorDefecto Json?
+  orden            Int             @default(0)
+  activa           Boolean         @default(true)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  empresas EmpresaCapacidad[]
+  grupos   GrupoEmpresaCapacidad[]
+
+  @@map("capacidad")
+}
+
+model EmpresaCapacidad {
+  empresaId  String
+  empresa    Cliente   @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  codigo     String
+  capacidad  Capacidad @relation(fields: [codigo], references: [codigo], onDelete: Cascade)
+  habilitado Boolean
+  config     Json?
+  updatedAt  DateTime  @updatedAt
+
+  @@id([empresaId, codigo])
+  @@index([codigo])
+  @@map("empresa_capacidad")
+}
+
+model GrupoEmpresaCapacidad {
+  grupoId    String
+  grupo      GrupoEmpresa @relation(fields: [grupoId], references: [id], onDelete: Cascade)
+  codigo     String
+  capacidad  Capacidad    @relation(fields: [codigo], references: [codigo], onDelete: Cascade)
+  habilitado Boolean
+  config     Json?
+  updatedAt  DateTime     @updatedAt
+
+  @@id([grupoId, codigo])
+  @@index([codigo])
+  @@map("grupo_empresa_capacidad")
 }
 
 model TarifaCliente {
@@ -136,6 +300,58 @@ enum AgenciaAduanas {
   AR_LOGISTY
 }
 
+// ─── Tipos de trámite (M4) ────────────────────────────────────────────────────
+//
+// La clasificación arancelaria NO es un caso especial de Litoplas: es una fila
+// de esta tabla. Un tipo nuevo (Plan Vallejo, por ejemplo) es configuración,
+// no un módulo nuevo.
+
+enum SecuenciaTramite {
+  CIUDAD_ANIO // DO.BAQ26-0001 — un contador por ciudad y año (importaciones)
+  ANIO // CLAS26-0001  — un contador por año, sin ciudad
+  GLOBAL // un único contador para todo el histórico
+}
+
+model TipoTramite {
+  codigo      String  @id // "IMPORTACION" | "CLASIFICACION"
+  nombre      String
+  descripcion String?
+
+  // Consecutivo
+  prefijoConsecutivo         String // "DO" | "CLAS"
+  secuenciaPor               SecuenciaTramite @default(CIUDAD_ANIO)
+  incluyeCiudadEnConsecutivo Boolean          @default(true)
+
+  /// Dimensión de cartera: "TRAMITE" | "CLASIFICACION" | "PLAN_VALLEJO".
+  /// Separa las carteras sin duplicar módulos (M5).
+  lineaServicio       String  @default("TRAMITE")
+  /// La factura de venta de este tipo no se mezcla con la de los trámites.
+  facturacionSeparada Boolean @default(false)
+
+  /// Capacidad que la empresa debe tener encendida para poder abrir trámites
+  /// de este tipo (p. ej. "clasificacion_arancelaria"). Null = disponible para
+  /// todas las empresas.
+  capacidadRequerida String?
+
+  // Campos del formulario que este tipo sí necesita
+  requiereAgenciaAduanas    Boolean         @default(true)
+  agenciaAduanasPorDefecto  AgenciaAduanas?
+  requiereEta               Boolean         @default(true)
+  usaChecklist              Boolean         @default(true)
+  /// Etiqueta del número externo de referencia (el consecutivo que asigna la
+  /// clasificadora: 2110, 2117, 2140). Null = el tipo no lleva referencia externa.
+  etiquetaReferenciaExterna String?
+
+  orden     Int      @default(0)
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tramites TramiteDO[]
+
+  @@map("tipo_tramite")
+}
+
 enum EstadoTramite {
   SOLICITUD
   APERTURA
@@ -149,20 +365,25 @@ enum EstadoTramite {
 }
 
 model TramiteDO {
-  id               String         @id @default(cuid())
-  consecutivo      String         @unique // DO.CTG26-0124
-  ciudad           Ciudad
-  anio             Int
-  numero           Int
-  clienteId        String
-  cliente          Cliente        @relation(fields: [clienteId], references: [id], onDelete: Restrict)
-  proveedorCliente String?
-  agenciaAduanas   AgenciaAduanas
-  doAgencia        String?
-  doCliente        String?
-  eta              DateTime?
-  estado           EstadoTramite  @default(SOLICITUD)
-  comentarios      String?
+  id                String          @id @default(cuid())
+  consecutivo       String          @unique // DO.CTG26-0124 · CLAS26-0001
+  tipoTramiteCodigo String          @default("IMPORTACION")
+  tipoTramite       TipoTramite     @relation(fields: [tipoTramiteCodigo], references: [codigo], onDelete: Restrict)
+  /// Número que asigna un tercero al servicio (p. ej. el informe de la
+  /// clasificadora: 2110, 2117, 2140). No es un consecutivo de Galcomex.
+  referenciaExterna String?
+  ciudad            Ciudad
+  anio              Int
+  numero            Int
+  clienteId         String
+  cliente           Cliente         @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  proveedorCliente  String?
+  agenciaAduanas    AgenciaAduanas?
+  doAgencia         String?
+  doCliente         String?
+  eta               DateTime?
+  estado            EstadoTramite   @default(SOLICITUD)
+  comentarios       String?
 
   fechaAceptacionDeclaracion DateTime?
   fechaLevante               DateTime?
@@ -184,9 +405,16 @@ model TramiteDO {
   auditLogs            AuditLog[]
   facturasProveedor    FacturaProveedor[]
   pseSolicitudes       PseSolicitud[]
+  movimientosCuenta    MovimientoCuenta[]
 
-  // Un número de DO es único por ciudad y año
-  @@unique([ciudad, anio, numero])
+  // Un número es único por tipo de trámite, ciudad y año. El tipo entra en la
+  // clave porque cada uno lleva su propio contador (M4): la clasificación
+  // arancelaria no consume consecutivos de importación.
+  @@unique([tipoTramiteCodigo, ciudad, anio, numero])
+  @@index([tipoTramiteCodigo])
+  @@index([clienteId])
+  @@index([estado])
+  @@index([estado, fechaSalidaCarga])
   @@map("tramite_do")
 }
 
@@ -199,6 +427,7 @@ model EstadoLog {
   usuarioId   String
   createdAt   DateTime      @default(now())
 
+  @@index([tramiteId])
   @@map("estado_log")
 }
 
@@ -233,6 +462,7 @@ model ChecklistItem {
   validadoPor     User?     @relation("ValidadoPor", fields: [validadoPorId], references: [id])
   fechaValidacion DateTime?
 
+  @@index([tramiteId])
   @@map("checklist_item")
 }
 
@@ -245,6 +475,7 @@ enum CategoriaDocumento {
   SOPORTE_FACTURACION
   FOTO_RECONOCIMIENTO
   COMPROBANTE_BANCARIO
+  COMPROBANTE_COMERCIO
   FACTURA_PROVEEDOR
   OTRO
 }
@@ -265,9 +496,28 @@ model Documento {
   createdAt     DateTime           @default(now())
 
   pagosTramite      PagoTramite[]      @relation("SoporteDocumento")
+  pagosComercio     PagoTramite[]      @relation("ComprobanteComercio")
   facturasProveedor FacturaProveedor[] @relation("FacturaProveedorDoc")
+  enlaces           DocumentoEnlace[]
 
+  @@index([tramiteId, eliminado])
   @@map("documento")
+}
+
+// Enlace público para compartir un documento con terceros sin sesión.
+// El token es la única credencial: URL /compartir/{token}.
+model DocumentoEnlace {
+  id          String    @id @default(cuid())
+  token       String    @unique
+  documentoId String
+  documento   Documento @relation(fields: [documentoId], references: [id], onDelete: Cascade)
+  expiraEn    DateTime
+  revocado    Boolean   @default(false)
+  creadoPorId String
+  creadoPor   User      @relation("EnlaceCreadoPor", fields: [creadoPorId], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@map("documento_enlace")
 }
 
 // ─── Anticipos ────────────────────────────────────────────────────────────────
@@ -326,6 +576,8 @@ model Anticipo {
 
   aplicaciones AplicacionAnticipo[]
 
+  @@index([clienteId])
+  @@index([fecha])
   @@map("anticipo")
 }
 
@@ -338,6 +590,8 @@ model AplicacionAnticipo {
   montoAplicado BigInt // COP sin decimales
   createdAt     DateTime  @default(now())
 
+  @@index([tramiteId])
+  @@index([anticipoId])
   @@map("aplicacion_anticipo")
 }
 
@@ -364,6 +618,14 @@ model FacturaProveedor {
   numFactura      String
   valor           BigInt // COP sin decimales
   fecha           DateTime
+  /// ¿Se traslada al cliente en la factura de venta? (M6 del PLAN-CONFIGURABILIDAD)
+  /// `true` (caso normal): es un gasto pagado por cuenta del cliente y se le
+  /// cobra — transporte, impuestos, almacenaje.
+  /// `false`: la factura va a nombre de Galcomex y el cliente no debe verla
+  /// nunca (caso Ascinter: asesoría). Se registra en el trámite para pagarla y
+  /// cruzarla, pero no genera línea en la factura de venta ni cuenta como
+  /// desviación en el panel de validaciones.
+  repercutible    Boolean                @default(true)
   estado          EstadoFacturaProveedor @default(REGISTRADA)
   documentoId     String?
   documento       Documento?             @relation("FacturaProveedorDoc", fields: [documentoId], references: [id])
@@ -376,6 +638,8 @@ model FacturaProveedor {
   lineasRevision LineaRevisionFactura[]
 
   @@unique([tramiteId, numFactura])
+  @@index([beneficiarioId])
+  @@index([tramiteId, estado])
   @@map("factura_proveedor")
 }
 
@@ -389,42 +653,58 @@ model Beneficiario {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Ficha de empresa a la que corresponde este beneficiario (M5). Permite
+  /// cruzar en una sola cuenta corriente lo que se le paga como proveedor y lo
+  /// que nos debe como cliente.
+  empresaId String?
+  empresa   Cliente? @relation("BeneficiarioEmpresa", fields: [empresaId], references: [id], onDelete: SetNull)
+
   pagos             PagoTramiteBeneficiario[]
   facturasProveedor FacturaProveedor[]
   // Banco asociado a pagos cuando el canal es OTROS_BANCOS / PSE.
   // Se usa como tercero del 4x1000 en la factura de venta.
   pagosBanco        PagoTramite[]             @relation("PagoTramiteBancoBeneficiario")
 
+  @@index([empresaId])
   @@map("beneficiario")
 }
 
 // ─── Pagos del trámite ────────────────────────────────────────────────────────
 model PagoTramite {
-  id            String           @id @default(cuid())
-  tramiteId     String
-  tramite       TramiteDO        @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
-  concepto      String
-  numSoporte    String? // Nro declaración DIAN, factura electrónica, etc.
-  documentoId   String?
-  documento     Documento?       @relation("SoporteDocumento", fields: [documentoId], references: [id])
-  valor         BigInt // COP sin decimales
-  canalPago     CanalPago
-  costoBancario BigInt           @default(0) // Tomado de MatrizRecaudoPago
+  id                    String           @id @default(cuid())
+  tramiteId             String
+  tramite               TramiteDO        @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
+  concepto              String
+  numSoporte            String? // Nro declaración DIAN, factura electrónica, etc.
+  documentoId           String?
+  documento             Documento?       @relation("SoporteDocumento", fields: [documentoId], references: [id])
+  // Comprobante de la página del comercio (puerto/PSE) — opcional; el bancario es el obligatorio.
+  comprobanteComercioId String?
+  comprobanteComercio   Documento?       @relation("ComprobanteComercio", fields: [comprobanteComercioId], references: [id])
+  // Correlaciona los N pagos (uno por DO) creados desde un solo pago multi-trámite
+  // (caso Karina/Occidente: un comprobante cubre facturas de varios DOs).
+  grupoPagoId           String?
+  valor                 BigInt // COP sin decimales
+  canalPago             CanalPago
+  costoBancario         BigInt           @default(0) // Tomado de MatrizRecaudoPago
   // Banco usado como tercero del 4x1000 en la factura de venta.
   // Bancolombia se auto-resuelve desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID;
   // otros bancos / PSE → lo elige el operario en el modal "Agregar pago".
-  bancoBeneficiarioId String?
-  bancoBeneficiario   Beneficiario? @relation("PagoTramiteBancoBeneficiario", fields: [bancoBeneficiarioId], references: [id], onDelete: SetNull)
-  orden         Int              @default(0)
-  fechaRealPago DateTime?
-  viaSocio      Boolean          @default(false)
-  estado        EstadoMovimiento @default(REALIZADO)
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
+  bancoBeneficiarioId   String?
+  bancoBeneficiario     Beneficiario?    @relation("PagoTramiteBancoBeneficiario", fields: [bancoBeneficiarioId], references: [id], onDelete: SetNull)
+  orden                 Int              @default(0)
+  fechaRealPago         DateTime?
+  viaSocio              Boolean          @default(false)
+  estado                EstadoMovimiento @default(REALIZADO)
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
 
   beneficiarios     PagoTramiteBeneficiario[]
   facturasProveedor PagoTramiteFactura[]
 
+  @@index([tramiteId])
+  @@index([grupoPagoId])
+  @@index([fechaRealPago])
   @@map("pago_tramite")
 }
 
@@ -465,30 +745,30 @@ model BorradorFactura {
   tramiteId String
   tramite   TramiteDO @relation(fields: [tramiteId], references: [id], onDelete: Restrict)
 
-  comision               BigInt // Default 150.000, editable por factura
-  ivaComision            BigInt // 19% sobre comisión
-  impuesto4x1000         BigInt // Condicional: solo si saldo a favor del cliente
-  costosBancarios        BigInt
-  totalAnticipo          BigInt
-  totalPagos             BigInt
-  totalFactura           BigInt
-  saldoAFavorCliente     BigInt @default(0)
-  saldoACargoCliente     BigInt @default(0)
-  saldoAFavorLM          BigInt @default(0)
-  saldoACargoLM          BigInt @default(0)
-  retenciones            BigInt @default(0)
-  conceptosOperacionales Json?
+  comision                     BigInt // Default 150.000, editable por factura
+  ivaComision                  BigInt // 19% sobre comisión
+  impuesto4x1000               BigInt // Condicional: solo si saldo a favor del cliente
+  costosBancarios              BigInt
+  totalAnticipo                BigInt
+  totalPagos                   BigInt
+  totalFactura                 BigInt
+  saldoAFavorCliente           BigInt       @default(0)
+  saldoACargoCliente           BigInt       @default(0)
+  saldoAFavorLM                BigInt       @default(0)
+  saldoACargoLM                BigInt       @default(0)
+  retenciones                  BigInt       @default(0)
+  conceptosOperacionales       Json?
   // Suma de las líneas (+ comisión + IVA − retenciones). Siempre se calcula.
   // En trámites SOCIO_LM se promueve a totalFactura; en PROPIO es solo referencia.
-  totalFacturaLineas     BigInt @default(0)
+  totalFacturaLineas           BigInt       @default(0)
   // 4x1000 calculado sobre la base de ingresos de terceros (SOCIO_LM únicamente).
   // Distinto del impuesto4x1000 interno (base anticipo). Para PROPIO queda en 0.
-  impuesto4x1000Factura  BigInt @default(0)
+  impuesto4x1000Factura        BigInt       @default(0)
   // Comisión interna Galcomex→Lucho (la mínima, ej. 150.000). Manual, editable
   // en el módulo de Cruce. SOLO afecta el cruce interno; NO toca el saldo a favor
   // del cliente (line-driven). Distinta de `comision` (la de la factura). Para
   // PROPIO queda en 0 (no aplica cruce).
-  comisionInternaLM      BigInt @default(0)
+  comisionInternaLM            BigInt       @default(0)
   // Tipo de pago con que Lucho liquida la comisión interna. Exactamente uno de
   // (tipoRecaudoComisionInternaLM, canalPagoComisionInternaLM) debe estar set
   // cuando comisionInternaLM > 0 (validado en código). Para PROPIO ambos null.
@@ -501,7 +781,7 @@ model BorradorFactura {
   // Saldo interno de Galcomex con el socio LM:
   //   saldoLMInterno = anticipo − Σpagos − comisionInternaLM − ivaComision − 4x1000interno − costosBancarios
   // Positivo → Galcomex le debe devolver a LM. Negativo → LM le debe a Galcomex.
-  saldoLMInterno         BigInt @default(0)
+  saldoLMInterno               BigInt       @default(0)
 
   // Comentarios de cabecera (formato Lucho). Array de strings; cada uno es una
   // fila descriptiva (factura comercial, DO+contenedor+BL, mercancía+puerto).
@@ -542,6 +822,8 @@ model BorradorFactura {
   factura        Factura?
   lineasRevision LineaRevision[]
 
+  @@index([tramiteId, estado])
+  @@index([createdAt])
   @@map("borrador_factura")
 }
 
@@ -626,6 +908,8 @@ model Factura {
 
   pagos PagoFactura[]
 
+  @@index([clienteId])
+  @@index([fecha])
   @@map("factura")
 }
 
@@ -661,6 +945,8 @@ model PagoFactura {
   registradoPor   User             @relation("PagosFacturaRegistrados", fields: [registradoPorId], references: [id])
   createdAt       DateTime         @default(now())
 
+  @@index([facturaId])
+  @@index([fecha])
   @@map("pago_factura")
 }
 
@@ -711,10 +997,10 @@ model SiigoProducto {
 
 // ─── Catálogo de impuestos Siigo (espejo de GET /v1/taxes) ────────────────────
 model SiigoImpuesto {
-  id             Int      @id              // ID numérico asignado por Siigo
-  nombre         String                    // "IVA 19%", "ReteFuente 1%", etc.
-  tipo           String                    // "IVA" | "ReteIVA" | "ReteICA" | "Retefuente" | etc.
-  porcentaje     String                    // Decimal como string para preservar precisión ("19.00")
+  id             Int      @id // ID numérico asignado por Siigo
+  nombre         String // "IVA 19%", "ReteFuente 1%", etc.
+  tipo           String // "IVA" | "ReteIVA" | "ReteICA" | "Retefuente" | etc.
+  porcentaje     String // Decimal como string para preservar precisión ("19.00")
   activo         Boolean  @default(true)
   sincronizadoEn DateTime @default(now()) @updatedAt
 
@@ -740,10 +1026,10 @@ model SiigoProductoImpuesto {
 // Electrónica, Factura POS, etc.). Se selecciona uno para todas las facturas
 // que envíe Galcomex.
 model SiigoTipoComprobante {
-  id             Int      @id          // ID numérico asignado por Siigo
-  code           String                // "1", "2"
-  nombre         String                // "Factura Electrónica de Venta"
-  tipo           String?               // "FV"
+  id             Int      @id // ID numérico asignado por Siigo
+  code           String // "1", "2"
+  nombre         String // "Factura Electrónica de Venta"
+  tipo           String? // "FV"
   activo         Boolean  @default(true)
   sincronizadoEn DateTime @default(now()) @updatedAt
 
@@ -754,9 +1040,9 @@ model SiigoTipoComprobante {
 // Usuarios de Siigo que figuran como vendedores en las facturas. Se asigna uno
 // global para todas las facturas que envíe Galcomex.
 model SiigoVendedor {
-  id             Int      @id          // ID numérico asignado por Siigo
+  id             Int      @id // ID numérico asignado por Siigo
   username       String?
-  nombre         String?               // first_name + last_name concatenados
+  nombre         String? // first_name + last_name concatenados
   email          String?
   activo         Boolean  @default(true)
   sincronizadoEn DateTime @default(now()) @updatedAt
@@ -768,9 +1054,9 @@ model SiigoVendedor {
 // Se selecciona una por borrador antes de enviar a Siigo porque contado vs
 // crédito varía por trámite.
 model SiigoFormaPago {
-  id             Int      @id          // ID numérico asignado por Siigo
-  nombre         String                // "Contado", "Crédito 30 días", etc.
-  tipo           String?               // Clasificación interna de Siigo
+  id             Int      @id // ID numérico asignado por Siigo
+  nombre         String // "Contado", "Crédito 30 días", etc.
+  tipo           String? // Clasificación interna de Siigo
   activo         Boolean  @default(true)
   sincronizadoEn DateTime @default(now()) @updatedAt
 
@@ -796,5 +1082,6 @@ model AuditLog {
   @@index([entidad, entidadId])
   @@index([usuarioId])
   @@index([tramiteId])
+  @@index([createdAt])
   @@map("audit_log")
 }

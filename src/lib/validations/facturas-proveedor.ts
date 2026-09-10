@@ -15,6 +15,12 @@ export const crearFacturaProveedorSchema = z.object({
   fecha: z.coerce.date(),
   /** Archivo obligatorio para nuevas facturas (validado también en UI) */
   documentoId: z.string().min(1, "El archivo de la factura es obligatorio"),
+  /**
+   * ¿Se traslada al cliente en la factura de venta? (M6). Default `true`:
+   * el caso normal es que el gasto se pague por cuenta del cliente. En `false`
+   * la factura queda en el trámite para pagarla, pero el cliente no la ve.
+   */
+  repercutible: z.boolean().default(true),
 });
 
 export const actualizarFacturaProveedorSchema = z.object({
@@ -30,6 +36,7 @@ export const actualizarFacturaProveedorSchema = z.object({
     .optional(),
   fecha: z.coerce.date().optional(),
   documentoId: z.string().min(1).optional().nullable(),
+  repercutible: z.boolean().optional(),
 });
 
 export const generarPagoDesdeFacturaSchema = z.object({

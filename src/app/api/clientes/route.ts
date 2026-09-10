@@ -7,10 +7,18 @@ import { prisma } from "@/lib/db/prisma";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import {
+  clienteFieldsQuerySchema,
   clientePayloadSchema,
   tipoClienteQuerySchema,
 } from "@/lib/validations/clientes";
 
+/**
+ * GET /api/clientes?tipo=&fields=
+ *
+ * - Sin `fields`: listado completo con tarifas (comportamiento histórico).
+ * - `fields=options`: solo `{ id, nombre, nit, tipo, activo }`, sin tarifas —
+ *   para selects/combos que no necesitan el detalle.
+ */
 export async function GET(request: NextRequest) {
   const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO", "SOCIO"]);
 
@@ -19,9 +27,13 @@ export async function GET(request: NextRequest) {
   }
 
   let tipo: ReturnType<typeof tipoClienteQuerySchema.parse>;
+  let fields: ReturnType<typeof clienteFieldsQuerySchema.parse>;
   try {
     tipo = tipoClienteQuerySchema.parse(
       request.nextUrl.searchParams.get("tipo") ?? undefined,
+    );
+    fields = clienteFieldsQuerySchema.parse(
+      request.nextUrl.searchParams.get("fields") ?? undefined,
     );
   } catch (error) {
     if (error instanceof ZodError) {
@@ -36,6 +48,16 @@ export async function GET(request: NextRequest) {
     where.tipo = TipoCliente.SOCIO_LM;
   } else if (tipo) {
     where.tipo = tipo;
+  }
+
+  if (fields === "options") {
+    const clientes = await prisma.cliente.findMany({
+      where,
+      orderBy: { nombre: "asc" },
+      select: { id: true, nombre: true, nit: true, tipo: true, activo: true },
+    });
+
+    return jsonResponse({ clientes });
   }
 
   const clientes = await prisma.cliente.findMany({
