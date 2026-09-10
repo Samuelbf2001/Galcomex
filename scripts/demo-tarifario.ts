@@ -23,6 +23,7 @@
 
 import "dotenv/config";
 
+import type { CodigoCapacidad } from "../src/lib/capacidades/catalogo";
 import { setCapacidadesEmpresa } from "../src/lib/capacidades/service";
 import { prisma } from "../src/lib/db/prisma";
 import { marcarEventosTramite } from "../src/lib/eventos/service";
@@ -121,8 +122,8 @@ async function main() {
   const litoplas = await localizar(["litoplas"]);
   const cw = await localizar(["cw asia", "cw express", "cw "]);
   const empresas = [
-    { empresa: litoplas, etiqueta: "LITOPLAS", capacidades: ["tarifario_propio", "eventos_facturables"], plantillas: ["LITOPLAS_IMPO_2026", "LITOPLAS_CLAS_2026", "LITOPLAS_EXPO_2026"] },
-    { empresa: cw, etiqueta: "CW ASIA", capacidades: ["tarifario_propio", "eventos_facturables", "base_cif"], plantillas: ["CW_ASIA_2026"] },
+    { empresa: litoplas, etiqueta: "LITOPLAS", capacidades: ["tarifario_propio", "eventos_facturables"] as CodigoCapacidad[], plantillas: ["LITOPLAS_IMPO_2026", "LITOPLAS_CLAS_2026", "LITOPLAS_EXPO_2026"] },
+    { empresa: cw, etiqueta: "CW ASIA", capacidades: ["tarifario_propio", "eventos_facturables", "base_cif"] as CodigoCapacidad[], plantillas: ["CW_ASIA_2026"] },
   ];
   for (const e of empresas) {
     if (!e.empresa) continue;

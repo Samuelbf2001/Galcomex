@@ -27,11 +27,20 @@ export type FuenteAsiento =
   | "PAGO_PROVEEDOR" // le pagamos → baja lo que le debemos
   | "CARGO_MANUAL" // importe fuera de trámite (mensualidad Coldex)
   | "COMISION" // nos paga comisión (Eltrans) → nos debe
-  | "AJUSTE";
+  | "AJUSTE"
+  | "COMPENSACION"; // cruce de saldos: una punta de un cruce, con su signo
+
+/** Punta de la cuenta a la que pertenece un asiento. */
+export type RolAsiento = "CLIENTE" | "PROVEEDOR";
 
 export interface AsientoCuenta {
   id: string;
   fuente: FuenteAsiento;
+  /**
+   * Punta explícita. Si falta, se deduce de la fuente (ver `rolDe`). Los
+   * asientos manuales y los cruces la traen siempre.
+   */
+  rol?: RolAsiento;
   /** "TRAMITE" | "CLASIFICACION" | "PLAN_VALLEJO" | "COMISION" | "ASESORIA" */
   lineaServicio: string;
   concepto: string;
@@ -40,6 +49,8 @@ export interface AsientoCuenta {
   valor: bigint;
   /** Referencia legible: consecutivo del DO, n° de factura, etc. */
   referencia?: string | null;
+  /** Cruce de saldos al que pertenece el asiento (las dos puntas comparten id). */
+  compensacionId?: string | null;
 }
 
 export interface SaldoLinea {
@@ -53,12 +64,22 @@ export interface SaldoLinea {
 }
 
 export interface ResumenCuenta {
-  /** Suma de todo lo que la empresa nos debe (≥ 0). */
+  /** Suma bruta de todo lo que va a favor de Galcomex (≥ 0): facturas de venta, pagos hechos, comisiones. */
   totalACargo: bigint;
-  /** Suma de todo lo que le debemos (≥ 0). */
+  /** Suma bruta de todo lo que va a favor de la empresa (≥ 0): abonos recibidos, facturas de proveedor, cargos. */
   totalAFavor: bigint;
   /** `totalACargo − totalAFavor`. Positivo = nos deben; negativo = les debemos. */
   neto: bigint;
+  /**
+   * Lo que la empresa todavía nos debe como cliente, neto de sus abonos
+   * (negativo = le sobra plata a su favor). Es la punta que se puede cruzar.
+   */
+  pendienteCliente: bigint;
+  /**
+   * Lo que todavía le debemos como proveedor, neto de lo pagado (negativo =
+   * le pagamos de más). La otra punta del cruce.
+   */
+  pendienteProveedor: bigint;
   /** Desglose por línea de servicio, ordenado por nombre. */
   porLinea: SaldoLinea[];
   /** Asientos ordenados de más reciente a más antiguo. */
@@ -81,17 +102,18 @@ const SIGNO: Record<FuenteAsiento, 1n | -1n> = {
   CARGO_MANUAL: -1n,
   COMISION: 1n,
   AJUSTE: 1n,
+  COMPENSACION: 1n,
 };
 
 /**
  * Normaliza un importe positivo al signo que le corresponde por su fuente.
- * `AJUSTE` es la excepción: conserva el signo que traiga, porque un ajuste
- * puede ir en cualquier dirección.
+ * `AJUSTE` y `COMPENSACION` son la excepción: conservan el signo que traigan,
+ * porque pueden ir en cualquier dirección.
  */
 export function asientoDesde(
   entrada: Omit<AsientoCuenta, "valor"> & { valor: bigint },
 ): AsientoCuenta {
-  if (entrada.fuente === "AJUSTE") {
+  if (entrada.fuente === "AJUSTE" || entrada.fuente === "COMPENSACION") {
     return entrada;
   }
 
@@ -108,11 +130,32 @@ export function asientoDesde(
  * no repercutible entra igual: se le debe al proveedor aunque no se le cobre al
  * cliente).
  */
+const ROL_POR_FUENTE: Record<Exclude<FuenteAsiento, "AJUSTE" | "COMPENSACION">, RolAsiento> = {
+  FACTURA_VENTA: "CLIENTE",
+  ABONO_CLIENTE: "CLIENTE",
+  DEVOLUCION_CLIENTE: "CLIENTE",
+  COMISION: "CLIENTE",
+  FACTURA_PROVEEDOR: "PROVEEDOR",
+  PAGO_PROVEEDOR: "PROVEEDOR",
+  CARGO_MANUAL: "PROVEEDOR",
+};
+
+/** Punta del asiento: la explícita, la de su fuente o, en último caso, la que dicta su signo. */
+export function rolDe(asiento: AsientoCuenta): RolAsiento {
+  if (asiento.rol) return asiento.rol;
+  if (asiento.fuente === "AJUSTE" || asiento.fuente === "COMPENSACION") {
+    return asiento.valor >= 0n ? "CLIENTE" : "PROVEEDOR";
+  }
+  return ROL_POR_FUENTE[asiento.fuente];
+}
+
 export function calcularCuentaCorriente(asientos: AsientoCuenta[]): ResumenCuenta {
   const porLinea = new Map<string, { aCargo: bigint; aFavor: bigint }>();
 
   let totalACargo = 0n;
   let totalAFavor = 0n;
+  let pendienteCliente = 0n;
+  let pendienteProveedor = 0n;
 
   for (const asiento of asientos) {
     const linea = porLinea.get(asiento.lineaServicio) ?? { aCargo: 0n, aFavor: 0n };
@@ -123,6 +166,13 @@ export function calcularCuentaCorriente(asientos: AsientoCuenta[]): ResumenCuent
     } else {
       linea.aFavor += -asiento.valor;
       totalAFavor += -asiento.valor;
+    }
+
+    // Punta cliente: positivo = nos debe. Punta proveedor: positivo = le debemos.
+    if (rolDe(asiento) === "CLIENTE") {
+      pendienteCliente += asiento.valor;
+    } else {
+      pendienteProveedor -= asiento.valor;
     }
 
     porLinea.set(asiento.lineaServicio, linea);
@@ -136,6 +186,8 @@ export function calcularCuentaCorriente(asientos: AsientoCuenta[]): ResumenCuent
     totalACargo,
     totalAFavor,
     neto: totalACargo - totalAFavor,
+    pendienteCliente,
+    pendienteProveedor,
     porLinea: [...porLinea.entries()]
       .map(([lineaServicio, saldo]) => ({
         lineaServicio,
@@ -154,4 +206,54 @@ export function describirNeto(neto: bigint, empresa: string): string {
   if (neto === 0n) return `La cuenta con ${empresa} está saldada`;
   if (neto > 0n) return `${empresa} le debe a Galcomex`;
   return `Galcomex le debe a ${empresa}`;
+}
+
+/**
+ * Cuánto se puede cruzar hoy: lo que salde las dos puntas a la vez. Cero si
+ * alguna punta está en cero (no hay nada contra qué cruzar).
+ */
+export function maximoCompensable(
+  resumen: Pick<ResumenCuenta, "pendienteCliente" | "pendienteProveedor">,
+): bigint {
+  const cliente = resumen.pendienteCliente > 0n ? resumen.pendienteCliente : 0n;
+  const proveedor = resumen.pendienteProveedor > 0n ? resumen.pendienteProveedor : 0n;
+  return cliente < proveedor ? cliente : proveedor;
+}
+
+/**
+ * Las dos puntas de un cruce, como asientos: en la punta cliente entra como un
+ * abono (negativo: baja lo que nos deben) y en la punta proveedor como un pago
+ * (positivo: baja lo que les debemos), por el mismo importe. El neto no cambia;
+ * los pendientes de las dos puntas bajan.
+ */
+export function asientosDeCompensacion(entrada: {
+  compensacionId: string;
+  valor: bigint;
+  fecha: Date;
+  concepto: string;
+  lineaServicio: string;
+}): [AsientoCuenta, AsientoCuenta] {
+  const magnitud = entrada.valor < 0n ? -entrada.valor : entrada.valor;
+  return [
+    {
+      id: `compensacion-cliente:${entrada.compensacionId}`,
+      fuente: "COMPENSACION",
+      rol: "CLIENTE",
+      lineaServicio: entrada.lineaServicio,
+      concepto: `Cruce · ${entrada.concepto}`,
+      fecha: entrada.fecha,
+      valor: -magnitud,
+      compensacionId: entrada.compensacionId,
+    },
+    {
+      id: `compensacion-proveedor:${entrada.compensacionId}`,
+      fuente: "COMPENSACION",
+      rol: "PROVEEDOR",
+      lineaServicio: entrada.lineaServicio,
+      concepto: `Cruce · ${entrada.concepto}`,
+      fecha: entrada.fecha,
+      valor: magnitud,
+      compensacionId: entrada.compensacionId,
+    },
+  ];
 }

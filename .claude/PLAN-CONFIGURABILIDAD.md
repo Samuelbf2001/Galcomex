@@ -603,3 +603,34 @@ un smoke MCP en vivo de 26 checks contra la app reconstruida en :3003.
 - Comisión automática por contenedor (Eltrans): el catálogo de eventos y la
   base de cálculo ya dan el número de contenedores; falta el consumidor de
   `comision_por_evento` que genere el `MovimientoCuenta` al cerrar el DO.
+
+## Cruce de saldos en la cuenta corriente (2026-09-10)
+
+Lo que Camila hace hoy a mano con Coldex (min 68:45): "meto esa factura aquí y la
+cruzo con lo que ellos nos deben, para no hacer doble transferencia". Ahora es
+una acción: **Cruzar saldos** en la sección Cuenta corriente de la ficha.
+
+- **Regla:** un cruce salda el mismo importe en las dos puntas sin que se mueva
+  plata. El neto de la cuenta no cambia; bajan los dos pendientes. Tope:
+  `maximoCompensable = min(pendienteCliente, pendienteProveedor)`.
+- **Pendientes netos por punta** (`pendienteCliente`, `pendienteProveedor`) se
+  agregaron a `calcularCuentaCorriente` porque `totalACargo/totalAFavor` son
+  flujos brutos (una factura de 10M con abono de 8M da 10M "a cargo"). Cada
+  asiento lleva ahora su `rol`; los que no lo traen lo deducen de la fuente.
+- **Cada punta se registra donde su módulo la lee**, para que cartera, el
+  trámite y la cuenta corriente cuenten lo mismo:
+  · punta cliente → `PagoFactura` ABONO sin canal ni costo (con
+    `compensacionId`) sobre la factura de venta elegida, o un ABONO manual con
+    origen `COMPENSACION`;
+  · punta proveedor → la `FacturaProveedor` elegida pasa a PAGADA (solo las
+    **no repercutibles**: las que se cobran al cliente necesitan el pago real del
+    libro), o un CARGO manual con origen `COMPENSACION`.
+- **Deshacer** retira las dos puntas (`DELETE …/compensaciones/[id]`).
+- Migración `20260910130000_compensacion` (aditiva): valor `COMPENSACION` en el
+  enum, `compensacionId` en `movimiento_cuenta`, `pago_factura` y
+  `factura_proveedor`. `registrarPagoFacturaAbono` y `eliminarPagoFactura`
+  aceptan un cliente de transacción externo.
+- MCP: `cuenta_compensar`, `cuenta_compensacion_eliminar`. Smoke en vivo con
+  Coldex: cargo de 1,5M como cliente contra la mensualidad de 4M, cruce, deshacer.
+- **Pendiente anotado (no se construye hasta respuesta):** orden de compra en la
+  revisión (Polired). Ver `PENDIENTES-MARIA-CAMILA.md`, pregunta 10.

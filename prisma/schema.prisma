@@ -165,6 +165,7 @@ enum OrigenMovimientoCuenta {
   CARGO_MANUAL
   COMISION
   AJUSTE
+  COMPENSACION // cruce de saldos: salda las dos puntas sin plata
 }
 
 model MovimientoCuenta {
@@ -191,10 +192,15 @@ model MovimientoCuenta {
   registradoPorId String
   registradoPor   User   @relation("MovimientosCuentaRegistrados", fields: [registradoPorId], references: [id])
 
+  /// Cruce de saldos que originó el asiento: agrupa las dos puntas de una
+  /// misma compensación (ver `registrarCompensacion`).
+  compensacionId String?
+
   createdAt DateTime @default(now())
 
   @@index([empresaId, rol])
   @@index([tramiteId])
+  @@index([compensacionId])
   @@map("movimiento_cuenta")
 }
 
@@ -640,6 +646,9 @@ model FacturaProveedor {
   /// desviación en el panel de validaciones.
   repercutible    Boolean                @default(true)
   estado          EstadoFacturaProveedor @default(REGISTRADA)
+  /// Pasó a PAGADA por cruce de saldos, sin pago del libro (solo facturas no
+  /// repercutibles: las que se le cobran al cliente necesitan el pago real).
+  compensacionId  String?
   documentoId     String?
   documento       Documento?             @relation("FacturaProveedorDoc", fields: [documentoId], references: [id])
   subidaPorId     String
@@ -961,10 +970,14 @@ model PagoFactura {
   estado          EstadoMovimiento @default(REALIZADO)
   registradoPorId String
   registradoPor   User             @relation("PagosFacturaRegistrados", fields: [registradoPorId], references: [id])
+  /// Abono por cruce de saldos (sin plata): tipoRecaudo y canalPago van en null
+  /// y el costo bancario es 0. Agrupa con la otra punta del cruce.
+  compensacionId  String?
   createdAt       DateTime         @default(now())
 
   @@index([facturaId])
   @@index([fecha])
+  @@index([compensacionId])
   @@map("pago_factura")
 }
 

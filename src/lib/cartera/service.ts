@@ -36,6 +36,10 @@ type RegistrarPagoFacturaInput = {
   canalPago?: CanalPago;
   comprobanteKey?: string | null;
   verificadoBanco?: boolean;
+  /** Abono por cruce de saldos (M5): sin canal ni costo bancario. */
+  compensacionId?: string | null;
+  /** Cliente de transacción cuando el abono es una punta de una operación mayor. */
+  tx?: Prisma.TransactionClient;
   usuarioId: string;
 };
 
@@ -142,10 +146,20 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
     return { ok: false as const, status: 400, message: "El monto debe ser mayor a 0" };
   }
 
-  // Validar que exactamente uno de (tipoRecaudo, canalPago) esté seteado
+  const esCompensacion = Boolean(input.compensacionId);
+
+  // Validar que exactamente uno de (tipoRecaudo, canalPago) esté seteado.
+  // Un abono por cruce de saldos no mueve plata: no lleva ninguno.
   const hasRecaudo = tipoRecaudo !== undefined;
   const hasCanal = canalPago !== undefined;
-  if (hasRecaudo === hasCanal) {
+  if (esCompensacion && (hasRecaudo || hasCanal)) {
+    return {
+      ok: false as const,
+      status: 400,
+      message: "Un abono por cruce de saldos no lleva tipoRecaudo ni canalPago.",
+    };
+  }
+  if (!esCompensacion && hasRecaudo === hasCanal) {
     return {
       ok: false as const,
       status: 400,
@@ -170,7 +184,7 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
 
   const lockKey = `pago_factura:${facturaId}:${destino}`;
 
-  return prisma.$transaction(async (tx) => {
+  const ejecutar = async (tx: Prisma.TransactionClient) => {
     // Advisory lock para evitar carreras bajo concurrencia
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
@@ -241,6 +255,7 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
         costoBancario,
         comprobanteKey: comprobanteKey ?? null,
         verificadoBanco: verificadoBanco ?? false,
+        compensacionId: input.compensacionId ?? null,
         registradoPorId: usuarioId,
       },
     });
@@ -291,6 +306,7 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
           tipoRecaudo: tipoRecaudo ?? null,
           canalPago: canalPago ?? null,
           costoBancario: costoBancario.toString(),
+          compensacionId: input.compensacionId ?? null,
           saldoNetoAntes: saldoNetoActual.toString(),
           saldoNetoNuevo: saldoNetoNuevo.toString(),
         }),
@@ -303,14 +319,22 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
       factura: facturaActualizada,
       saldoNeto: saldoNetoNuevo,
     };
-  });
+  };
+
+  // Dentro de una transacción ajena (cruce de saldos) se reutiliza el cliente;
+  // si no, se abre la propia.
+  return input.tx ? ejecutar(input.tx) : prisma.$transaction(ejecutar);
 }
 
 /**
  * Elimina un PagoFactura y recalcula saldoNeto + fechaPago del destino.
  */
-export async function eliminarPagoFactura(pagoId: string, usuarioId: string) {
-  return prisma.$transaction(async (tx) => {
+export async function eliminarPagoFactura(
+  pagoId: string,
+  usuarioId: string,
+  txExterna?: Prisma.TransactionClient,
+) {
+  const ejecutar = async (tx: Prisma.TransactionClient) => {
     const pago = await tx.pagoFactura.findUnique({
       where: { id: pagoId },
       include: { factura: true },
@@ -390,7 +414,9 @@ export async function eliminarPagoFactura(pagoId: string, usuarioId: string) {
       factura: facturaActualizada,
       saldoNeto: saldoNetoNuevo,
     };
-  });
+  };
+
+  return txExterna ? ejecutar(txExterna) : prisma.$transaction(ejecutar);
 }
 
 /**

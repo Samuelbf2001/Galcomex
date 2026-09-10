@@ -1,9 +1,11 @@
 "use client";
 
-import { AlertCircle, Loader2, Plus } from "lucide-react";
+import { AlertCircle, ArrowLeftRight, Loader2, Plus, Undo2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 
+import { CompensacionModal } from "@/components/clientes/compensacion-modal";
 import {
+  eliminarCompensacion,
   fetchCuentaCorriente,
   registrarMovimiento,
   type CuentaCorriente,
@@ -15,6 +17,7 @@ import { ModuleState } from "@/components/layout/module-state";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
 
 function formatCOP(valor: string): string {
@@ -52,6 +55,7 @@ const ETIQUETA_FUENTE: Record<string, string> = {
   CARGO_MANUAL: "Cargo manual",
   COMISION: "Comisión",
   AJUSTE: "Ajuste",
+  COMPENSACION: "Cruce de saldos",
 };
 
 const LINEAS_SERVICIO = ["TRAMITE", "CLASIFICACION", "PLAN_VALLEJO", "COMISION", "ASESORIA"];
@@ -218,7 +222,15 @@ function MovimientoModal({
   );
 }
 
-function FilaMovimiento({ movimiento }: { movimiento: MovimientoCuentaRow }) {
+function FilaMovimiento({
+  movimiento,
+  onDeshacer,
+  deshaciendo,
+}: {
+  movimiento: MovimientoCuentaRow;
+  onDeshacer?: (compensacionId: string) => void;
+  deshaciendo: boolean;
+}) {
   const aFavorNuestro = !movimiento.valor.startsWith("-");
 
   return (
@@ -226,6 +238,24 @@ function FilaMovimiento({ movimiento }: { movimiento: MovimientoCuentaRow }) {
       <td className="px-4 py-2.5 text-slate-600">{formatFecha(movimiento.fecha)}</td>
       <td className="px-4 py-2.5">
         <span className="font-medium text-slate-900">{movimiento.concepto}</span>
+        {movimiento.compensacionId ? (
+          <span className="ml-2 inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-semibold uppercase text-cyan-700">
+            <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />
+            cruce
+            {onDeshacer ? (
+              <button
+                type="button"
+                onClick={() => onDeshacer(movimiento.compensacionId ?? "")}
+                disabled={deshaciendo}
+                className="ml-1 inline-flex items-center gap-0.5 text-cyan-800 hover:underline disabled:opacity-50"
+                aria-label="Deshacer el cruce"
+              >
+                <Undo2 className="h-3 w-3" aria-hidden="true" />
+                deshacer
+              </button>
+            ) : null}
+          </span>
+        ) : null}
         <span className="mt-0.5 block text-xs text-slate-500">
           {ETIQUETA_FUENTE[movimiento.fuente] ?? movimiento.fuente}
           {movimiento.referencia ? ` · ${movimiento.referencia}` : ""}
@@ -259,7 +289,31 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [modalAbierto, setModalAbierto] = useState(false);
+  const [cruceAbierto, setCruceAbierto] = useState(false);
+  const [deshaciendo, setDeshaciendo] = useState<string | null>(null);
   const [verTodo, setVerTodo] = useState(false);
+  const { toast } = useToast();
+  const confirmar = useConfirm();
+
+  async function deshacerCruce(compensacionId: string) {
+    const ok = await confirmar({
+      title: "Deshacer el cruce",
+      description: "Se retiran las dos puntas: vuelve a deberse lo que se había cruzado.",
+      confirmText: "Deshacer",
+      variant: "danger",
+    });
+    if (!ok) return;
+    setDeshaciendo(compensacionId);
+    try {
+      const actualizada = await eliminarCompensacion(clienteId, compensacionId);
+      if (actualizada) setCuenta(actualizada);
+      toast({ title: "Cruce deshecho", variant: "success" });
+    } catch (caught) {
+      toast({ title: "No se pudo deshacer", description: describirError(caught), variant: "error" });
+    } finally {
+      setDeshaciendo(null);
+    }
+  }
 
   useEffect(() => {
     // Con criterio explícito: si el rol no puede, ni se consulta.
@@ -307,14 +361,30 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
           </p>
         </div>
         {puedeRegistrar && loadState === "ready" ? (
-          <button
-            type="button"
-            onClick={() => setModalAbierto(true)}
-            className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Registrar movimiento
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCruceAbierto(true)}
+              disabled={!cuenta || BigInt(cuenta.maximoCompensable) <= 0n}
+              title={
+                cuenta && BigInt(cuenta.maximoCompensable) <= 0n
+                  ? "Para cruzar, la empresa tiene que debernos y nosotros deberle a la vez"
+                  : undefined
+              }
+              className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ArrowLeftRight className="h-4 w-4" aria-hidden="true" />
+              Cruzar saldos
+            </button>
+            <button
+              type="button"
+              onClick={() => setModalAbierto(true)}
+              className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Registrar movimiento
+            </button>
+          </div>
         ) : null}
       </div>
 
@@ -412,7 +482,12 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
                 </thead>
                 <tbody>
                   {visibles.map((movimiento) => (
-                    <FilaMovimiento key={movimiento.id} movimiento={movimiento} />
+                    <FilaMovimiento
+                      key={movimiento.id}
+                      movimiento={movimiento}
+                      onDeshacer={puedeRegistrar ? deshacerCruce : undefined}
+                      deshaciendo={deshaciendo === movimiento.compensacionId}
+                    />
                   ))}
                 </tbody>
               </table>
@@ -440,6 +515,18 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
           clienteId={clienteId}
           onClose={() => setModalAbierto(false)}
           onGuardado={(actualizada) => setCuenta(actualizada)}
+        />
+      ) : null}
+
+      {cruceAbierto && puedeRegistrar && cuenta ? (
+        <CompensacionModal
+          clienteId={clienteId}
+          cuenta={cuenta}
+          onClose={() => setCruceAbierto(false)}
+          onGuardado={(actualizada) => {
+            setCuenta(actualizada);
+            toast({ title: "Saldos cruzados", variant: "success" });
+          }}
         />
       ) : null}
     </div>

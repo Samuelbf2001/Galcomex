@@ -6,8 +6,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   asientoDesde,
+  asientosDeCompensacion,
   calcularCuentaCorriente,
   describirNeto,
+  maximoCompensable,
   type AsientoCuenta,
   type FuenteAsiento,
 } from "@/lib/cuenta-corriente/calculo";
@@ -170,5 +172,64 @@ describe("calcularCuentaCorriente", () => {
     ]);
 
     expect(resumen.neto).toBe(3_357_958n);
+  });
+});
+
+describe("cruce de saldos (compensación)", () => {
+
+  it("maximoCompensable es el pendiente menor, y cero si alguna punta no debe", () => {
+    expect(maximoCompensable({ pendienteCliente: 1_500_000n, pendienteProveedor: 4_000_000n })).toBe(1_500_000n);
+    expect(maximoCompensable({ pendienteCliente: 9_000_000n, pendienteProveedor: 4_000_000n })).toBe(4_000_000n);
+    expect(maximoCompensable({ pendienteCliente: 0n, pendienteProveedor: 4_000_000n })).toBe(0n);
+    expect(maximoCompensable({ pendienteCliente: 2_000_000n, pendienteProveedor: -300_000n })).toBe(0n);
+  });
+
+  it("los pendientes son netos por punta, no flujos brutos", () => {
+    // Le facturamos 10M y nos abonó 8M: bruto 10M / 8M, pero solo nos debe 2M.
+    const resumen = calcularCuentaCorriente([
+      asiento("FACTURA_VENTA", 10_000_000n),
+      asiento("ABONO_CLIENTE", 8_000_000n),
+      asiento("FACTURA_PROVEEDOR", 3_000_000n),
+      asiento("PAGO_PROVEEDOR", 500_000n),
+    ]);
+    expect(resumen.totalACargo).toBe(10_500_000n);
+    expect(resumen.totalAFavor).toBe(11_000_000n);
+    expect(resumen.pendienteCliente).toBe(2_000_000n);
+    expect(resumen.pendienteProveedor).toBe(2_500_000n);
+    expect(resumen.neto).toBe(resumen.pendienteCliente - resumen.pendienteProveedor);
+    expect(maximoCompensable(resumen)).toBe(2_000_000n);
+  });
+
+  it("las dos puntas del cruce bajan cada lado por el mismo importe y el neto no cambia", () => {
+    // Coldex: nos debe 1.500.000 (liberación de BL) y le debemos 4.000.000 (mensualidad).
+    const base = [
+      asiento("FACTURA_VENTA", 1_500_000n, { concepto: "Liberación de BL" }),
+      asiento("CARGO_MANUAL", 4_000_000n, { concepto: "Mensualidad" }),
+    ];
+    const antes = calcularCuentaCorriente(base);
+    expect(antes.pendienteCliente).toBe(1_500_000n);
+    expect(antes.pendienteProveedor).toBe(4_000_000n);
+    expect(antes.neto).toBe(-2_500_000n);
+
+    const cruce = asientosDeCompensacion({
+      compensacionId: "c1",
+      valor: 1_500_000n,
+      fecha: new Date("2026-03-15"),
+      concepto: "Liberación de BL contra mensualidad",
+      lineaServicio: "TRAMITE",
+    });
+    const despues = calcularCuentaCorriente([...base, ...cruce]);
+    expect(despues.pendienteCliente).toBe(0n);
+    expect(despues.pendienteProveedor).toBe(2_500_000n);
+    expect(despues.neto).toBe(antes.neto);
+    // En bruto, el cruce cuenta como un abono y un pago: no se pierde el rastro.
+    expect(despues.totalACargo).toBe(3_000_000n);
+    expect(despues.totalAFavor).toBe(5_500_000n);
+    expect(cruce.every((a) => a.compensacionId === "c1")).toBe(true);
+  });
+
+  it("asientoDesde conserva el signo de COMPENSACION", () => {
+    expect(asiento("COMPENSACION", -700_000n).valor).toBe(-700_000n);
+    expect(asiento("COMPENSACION", 700_000n).valor).toBe(700_000n);
   });
 });
