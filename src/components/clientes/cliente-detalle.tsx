@@ -1,32 +1,31 @@
 "use client";
 
-import {
-  CheckCircle2,
-  ExternalLink,
-  Loader2,
-  Pencil,
-  Plus,
-  RotateCcw,
-  X,
-} from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, Pencil, Plus, RotateCcw } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
-import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
-import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
-import { ModuleState } from "@/components/layout/module-state";
 import {
   ClientesApiError,
+  erroresPorCampo,
   fetchClienteDetalle,
   updateCliente,
   upsertTarifa,
   type AnticipoResumen,
   type ClienteDetalle,
+  type DetalleValidacion,
   type FacturaResumen,
   type TarifaCliente,
   type TramiteResumen,
   type UpdateClienteInput,
 } from "@/components/clientes/clientes-api";
+import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
+import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
+import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
+import { ModuleState } from "@/components/layout/module-state";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { CardsSkeleton, Skeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useEsAdmin } from "@/lib/auth/rol-context";
 
 // ---------------------------------------------------------------------------
 // Helpers de formato
@@ -82,6 +81,17 @@ function estadoBadgeClass(estado: string): string {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
+/** Para el modal de tarifa el path de Zod es `tarifas.N.valor`: mapea por último segmento. */
+function erroresTarifa(details?: DetalleValidacion[]): Record<string, string> {
+  const mapa: Record<string, string> = {};
+  for (const d of details ?? []) {
+    const partes = d.campo.split(".");
+    const hoja = partes[partes.length - 1] || d.campo;
+    if (!(hoja in mapa)) mapa[hoja] = d.mensaje;
+  }
+  return mapa;
+}
+
 // ---------------------------------------------------------------------------
 // Sub-componente: modal editar cliente
 // ---------------------------------------------------------------------------
@@ -93,12 +103,16 @@ type EditClienteModalProps = {
 };
 
 function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) {
+  const { toast } = useToast();
+  const formId = useId();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errores, setErrores] = useState<Record<string, string>>({});
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
+    setErrores({});
     setIsSubmitting(true);
 
     const fd = new FormData(e.currentTarget);
@@ -118,168 +132,185 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
 
     try {
       const updated = await updateCliente(cliente.id, input);
+      toast({ title: "Cliente actualizado", description: updated.nombre, variant: "success" });
       onSaved({ ...cliente, ...updated });
     } catch (caught) {
+      const mensaje = describirError(caught, "No fue posible guardar los cambios.");
       if (caught instanceof ClientesApiError && caught.details?.length) {
-        setError(caught.details.map((d) => `${d.campo}: ${d.mensaje}`).join(" · "));
+        setErrores(erroresPorCampo(caught.details));
+        setError("Revisa los campos marcados.");
       } else {
-        setError(caught instanceof Error ? caught.message : "No fue posible guardar los cambios.");
+        setError(mensaje);
       }
+      toast({ title: "No se pudo guardar el cliente", description: mensaje, variant: "error" });
     } finally {
       setIsSubmitting(false);
     }
   }
 
+  const campo = (nombre: string) => ({
+    invalido: Boolean(errores[nombre]),
+    describedBy: errores[nombre] ? `${formId}-${nombre}-error` : undefined,
+    errorId: `${formId}-${nombre}-error`,
+  });
+
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-2xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Editar cliente</h2>
-            <p className="mt-1 text-sm text-slate-500">{cliente.nombre}</p>
-          </div>
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Editar cliente"
+      description={cliente.nombre}
+      size="lg"
+      dismissible={!isSubmitting}
+      footer={
+        <>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
+            disabled={isSubmitting}
+            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
           >
-            <X className="h-4 w-4" aria-hidden="true" />
+            Cancelar
           </button>
+          <button
+            type="submit"
+            form={formId}
+            disabled={isSubmitting}
+            className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+          >
+            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            {isSubmitting ? "Guardando…" : "Guardar cambios"}
+          </button>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Nombre / Razón social *</span>
+            <input
+              name="nombre"
+              required
+              defaultValue={cliente.nombre}
+              aria-invalid={campo("nombre").invalido || undefined}
+              aria-describedby={campo("nombre").describedBy}
+              className={claseCampo(campo("nombre").invalido)}
+            />
+            <MensajeCampo id={campo("nombre").errorId} error={errores.nombre} />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">NIT *</span>
+            <input
+              name="nit"
+              required
+              defaultValue={cliente.nit}
+              aria-invalid={campo("nit").invalido || undefined}
+              aria-describedby={campo("nit").describedBy}
+              className={claseCampo(campo("nit").invalido)}
+            />
+            <MensajeCampo id={campo("nit").errorId} error={errores.nit} />
+          </label>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Nombre / Razon social *</span>
-              <input
-                name="nombre"
-                required
-                defaultValue={cliente.nombre}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">NIT *</span>
-              <input
-                name="nit"
-                required
-                defaultValue={cliente.nit}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-3">
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Tipo</span>
-              <select
-                name="tipo"
-                defaultValue={cliente.tipo}
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-              >
-                <option value="PROPIO">Propio</option>
-                <option value="SOCIO_LM">Socio LM</option>
-              </select>
-            </label>
-            <label className="space-y-1.5 md:col-span-2">
-              <span className="text-sm font-medium text-slate-700">Nombre contacto</span>
-              <input
-                name="contactoNombre"
-                defaultValue={cliente.contactoNombre ?? ""}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Email contacto</span>
-              <input
-                name="contactoEmail"
-                type="email"
-                defaultValue={cliente.contactoEmail ?? ""}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Telefono contacto</span>
-              <input
-                name="contactoTel"
-                defaultValue={cliente.contactoTel ?? ""}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-          </div>
-
-          <div className="flex gap-6">
-            <label className="flex items-center gap-2">
-              <input
-                name="manejaAnticipo"
-                type="checkbox"
-                defaultChecked={cliente.manejaAnticipo}
-                className="h-4 w-4"
-              />
-              <span className="text-sm text-slate-700">Maneja anticipo</span>
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                name="activo"
-                type="checkbox"
-                defaultChecked={cliente.activo}
-                className="h-4 w-4"
-              />
-              <span className="text-sm text-slate-700">Activo</span>
-            </label>
-            {/* Roles simultáneos (M5): Ascinter, Coldex y Eltrans son las dos cosas. */}
-            <label className="flex items-center gap-2">
-              <input
-                name="esCliente"
-                type="checkbox"
-                defaultChecked={cliente.esCliente !== false}
-                className="h-4 w-4"
-              />
-              <span className="text-sm text-slate-700">Es cliente</span>
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                name="esProveedor"
-                type="checkbox"
-                defaultChecked={cliente.esProveedor === true}
-                className="h-4 w-4"
-              />
-              <span className="text-sm text-slate-700">Es proveedor</span>
-            </label>
-          </div>
-
-          {error ? (
-            <div className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
-            </div>
-          ) : null}
-
-          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+        <div className="grid gap-4 md:grid-cols-3">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Tipo</span>
+            <select
+              name="tipo"
+              defaultValue={cliente.tipo}
+              aria-invalid={campo("tipo").invalido || undefined}
+              className={claseCampo(campo("tipo").invalido, "bg-white")}
             >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
-            >
-              {isSubmitting ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : null}
-              Guardar cambios
-            </button>
+              <option value="PROPIO">Propio</option>
+              <option value="SOCIO_LM">Socio LM</option>
+            </select>
+            <MensajeCampo id={campo("tipo").errorId} error={errores.tipo} />
+          </label>
+          <label className="space-y-1.5 md:col-span-2">
+            <span className="text-sm font-medium text-slate-700">Nombre contacto</span>
+            <input
+              name="contactoNombre"
+              defaultValue={cliente.contactoNombre ?? ""}
+              aria-invalid={campo("contactoNombre").invalido || undefined}
+              className={claseCampo(campo("contactoNombre").invalido)}
+            />
+            <MensajeCampo id={campo("contactoNombre").errorId} error={errores.contactoNombre} />
+          </label>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Email contacto</span>
+            <input
+              name="contactoEmail"
+              type="email"
+              defaultValue={cliente.contactoEmail ?? ""}
+              aria-invalid={campo("contactoEmail").invalido || undefined}
+              aria-describedby={campo("contactoEmail").describedBy}
+              className={claseCampo(campo("contactoEmail").invalido)}
+            />
+            <MensajeCampo id={campo("contactoEmail").errorId} error={errores.contactoEmail} />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Teléfono contacto</span>
+            <input
+              name="contactoTel"
+              defaultValue={cliente.contactoTel ?? ""}
+              aria-invalid={campo("contactoTel").invalido || undefined}
+              aria-describedby={campo("contactoTel").describedBy}
+              className={claseCampo(campo("contactoTel").invalido)}
+            />
+            <MensajeCampo id={campo("contactoTel").errorId} error={errores.contactoTel} />
+          </label>
+        </div>
+
+        <div className="flex flex-wrap gap-6">
+          <label className="flex items-center gap-2">
+            <input
+              name="manejaAnticipo"
+              type="checkbox"
+              defaultChecked={cliente.manejaAnticipo}
+              className="h-4 w-4"
+            />
+            <span className="text-sm text-slate-700">Maneja anticipo</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              name="activo"
+              type="checkbox"
+              defaultChecked={cliente.activo}
+              className="h-4 w-4"
+            />
+            <span className="text-sm text-slate-700">Activo</span>
+          </label>
+          {/* Roles simultáneos (M5): Ascinter, Coldex y Eltrans son las dos cosas. */}
+          <label className="flex items-center gap-2">
+            <input
+              name="esCliente"
+              type="checkbox"
+              defaultChecked={cliente.esCliente !== false}
+              className="h-4 w-4"
+            />
+            <span className="text-sm text-slate-700">Es cliente</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              name="esProveedor"
+              type="checkbox"
+              defaultChecked={cliente.esProveedor === true}
+              className="h-4 w-4"
+            />
+            <span className="text-sm text-slate-700">Es proveedor</span>
+          </label>
+        </div>
+
+        {error ? (
+          <div role="alert" className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {error}
           </div>
-        </form>
-      </div>
-    </div>
+        ) : null}
+      </form>
+    </ModalShell>
   );
 }
 
@@ -295,12 +326,16 @@ type TarifaModalProps = {
 };
 
 function TarifaModal({ clienteId, initial, onClose, onSaved }: TarifaModalProps) {
+  const { toast } = useToast();
+  const formId = useId();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errores, setErrores] = useState<Record<string, string>>({});
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
+    setErrores({});
     setIsSubmitting(true);
 
     const fd = new FormData(e.currentTarget);
@@ -318,103 +353,116 @@ function TarifaModal({ clienteId, initial, onClose, onSaved }: TarifaModalProps)
 
     try {
       const updated = await upsertTarifa(clienteId, tarifa);
+      toast({
+        title: initial ? "Tarifa actualizada" : "Tarifa agregada",
+        description: `${tarifa.anio} · ${tipoLabel(tarifa.tipo)} · ${formatCOP(tarifa.valor)}`,
+        variant: "success",
+      });
       onSaved(updated.tarifas);
     } catch (caught) {
+      const mensaje = describirError(caught, "No fue posible guardar la tarifa.");
       if (caught instanceof ClientesApiError && caught.details?.length) {
-        setError(caught.details.map((d) => `${d.campo}: ${d.mensaje}`).join(" · "));
+        setErrores(erroresTarifa(caught.details));
+        setError("Revisa los campos marcados.");
       } else {
-        setError(caught instanceof Error ? caught.message : "No fue posible guardar la tarifa.");
+        setError(mensaje);
       }
+      toast({ title: "No se pudo guardar la tarifa", description: mensaje, variant: "error" });
     } finally {
       setIsSubmitting(false);
     }
   }
 
+  const campo = (nombre: string) => ({
+    invalido: Boolean(errores[nombre]),
+    describedBy: errores[nombre] ? `${formId}-${nombre}-error` : undefined,
+    errorId: `${formId}-${nombre}-error`,
+  });
+
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-md border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-950">
-            {initial ? "Editar tarifa" : "Agregar tarifa"}
-          </h2>
+    <ModalShell
+      open
+      onClose={onClose}
+      title={initial ? "Editar tarifa" : "Agregar tarifa"}
+      size="sm"
+      dismissible={!isSubmitting}
+      footer={
+        <>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
+            disabled={isSubmitting}
+            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
           >
-            <X className="h-4 w-4" aria-hidden="true" />
+            Cancelar
           </button>
+          <button
+            type="submit"
+            form={formId}
+            disabled={isSubmitting}
+            className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+          >
+            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            {isSubmitting ? "Guardando…" : "Guardar tarifa"}
+          </button>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Año</span>
+            <input
+              name="anio"
+              type="number"
+              min="2020"
+              max="2100"
+              required
+              defaultValue={initial?.anio ?? new Date().getFullYear()}
+              aria-invalid={campo("anio").invalido || undefined}
+              aria-describedby={campo("anio").describedBy}
+              className={claseCampo(campo("anio").invalido)}
+            />
+            <MensajeCampo id={campo("anio").errorId} error={errores.anio} />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Tipo tarifa</span>
+            <select
+              name="tipo"
+              defaultValue={initial?.tipo ?? "fijo"}
+              aria-invalid={campo("tipo").invalido || undefined}
+              className={claseCampo(campo("tipo").invalido, "bg-white")}
+            >
+              <option value="fijo">Fijo</option>
+              <option value="por_contenedor">Por contenedor</option>
+              <option value="porcentaje_cif">% sobre CIF</option>
+            </select>
+            <MensajeCampo id={campo("tipo").errorId} error={errores.tipo} />
+          </label>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Ano</span>
-              <input
-                name="anio"
-                type="number"
-                min="2020"
-                max="2100"
-                required
-                defaultValue={initial?.anio ?? new Date().getFullYear()}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Tipo tarifa</span>
-              <select
-                name="tipo"
-                defaultValue={initial?.tipo ?? "fijo"}
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-              >
-                <option value="fijo">Fijo</option>
-                <option value="por_contenedor">Por contenedor</option>
-                <option value="porcentaje_cif">% sobre CIF</option>
-              </select>
-            </label>
+        <label className="space-y-1.5">
+          <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
+          <input
+            name="valor"
+            required
+            inputMode="numeric"
+            defaultValue={initial?.valor ?? ""}
+            placeholder="150000"
+            aria-invalid={campo("valor").invalido || undefined}
+            aria-describedby={campo("valor").describedBy}
+            className={claseCampo(campo("valor").invalido)}
+          />
+          <MensajeCampo id={campo("valor").errorId} error={errores.valor} />
+        </label>
+
+        {error ? (
+          <div role="alert" className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {error}
           </div>
-
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
-            <input
-              name="valor"
-              required
-              inputMode="numeric"
-              defaultValue={initial?.valor ?? ""}
-              placeholder="150000"
-              className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-            />
-          </label>
-
-          {error ? (
-            <div className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
-            </div>
-          ) : null}
-
-          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
-            >
-              {isSubmitting ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : null}
-              Guardar tarifa
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        ) : null}
+      </form>
+    </ModalShell>
   );
 }
 
@@ -425,10 +473,13 @@ function TarifaModal({ clienteId, initial, onClose, onSaved }: TarifaModalProps)
 function SeccionTarifas({
   clienteId,
   tarifas,
+  puedeEditar,
   onTarifasChanged,
 }: {
   clienteId: string;
   tarifas: TarifaCliente[];
+  /** `PATCH /api/clientes/[id]` es solo ADMIN: sin permiso no se muestran los botones. */
+  puedeEditar: boolean;
   onTarifasChanged: (tarifas: TarifaCliente[]) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
@@ -448,29 +499,33 @@ function SeccionTarifas({
     <div className="overflow-hidden border border-slate-200 bg-white">
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
         <p className="text-sm font-semibold text-slate-900">Tarifas ({tarifas.length})</p>
-        <button
-          type="button"
-          onClick={openNew}
-          className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          Agregar tarifa
-        </button>
+        {puedeEditar ? (
+          <button
+            type="button"
+            onClick={openNew}
+            className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Agregar tarifa
+          </button>
+        ) : (
+          <span className="text-xs text-slate-500">Solo ADMIN edita tarifas</span>
+        )}
       </div>
 
       <table className="w-full border-collapse text-left text-sm">
         <thead className="bg-slate-50 text-xs uppercase text-slate-500">
           <tr>
-            <th className="border-b border-slate-200 px-4 py-3">Ano</th>
+            <th className="border-b border-slate-200 px-4 py-3">Año</th>
             <th className="border-b border-slate-200 px-4 py-3">Tipo</th>
             <th className="border-b border-slate-200 px-4 py-3 text-right">Valor (COP)</th>
-            <th className="border-b border-slate-200 px-4 py-3 w-14"></th>
+            {puedeEditar ? <th className="border-b border-slate-200 px-4 py-3 w-14"></th> : null}
           </tr>
         </thead>
         <tbody>
           {tarifas.length === 0 ? (
             <tr>
-              <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
+              <td colSpan={puedeEditar ? 4 : 3} className="px-4 py-8 text-center text-slate-500">
                 Sin tarifas registradas
               </td>
             </tr>
@@ -485,24 +540,26 @@ function SeccionTarifas({
                 <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
                   {formatCOP(tarifa.valor)}
                 </td>
-                <td className="px-4 py-3">
-                  <button
-                    type="button"
-                    onClick={() => openEdit(tarifa)}
-                    className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-cyan-700"
-                    aria-label="Editar tarifa"
-                    title="Editar tarifa"
-                  >
-                    <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                  </button>
-                </td>
+                {puedeEditar ? (
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => openEdit(tarifa)}
+                      className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-cyan-700"
+                      aria-label={`Editar tarifa ${tarifa.anio} ${tipoLabel(tarifa.tipo)}`}
+                      title="Editar tarifa"
+                    >
+                      <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </td>
+                ) : null}
               </tr>
             ))
           )}
         </tbody>
       </table>
 
-      {modalOpen ? (
+      {modalOpen && puedeEditar ? (
         <TarifaModal
           clienteId={clienteId}
           initial={editingTarifa}
@@ -518,14 +575,14 @@ function SeccionTarifas({
 }
 
 // ---------------------------------------------------------------------------
-// Sub-componente: sección de tramites
+// Sub-componente: sección de trámites
 // ---------------------------------------------------------------------------
 
 function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
   return (
     <div className="overflow-hidden border border-slate-200 bg-white">
       <div className="border-b border-slate-200 px-4 py-3">
-        <p className="text-sm font-semibold text-slate-900">Tramites ({tramites.length})</p>
+        <p className="text-sm font-semibold text-slate-900">Trámites ({tramites.length})</p>
       </div>
 
       <table className="w-full border-collapse text-left text-sm">
@@ -541,7 +598,7 @@ function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
           {tramites.length === 0 ? (
             <tr>
               <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
-                Sin tramites registrados
+                Sin trámites registrados
               </td>
             </tr>
           ) : (
@@ -565,8 +622,8 @@ function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
                   <Link
                     href={`/tramites/${tramite.id}`}
                     className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-cyan-700"
-                    aria-label={`Ver tramite ${tramite.consecutivo}`}
-                    title="Ver tramite"
+                    aria-label={`Ver trámite ${tramite.consecutivo}`}
+                    title="Ver trámite"
                   >
                     <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
                   </Link>
@@ -646,7 +703,11 @@ function SeccionAnticipos({ anticipos }: { anticipos: AnticipoResumen[] }) {
                   <td className="px-4 py-3 text-xs text-slate-600">{anticipo.canalPago}</td>
                   <td className="px-4 py-3">
                     {anticipo.verificadoBanco ? (
-                      <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+                      <CheckCircle2
+                        className="h-4 w-4 text-emerald-600"
+                        aria-label="Verificado en banco"
+                        role="img"
+                      />
                     ) : (
                       <span className="text-xs text-slate-400">Pendiente</span>
                     )}
@@ -727,9 +788,12 @@ function SeccionFacturas({ facturas }: { facturas: FacturaResumen[] }) {
 
 function ClienteCabecera({
   cliente,
+  puedeEditar,
   onEdit,
 }: {
   cliente: ClienteDetalle;
+  /** `PATCH /api/clientes/[id]` es solo ADMIN. */
+  puedeEditar: boolean;
   onEdit: () => void;
 }) {
   return (
@@ -738,7 +802,7 @@ function ClienteCabecera({
         <div className="flex flex-wrap gap-x-8 gap-y-3">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Nombre / Razon social
+              Nombre / Razón social
             </p>
             <p className="mt-0.5 text-lg font-bold text-slate-950">{cliente.nombre}</p>
           </div>
@@ -776,14 +840,16 @@ function ClienteCabecera({
           ) : null}
         </div>
 
-        <button
-          type="button"
-          onClick={onEdit}
-          className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-        >
-          <Pencil className="h-4 w-4" aria-hidden="true" />
-          Editar
-        </button>
+        {puedeEditar ? (
+          <button
+            type="button"
+            onClick={onEdit}
+            className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+          >
+            <Pencil className="h-4 w-4" aria-hidden="true" />
+            Editar
+          </button>
+        ) : null}
       </div>
 
       {(cliente.contactoNombre || cliente.contactoEmail || cliente.contactoTel) ? (
@@ -813,12 +879,76 @@ function ClienteCabecera({
 }
 
 // ---------------------------------------------------------------------------
+// Skeleton de la ficha: reserva alturas parecidas al contenido real para que
+// el salto al llegar los datos sea mínimo (CLS medido antes: 0,25).
+// ---------------------------------------------------------------------------
+
+function SeccionSkeleton({ rows, cols, rowHeight }: { rows: number; cols: number; rowHeight?: number }) {
+  return (
+    <div className="overflow-hidden border border-slate-200 bg-white">
+      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <Skeleton className="h-4 w-32" />
+        <Skeleton className="h-9 w-32" />
+      </div>
+      <TableSkeleton rows={rows} cols={cols} rowHeight={rowHeight} />
+    </div>
+  );
+}
+
+function FichaSkeleton() {
+  return (
+    <section className="space-y-4" aria-busy="true" aria-label="Cargando ficha del cliente">
+      {/* Cabecera: 4 datos en fila + línea de contacto (≈ 112 px). */}
+      <div className="border border-slate-200 bg-white px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex flex-wrap gap-x-8 gap-y-3">
+            <div>
+              <Skeleton className="h-3 w-32" />
+              <Skeleton className="mt-2 h-6 w-56" />
+            </div>
+            {[0, 1, 2].map((i) => (
+              <div key={i}>
+                <Skeleton className="h-3 w-12" />
+                <Skeleton className="mt-2 h-5 w-24" />
+              </div>
+            ))}
+          </div>
+          <Skeleton className="h-9 w-24" />
+        </div>
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <Skeleton className="h-4 w-80 max-w-full" />
+        </div>
+      </div>
+      <div className="flex justify-end">
+        <Skeleton className="h-9 w-28" />
+      </div>
+      {/* Funciones (filas altas), cuenta corriente (3 KPI + tabla) y las 4 tablas. */}
+      <SeccionSkeleton rows={4} cols={3} rowHeight={72} />
+      <div className="overflow-hidden border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 px-4 py-3">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="mt-2 h-3 w-96 max-w-full" />
+        </div>
+        <CardsSkeleton count={3} height={72} />
+        <TableSkeleton rows={4} cols={4} />
+      </div>
+      <SeccionSkeleton rows={2} cols={3} />
+      <SeccionSkeleton rows={4} cols={4} />
+      <SeccionSkeleton rows={3} cols={6} />
+      <SeccionSkeleton rows={3} cols={6} />
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Componente principal exportado
 // ---------------------------------------------------------------------------
 
 type LoadState = "loading" | "ready" | "error";
 
 export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
+  // Editar cliente y tarifas pega a `PATCH /api/clientes/[id]` (solo ADMIN).
+  const puedeEditar = useEsAdmin();
   const [cliente, setCliente] = useState<ClienteDetalle | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -837,7 +967,7 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
         setLoadState("ready");
       } catch (caught: unknown) {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setLoadError(caught instanceof Error ? caught.message : "Error al cargar el cliente.");
+        setLoadError(describirError(caught, "Error al cargar el cliente."));
         setLoadState("error");
       }
     }
@@ -846,8 +976,10 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
     return () => controller.abort();
   }, [clienteId, reloadKey]);
 
+  const recargar = () => setReloadKey((k) => k + 1);
+
   if (loadState === "loading") {
-    return <ModuleState type="loading" title="Cargando ficha del cliente" />;
+    return <FichaSkeleton />;
   }
 
   if (loadState === "error" || !cliente) {
@@ -856,18 +988,23 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
         type="error"
         title="No fue posible cargar el cliente"
         detail={loadError ?? undefined}
+        action={{ label: "Reintentar", onClick: recargar }}
       />
     );
   }
 
   return (
     <section className="space-y-4">
-      <ClienteCabecera cliente={cliente} onEdit={() => setEditModalOpen(true)} />
+      <ClienteCabecera
+        cliente={cliente}
+        puedeEditar={puedeEditar}
+        onEdit={() => setEditModalOpen(true)}
+      />
 
       <div className="flex justify-end">
         <button
           type="button"
-          onClick={() => setReloadKey((k) => k + 1)}
+          onClick={recargar}
           className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
         >
           <RotateCcw className="h-4 w-4" aria-hidden="true" />
@@ -882,6 +1019,7 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
       <SeccionTarifas
         clienteId={cliente.id}
         tarifas={cliente.tarifas}
+        puedeEditar={puedeEditar}
         onTarifasChanged={(tarifas) => setCliente((prev) => (prev ? { ...prev, tarifas } : prev))}
       />
 
@@ -891,7 +1029,7 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
 
       <SeccionFacturas facturas={cliente.facturas} />
 
-      {editModalOpen ? (
+      {editModalOpen && puedeEditar ? (
         <EditClienteModal
           cliente={cliente}
           onClose={() => setEditModalOpen(false)}

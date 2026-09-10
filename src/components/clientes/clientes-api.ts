@@ -70,11 +70,13 @@ export type UpdateClienteInput = Partial<
   CreateClienteInput & { activo: boolean }
 >;
 
+export type DetalleValidacion = { campo: string; mensaje: string };
+
 export class ClientesApiError extends Error {
   status?: number;
-  details?: { campo: string; mensaje: string }[];
+  details?: DetalleValidacion[];
 
-  constructor(message: string, status?: number, details?: { campo: string; mensaje: string }[]) {
+  constructor(message: string, status?: number, details?: DetalleValidacion[]) {
     super(message);
     this.name = "ClientesApiError";
     this.status = status;
@@ -82,8 +84,32 @@ export class ClientesApiError extends Error {
   }
 }
 
+/**
+ * Convierte los `details` de Zod (`{ campo: "tarifas.0.valor", mensaje }`) en
+ * un mapa por campo raíz (`tarifas`) para pintarlos junto al input.
+ * Si el mismo campo trae varios mensajes se conserva el primero.
+ */
+export function erroresPorCampo(details?: DetalleValidacion[]): Record<string, string> {
+  const mapa: Record<string, string> = {};
+  for (const d of details ?? []) {
+    const raiz = d.campo.split(".")[0] || d.campo;
+    if (!(raiz in mapa)) mapa[raiz] = d.mensaje;
+  }
+  return mapa;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function leerDetalles(payload: Record<string, unknown>): DetalleValidacion[] | undefined {
+  if (!Array.isArray(payload.details)) return undefined;
+  return payload.details
+    .filter(isRecord)
+    .map((d) => ({
+      campo: typeof d.campo === "string" ? d.campo : "",
+      mensaje: typeof d.mensaje === "string" ? d.mensaje : "Valor inválido",
+    }));
 }
 
 function normalizeCliente(row: unknown): ClienteRow | null {
@@ -132,7 +158,12 @@ export async function fetchClientes(signal?: AbortSignal): Promise<ClienteRow[]>
   });
 
   if (!response.ok) {
-    throw new ClientesApiError("No fue posible cargar los clientes.", response.status);
+    const payload: unknown = await response.json().catch(() => null);
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : "No fue posible cargar los clientes.";
+    throw new ClientesApiError(message, response.status);
   }
 
   const payload: unknown = await response.json();
@@ -246,7 +277,7 @@ export async function fetchClienteDetalle(
   const cliente = isRecord(payload) ? normalizeClienteDetalle(payload.cliente) : null;
 
   if (!cliente) {
-    throw new ClientesApiError("La respuesta del servidor no es valida.");
+    throw new ClientesApiError("La respuesta del servidor no es válida.");
   }
 
   return cliente;
@@ -266,12 +297,9 @@ export async function updateCliente(
 
   if (!response.ok) {
     if (isRecord(payload)) {
-      const details = Array.isArray(payload.details)
-        ? (payload.details as { campo: string; mensaje: string }[])
-        : undefined;
       const message =
         typeof payload.error === "string" ? payload.error : "No fue posible actualizar el cliente.";
-      throw new ClientesApiError(message, response.status, details);
+      throw new ClientesApiError(message, response.status, leerDetalles(payload));
     }
     throw new ClientesApiError("No fue posible actualizar el cliente.", response.status);
   }
@@ -279,7 +307,7 @@ export async function updateCliente(
   const cliente = isRecord(payload) ? normalizeCliente(payload.cliente) : null;
 
   if (!cliente) {
-    throw new ClientesApiError("La respuesta de actualizacion no es valida.");
+    throw new ClientesApiError("La respuesta de actualización no es válida.");
   }
 
   return cliente;
@@ -316,12 +344,9 @@ export async function createCliente(input: CreateClienteInput): Promise<ClienteR
 
   if (!response.ok) {
     if (isRecord(payload)) {
-      const details = Array.isArray(payload.details)
-        ? (payload.details as { campo: string; mensaje: string }[])
-        : undefined;
       const message =
         typeof payload.error === "string" ? payload.error : "No fue posible crear el cliente.";
-      throw new ClientesApiError(message, response.status, details);
+      throw new ClientesApiError(message, response.status, leerDetalles(payload));
     }
 
     throw new ClientesApiError("No fue posible crear el cliente.", response.status);
@@ -330,7 +355,7 @@ export async function createCliente(input: CreateClienteInput): Promise<ClienteR
   const cliente = isRecord(payload) ? normalizeCliente(payload.cliente) : null;
 
   if (!cliente) {
-    throw new ClientesApiError("La respuesta de creacion no es valida.");
+    throw new ClientesApiError("La respuesta de creación no es válida.");
   }
 
   return cliente;

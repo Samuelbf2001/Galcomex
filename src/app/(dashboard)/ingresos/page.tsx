@@ -1,11 +1,22 @@
 import { Suspense } from "react";
 
 import { IngresosWorkspace } from "@/components/ingresos/ingresos-workspace";
-import { ModuleState } from "@/components/layout/module-state";
+import { WorkspaceFallback } from "@/components/layout/workspace-fallback";
+import { exigirAccesoPagina } from "@/lib/auth/page-guard";
 
-export default function IngresosPage() {
+export default async function IngresosPage() {
+  await exigirAccesoPagina("/ingresos");
   return (
-    <Suspense fallback={<ModuleState type="loading" title="Cargando ingresos…" />}>
+    <Suspense
+      fallback={
+        <WorkspaceFallback
+          titulo="Ingresos"
+          subtitulo="Libro de bancos unificado: anticipos, abonos de factura y devoluciones."
+          filtros={3}
+          tarjetas={3}
+        />
+      }
+    >
       <IngresosWorkspace />
     </Suspense>
   );

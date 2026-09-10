@@ -45,6 +45,8 @@ model Session {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+  @@index([expiresAt])
   @@map("session")
 }
 
@@ -410,6 +412,9 @@ model TramiteDO {
   // arancelaria no consume consecutivos de importación.
   @@unique([tipoTramiteCodigo, ciudad, anio, numero])
   @@index([tipoTramiteCodigo])
+  @@index([clienteId])
+  @@index([estado])
+  @@index([estado, fechaSalidaCarga])
   @@map("tramite_do")
 }
 
@@ -422,6 +427,7 @@ model EstadoLog {
   usuarioId   String
   createdAt   DateTime      @default(now())
 
+  @@index([tramiteId])
   @@map("estado_log")
 }
 
@@ -456,6 +462,7 @@ model ChecklistItem {
   validadoPor     User?     @relation("ValidadoPor", fields: [validadoPorId], references: [id])
   fechaValidacion DateTime?
 
+  @@index([tramiteId])
   @@map("checklist_item")
 }
 
@@ -493,6 +500,7 @@ model Documento {
   facturasProveedor FacturaProveedor[] @relation("FacturaProveedorDoc")
   enlaces           DocumentoEnlace[]
 
+  @@index([tramiteId, eliminado])
   @@map("documento")
 }
 
@@ -568,6 +576,8 @@ model Anticipo {
 
   aplicaciones AplicacionAnticipo[]
 
+  @@index([clienteId])
+  @@index([fecha])
   @@map("anticipo")
 }
 
@@ -580,6 +590,8 @@ model AplicacionAnticipo {
   montoAplicado BigInt // COP sin decimales
   createdAt     DateTime  @default(now())
 
+  @@index([tramiteId])
+  @@index([anticipoId])
   @@map("aplicacion_anticipo")
 }
 
@@ -626,6 +638,8 @@ model FacturaProveedor {
   lineasRevision LineaRevisionFactura[]
 
   @@unique([tramiteId, numFactura])
+  @@index([beneficiarioId])
+  @@index([tramiteId, estado])
   @@map("factura_proveedor")
 }
 
@@ -688,6 +702,9 @@ model PagoTramite {
   beneficiarios     PagoTramiteBeneficiario[]
   facturasProveedor PagoTramiteFactura[]
 
+  @@index([tramiteId])
+  @@index([grupoPagoId])
+  @@index([fechaRealPago])
   @@map("pago_tramite")
 }
 
@@ -805,6 +822,8 @@ model BorradorFactura {
   factura        Factura?
   lineasRevision LineaRevision[]
 
+  @@index([tramiteId, estado])
+  @@index([createdAt])
   @@map("borrador_factura")
 }
 
@@ -889,6 +908,8 @@ model Factura {
 
   pagos PagoFactura[]
 
+  @@index([clienteId])
+  @@index([fecha])
   @@map("factura")
 }
 
@@ -924,6 +945,8 @@ model PagoFactura {
   registradoPor   User             @relation("PagosFacturaRegistrados", fields: [registradoPorId], references: [id])
   createdAt       DateTime         @default(now())
 
+  @@index([facturaId])
+  @@index([fecha])
   @@map("pago_factura")
 }
 
@@ -1059,5 +1082,6 @@ model AuditLog {
   @@index([entidad, entidadId])
   @@index([usuarioId])
   @@index([tramiteId])
+  @@index([createdAt])
   @@map("audit_log")
 }

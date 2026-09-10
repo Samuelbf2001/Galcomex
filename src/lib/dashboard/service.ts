@@ -3,12 +3,28 @@
  * A2-T8: Dashboard operativo con métricas en vivo.
  *
  * Expone getDashboardData() y la función pura calcularDiasYAlerta().
+ *
+ * Rendimiento (2026-09-07):
+ *   - Las seis consultas del dashboard son independientes y corren en
+ *     paralelo con `Promise.all`.
+ *   - Los totales (saldo neto por cliente, anticipos con saldo, cartera
+ *     vencida) se agregan en Postgres en vez de traer todas las filas y
+ *     sumarlas en memoria. Todo el dinero se castea a `::bigint` en SQL y se
+ *     convierte con `BigInt(...)`: cero flotantes.
+ *   - Las listas "pendientes de facturar" y "cartera vencida" se limitan a
+ *     LIMITE_LISTAS_DASHBOARD filas; el total real viaja en los contadores
+ *     `cantidadPendientesFacturar` / `cantidadFacturasVencidas`.
  */
 
-import { DestinoPago, EstadoTramite, TipoPagoFactura } from "@prisma/client";
+import {
+  DestinoPago,
+  EstadoBorrador,
+  EstadoTramite,
+  Prisma,
+  TipoPagoFactura,
+} from "@prisma/client";
 
 import { getUmbralAlertaCarteraCliente } from "@/lib/alertas/umbrales";
-import { calcularSaldoNeto } from "@/lib/cartera/service";
 import { prisma } from "@/lib/db/prisma";
 
 // ─── Función pura testeable ───────────────────────────────────────────────────
@@ -72,53 +88,68 @@ export function seleccionarClientesEnAlertaCartera(
     }));
 }
 
+/** Fila cruda del agregado SQL; `saldoNeto` llega como int8 (bigint). */
+type SaldoNetoClienteDbRow = {
+  clienteId: string;
+  clienteNombre: string;
+  saldoNeto: bigint;
+};
+
+/**
+ * Saldo neto de cartera por cliente, agregado en Postgres.
+ *
+ * Misma fórmula que `calcularSaldoNeto` (cartera/service.ts) sumada sobre
+ * todas las facturas del cliente, ledger destino=CLIENTE:
+ *   Σ (saldoAFavorCliente − saldoACargoCliente) + Σ abonos − Σ devoluciones
+ * Incluye TODOS los clientes (sin facturas → 0), igual que el findMany
+ * original, para que el umbral se evalúe sobre la misma población.
+ */
+export async function getSaldosNetoPorCliente(): Promise<ClienteSaldoNeto[]> {
+  const rows = await prisma.$queryRaw<SaldoNetoClienteDbRow[]>`
+    SELECT
+      c.id AS "clienteId",
+      c.nombre AS "clienteNombre",
+      (
+        COALESCE(f.saldo, 0)
+        + COALESCE(p.abonos, 0)
+        - COALESCE(p.devoluciones, 0)
+      )::bigint AS "saldoNeto"
+    FROM cliente c
+    LEFT JOIN (
+      SELECT "clienteId", SUM("saldoAFavorCliente" - "saldoACargoCliente") AS saldo
+      FROM factura
+      GROUP BY "clienteId"
+    ) f ON f."clienteId" = c.id
+    LEFT JOIN (
+      SELECT
+        fa."clienteId",
+        SUM(CASE WHEN pf.tipo = ${TipoPagoFactura.ABONO}::"TipoPagoFactura" THEN pf.monto ELSE 0 END) AS abonos,
+        SUM(CASE WHEN pf.tipo = ${TipoPagoFactura.DEVOLUCION}::"TipoPagoFactura" THEN pf.monto ELSE 0 END) AS devoluciones
+      FROM pago_factura pf
+      JOIN factura fa ON fa.id = pf."facturaId"
+      WHERE pf.destino = ${DestinoPago.CLIENTE}::"DestinoPago"
+      GROUP BY fa."clienteId"
+    ) p ON p."clienteId" = c.id
+    ORDER BY c.id ASC
+  `;
+
+  return rows.map((row) => ({
+    clienteId: row.clienteId,
+    clienteNombre: row.clienteNombre,
+    saldoNeto: BigInt(row.saldoNeto),
+  }));
+}
+
 /**
  * Calcula el saldo neto de cartera (Σ saldoNeto de todas las facturas, ledger
  * destino=CLIENTE — misma fórmula que getCarteraCliente().cruceCliente) para
  * todos los clientes, y retorna solo los que están bajo el umbral de alerta.
  */
 export async function getClientesConAlertaCartera(): Promise<ClienteAlertaCarteraRow[]> {
-  const [clientes, umbral] = await Promise.all([
-    prisma.cliente.findMany({
-      select: {
-        id: true,
-        nombre: true,
-        facturas: {
-          select: {
-            saldoAFavorCliente: true,
-            saldoACargoCliente: true,
-            pagos: {
-              where: { destino: DestinoPago.CLIENTE },
-              select: { tipo: true, monto: true },
-            },
-          },
-        },
-      },
-    }),
+  const [clientesConSaldo, umbral] = await Promise.all([
+    getSaldosNetoPorCliente(),
     getUmbralAlertaCarteraCliente(),
   ]);
-
-  const clientesConSaldo: ClienteSaldoNeto[] = clientes.map((cliente) => {
-    const saldoNeto = cliente.facturas.reduce((acc, f) => {
-      const abonos = f.pagos
-        .filter((p) => p.tipo === TipoPagoFactura.ABONO)
-        .reduce((sum, p) => sum + p.monto, 0n);
-      const devoluciones = f.pagos
-        .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
-        .reduce((sum, p) => sum + p.monto, 0n);
-      return (
-        acc +
-        calcularSaldoNeto({
-          saldoAFavor: f.saldoAFavorCliente,
-          saldoACargo: f.saldoACargoCliente,
-          abonos,
-          devoluciones,
-        })
-      );
-    }, 0n);
-
-    return { clienteId: cliente.id, clienteNombre: cliente.nombre, saldoNeto };
-  });
 
   return seleccionarClientesEnAlertaCartera(clientesConSaldo, umbral);
 }
@@ -166,9 +197,18 @@ export type ActividadRecienteRow = {
 export type DashboardData = {
   dosActivos: number;
   dosPorEstado: DosPorEstado[];
+  /** Hasta LIMITE_LISTAS_DASHBOARD filas, las más urgentes (más días) primero. */
   pendientesFacturar: PendienteFacturarRow[];
+  /** Total real de trámites pendientes de facturar (la lista puede estar recortada). */
+  cantidadPendientesFacturar: number;
+  /** Cuántos de los pendientes (todos, no solo los listados) exceden el SLA. */
+  cantidadPendientesConAlerta: number;
+  /** Hasta LIMITE_LISTAS_DASHBOARD facturas, las más antiguas primero. */
   carteraVencida: CarteraVencidaRow[];
-  totalCarteraVencida: string;  // BigInt as string
+  /** Total real de facturas vencidas (la lista puede estar recortada). */
+  cantidadFacturasVencidas: number;
+  /** Σ saldoACargoCliente de TODAS las facturas vencidas. BigInt as string. */
+  totalCarteraVencida: string;
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
   /** Clientes con saldo neto de cartera por debajo de UMBRAL_ALERTA_CARTERA_CLIENTE. */
@@ -193,58 +233,98 @@ const ESTADOS_PENDIENTE_FACTURAR: EstadoTramite[] = [
   EstadoTramite.ENVIADO_A_FACTURAR,
 ];
 
-// ─── Servicio principal ───────────────────────────────────────────────────────
+/** Máximo de filas que viajan en las listas del dashboard. */
+export const LIMITE_LISTAS_DASHBOARD = 20;
 
-export async function getDashboardData(): Promise<DashboardData> {
-  const hoy = new Date();
+/** SLA (días) a partir del cual un pendiente de facturar entra en alerta. */
+const SLA_DIAS_PENDIENTE_FACTURAR = 3;
 
-  // 1. Conteo de DOs agrupado por estado
-  const gruposPorEstado = await prisma.tramiteDO.groupBy({
-    by: ["estado"],
-    _count: { id: true },
-  });
+const MS_POR_DIA = 1000 * 60 * 60 * 24;
 
-  const dosPorEstado: DosPorEstado[] = gruposPorEstado.map((g) => ({
-    estado: g.estado,
-    count: g._count.id,
-  }));
+// ─── Consultas parciales ──────────────────────────────────────────────────────
 
-  // DOs activos: todo excepto CERRADO
-  const dosActivos = dosPorEstado
-    .filter((d) => ESTADOS_ACTIVOS.includes(d.estado))
-    .reduce((sum, d) => sum + d.count, 0);
+type PendienteFacturarDbRow = {
+  id: string;
+  consecutivo: string;
+  estado: EstadoTramite;
+  fechaSalidaCarga: Date | null;
+  fechaEnviadoAFacturar: Date | null;
+  clienteNombre: string;
+};
 
-  // 2. Pendientes de facturar: DESPACHADO o ENVIADO_A_FACTURAR sin factura emitida
-  const dosPendientes = await prisma.tramiteDO.findMany({
-    where: {
-      estado: { in: ESTADOS_PENDIENTE_FACTURAR },
-      borradores: {
-        none: {
-          estado: "FACTURADO",
-        },
-      },
-    },
-    select: {
-      id: true,
-      consecutivo: true,
-      estado: true,
-      fechaSalidaCarga: true,
-      fechaEnviadoAFacturar: true,
-      cliente: { select: { nombre: true } },
-    },
-    orderBy: { fechaSalidaCarga: "asc" },
-  });
+type ConteoPendientesDbRow = {
+  total: number;
+  conAlerta: number;
+};
 
-  const pendientesFacturar: PendienteFacturarRow[] = dosPendientes
+/**
+ * Pendientes de facturar: DESPACHADO o ENVIADO_A_FACTURAR sin borrador
+ * FACTURADO. La página se ordena en SQL por la fecha de referencia
+ * (fechaSalidaCarga, o fechaEnviadoAFacturar si la primera es null) para que
+ * las LIMITE filas sean exactamente las de más días; luego se ordena en
+ * memoria por `dias` desc como siempre.
+ */
+async function getPendientesFacturar(hoy: Date): Promise<{
+  pendientesFacturar: PendienteFacturarRow[];
+  cantidadPendientesFacturar: number;
+  cantidadPendientesConAlerta: number;
+}> {
+  const estadosSql = Prisma.join(
+    ESTADOS_PENDIENTE_FACTURAR.map((estado) => Prisma.sql`${estado}::"EstadoTramite"`),
+  );
+
+  // Mismo filtro que `{ estado: { in }, borradores: { none: { estado: FACTURADO } } }`.
+  const wherePendientes = Prisma.sql`
+    t.estado IN (${estadosSql})
+    AND NOT EXISTS (
+      SELECT 1
+      FROM borrador_factura b
+      WHERE b."tramiteId" = t.id
+        AND b.estado = ${EstadoBorrador.FACTURADO}::"EstadoBorrador"
+    )
+  `;
+
+  // alerta ⟺ floor((hoy − fechaRef) / día) > SLA ⟺ fechaRef ≤ hoy − (SLA + 1) días.
+  const limiteAlerta = new Date(hoy.getTime() - (SLA_DIAS_PENDIENTE_FACTURAR + 1) * MS_POR_DIA);
+
+  const [rows, conteos] = await Promise.all([
+    prisma.$queryRaw<PendienteFacturarDbRow[]>`
+      SELECT
+        t.id,
+        t.consecutivo,
+        t.estado,
+        t."fechaSalidaCarga",
+        t."fechaEnviadoAFacturar",
+        c.nombre AS "clienteNombre"
+      FROM tramite_do t
+      JOIN cliente c ON c.id = t."clienteId"
+      WHERE ${wherePendientes}
+      ORDER BY
+        COALESCE(t."fechaSalidaCarga", t."fechaEnviadoAFacturar") ASC NULLS LAST,
+        t.id ASC
+      LIMIT ${Prisma.raw(String(LIMITE_LISTAS_DASHBOARD))}
+    `,
+    prisma.$queryRaw<ConteoPendientesDbRow[]>`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (
+          WHERE COALESCE(t."fechaSalidaCarga", t."fechaEnviadoAFacturar") <= ${limiteAlerta}
+        )::int AS "conAlerta"
+      FROM tramite_do t
+      WHERE ${wherePendientes}
+    `,
+  ]);
+
+  const pendientesFacturar: PendienteFacturarRow[] = rows
     .map((do_) => {
       // Preferir fechaSalidaCarga; si no, fechaEnviadoAFacturar
       const fechaRef = do_.fechaSalidaCarga ?? do_.fechaEnviadoAFacturar;
-      const { dias, alerta } = calcularDiasYAlerta(fechaRef, hoy);
+      const { dias, alerta } = calcularDiasYAlerta(fechaRef, hoy, SLA_DIAS_PENDIENTE_FACTURAR);
 
       return {
         id: do_.id,
         consecutivo: do_.consecutivo,
-        clienteNombre: do_.cliente.nombre,
+        clienteNombre: do_.clienteNombre,
         estado: do_.estado,
         fechaRef: fechaRef ? fechaRef.toISOString() : null,
         dias,
@@ -254,27 +334,54 @@ export async function getDashboardData(): Promise<DashboardData> {
     // Ordenar por días descendente (los más urgentes primero)
     .sort((a, b) => b.dias - a.dias);
 
-  // 3. Cartera vencida: facturas con saldoACargoCliente > 0 y sin fecha de pago
-  const facturasVencidas = await prisma.factura.findMany({
-    where: {
-      saldoACargoCliente: { gt: 0n },
-      fechaPagoCliente: null,
-    },
-    select: {
-      id: true,
-      numSiigo: true,
-      saldoACargoCliente: true,
-      fecha: true,
-      cliente: { select: { nombre: true } },
-    },
-    orderBy: { fecha: "asc" },
-  });
+  const conteo = conteos[0];
+
+  return {
+    pendientesFacturar,
+    cantidadPendientesFacturar: conteo ? Number(conteo.total) : 0,
+    cantidadPendientesConAlerta: conteo ? Number(conteo.conAlerta) : 0,
+  };
+}
+
+/**
+ * Cartera vencida: facturas con saldoACargoCliente > 0 y sin fecha de pago.
+ * La lista se recorta a LIMITE filas (más antiguas primero); el total en COP
+ * y el conteo se agregan en BD sobre TODAS las facturas vencidas.
+ */
+async function getCarteraVencida(hoy: Date): Promise<{
+  carteraVencida: CarteraVencidaRow[];
+  cantidadFacturasVencidas: number;
+  totalCarteraVencida: bigint;
+}> {
+  const whereVencidas: Prisma.FacturaWhereInput = {
+    saldoACargoCliente: { gt: 0n },
+    fechaPagoCliente: null,
+  };
+
+  const [facturasVencidas, agregado] = await Promise.all([
+    prisma.factura.findMany({
+      where: whereVencidas,
+      select: {
+        id: true,
+        numSiigo: true,
+        saldoACargoCliente: true,
+        fecha: true,
+        cliente: { select: { nombre: true } },
+      },
+      orderBy: [{ fecha: "asc" }, { id: "asc" }],
+      take: LIMITE_LISTAS_DASHBOARD,
+    }),
+    prisma.factura.aggregate({
+      where: whereVencidas,
+      _sum: { saldoACargoCliente: true },
+      _count: { id: true },
+    }),
+  ]);
 
   const carteraVencida: CarteraVencidaRow[] = facturasVencidas.map((f) => {
-    const msPerDay = 1000 * 60 * 60 * 24;
     const diasAntiguedad = Math.max(
       0,
-      Math.floor((hoy.getTime() - f.fecha.getTime()) / msPerDay),
+      Math.floor((hoy.getTime() - f.fecha.getTime()) / MS_POR_DIA),
     );
 
     return {
@@ -287,47 +394,89 @@ export async function getDashboardData(): Promise<DashboardData> {
     };
   });
 
-  const totalCarteraVencidaBigInt = facturasVencidas.reduce(
-    (sum, f) => sum + f.saldoACargoCliente,
-    0n,
-  );
+  return {
+    carteraVencida,
+    cantidadFacturasVencidas: agregado._count.id,
+    totalCarteraVencida: agregado._sum.saldoACargoCliente ?? 0n,
+  };
+}
 
-  // 4. Anticipos con saldo restante > 0
-  const anticipos = await prisma.anticipo.findMany({
-    select: {
-      monto: true,
-      aplicaciones: { select: { montoAplicado: true } },
-    },
-  });
+type AnticiposConSaldoDbRow = {
+  cantidad: number;
+  totalRestante: bigint;
+};
 
-  let anticiposCantidad = 0;
-  let anticiposTotalRestante = 0n;
+/**
+ * Anticipos con saldo restante > 0 (monto − Σ montoAplicado), contados y
+ * sumados en Postgres. No filtra por estado del anticipo (igual que antes).
+ */
+export async function getAnticiposConSaldo(): Promise<AnticiposConSaldoResumen> {
+  const [row] = await prisma.$queryRaw<AnticiposConSaldoDbRow[]>`
+    SELECT
+      COUNT(*)::int AS cantidad,
+      COALESCE(SUM(t.restante), 0)::bigint AS "totalRestante"
+    FROM (
+      SELECT a.monto - COALESCE(ap.aplicado, 0) AS restante
+      FROM anticipo a
+      LEFT JOIN (
+        SELECT "anticipoId", SUM("montoAplicado") AS aplicado
+        FROM aplicacion_anticipo
+        GROUP BY "anticipoId"
+      ) ap ON ap."anticipoId" = a.id
+    ) t
+    WHERE t.restante > 0
+  `;
 
-  for (const anticipo of anticipos) {
-    const aplicado = anticipo.aplicaciones.reduce(
-      (sum, ap) => sum + ap.montoAplicado,
-      0n,
-    );
-    const restante = anticipo.monto - aplicado;
-    if (restante > 0n) {
-      anticiposCantidad++;
-      anticiposTotalRestante += restante;
-    }
-  }
+  return {
+    cantidad: row ? Number(row.cantidad) : 0,
+    totalRestante: (row ? BigInt(row.totalRestante) : 0n).toString(),
+  };
+}
 
-  // 5. Actividad reciente — últimos 10 AuditLog
-  const auditLogs = await prisma.auditLog.findMany({
-    take: 10,
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      accion: true,
-      entidad: true,
-      entidadId: true,
-      createdAt: true,
-      usuario: { select: { name: true } },
-    },
-  });
+// ─── Servicio principal ───────────────────────────────────────────────────────
+
+export async function getDashboardData(): Promise<DashboardData> {
+  const hoy = new Date();
+
+  const [gruposPorEstado, pendientes, cartera, anticiposConSaldo, auditLogs, alertasCartera] =
+    await Promise.all([
+      // 1. Conteo de DOs agrupado por estado
+      prisma.tramiteDO.groupBy({
+        by: ["estado"],
+        _count: { id: true },
+      }),
+      // 2. Pendientes de facturar (página + contadores)
+      getPendientesFacturar(hoy),
+      // 3. Cartera vencida (página + total + contador)
+      getCarteraVencida(hoy),
+      // 4. Anticipos con saldo restante > 0
+      getAnticiposConSaldo(),
+      // 5. Actividad reciente — últimos 10 AuditLog
+      prisma.auditLog.findMany({
+        take: 10,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          accion: true,
+          entidad: true,
+          entidadId: true,
+          createdAt: true,
+          usuario: { select: { name: true } },
+        },
+      }),
+      // 6. Alertas de cartera — clientes con saldo neto por debajo del umbral
+      getClientesConAlertaCartera(),
+    ]);
+
+  const dosPorEstado: DosPorEstado[] = gruposPorEstado.map((g) => ({
+    estado: g.estado,
+    count: g._count.id,
+  }));
+
+  // DOs activos: todo excepto CERRADO
+  const dosActivos = dosPorEstado
+    .filter((d) => ESTADOS_ACTIVOS.includes(d.estado))
+    .reduce((sum, d) => sum + d.count, 0);
 
   const actividadReciente: ActividadRecienteRow[] = auditLogs.map((log) => ({
     id: log.id,
@@ -338,19 +487,16 @@ export async function getDashboardData(): Promise<DashboardData> {
     createdAt: log.createdAt.toISOString(),
   }));
 
-  // 6. Alertas de cartera — clientes con saldo neto por debajo del umbral
-  const alertasCartera = await getClientesConAlertaCartera();
-
   return {
     dosActivos,
     dosPorEstado,
-    pendientesFacturar,
-    carteraVencida,
-    totalCarteraVencida: totalCarteraVencidaBigInt.toString(),
-    anticiposConSaldo: {
-      cantidad: anticiposCantidad,
-      totalRestante: anticiposTotalRestante.toString(),
-    },
+    pendientesFacturar: pendientes.pendientesFacturar,
+    cantidadPendientesFacturar: pendientes.cantidadPendientesFacturar,
+    cantidadPendientesConAlerta: pendientes.cantidadPendientesConAlerta,
+    carteraVencida: cartera.carteraVencida,
+    cantidadFacturasVencidas: cartera.cantidadFacturasVencidas,
+    totalCarteraVencida: cartera.totalCarteraVencida.toString(),
+    anticiposConSaldo,
     actividadReciente,
     alertasCartera,
   };

@@ -2,6 +2,7 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 
 import { TramiteDetalle } from "@/components/tramites/tramite-detalle";
+import { exigirAccesoPagina } from "@/lib/auth/page-guard";
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -9,6 +10,7 @@ type Props = {
 
 export default async function TramiteDetallePage({ params }: Props) {
   const { id } = await params;
+  await exigirAccesoPagina(`/tramites/${id}`);
 
   return (
     <section className="space-y-5">
@@ -17,12 +19,12 @@ export default async function TramiteDetallePage({ params }: Props) {
         <Link
           href="/tramites"
           className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 bg-white text-slate-600 transition hover:bg-slate-50"
-          aria-label="Volver a tramites"
+          aria-label="Volver a trámites"
         >
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
         </Link>
         <div>
-          <h1 className="text-2xl font-semibold tracking-normal">Detalle del tramite</h1>
+          <h1 className="text-2xl font-semibold tracking-normal">Detalle del trámite</h1>
           <p className="mt-0.5 text-sm text-slate-600">
             Resumen, documentos, pagos, facturación e historial del DO.
           </p>

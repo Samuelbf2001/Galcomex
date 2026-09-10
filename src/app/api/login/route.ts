@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { auth } from "@/lib/auth/auth";
+import { destinoInternoSeguro } from "@/lib/auth/rutas-roles";
 import {
   construirClaveLimite,
   limpiarIntentos,
@@ -41,23 +42,25 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const authResponse = await auth.handler(
-    new Request(`${origin}/api/auth/sign-in/email`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        origin,
-      },
-      body: new URLSearchParams({
-        email,
-        password,
-        callbackURL,
-      }),
-    }),
-  );
+  // API de servidor de Better Auth con las cabeceras reales del navegador
+  // (origin/host del cliente). Antes se fabricaba una Request con
+  // `request.nextUrl.origin`, que dentro de Docker resuelve a localhost:3000 y
+  // Better Auth la rechazaba como "Invalid origin".
+  const authResponse = await auth.api.signInEmail({
+    body: { email, password },
+    headers: request.headers,
+    asResponse: true,
+  });
+
+  // El formulario con JavaScript pide JSON; sin JavaScript (action del form)
+  // se mantiene el flujo de redirecciones.
+  const quiereJson = (request.headers.get("accept") ?? "").includes("application/json");
 
   if (!authResponse.ok) {
     registrarIntentoFallido(claveLimite);
+    if (quiereJson) {
+      return NextResponse.json({ error: "Correo o contraseña inválidos." }, { status: 401 });
+    }
     const loginUrl = new URL("/auth/login", origin);
     loginUrl.searchParams.set("error", "credenciales");
     loginUrl.searchParams.set("next", callbackURL);
@@ -66,14 +69,16 @@ export async function POST(request: NextRequest) {
 
   limpiarIntentos(claveLimite);
 
-  const isSafeCallback =
-    callbackURL.startsWith("/") && !callbackURL.startsWith("//") && !callbackURL.startsWith("/\\");
-  const redirectTo = isSafeCallback ? callbackURL : "/dashboard";
-  const response = NextResponse.redirect(new URL(redirectTo, origin));
-  const setCookie = authResponse.headers.get("set-cookie");
+  // "/" delega en la página raíz, que envía a cada rol a su pantalla inicial.
+  const redirectTo = destinoInternoSeguro(callbackURL) ?? "/";
+  const response = quiereJson
+    ? NextResponse.json({ ok: true, redirectTo })
+    : NextResponse.redirect(new URL(redirectTo, origin));
 
-  if (setCookie) {
-    response.headers.set("set-cookie", setCookie);
+  // Better Auth emite VARIAS cookies (session_token + session_data por la
+  // caché de cookie): hay que copiarlas una a una, no como cabecera única.
+  for (const cookie of authResponse.headers.getSetCookie()) {
+    response.headers.append("set-cookie", cookie);
   }
 
   return response;

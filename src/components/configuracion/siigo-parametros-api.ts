@@ -2,6 +2,8 @@
  * Helpers de API para la sección "Configuración de envío Siigo".
  */
 
+import { describirError } from "@/components/ui/toast";
+
 export type ClaveSiigo =
   | "SIIGO_TIPO_COMPROBANTE_ID"
   | "SIIGO_VENDEDOR_ID"
@@ -28,7 +30,12 @@ export async function fetchParametrosSiigo(): Promise<ParametroSiigoRow[]> {
     headers: { Accept: "application/json" },
   });
   if (!response.ok) {
-    throw new Error("No fue posible cargar los parámetros Siigo.");
+    const payload: unknown = await response.json().catch(() => null);
+    throw new Error(
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : "No fue posible cargar los parámetros Siigo.",
+    );
   }
   const payload: unknown = await response.json();
   if (!isRecord(payload) || !Array.isArray(payload.parametros)) return [];
@@ -49,14 +56,22 @@ export type GuardarResult =
 export async function guardarParametrosSiigo(
   parametros: Array<{ clave: ClaveSiigo; valor: string }>,
 ): Promise<GuardarResult> {
-  const response = await fetch("/api/configuracion/siigo/parametros", {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ parametros }),
-  });
+  // Sin red el `fetch` lanza: se convierte en `{ ok: false }` para que el
+  // botón nunca quede atascado en "Guardando…".
+  let response: Response;
+  try {
+    response = await fetch("/api/configuracion/siigo/parametros", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ parametros }),
+    });
+  } catch (caught) {
+    return { ok: false, error: describirError(caught, "No fue posible guardar los parámetros.") };
+  }
+
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const error =
@@ -73,4 +88,3 @@ export async function guardarParametrosSiigo(
   }
   return { ok: false, error: "Respuesta inesperada del servidor." };
 }
-

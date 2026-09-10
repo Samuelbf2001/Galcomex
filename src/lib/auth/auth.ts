@@ -21,6 +21,15 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
+  session: {
+    // La sesión se valida desde una cookie firmada durante 5 min; la BD solo
+    // se consulta al vencer. Antes cada request (79 rutas API + layout) hacía
+    // un lookup de sesión + usuario en Postgres.
+    cookieCache: {
+      enabled: true,
+      maxAge: 5 * 60,
+    },
+  },
   user: {
     additionalFields: {
       rol: {

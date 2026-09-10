@@ -18,6 +18,8 @@ import {
   fetchSiigoProductos,
   type SiigoProductoRow,
 } from "@/components/configuracion/siigo-productos-api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { describirError, useToast } from "@/components/ui/toast";
 
 import {
   actualizarComentariosCabecera as apiActualizarComentarios,
@@ -36,6 +38,13 @@ const ETIQUETA_SECCION: Record<SeccionLinea, string> = {
   TERCEROS: "Ingresos recibidos para terceros",
   OPERACIONAL: "Ingresos operacionales",
 };
+
+/**
+ * Ejecuta una mutación del borrador y propaga el resultado al padre.
+ * `exito` es el título del toast de éxito (si se omite, no se muestra —
+ * p. ej. ediciones inline muy frecuentes).
+ */
+type Ejecutar = (accion: () => Promise<BorradorRow>, exito?: string) => Promise<void>;
 
 // Refleja la asociación real producto↔impuesto (tabla SiigoProductoImpuesto).
 // `clasificacionIva` viene de Siigo y es solo descriptivo: "Taxed" significa
@@ -354,7 +363,7 @@ type ComentariosCabeceraProps = {
   borrador: BorradorRow;
   puedeEditar: boolean;
   guardando: boolean;
-  ejecutar: (accion: () => Promise<BorradorRow>) => Promise<void>;
+  ejecutar: Ejecutar;
 };
 
 function ComentariosCabecera({
@@ -366,11 +375,13 @@ function ComentariosCabecera({
   const [borradorLocal, setBorradorLocal] = useState<string[]>(
     borrador.comentariosCabecera,
   );
-
-  // Resincronizar cuando llega un borrador nuevo desde el server
-  useEffect(() => {
+  // Resincronizar cuando llega un borrador nuevo desde el server: patrón
+  // "ajustar estado durante el render" (sin efecto, sin render en cascada).
+  const [comentariosPrevios, setComentariosPrevios] = useState(borrador.comentariosCabecera);
+  if (comentariosPrevios !== borrador.comentariosCabecera) {
+    setComentariosPrevios(borrador.comentariosCabecera);
     setBorradorLocal(borrador.comentariosCabecera);
-  }, [borrador.comentariosCabecera]);
+  }
 
   async function commit(siguiente: string[]) {
     await ejecutar(() => apiActualizarComentarios(borrador.id, siguiente));
@@ -493,7 +504,7 @@ type ComisionEditableProps = {
   borrador: BorradorRow;
   puedeEditar: boolean;
   guardando: boolean;
-  ejecutar: (accion: () => Promise<BorradorRow>) => Promise<void>;
+  ejecutar: Ejecutar;
 };
 
 // Opciones fijas de comisión de servicio logístico (pedido del cliente:
@@ -610,7 +621,7 @@ type SubseccionProps = {
   puedeEditar: boolean;
   guardando: boolean;
   borradorId: string;
-  ejecutar: (accion: () => Promise<BorradorRow>) => Promise<void>;
+  ejecutar: Ejecutar;
   setError: (msg: string) => void;
 };
 
@@ -639,6 +650,18 @@ function SubseccionLineas({
   const [nuevoNitTercero, setNuevoNitTercero] = useState("");
 
   const productoSeleccionado = productos.find((p) => p.id === nuevoSiigoProductoId) ?? null;
+  const confirmar = useConfirm();
+
+  async function handleEliminar(linea: LineaRevisionRow) {
+    const ok = await confirmar({
+      title: "¿Eliminar esta línea del borrador?",
+      description: `${linea.concepto} · ${formatCOP(linea.valor)}. Esta acción no se puede deshacer.`,
+      confirmText: "Eliminar línea",
+      variant: "danger",
+    });
+    if (!ok) return;
+    await ejecutar(() => apiEliminarLinea(borradorId, linea.id), "Línea eliminada");
+  }
 
   async function handleCrear() {
     const valor = parseBigIntInput(nuevoValor);
@@ -650,20 +673,22 @@ function SubseccionLineas({
     // por eso no se envía numSoporte desde el formulario.
     const facturaIds = compacto ? [] : nuevasFacturas;
     const nitTrimmed = nuevoNitTercero.trim();
-    await ejecutar(() =>
-      apiCrearLinea(borradorId, {
-        concepto: nuevoConcepto.trim(),
-        valor,
-        seccion,
-        facturaIds,
-        siigoProductoId: nuevoSiigoProductoId || undefined,
-        // El NIT manual solo aplica a TERCEROS sin factura — en otros casos el
-        // NIT real lo provee la factura del proveedor.
-        nitTercero:
-          !compacto && facturaIds.length === 0 && nitTrimmed.length > 0
-            ? nitTrimmed
-            : undefined,
-      }),
+    await ejecutar(
+      () =>
+        apiCrearLinea(borradorId, {
+          concepto: nuevoConcepto.trim(),
+          valor,
+          seccion,
+          facturaIds,
+          siigoProductoId: nuevoSiigoProductoId || undefined,
+          // El NIT manual solo aplica a TERCEROS sin factura — en otros casos el
+          // NIT real lo provee la factura del proveedor.
+          nitTercero:
+            !compacto && facturaIds.length === 0 && nitTrimmed.length > 0
+              ? nitTrimmed
+              : undefined,
+        }),
+      "Línea agregada",
     );
     setNuevoConcepto("");
     setNuevoValor("");
@@ -820,9 +845,8 @@ function SubseccionLineas({
                     <button
                       type="button"
                       disabled={guardando}
-                      onClick={() =>
-                        ejecutar(() => apiEliminarLinea(borradorId, linea.id))
-                      }
+                      onClick={() => void handleEliminar(linea)}
+                      aria-label={`Eliminar línea ${linea.orden}: ${linea.concepto}`}
                       className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50"
                     >
                       Eliminar
@@ -992,6 +1016,7 @@ export function EditorLineas({
   puedeEditar,
   onBorradorActualizado,
 }: EditorLineasProps) {
+  const { toast } = useToast();
   const [facturas, setFacturas] = useState<FacturaProveedorRow[]>([]);
   const [productos, setProductos] = useState<SiigoProductoRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -1063,18 +1088,21 @@ export function EditorLineas({
 
   const desviacion = totalLineasVivo - totalMotor;
 
-  async function ejecutar(accion: () => Promise<BorradorRow>) {
+  const ejecutar: Ejecutar = async (accion, exito) => {
     setGuardando(true);
     setError(null);
     try {
       const actualizado = await accion();
       onBorradorActualizado(actualizado);
+      if (exito) toast({ title: exito, variant: "success" });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al guardar la línea.");
+      const mensaje = describirError(e, "Error al guardar la línea.");
+      setError(mensaje);
+      toast({ title: "No se pudo guardar", description: mensaje, variant: "error" });
     } finally {
       setGuardando(false);
     }
-  }
+  };
 
   return (
     <div className="flex flex-col gap-4">

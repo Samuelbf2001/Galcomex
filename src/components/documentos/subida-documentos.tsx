@@ -7,12 +7,12 @@ import {
   CATEGORIAS_DOCUMENTO,
   type CategoriaDocumento,
   type DocumentoRow,
-  DocumentosApiError,
   registrarDocumento,
   solicitarUploadUrl,
   subirArchivoDirecto,
   validarArchivo,
 } from "@/components/documentos/documentos-api";
+import { describirError, useToast } from "@/components/ui/toast";
 
 // ─── Tipos internos ───────────────────────────────────────────────────────────
 
@@ -39,6 +39,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
   const [cola, setCola] = useState<ArchivoEnCola[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
 
   // ─── Subida de un archivo ──────────────────────────────────────────────────
 
@@ -95,12 +96,10 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
           ),
         );
 
+        toast({ title: "Documento subido", description: doc.nombreArchivo, variant: "success" });
         onDocumentoSubido(doc);
       } catch (caught) {
-        const msg =
-          caught instanceof DocumentosApiError
-            ? caught.message
-            : "Error inesperado al subir el archivo.";
+        const msg = describirError(caught, "Error inesperado al subir el archivo.");
 
         setCola((prev) =>
           prev.map((a) =>
@@ -109,9 +108,14 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
               : a,
           ),
         );
+        toast({
+          title: "No se pudo subir el documento",
+          description: `${archivo.file.name}: ${msg}`,
+          variant: "error",
+        });
       }
     },
-    [tramiteId, onDocumentoSubido],
+    [tramiteId, onDocumentoSubido, toast],
   );
 
   // ─── Agregar archivos a la cola ────────────────────────────────────────────

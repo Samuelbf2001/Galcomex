@@ -1,6 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useId, useState } from "react";
+
+import { patchJson } from "@/components/configuracion/respuesta-api";
+import { describirError, useToast } from "@/components/ui/toast";
 
 export type ParametroRow = {
   id: string;
@@ -23,6 +27,8 @@ export function ParametrosConfig({
   parametros: ParametroRow[];
   esAdmin: boolean;
 }) {
+  const { toast } = useToast();
+  const errorId = useId();
   const [parametros, setParametros] = useState(parametrosIniciales);
   const [editando, setEditando] = useState<string | null>(null);
   const [valor, setValor] = useState("");
@@ -50,23 +56,24 @@ export function ParametrosConfig({
     }
 
     setGuardando(true);
-    const res = await fetch(`/api/parametros/${encodeURIComponent(clave)}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ valor: trimmed }),
-    });
-    setGuardando(false);
-
-    if (!res.ok) {
-      const payload = await res.json().catch(() => null);
-      setError(payload?.error ?? "No fue posible guardar el parámetro");
-      return;
+    try {
+      await patchJson(
+        `/api/parametros/${encodeURIComponent(clave)}`,
+        { valor: trimmed },
+        "No fue posible guardar el parámetro",
+      );
+      setParametros((prev) =>
+        prev.map((p) => (p.clave === clave ? { ...p, valor: trimmed } : p)),
+      );
+      toast({ title: "Parámetro guardado", description: `${clave} = ${trimmed}`, variant: "success" });
+      cerrar();
+    } catch (caught) {
+      const mensaje = describirError(caught, "No fue posible guardar el parámetro");
+      setError(mensaje);
+      toast({ title: "No se pudo guardar el parámetro", description: mensaje, variant: "error" });
+    } finally {
+      setGuardando(false);
     }
-
-    setParametros((prev) =>
-      prev.map((p) => (p.clave === clave ? { ...p, valor: trimmed } : p)),
-    );
-    cerrar();
   }
 
   return (
@@ -101,11 +108,23 @@ export function ParametrosConfig({
                       <input
                         value={valor}
                         onChange={(e) => setValor(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void guardar(parametro.clave);
+                          if (e.key === "Escape") cerrar();
+                        }}
                         autoFocus
-                        className="h-8 w-48 border border-slate-300 px-2 text-sm outline-none focus:border-cyan-600"
+                        disabled={guardando}
+                        aria-label={`Valor de ${parametro.clave}`}
+                        aria-invalid={error ? true : undefined}
+                        aria-describedby={error ? errorId : undefined}
+                        className={`h-8 w-48 border px-2 text-sm outline-none focus:border-cyan-600 ${
+                          error ? "border-rose-500" : "border-slate-300"
+                        }`}
                       />
                       {error ? (
-                        <span className="text-xs text-red-600">{error}</span>
+                        <span id={errorId} role="alert" className="text-xs text-red-600">
+                          {error}
+                        </span>
                       ) : null}
                     </div>
                   ) : (
@@ -122,7 +141,8 @@ export function ParametrosConfig({
                         <button
                           type="button"
                           onClick={cerrar}
-                          className="h-8 border border-slate-300 px-3 text-xs text-slate-600 hover:bg-slate-100"
+                          disabled={guardando}
+                          className="h-8 border border-slate-300 px-3 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-60"
                         >
                           Cancelar
                         </button>
@@ -130,9 +150,12 @@ export function ParametrosConfig({
                           type="button"
                           onClick={() => void guardar(parametro.clave)}
                           disabled={guardando}
-                          className="h-8 bg-slate-950 px-3 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                          className="inline-flex h-8 items-center gap-1.5 bg-slate-950 px-3 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
                         >
-                          {guardando ? "Guardando" : "Guardar"}
+                          {guardando ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                          ) : null}
+                          {guardando ? "Guardando…" : "Guardar"}
                         </button>
                       </div>
                     ) : (

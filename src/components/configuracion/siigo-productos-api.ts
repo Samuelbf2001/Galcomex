@@ -1,3 +1,5 @@
+import { describirError } from "@/components/ui/toast";
+
 export type SiigoImpuestoRow = {
   id: number;
   nombre: string;
@@ -192,10 +194,21 @@ async function triggerSyncEndpoint(
   url: string,
   recurso: string,
 ): Promise<SyncResult> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { Accept: "application/json" },
-  });
+  // Sin red `fetch` lanza: se devuelve `{ ok: false }` para que el botón de
+  // sincronizar nunca quede atascado en "Sincronizando…".
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+  } catch (caught) {
+    return {
+      ok: false,
+      error: describirError(caught, `No fue posible sincronizar los ${recurso} de Siigo.`),
+      tipo: "api",
+    };
+  }
 
   const payload: unknown = await response.json().catch(() => null);
 
@@ -380,17 +393,25 @@ export async function setImpuestosProducto(
   productoId: string,
   impuestoIds: number[],
 ): Promise<{ ok: boolean; error?: string }> {
-  const response = await fetch(
-    `/api/configuracion/siigo/productos/${productoId}/impuestos`,
-    {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
+  let response: Response;
+  try {
+    response = await fetch(
+      `/api/configuracion/siigo/productos/${productoId}/impuestos`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ impuestoIds }),
       },
-      body: JSON.stringify({ impuestoIds }),
-    },
-  );
+    );
+  } catch (caught) {
+    return {
+      ok: false,
+      error: describirError(caught, "No fue posible actualizar los impuestos del producto."),
+    };
+  }
 
   const payload: unknown = await response.json().catch(() => null);
 

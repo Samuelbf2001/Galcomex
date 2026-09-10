@@ -217,6 +217,17 @@ npx prisma migrate reset                 # Reset completo (dev)
 docker compose up --build               # Stack completo
 ```
 
+## Convenciones de UI (desde la auditoría 2026-09-07)
+
+- **Acceso por rol a módulos:** un solo mapa `RUTAS_DASHBOARD` en `src/lib/auth/rutas-roles.ts` alimenta el sidebar, el guard de página y la redirección tras login. Cada `page.tsx` del dashboard empieza con `await exigirAccesoPagina("/ruta")` (`src/lib/auth/page-guard.ts`); si el rol no puede, va a `/sin-acceso`. El middleware solo comprueba que exista cookie. Al añadir un módulo: entrada en el mapa + guard en su page.
+- **Rol en cliente:** `useRol()` / `usePermiso([...])` de `src/lib/auth/rol-context.tsx` (provisto por el layout). Prohibido `fetch("/api/auth/get-session")` en componentes. Un botón solo se muestra si el `requireRole` del endpoint que llama admite el rol.
+- **Feedback de mutaciones:** `useToast()` (`src/components/ui/toast.tsx`) para éxito y error (`describirError(e)`); toda mutación va en `try/catch/finally` y el estado pendiente siempre vuelve a `false`.
+- **Acciones destructivas:** `useConfirm()` (`src/components/ui/confirm-dialog.tsx`, `variant: "danger"`). Prohibido `window.confirm`.
+- **Modales:** `ModalShell` (`src/components/ui/modal-shell.tsx`, `<dialog>` nativo con foco, Escape y `aria-labelledby`). No crear overlays `fixed inset-0` nuevos.
+- **Estados:** carga inicial con `TableSkeleton`/`CardsSkeleton` (reservan altura, evitan CLS); error con `ModuleState type="error" action={{ label: "Reintentar" }}`; vacío con `type="empty"` y CTA cuando el rol pueda actuar.
+- **Rutas especiales:** `(dashboard)/loading.tsx`, `error.tsx`, `not-found.tsx` y `sin-acceso/page.tsx` ya existen; `app/not-found.tsx`, `error.tsx`, `global-error.tsx` cubren fuera del dashboard. Textos en español con tildes.
+- **Sesión:** `getCurrentSession` está envuelto en `React.cache` y Better Auth usa `cookieCache` (5 min): no volver a consultar la sesión a mano.
+
 ## Sprint actual y progreso
 
 Ver `.claude/SPRINT.md` para el estado actual de tareas por agente.

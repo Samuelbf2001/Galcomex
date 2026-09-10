@@ -43,3 +43,10 @@ export const clientePayloadSchema = z.object({
 export const clienteUpdateSchema = clientePayloadSchema.partial().extend({
   tarifas: z.array(tarifaClienteSchema).optional(),
 });
+
+/**
+ * `?fields=options` en GET /api/clientes → listado liviano para selects
+ * (`{ id, nombre, nit, tipo, activo }`, sin tarifas). Sin el parámetro, el
+ * listado completo con tarifas se mantiene igual.
+ */
+export const clienteFieldsQuerySchema = z.enum(["options"]).optional();

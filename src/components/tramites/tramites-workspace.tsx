@@ -1,10 +1,9 @@
 "use client";
 
 import {
-  AlertTriangle,
   Building2,
   CheckCircle2,
-  X,
+  ChevronDown,
   FileText,
   Kanban,
   LayoutList,
@@ -19,15 +18,21 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ModuleState } from "@/components/layout/module-state";
 import { KanbanTramites } from "@/components/tramites/kanban-tramites";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { usePermiso } from "@/lib/auth/rol-context";
 
 import {
   createTramite,
   fetchClienteOptions,
   fetchTiposTramite,
-  fetchTramites,
+  fetchTramitesPage,
+  TRAMITES_PAGE_SIZE,
   type ClienteOption,
   type CreateTramiteInput,
   type FacturadoFilter,
@@ -37,6 +42,13 @@ import {
 } from "@/components/tramites/tramites-api";
 
 type LoadState = "loading" | "ready" | "error";
+
+/** POST /api/tramites exige ADMIN/REVISOR/OPERATIVO (SOCIO solo consulta). */
+const ROLES_CREAR_DO = ["ADMIN", "REVISOR", "OPERATIVO"] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 type ClienteTipo = "PROPIO" | "SOCIO_LM";
 
@@ -84,98 +96,174 @@ function statusClassName(status: string) {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
+/**
+ * Lista paginada de trámites. La primera página pide `take=100` (el API
+ * recortaba a 50 en silencio); "Cargar más" acumula `skip` mientras
+ * `rows.length < total`.
+ */
+type ResultadoTramites = {
+  /** Clave de filtros+recarga a la que pertenece este resultado. */
+  key: string;
+  rows: TramiteRow[];
+  total: number;
+  error: string | null;
+};
+
 function useTramites(filters: TramiteFilters) {
-  const [rows, setRows] = useState<TramiteRow[]>([]);
-  const [state, setState] = useState<LoadState>("loading");
-  const [error, setError] = useState<string | null>(null);
+  // El estado de carga se DERIVA: si el último resultado no corresponde a la
+  // clave actual (filtros + reloadKey), estamos cargando. Así el efecto no
+  // llama a setState de forma síncrona (react-hooks/set-state-in-effect).
+  const [resultado, setResultado] = useState<ResultadoTramites | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const { toast } = useToast();
+
+  const key = JSON.stringify([
+    filters.q ?? "",
+    filters.estado ?? "",
+    filters.ciudad ?? "",
+    filters.clienteId ?? "",
+    filters.tipoCliente ?? "",
+    filters.facturado ?? "",
+    reloadKey,
+  ]);
 
   useEffect(() => {
     const controller = new AbortController();
-    setState("loading");
-    setError(null);
 
-    fetchTramites(controller.signal, filters)
-      .then((tramites) => {
-        setRows(tramites);
-        setState("ready");
+    fetchTramitesPage(controller.signal, filters, { take: TRAMITES_PAGE_SIZE, skip: 0 })
+      .then((page) => {
+        setResultado({ key, rows: page.rows, total: page.total, error: null });
       })
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") {
           return;
         }
 
-        setRows([]);
-        setError(caught instanceof Error ? caught.message : "No fue posible cargar los tramites.");
-        setState("error");
+        setResultado({
+          key,
+          rows: [],
+          total: 0,
+          error: caught instanceof Error ? caught.message : "No fue posible cargar los trámites.",
+        });
       });
 
     return () => controller.abort();
-    // Los filtros se comparan por valor (primitivos) para evitar refetch por
-    // un objeto `filters` recreado en cada render.
+    // `key` ya resume los filtros por valor; `filters` es el mismo objeto
+    // memoizado por el llamador.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    filters.q,
-    filters.estado,
-    filters.ciudad,
-    filters.clienteId,
-    filters.tipoCliente,
-    filters.facturado,
-    reloadKey,
-  ]);
+  }, [key]);
+
+  const actual = resultado?.key === key ? resultado : null;
+  const state: LoadState = actual ? (actual.error ? "error" : "ready") : "loading";
+  // Mientras llega la nueva página se conservan las filas anteriores (recarga
+  // secundaria); tras un error o en la primera carga no hay filas.
+  const rows = actual ? actual.rows : (resultado?.rows ?? []);
+  const total = actual ? actual.total : (resultado?.total ?? 0);
+  const error = actual?.error ?? null;
+  const hasMore = state === "ready" && rows.length < total;
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchTramitesPage(undefined, filters, {
+        take: TRAMITES_PAGE_SIZE,
+        skip: rows.length,
+      });
+      setResultado((prev) => {
+        if (!prev || prev.key !== key) return prev;
+        const conocidos = new Set(prev.rows.map((row) => row.id));
+        return {
+          ...prev,
+          rows: [...prev.rows, ...page.rows.filter((row) => !conocidos.has(row.id))],
+          total: page.total,
+        };
+      });
+    } catch (caught: unknown) {
+      toast({
+        title: "No se pudieron cargar más trámites",
+        description: describirError(caught),
+        variant: "error",
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [filters, hasMore, key, loadingMore, rows.length, toast]);
+
+  const reload = useCallback(() => {
+    // Descarta las filas previas para que la recarga muestre el skeleton.
+    setResultado(null);
+    setReloadKey((k) => k + 1);
+  }, []);
 
   return {
     error,
-    reload: () => {
-      setRows([]);
-      setState("loading");
-      setError(null);
-      setReloadKey((key) => key + 1);
-    },
+    hasMore,
+    loadMore,
+    loadingMore,
+    reload,
     rows,
     state,
+    total,
   };
 }
 
-function StateRow({
-  colSpan,
-  state,
-  title,
-  detail,
-  onRetry,
-}: {
-  colSpan: number;
-  state: "loading" | "error" | "empty";
-  title: string;
-  detail?: string;
-  onRetry?: () => void;
-}) {
-  const Icon = state === "loading" ? Loader2 : state === "error" ? AlertTriangle : FileText;
+/**
+ * Sube un adjunto al DO recién creado (URL prefirmada → PUT a MinIO →
+ * registro). Cualquier paso fallido lanza para que el llamador lo cuente.
+ */
+async function subirAdjuntoDO(tramiteId: string, categoria: string, file: File): Promise<void> {
+  const contentType = file.type || "application/octet-stream";
+  const urlRes = await fetch(`/api/tramites/${tramiteId}/documentos`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      action: "uploadUrl",
+      categoria,
+      carpeta: "documentos-adjuntos",
+      fileName: file.name,
+      contentType,
+      sizeBytes: file.size,
+    }),
+  });
+  if (!urlRes.ok) {
+    throw new Error(`No se obtuvo URL de subida (${urlRes.status}).`);
+  }
+  const urlPayload: unknown = await urlRes.json().catch(() => null);
+  if (!isRecord(urlPayload) || !isRecord(urlPayload.uploadUrl)) {
+    throw new Error("Respuesta de URL de subida no válida.");
+  }
+  const uploadUrl = String(urlPayload.uploadUrl.uploadUrl ?? "");
+  const storageKey = String(urlPayload.uploadUrl.storageKey ?? "");
+  if (!uploadUrl || !storageKey) {
+    throw new Error("Respuesta de URL de subida incompleta.");
+  }
 
-  return (
-    <tr>
-      <td className="px-4 py-12 text-center" colSpan={colSpan}>
-        <div className="mx-auto flex max-w-md flex-col items-center text-sm text-slate-600">
-          <Icon
-            className={`h-6 w-6 text-slate-500 ${state === "loading" ? "animate-spin" : ""}`}
-            aria-hidden="true"
-          />
-          <p className="mt-3 font-medium text-slate-950">{title}</p>
-          {detail ? <p className="mt-1">{detail}</p> : null}
-          {onRetry ? (
-            <button
-              type="button"
-              onClick={onRetry}
-              className="mt-4 inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              <RotateCcw className="h-4 w-4" aria-hidden="true" />
-              Reintentar
-            </button>
-          ) : null}
-        </div>
-      </td>
-    </tr>
-  );
+  const putRes = await fetch(uploadUrl, {
+    method: "PUT",
+    body: file,
+    headers: { "content-type": contentType },
+  });
+  if (!putRes.ok) {
+    throw new Error(`Fallo al subir el archivo (${putRes.status}).`);
+  }
+
+  const registerRes = await fetch(`/api/tramites/${tramiteId}/documentos`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      action: "register",
+      categoria,
+      nombreArchivo: file.name,
+      storageKey,
+      mimeType: contentType,
+      tamanoBytes: file.size,
+    }),
+  });
+  if (!registerRes.ok) {
+    throw new Error(`No se pudo registrar el adjunto (${registerRes.status}).`);
+  }
 }
 
 function formatDateInputAsIso(value: FormDataEntryValue | null) {
@@ -220,6 +308,7 @@ function CreateTramiteDialog({
     tipos: TipoTramiteOption[];
   }>({ clienteId: "", tipos: [] });
   const [tipoElegido, setTipoElegido] = useState("");
+  const { toast } = useToast();
 
   const CATEGORIAS: { key: string; label: string }[] = [
     { key: "FACTURA_COMERCIAL",  label: "Factura comercial" },
@@ -373,85 +462,57 @@ function CreateTramiteDialog({
     try {
       const created = await createTramite(input);
 
-      // Subir archivos adjuntos al DO recién creado
+      // Subir archivos adjuntos al DO recién creado. Un adjunto fallido no
+      // bloquea el DO, pero sí se informa cuántos quedaron sin subir.
       const filePairs = Object.entries(stagedFiles).filter((e): e is [string, File] => e[1] !== null);
+      let adjuntosFallidos = 0;
       for (const [categoria, file] of filePairs) {
         try {
-          const urlRes = await fetch(`/api/tramites/${created.id}/documentos`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              action: "uploadUrl",
-              categoria,
-              carpeta: "documentos-adjuntos",
-              fileName: file.name,
-              contentType: file.type || "application/octet-stream",
-              sizeBytes: file.size,
-            }),
-          });
-          if (!urlRes.ok) continue;
-          const { uploadUrl } = (await urlRes.json()) as { uploadUrl: { uploadUrl: string; storageKey: string } };
-
-          await fetch(uploadUrl.uploadUrl, {
-            method: "PUT",
-            body: file,
-            headers: { "content-type": file.type || "application/octet-stream" },
-          });
-
-          await fetch(`/api/tramites/${created.id}/documentos`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              action: "register",
-              categoria,
-              nombreArchivo: file.name,
-              storageKey: uploadUrl.storageKey,
-              mimeType: file.type || "application/octet-stream",
-              tamanoBytes: file.size,
-            }),
-          });
+          await subirAdjuntoDO(created.id, categoria, file);
         } catch {
-          // No bloqueamos la creación del DO si falla un archivo
+          adjuntosFallidos += 1;
         }
       }
 
-      setSuccess(`${created.doNumber} creado${filePairs.length > 0 ? ` · ${filePairs.length} archivo(s) adjunto(s)` : ""}`);
+      const adjuntosOk = filePairs.length - adjuntosFallidos;
+      setSuccess(
+        `${created.doNumber} creado${adjuntosOk > 0 ? ` · ${adjuntosOk} archivo(s) adjunto(s)` : ""}`,
+      );
+      if (adjuntosFallidos > 0) {
+        toast({
+          title: `DO creado, pero ${adjuntosFallidos} adjunto(s) no se subieron`,
+          description: "Puedes volver a subirlos desde la pestaña Documentos del DO.",
+          variant: "error",
+        });
+      } else {
+        toast({ title: `DO ${created.doNumber} creado`, variant: "success" });
+      }
       onCreated(created);
       form.reset();
       setClienteId("");
       setTipoCliente("PROPIO");
       setStagedFiles({});
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No fue posible crear el tramite.");
+      setError(describirError(caught, "No fue posible crear el trámite."));
     } finally {
       setIsSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="flex max-h-[calc(100vh-4rem)] w-full max-w-3xl flex-col overflow-hidden border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Crear tramite</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              {tipoTramiteSeleccionado && tipoTramiteSeleccionado.codigo !== "IMPORTACION"
-                ? `Consecutivo propio con prefijo ${tipoTramiteSeleccionado.prefijoConsecutivo}: no consume numeracion de importacion.`
-                : "El consecutivo se asigna automaticamente por ciudad y ano."}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-            title="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto px-5 py-5">
+    <ModalShell
+      open={open}
+      onClose={onClose}
+      title="Crear trámite"
+      description={
+        tipoTramiteSeleccionado && tipoTramiteSeleccionado.codigo !== "IMPORTACION"
+          ? `Consecutivo propio con prefijo ${tipoTramiteSeleccionado.prefijoConsecutivo}: no consume numeración de importación.`
+          : "El consecutivo se asigna automáticamente por ciudad y año."
+      }
+      size="xl"
+      dismissible={!isSubmitting}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid gap-4 md:grid-cols-4">
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Ciudad</span>
@@ -467,7 +528,7 @@ function CreateTramiteDialog({
               </select>
             </label>
             <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Ano</span>
+              <span className="text-sm font-medium text-slate-700">Año</span>
               <input
                 name="anio"
                 type="number"
@@ -542,7 +603,7 @@ function CreateTramiteDialog({
               {tipoCliente === "SOCIO_LM" || clienteSeleccionado?.tipo === "SOCIO_LM" ? (
                 <p className="flex items-start gap-2 border-l-2 border-amber-400 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
                   <Users className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                  Este DO sera operado por el socio Lucho y visible en su portal.
+                  Este DO será operado por el socio Lucho y visible en su portal.
                 </p>
               ) : (
                 <p className="flex items-start gap-2 border-l-2 border-slate-300 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
@@ -558,7 +619,7 @@ function CreateTramiteDialog({
           {tiposTramite.length > 1 ? (
             <div className="space-y-1.5">
               <span className="block text-sm font-medium text-slate-700" id="tipo-tramite-label">
-                Tipo de tramite
+                Tipo de trámite
               </span>
               <div
                 className="flex border border-slate-300 bg-white"
@@ -782,7 +843,8 @@ function CreateTramiteDialog({
             <button
               type="button"
               onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              disabled={isSubmitting}
+              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
             >
               Cerrar
             </button>
@@ -796,8 +858,7 @@ function CreateTramiteDialog({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -805,6 +866,7 @@ type ViewMode = "tabla" | "kanban";
 
 export function TramitesWorkspace() {
   const router = useRouter();
+  const puedeCrearDO = usePermiso(ROLES_CREAR_DO);
   const [createOpen, setCreateOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -847,7 +909,8 @@ export function TramitesWorkspace() {
     [debouncedSearch, estado, ciudad, clienteId, tipoCliente, facturado],
   );
 
-  const { error, reload, rows, state } = useTramites(filters);
+  const { error, hasMore, loadMore, loadingMore, reload, rows, state, total } =
+    useTramites(filters);
   const filteredRows = rows;
 
   const hasFilters =
@@ -870,16 +933,19 @@ export function TramitesWorkspace() {
 
   const isLoading = state === "loading";
   const isError = state === "error";
-  const emptyTitle = hasFilters ? "Sin resultados para los filtros" : "Sin tramites registrados";
+  // Carga inicial (sin filas todavía) → skeleton que reserva el alto de la
+  // tabla; recargas con filas ya visibles → ModuleState loading.
+  const isInitialLoading = isLoading && rows.length === 0;
+  const emptyTitle = hasFilters ? "Sin resultados para los filtros" : "Sin trámites registrados";
   const emptyDetail = hasFilters
-    ? "Ajusta estado, ciudad, cliente, tipo o busqueda para ampliar la consulta."
-    : "Cuando existan DOs, apareceran en esta tabla operativa.";
+    ? "Ajusta estado, ciudad, cliente, tipo o búsqueda para ampliar la consulta."
+    : "Cuando existan DOs, aparecerán en esta tabla operativa.";
 
   return (
     <section className="space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-normal">Tramites</h1>
+          <h1 className="text-2xl font-semibold tracking-normal">Trámites</h1>
           <p className="mt-1 text-sm text-slate-600">
             Lista maestra de DOs, pipeline y detalle documental.
           </p>
@@ -915,25 +981,29 @@ export function TramitesWorkspace() {
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="inline-flex h-10 shrink-0 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Crear DO
-          </button>
+          {puedeCrearDO ? (
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="inline-flex h-10 shrink-0 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Crear DO
+            </button>
+          ) : null}
         </div>
       </div>
 
-      <CreateTramiteDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreated={(tramite) => {
-          reload();
-          router.push(`/tramites/${tramite.id}`);
-        }}
-      />
+      {puedeCrearDO ? (
+        <CreateTramiteDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(tramite) => {
+            reload();
+            router.push(`/tramites/${tramite.id}`);
+          }}
+        />
+      ) : null}
 
       <div className="border border-slate-200 bg-white">
         <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-800">
@@ -942,12 +1012,15 @@ export function TramitesWorkspace() {
         </div>
         <div className="space-y-3 px-4 py-3">
           <label className="relative block">
-            <span className="sr-only">Buscar tramite</span>
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <span className="sr-only">Buscar trámite</span>
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+              aria-hidden="true"
+            />
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Buscar por numero de DO"
+              placeholder="Buscar por número de DO"
               className="h-10 w-full border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
             />
           </label>
@@ -1044,36 +1117,50 @@ export function TramitesWorkspace() {
       {viewMode === "kanban" ? (
         <div>
           {isLoading ? (
-            <div className="flex items-center gap-2 border border-dashed border-slate-300 bg-white px-4 py-6 text-sm text-slate-500">
-              <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
-              Cargando tramites...
-            </div>
+            <ModuleState type="loading" title="Cargando trámites…" />
           ) : isError ? (
-            <div className="flex items-center gap-3 border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-700">
-              <AlertTriangle className="h-5 w-5 shrink-0" aria-hidden="true" />
-              <div>
-                <p className="font-medium">No se pudieron cargar los tramites</p>
-                {error ? <p className="mt-0.5 text-xs">{error}</p> : null}
-                <button type="button" onClick={reload} className="mt-2 text-xs underline hover:no-underline">
-                  Reintentar
-                </button>
-              </div>
-            </div>
+            <ModuleState
+              type="error"
+              title="No se pudieron cargar los trámites"
+              detail={error ?? undefined}
+              action={{ label: "Reintentar", onClick: reload }}
+            />
           ) : (
             <KanbanTramites rows={filteredRows} onEstadoChanged={reload} />
           )}
         </div>
       ) : null}
 
-      {/* Vista Tabla */}
-      {viewMode === "tabla" ? (
+      {/* Vista Tabla: la carga inicial reserva el alto de la tabla con un skeleton */}
+      {viewMode === "tabla" && isInitialLoading ? (
+        <TableSkeleton rows={8} cols={10} rowHeight={45} />
+      ) : null}
+      {viewMode === "tabla" && !isInitialLoading ? (
         <div className="overflow-hidden border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-sm">
             <p className="font-semibold text-slate-900">DOs operativos</p>
-            <p className="text-slate-500">
-              {filteredRows.length} {filteredRows.length === 1 ? "resultado" : "resultados"}
+            <p className="text-slate-500" aria-live="polite">
+              {isError ? "—" : `Mostrando ${filteredRows.length} de ${total}`}
             </p>
           </div>
+          {isError ? (
+            <div className="p-4">
+              <ModuleState
+                type="error"
+                title="No se pudieron cargar los trámites"
+                detail={error ?? undefined}
+                action={{ label: "Reintentar", onClick: reload }}
+              />
+            </div>
+          ) : isLoading ? (
+            <div className="p-4">
+              <ModuleState type="loading" title="Actualizando trámites…" />
+            </div>
+          ) : filteredRows.length === 0 ? (
+            <div className="p-4">
+              <ModuleState type="empty" title={emptyTitle} detail={emptyDetail} />
+            </div>
+          ) : (
           <div className="overflow-x-auto">
             <table className="min-w-[1080px] w-full border-collapse text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase text-slate-500">
@@ -1091,28 +1178,7 @@ export function TramitesWorkspace() {
                 </tr>
               </thead>
               <tbody>
-                {isLoading ? (
-                  <StateRow
-                    colSpan={10}
-                    state="loading"
-                    title="Cargando tramites"
-                    detail="Consultando GET /api/tramites."
-                  />
-                ) : null}
-                {isError ? (
-                  <StateRow
-                    colSpan={10}
-                    state="error"
-                    title="No se pudieron cargar los tramites"
-                    detail={error ?? undefined}
-                    onRetry={reload}
-                  />
-                ) : null}
-                {!isLoading && !isError && filteredRows.length === 0 ? (
-                  <StateRow colSpan={10} state="empty" title={emptyTitle} detail={emptyDetail} />
-                ) : null}
-                {!isLoading && !isError
-                  ? filteredRows.map((tramite) => (
+                {filteredRows.map((tramite) => (
                       <tr
                         key={tramite.id}
                         className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
@@ -1155,11 +1221,31 @@ export function TramitesWorkspace() {
                           {tramite.responsable}
                         </td>
                       </tr>
-                    ))
-                  : null}
+                    ))}
               </tbody>
             </table>
           </div>
+          )}
+          {hasMore ? (
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-sm">
+              <p className="text-slate-500">
+                Mostrando {filteredRows.length} de {total} trámites
+              </p>
+              <button
+                type="button"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+              >
+                {loadingMore ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                )}
+                Cargar más
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>

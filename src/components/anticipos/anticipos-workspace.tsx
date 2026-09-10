@@ -17,6 +17,12 @@ import {
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { ModuleState } from "@/components/layout/module-state";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useRol } from "@/lib/auth/rol-context";
 import {
   TIPOS_RECAUDO,
   type AnticipoRow,
@@ -38,29 +44,6 @@ import {
   subirComprobante,
   validarArchivoSoporte,
 } from "@/components/anticipos/anticipos-api";
-
-// ─── Hook: rol del usuario actual (mismo patrón que clientes-workspace.tsx) ────
-
-function isRecordUnknown(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function useUserRol(): string {
-  const [rol, setRol] = useState<string>("OPERATIVO");
-
-  useEffect(() => {
-    fetch("/api/auth/get-session", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data: unknown) => {
-        if (isRecordUnknown(data) && isRecordUnknown(data.user) && typeof data.user.rol === "string") {
-          setRol(data.user.rol);
-        }
-      })
-      .catch(() => {/* silencioso */});
-  }, []);
-
-  return rol;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -101,6 +84,7 @@ type CreateModalProps = {
 };
 
 function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps) {
+  const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [montoRaw, setMontoRaw] = useState("");
@@ -180,30 +164,32 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
         verificadoBanco: false,
         soporteKey,
       });
+      toast({
+        title: "Anticipo registrado",
+        description: `${formatCOP(montoBig)} · ${clientes.find((c) => c.id === clienteId)?.nombre ?? ""}`,
+        variant: "success",
+      });
       onCreated(anticipo);
     } catch (caught) {
-      setError(caught instanceof AnticiposApiError ? caught.message : "Error al registrar el anticipo.");
+      setError(
+        caught instanceof AnticiposApiError
+          ? caught.message
+          : describirError(caught, "Error al registrar el anticipo."),
+      );
     } finally {
       setIsSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-950">Registrar anticipo</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Registrar anticipo"
+      size="lg"
+      dismissible={!isSubmitting && !uploading}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Cliente *</span>
             <select
@@ -335,8 +321,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -352,6 +337,7 @@ type AplicarModalProps = {
 };
 
 function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: AplicarModalProps) {
+  const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [montoRaw, setMontoRaw] = useState("");
@@ -374,7 +360,7 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
 
     const formData = new FormData(e.currentTarget);
     const tramiteId = String(formData.get("tramiteId") ?? "").trim();
-    if (!tramiteId) { setError("Selecciona un tramite."); return; }
+    if (!tramiteId) { setError("Selecciona un trámite."); return; }
 
     const montoBig = parseBigIntInput(montoRaw);
     if (!montoBig) { setError("El monto debe ser mayor a 0."); return; }
@@ -385,38 +371,35 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
         tramiteId,
         montoAplicado: montoBig,
       });
+      toast({
+        title: "Anticipo aplicado",
+        description: `${formatCOP(montoBig)} a ${tramites.find((t) => t.id === tramiteId)?.consecutivo ?? "DO"}`,
+        variant: "success",
+      });
       onApplied(anticipo.id, result);
     } catch (caught) {
-      setError(caught instanceof AnticiposApiError ? caught.message : "Error al aplicar el anticipo.");
+      setError(
+        caught instanceof AnticiposApiError
+          ? caught.message
+          : describirError(caught, "Error al aplicar el anticipo."),
+      );
     } finally {
       setIsSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-lg border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Aplicar anticipo a DO</h2>
-            <p className="mt-0.5 text-sm text-slate-500">
-              Saldo disponible:{" "}
-              <span className="font-semibold text-emerald-700">{formatCOP(anticipo.restante)}</span>
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Aplicar anticipo a DO"
+      description={`Saldo disponible: ${formatCOP(anticipo.restante)}`}
+      size="md"
+      dismissible={!isSubmitting}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <label className="block space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Tramite (DO) *</span>
+            <span className="text-sm font-medium text-slate-700">Trámite (DO) *</span>
             <select
               name="tramiteId"
               required
@@ -475,8 +458,7 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -486,14 +468,31 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
 
 type AnticipoFilaProps = {
   anticipo: AnticipoRow;
-  esAdmin: boolean;
+  /** POST /api/anticipos/[id]/aplicaciones → solo ADMIN. */
+  puedeAplicar: boolean;
+  /** DELETE /api/anticipos/[id]/aplicaciones/[aplicacionId] → solo ADMIN. */
+  puedeEliminarAplicacion: boolean;
+  /** PATCH /api/anticipos/[id]/verificar → ADMIN u OPERATIVO. */
+  puedeVerificar: boolean;
+  /** Id del anticipo que se está verificando (bloquea doble clic). */
+  verificandoId: string | null;
   onAplicar: (anticipo: AnticipoRow) => void;
   onEliminarAplicacion: (anticipoId: string, aplicacionId: string) => void;
   onVerificar: (id: string) => Promise<void>;
   deletingAplicacionId: string | null;
 };
 
-function AnticipoFila({ anticipo, esAdmin, onAplicar, onEliminarAplicacion, onVerificar, deletingAplicacionId }: AnticipoFilaProps) {
+function AnticipoFila({
+  anticipo,
+  puedeAplicar,
+  puedeEliminarAplicacion,
+  puedeVerificar,
+  verificandoId,
+  onAplicar,
+  onEliminarAplicacion,
+  onVerificar,
+  deletingAplicacionId,
+}: AnticipoFilaProps) {
   const [expanded, setExpanded] = useState(false);
   const [descargando, setDescargando] = useState(false);
   const [descargaError, setDescargaError] = useState<string | null>(null);
@@ -525,7 +524,12 @@ function AnticipoFila({ anticipo, esAdmin, onAplicar, onEliminarAplicacion, onVe
               type="button"
               onClick={() => setExpanded(!expanded)}
               className="text-slate-400 transition hover:text-slate-700"
-              aria-label={expanded ? "Colapsar" : "Ver desglose"}
+              aria-label={
+                expanded
+                  ? `Ocultar desglose del anticipo de ${anticipo.clienteNombre || "cliente"}`
+                  : `Ver desglose por DO del anticipo de ${anticipo.clienteNombre || "cliente"}`
+              }
+              aria-expanded={expanded}
             >
               {expanded ? (
                 <ChevronDown className="h-4 w-4" aria-hidden="true" />
@@ -590,25 +594,41 @@ function AnticipoFila({ anticipo, esAdmin, onAplicar, onEliminarAplicacion, onVe
                 BORRADOR
               </span>
             )}
-            {anticipo.estado === "REALIZADO" && esAdmin && (
+            {anticipo.estado === "REALIZADO" && puedeVerificar && (
               <button
                 type="button"
                 onClick={() => void onVerificar(anticipo.id)}
-                className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100"
-                title="Marcar como verificado"
+                disabled={verificandoId !== null}
+                className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
+                title="Marcar como verificado en banco"
               >
+                {verificandoId === anticipo.id ? (
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                ) : null}
                 Verificar
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => onAplicar(anticipo)}
-              disabled={BigInt(anticipo.restante) <= 0n}
-              className="inline-flex h-7 items-center gap-1.5 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
-            >
-              <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
-              Aplicar
-            </button>
+            {anticipo.estado === "REALIZADO" && !puedeVerificar && (
+              <span className="inline-flex items-center border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                REALIZADO
+              </span>
+            )}
+            {puedeAplicar ? (
+              <button
+                type="button"
+                onClick={() => onAplicar(anticipo)}
+                disabled={BigInt(anticipo.restante) <= 0n}
+                title={
+                  BigInt(anticipo.restante) <= 0n
+                    ? "Este anticipo ya no tiene saldo disponible"
+                    : "Aplicar parte del anticipo a un DO"
+                }
+                className="inline-flex h-7 items-center gap-1.5 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
+              >
+                <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
+                Aplicar
+              </button>
+            ) : null}
             {anticipo.soporteKey ? (
               <button
                 type="button"
@@ -644,7 +664,7 @@ function AnticipoFila({ anticipo, esAdmin, onAplicar, onEliminarAplicacion, onVe
                 <tr className="text-xs uppercase text-slate-400">
                   <th className="pb-1 text-left font-medium">Consecutivo DO</th>
                   <th className="pb-1 text-right font-medium">Monto aplicado</th>
-                  <th className="pb-1 w-8"></th>
+                  {puedeEliminarAplicacion ? <th className="pb-1 w-8"></th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -661,22 +681,24 @@ function AnticipoFila({ anticipo, esAdmin, onAplicar, onEliminarAplicacion, onVe
                     <td className="py-1.5 text-right font-semibold text-slate-800">
                       {formatCOP(ap.montoAplicado)}
                     </td>
-                    <td className="py-1.5 text-right">
-                      <button
-                        type="button"
-                        onClick={() => onEliminarAplicacion(anticipo.id, ap.aplicacionId)}
-                        disabled={deletingAplicacionId === ap.aplicacionId}
-                        className="inline-flex h-6 w-6 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
-                        aria-label="Eliminar aplicación"
-                        title="Eliminar aplicación"
-                      >
-                        {deletingAplicacionId === ap.aplicacionId ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                        ) : (
-                          <X className="h-3.5 w-3.5" aria-hidden="true" />
-                        )}
-                      </button>
-                    </td>
+                    {puedeEliminarAplicacion ? (
+                      <td className="py-1.5 text-right">
+                        <button
+                          type="button"
+                          onClick={() => onEliminarAplicacion(anticipo.id, ap.aplicacionId)}
+                          disabled={deletingAplicacionId !== null}
+                          className="inline-flex h-6 w-6 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                          aria-label={`Eliminar aplicación de ${formatCOP(ap.montoAplicado)} en ${ap.consecutivo}`}
+                          title="Eliminar aplicación"
+                        >
+                          {deletingAplicacionId === ap.aplicacionId ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <X className="h-3.5 w-3.5" aria-hidden="true" />
+                          )}
+                        </button>
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>
@@ -693,8 +715,14 @@ function AnticipoFila({ anticipo, esAdmin, onAplicar, onEliminarAplicacion, onVe
 // ---------------------------------------------------------------------------
 
 export function AnticiposWorkspace() {
-  const userRol = useUserRol();
-  const esAdmin = userRol === "ADMIN";
+  // Permisos = requireRole de cada endpoint (la página admite ADMIN/OPERATIVO):
+  //   POST /api/anticipos, POST/DELETE …/aplicaciones → ADMIN
+  //   PATCH /api/anticipos/[id]/verificar → ADMIN u OPERATIVO
+  const rol = useRol();
+  const esAdmin = rol === "ADMIN";
+  const puedeVerificar = rol === "ADMIN" || rol === "OPERATIVO";
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [anticipos, setAnticipos] = useState<AnticipoRow[]>([]);
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
   const [tramites, setTramites] = useState<TramiteOption[]>([]);
@@ -706,6 +734,7 @@ export function AnticiposWorkspace() {
   const [aplicarTarget, setAplicarTarget] = useState<AnticipoRow | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [deletingAplicacionId, setDeletingAplicacionId] = useState<string | null>(null);
+  const [verificandoId, setVerificandoId] = useState<string | null>(null);
 
   // Carga inicial
   useEffect(() => {
@@ -738,7 +767,7 @@ export function AnticiposWorkspace() {
 
     load().catch((caught: unknown) => {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
-      setLoadError(caught instanceof Error ? caught.message : "Error al cargar los anticipos.");
+      setLoadError(describirError(caught, "Error al cargar los anticipos."));
       setLoadState("error");
     });
 
@@ -789,7 +818,19 @@ export function AnticiposWorkspace() {
   }
 
   async function handleEliminarAplicacion(anticipoId: string, aplicacionId: string) {
-    if (!confirm("¿Eliminar esta aplicación? El monto volverá al saldo disponible del anticipo.")) return;
+    if (deletingAplicacionId) return;
+    const anticipo = anticipos.find((a) => a.id === anticipoId);
+    const aplicacion = anticipo?.aplicaciones.find((x) => x.aplicacionId === aplicacionId);
+    const ok = await confirmar({
+      title: "¿Eliminar esta aplicación del anticipo?",
+      description: aplicacion
+        ? `${formatCOP(aplicacion.montoAplicado)} aplicados a ${aplicacion.consecutivo} volverán al saldo disponible del anticipo. El DO quedará sin ese anticipo.`
+        : "El monto volverá al saldo disponible del anticipo.",
+      confirmText: "Eliminar aplicación",
+      variant: "danger",
+    });
+    if (!ok) return;
+
     setDeletingAplicacionId(aplicacionId);
     setGlobalError(null);
 
@@ -810,15 +851,29 @@ export function AnticiposWorkspace() {
           };
         }),
       );
+      toast({
+        title: "Aplicación eliminada",
+        description: aplicacion
+          ? `${formatCOP(aplicacion.montoAplicado)} volvieron al saldo del anticipo`
+          : undefined,
+        variant: "success",
+      });
     } catch (caught) {
-      setGlobalError(caught instanceof AnticiposApiError ? caught.message : "Error al eliminar la aplicación.");
+      const mensaje =
+        caught instanceof AnticiposApiError
+          ? caught.message
+          : describirError(caught, "Error al eliminar la aplicación.");
+      setGlobalError(mensaje);
+      toast({ title: "No se pudo eliminar la aplicación", description: mensaje, variant: "error" });
     } finally {
       setDeletingAplicacionId(null);
     }
   }
 
   async function handleVerificar(id: string) {
+    if (verificandoId) return; // evita doble clic
     setGlobalError(null);
+    setVerificandoId(id);
     try {
       const response = await fetch(`/api/anticipos/${id}/verificar`, {
         method: "PATCH",
@@ -834,8 +889,7 @@ export function AnticiposWorkspace() {
           typeof (payload as Record<string, unknown>).error === "string"
             ? (payload as Record<string, unknown>).error as string
             : `Error al verificar (${response.status}).`;
-        setGlobalError(msg);
-        return;
+        throw new AnticiposApiError(msg, response.status);
       }
       setAnticipos((prev) =>
         prev.map((a) =>
@@ -848,8 +902,13 @@ export function AnticiposWorkspace() {
             : a,
         ),
       );
-    } catch {
-      setGlobalError("Error de red al verificar.");
+      toast({ title: "Anticipo verificado en banco", variant: "success" });
+    } catch (caught) {
+      const mensaje = describirError(caught, "Error de red al verificar.");
+      setGlobalError(mensaje);
+      toast({ title: "No se pudo verificar el anticipo", description: mensaje, variant: "error" });
+    } finally {
+      setVerificandoId(null);
     }
   }
 
@@ -863,20 +922,24 @@ export function AnticiposWorkspace() {
         <div>
           <h1 className="text-2xl font-semibold tracking-normal">Anticipos</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Registro, verificacion bancaria y aplicacion multi-DO.
+            Registro, verificación bancaria y aplicación multi-DO.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setCreateOpen(true)}
-          className="inline-flex h-10 shrink-0 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          Registrar anticipo
-        </button>
+        {/* POST /api/anticipos → solo ADMIN */}
+        {esAdmin ? (
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex h-10 shrink-0 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Registrar anticipo
+          </button>
+        ) : null}
       </div>
 
       {/* Tarjetas de resumen */}
+      {loadState === "loading" ? <CardsSkeleton count={3} height={84} /> : null}
       {loadState === "ready" && (
         <div className="grid grid-cols-3 gap-4">
           {[
@@ -936,14 +999,24 @@ export function AnticiposWorkspace() {
             type="button"
             onClick={() => setGlobalError(null)}
             className="ml-auto"
-            aria-label="Cerrar"
+            aria-label="Cerrar aviso de error"
           >
-            <X className="h-4 w-4" />
+            <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       ) : null}
 
       {/* Tabla */}
+      {loadState === "loading" ? (
+        <TableSkeleton rows={6} cols={9} rowHeight={45} />
+      ) : loadState === "error" ? (
+        <ModuleState
+          type="error"
+          title="No fue posible cargar los anticipos"
+          detail={loadError ?? undefined}
+          action={{ label: "Reintentar", onClick: () => setReloadKey((k) => k + 1) }}
+        />
+      ) : (
       <div className="overflow-hidden border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-sm">
           <p className="font-semibold text-slate-900">
@@ -967,34 +1040,7 @@ export function AnticiposWorkspace() {
               </tr>
             </thead>
             <tbody>
-              {loadState === "loading" ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center">
-                    <div className="mx-auto flex max-w-md flex-col items-center text-sm text-slate-600">
-                      <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
-                      <p className="mt-3 font-medium text-slate-950">Cargando anticipos…</p>
-                    </div>
-                  </td>
-                </tr>
-              ) : loadState === "error" ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center">
-                    <div className="mx-auto flex max-w-md flex-col items-center text-sm text-slate-600">
-                      <AlertTriangle className="h-6 w-6 text-slate-400" aria-hidden="true" />
-                      <p className="mt-3 font-medium text-slate-950">No fue posible cargar los anticipos</p>
-                      {loadError ? <p className="mt-1">{loadError}</p> : null}
-                      <button
-                        type="button"
-                        onClick={() => setReloadKey((k) => k + 1)}
-                        className="mt-4 inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                      >
-                        <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                        Reintentar
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : anticipos.length === 0 ? (
+              {anticipos.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-12 text-center text-sm text-slate-500">
                     {conSaldo
@@ -1007,9 +1053,14 @@ export function AnticiposWorkspace() {
                   <AnticipoFila
                     key={anticipo.id}
                     anticipo={anticipo}
-                    esAdmin={esAdmin}
+                    puedeAplicar={esAdmin}
+                    puedeEliminarAplicacion={esAdmin}
+                    puedeVerificar={puedeVerificar}
+                    verificandoId={verificandoId}
                     onAplicar={(a) => setAplicarTarget(a)}
-                    onEliminarAplicacion={handleEliminarAplicacion}
+                    onEliminarAplicacion={(anticipoId, aplicacionId) =>
+                      void handleEliminarAplicacion(anticipoId, aplicacionId)
+                    }
                     onVerificar={handleVerificar}
                     deletingAplicacionId={deletingAplicacionId}
                   />
@@ -1019,9 +1070,10 @@ export function AnticiposWorkspace() {
           </table>
         </div>
       </div>
+      )}
 
-      {/* Modal crear */}
-      {createOpen ? (
+      {/* Modal crear (solo ADMIN) */}
+      {createOpen && esAdmin ? (
         <CreateAnticipoModal
           clientes={clientes}
           onClose={() => setCreateOpen(false)}
@@ -1029,8 +1081,8 @@ export function AnticiposWorkspace() {
         />
       ) : null}
 
-      {/* Modal aplicar */}
-      {aplicarTarget ? (
+      {/* Modal aplicar (solo ADMIN) */}
+      {aplicarTarget && esAdmin ? (
         <AplicarAnticipoModal
           anticipo={aplicarTarget}
           tramites={tramites}

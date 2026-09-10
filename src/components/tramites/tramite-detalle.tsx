@@ -20,6 +20,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import type { Rol } from "@/lib/auth/auth";
+import { useRol } from "@/lib/auth/rol-context";
 
 import {
   RegistrarAnticipoTramiteModal,
@@ -46,7 +50,6 @@ import {
 } from "@/components/tramites/checklist-api";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import {
-  FacturasProveedorApiError,
   type FacturaProveedorRow,
   solicitarFacturacion,
 } from "@/components/facturas-proveedor/facturas-proveedor-api";
@@ -64,12 +67,6 @@ const PIPELINE: readonly string[] = [
   "PAGADO",
   "CERRADO",
 ];
-
-function nextEstado(current: string): string | null {
-  const idx = PIPELINE.indexOf(current);
-  if (idx === -1 || idx >= PIPELINE.length - 1) return null;
-  return PIPELINE[idx + 1] ?? null;
-}
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -237,7 +234,13 @@ function accionLabel(accion: string): string {
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
-async function fetchTramiteDetalle(tramiteId: string, signal?: AbortSignal): Promise<TramiteDetalleData> {
+type DetalleCargado = {
+  tramite: TramiteDetalleData;
+  /** Umbral de alerta de saldo que acompaña al GET (lo consume la Hoja). */
+  umbralAlertaSaldo: string;
+};
+
+async function fetchTramiteDetalle(tramiteId: string, signal?: AbortSignal): Promise<DetalleCargado> {
   const res = await fetch(`/api/tramites/${tramiteId}`, {
     cache: "no-store",
     headers: { Accept: "application/json" },
@@ -258,7 +261,12 @@ async function fetchTramiteDetalle(tramiteId: string, signal?: AbortSignal): Pro
     throw new Error("Respuesta inesperada del servidor.");
   }
 
-  return payload.tramite as TramiteDetalleData;
+  const umbral = payload.umbralAlertaSaldo;
+  return {
+    tramite: payload.tramite as TramiteDetalleData,
+    umbralAlertaSaldo:
+      typeof umbral === "string" || typeof umbral === "number" ? String(umbral) : "500000",
+  };
 }
 
 async function patchFechasClave(
@@ -335,14 +343,17 @@ type InlineDateFieldProps = {
   fieldKey: DateFieldKey;
   value: string | null;
   tramiteId: string;
+  /** PUT /api/tramites/[id] exige ADMIN/REVISOR/OPERATIVO; en false es solo lectura. */
+  editable: boolean;
   onSaved: (key: DateFieldKey, newIso: string | null, updated: TramiteDetalleData) => void;
 };
 
-function InlineDateField({ label, fieldKey, value, tramiteId, onSaved }: InlineDateFieldProps) {
+function InlineDateField({ label, fieldKey, value, tramiteId, editable, onSaved }: InlineDateFieldProps) {
   const [editing, setEditing] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   function openEdit() {
     setInputValue(isoToDateInput(value));
@@ -351,6 +362,7 @@ function InlineDateField({ label, fieldKey, value, tramiteId, onSaved }: InlineD
   }
 
   async function handleSave() {
+    if (saving) return;
     setSaving(true);
     setError(null);
     const newIso = dateInputToIso(inputValue);
@@ -358,8 +370,9 @@ function InlineDateField({ label, fieldKey, value, tramiteId, onSaved }: InlineD
       const updated = await patchFechasClave(tramiteId, { [fieldKey]: newIso });
       onSaved(fieldKey, newIso, updated);
       setEditing(false);
+      toast({ title: `${label} guardada`, variant: "success" });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No se pudo guardar.");
+      setError(describirError(caught, "No se pudo guardar."));
       setInputValue(isoToDateInput(value));
     } finally {
       setSaving(false);
@@ -369,6 +382,15 @@ function InlineDateField({ label, fieldKey, value, tramiteId, onSaved }: InlineD
   function handleCancel() {
     setEditing(false);
     setError(null);
+  }
+
+  if (!editable) {
+    return (
+      <div className="flex flex-col gap-1">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+        <p className="text-sm text-slate-800">{formatDate(value)}</p>
+      </div>
+    );
   }
 
   return (
@@ -381,6 +403,7 @@ function InlineDateField({ label, fieldKey, value, tramiteId, onSaved }: InlineD
               type="date"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
+              aria-label={label}
               className="h-8 border border-cyan-500 px-2 text-sm text-slate-950 outline-none focus:ring-2 focus:ring-cyan-100"
               disabled={saving}
               autoFocus
@@ -444,6 +467,7 @@ function InlineTextField({ label, fieldKey, value, tramiteId, onSaved }: InlineT
   const [inputValue, setInputValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   function openEdit() {
     setInputValue(value ?? "");
@@ -452,6 +476,7 @@ function InlineTextField({ label, fieldKey, value, tramiteId, onSaved }: InlineT
   }
 
   async function handleSave() {
+    if (saving) return;
     setSaving(true);
     setError(null);
     const newValue = inputValue.trim() || null;
@@ -462,25 +487,21 @@ function InlineTextField({ label, fieldKey, value, tramiteId, onSaved }: InlineT
         body: JSON.stringify({ [fieldKey]: newValue }),
       });
       if (!res.ok) {
-        const payload: unknown = await res.json().catch(() => ({}));
+        const payload: unknown = await res.json().catch(() => null);
         const msg =
-          typeof payload === "object" && payload !== null && "error" in payload && typeof (payload as Record<string, unknown>).error === "string"
-            ? (payload as Record<string, unknown>).error as string
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
             : `Error ${res.status}`;
         throw new Error(msg);
       }
       const payload: unknown = await res.json();
-      if (
-        typeof payload === "object" &&
-        payload !== null &&
-        "tramite" in payload &&
-        typeof (payload as Record<string, unknown>).tramite === "object"
-      ) {
-        onSaved((payload as Record<string, unknown>).tramite as TramiteDetalleData);
+      if (isRecord(payload) && isRecord(payload.tramite)) {
+        onSaved(payload.tramite as TramiteDetalleData);
       }
       setEditing(false);
+      toast({ title: `${label} guardado`, variant: "success" });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No se pudo guardar.");
+      setError(describirError(caught, "No se pudo guardar."));
     } finally {
       setSaving(false);
     }
@@ -501,6 +522,7 @@ function InlineTextField({ label, fieldKey, value, tramiteId, onSaved }: InlineT
               type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
+              aria-label={label}
               className="h-8 border border-cyan-500 px-2 text-sm text-slate-950 outline-none focus:ring-2 focus:ring-cyan-100"
               disabled={saving}
               autoFocus
@@ -562,23 +584,28 @@ function CambioEstadoButton({
   const [selected, setSelected] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [faltantes, setFaltantes] = useState<string[]>([]);
+  const { toast } = useToast();
 
   const otrosEstados = PIPELINE.filter((s) => s !== tramite.estado);
 
   async function handleCambiar() {
-    if (!selected) return;
+    if (!selected || saving) return;
     setSaving(true);
     setError(null);
     setFaltantes([]);
     try {
       const updated = await patchEstado(tramite.id, selected);
+      toast({
+        title: "Estado actualizado",
+        description: `${tramite.consecutivo} → ${selected.replace(/_/g, " ")}`,
+        variant: "success",
+      });
       setSelected("");
       onChanged(updated);
     } catch (caught) {
-      const err = caught instanceof Error ? caught : new Error("Error desconocido");
-      const typed = err as Error & { faltantes?: string[] };
-      setError(err.message);
-      setFaltantes(typed.faltantes ?? []);
+      const typed = caught as { faltantes?: string[] };
+      setError(describirError(caught, "Error desconocido"));
+      setFaltantes(Array.isArray(typed?.faltantes) ? typed.faltantes : []);
     } finally {
       setSaving(false);
     }
@@ -591,6 +618,7 @@ function CambioEstadoButton({
           value={selected}
           onChange={(e) => { setSelected(e.target.value); setError(null); setFaltantes([]); }}
           disabled={saving}
+          aria-label={`Mover ${tramite.consecutivo} a otro estado`}
           className="h-6 border border-slate-300 bg-white px-1.5 text-xs text-slate-700 outline-none focus:border-cyan-500 disabled:opacity-60"
         >
           <option value="">Mover a...</option>
@@ -602,6 +630,7 @@ function CambioEstadoButton({
           type="button"
           onClick={() => void handleCambiar()}
           disabled={saving || !selected}
+          aria-label="Confirmar cambio de estado"
           className="inline-flex h-6 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
         >
           {saving ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
@@ -751,8 +780,10 @@ function ChecklistItemRow({
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   async function handleToggle(next: boolean) {
+    if (saving) return;
     setSaving(true);
     setError(null);
     // Actualización optimista: refleja el cambio de inmediato en el estado del trámite.
@@ -760,10 +791,15 @@ function ChecklistItemRow({
     try {
       const updated = await patchChecklistItem(tramiteId, item.id, next);
       onChanged(updated);
+      toast({
+        title: next ? "Documento marcado como recibido" : "Documento desmarcado",
+        description: item.descripcion,
+        variant: "success",
+      });
     } catch (caught) {
       // Revertir al valor previo si el PATCH falla.
       onChanged({ ...item, recibido: item.recibido });
-      setError(caught instanceof Error ? caught.message : "No se pudo actualizar el ítem.");
+      setError(describirError(caught, "No se pudo actualizar el ítem."));
     } finally {
       setSaving(false);
     }
@@ -921,7 +957,9 @@ function TabResumen({
         <div className="mb-4 flex items-center gap-2">
           <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
           <h3 className="text-sm font-semibold text-slate-900">Fechas clave</h3>
-          <span className="text-xs text-slate-400">(click para editar)</span>
+          {puedeEditar ? (
+            <span className="text-xs text-slate-500">(clic para editar)</span>
+          ) : null}
         </div>
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           <InlineDateField
@@ -929,6 +967,7 @@ function TabResumen({
             fieldKey="fechaDocumentosOk"
             value={tramite.fechaDocumentosOk}
             tramiteId={tramite.id}
+            editable={puedeEditar}
             onSaved={onDateSaved}
           />
           <InlineDateField
@@ -936,6 +975,7 @@ function TabResumen({
             fieldKey="fechaAceptacionDeclaracion"
             value={tramite.fechaAceptacionDeclaracion}
             tramiteId={tramite.id}
+            editable={puedeEditar}
             onSaved={onDateSaved}
           />
           <InlineDateField
@@ -943,6 +983,7 @@ function TabResumen({
             fieldKey="fechaLevante"
             value={tramite.fechaLevante}
             tramiteId={tramite.id}
+            editable={puedeEditar}
             onSaved={onDateSaved}
           />
           <InlineDateField
@@ -950,6 +991,7 @@ function TabResumen({
             fieldKey="fechaSalidaCarga"
             value={tramite.fechaSalidaCarga}
             tramiteId={tramite.id}
+            editable={puedeEditar}
             onSaved={onDateSaved}
           />
           <InlineDateField
@@ -957,6 +999,7 @@ function TabResumen({
             fieldKey="fechaEnviadoAFacturar"
             value={tramite.fechaEnviadoAFacturar}
             tramiteId={tramite.id}
+            editable={puedeEditar}
             onSaved={onDateSaved}
           />
         </div>
@@ -1040,8 +1083,8 @@ function TabHistorial({ tramite }: { tramite: TramiteDetalleData }) {
     return (
       <ModuleState
         type="empty"
-        title="Historial no disponible"
-        detail="El registro de cambios de estado estara disponible proximamente."
+        title="Sin movimientos"
+        detail="Aún no hay movimientos registrados en este DO."
       />
     );
   }
@@ -1101,39 +1144,62 @@ function TabHistorial({ tramite }: { tramite: TramiteDetalleData }) {
 // ─── Editor de líneas manuales (PROPIO + SOCIO_LM) ────────────────────────────
 
 const ESTADOS_BORRADOR_EDITABLE = ["BORRADOR", "EN_REVISION"];
-/** Roles que pueden transicionar un borrador a EN_REVISION. */
-const ROLES_PUEDE_ENVIAR_REVISION = ["ADMIN", "REVISOR", "OPERATIVO"];
+/** Roles que pueden transicionar un borrador a EN_REVISION (PATCH /api/borradores/[id]). */
+const ROLES_PUEDE_ENVIAR_REVISION: readonly Rol[] = ["ADMIN", "OPERATIVO"];
 
 function SeccionEditorFacturaVenta({
   tramiteId,
   userRol,
+  refreshToken = 0,
 }: {
   tramiteId: string;
-  userRol: string;
+  userRol: Rol;
+  refreshToken?: number;
 }) {
   const [borradores, setBorradores] = useState<BorradorRow[]>([]);
   const [estado, setEstado] = useState<"loading" | "ready" | "error">("loading");
+  const [errorCarga, setErrorCarga] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [enviandoRevision, setEnviandoRevision] = useState(false);
   const [errorRevision, setErrorRevision] = useState<string | null>(null);
+  const { toast } = useToast();
 
   useEffect(() => {
     const controller = new AbortController();
     fetchBorradoresDeTramite(tramiteId, controller.signal)
       .then((bs) => {
         setBorradores(bs);
+        setErrorCarga(null);
         setEstado("ready");
       })
-      .catch((e) => {
+      .catch((e: unknown) => {
         if (e instanceof DOMException && e.name === "AbortError") return;
+        setErrorCarga(describirError(e, "No se pudieron cargar los borradores."));
         setEstado("error");
       });
     return () => controller.abort();
-  }, [tramiteId]);
+  }, [tramiteId, reloadKey, refreshToken]);
 
   if (estado === "loading") {
-    return <p className="mt-4 text-sm text-slate-500">Cargando líneas…</p>;
+    return (
+      <div className="mt-4">
+        <TableSkeleton rows={3} cols={4} rowHeight={40} />
+      </div>
+    );
   }
-  if (estado === "error" || borradores.length === 0) {
+  if (estado === "error") {
+    return (
+      <div className="mt-4">
+        <ModuleState
+          type="error"
+          title="No se pudieron cargar las líneas de la factura"
+          detail={errorCarga ?? undefined}
+          action={{ label: "Reintentar", onClick: () => setReloadKey((k) => k + 1) }}
+        />
+      </div>
+    );
+  }
+  if (borradores.length === 0) {
     return (
       <p className="mt-4 text-sm text-slate-500">
         Genera un borrador en Facturación para escribir las líneas a mano.
@@ -1165,10 +1231,9 @@ function SeccionEditorFacturaVenta({
       setBorradores((prev) =>
         prev.map((b) => (b.id === actualizado.id ? actualizado : b)),
       );
+      toast({ title: "Borrador enviado a revisión", variant: "success" });
     } catch (err) {
-      setErrorRevision(
-        err instanceof Error ? err.message : "Error al enviar a revisión.",
-      );
+      setErrorRevision(describirError(err, "Error al enviar a revisión."));
     } finally {
       setEnviandoRevision(false);
     }
@@ -1223,9 +1288,11 @@ function SeccionEditorFacturaVenta({
 function TabFacturacion({
   tramite,
   userRol,
+  refreshToken,
 }: {
   tramite: TramiteDetalleData;
-  userRol: string;
+  userRol: Rol;
+  refreshToken: number;
 }) {
   const esFacturable =
     tramite.estado === "ENVIADO_A_FACTURAR" ||
@@ -1266,7 +1333,11 @@ function TabFacturacion({
         </p>
       ) : null}
       {esFacturable ? (
-        <SeccionEditorFacturaVenta tramiteId={tramite.id} userRol={userRol} />
+        <SeccionEditorFacturaVenta
+          tramiteId={tramite.id}
+          userRol={userRol}
+          refreshToken={refreshToken}
+        />
       ) : null}
     </div>
   );
@@ -1284,13 +1355,33 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "historial", label: "Historial" },
 ];
 
+/** Skeleton de cabecera + tabla mientras llega GET /api/tramites/[id]. */
+function DetalleSkeleton() {
+  return (
+    <div className="space-y-4" aria-busy="true" role="status" aria-label="Cargando detalle del trámite">
+      <CardsSkeleton count={4} height={76} />
+      <div className="flex gap-6 border-b border-slate-200 pb-3">
+        {TABS.map((tab) => (
+          <div key={tab.id} className="h-3 w-20 animate-pulse bg-slate-200/80" aria-hidden="true" />
+        ))}
+      </div>
+      <TableSkeleton rows={6} cols={6} rowHeight={44} />
+    </div>
+  );
+}
+
 export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
+  const userRol = useRol();
+  const { toast } = useToast();
   const [tramite, setTramite] = useState<TramiteDetalleData | null>(null);
+  const [umbralAlertaSaldo, setUmbralAlertaSaldo] = useState("500000");
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [activeTab, setActiveTab] = useState<TabId>("hoja");
-  const [userRol, setUserRol] = useState<string>("OPERATIVO");
+  // Pestañas ya visitadas: se mantienen montadas (ocultas con `hidden`) para
+  // no volver a cargar todo al regresar a ellas.
+  const [visitedTabs, setVisitedTabs] = useState<TabId[]>(["hoja"]);
   const [solicitandoFacturacion, setSolicitandoFacturacion] = useState(false);
   const [errorSolicitud, setErrorSolicitud] = useState<string | null>(null);
   const [topAction, setTopAction] = useState<
@@ -1303,39 +1394,23 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
     valor?: string;
   } | null>(null);
 
-  // Cargar rol del usuario actual
-  useEffect(() => {
-    fetch("/api/auth/get-session", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data: unknown) => {
-        if (
-          typeof data === "object" &&
-          data !== null &&
-          "user" in data &&
-          typeof (data as Record<string, unknown>).user === "object"
-        ) {
-          const user = (data as Record<string, unknown>).user as Record<string, unknown>;
-          if (typeof user.rol === "string") setUserRol(user.rol);
-        }
-      })
-      .catch(() => {/* silencioso */});
-  }, []);
-
   useEffect(() => {
     const controller = new AbortController();
 
     async function load() {
-      setTramite(null);
+      // En recargas (reloadKey > 0) se conserva el trámite visible para no
+      // desmontar las pestañas; solo la primera carga muestra el skeleton.
       setLoadError(null);
-      setLoadState("loading");
+      setLoadState((prev) => (prev === "ready" ? prev : "loading"));
 
       try {
         const data = await fetchTramiteDetalle(tramiteId, controller.signal);
-        setTramite(data);
+        setTramite(data.tramite);
+        setUmbralAlertaSaldo(data.umbralAlertaSaldo);
         setLoadState("ready");
       } catch (caught: unknown) {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setLoadError(caught instanceof Error ? caught.message : "Error al cargar el tramite.");
+        setLoadError(caught instanceof Error ? caught.message : "Error al cargar el trámite.");
         setLoadState("error");
       }
     }
@@ -1344,6 +1419,11 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
 
     return () => controller.abort();
   }, [tramiteId, reloadKey]);
+
+  const selectTab = useCallback((tab: TabId) => {
+    setActiveTab(tab);
+    setVisitedTabs((prev) => (prev.includes(tab) ? prev : [...prev, tab]));
+  }, []);
 
   const handleDateSaved = useCallback(
     (_key: DateFieldKey, _newIso: string | null, updated: TramiteDetalleData) => {
@@ -1373,20 +1453,23 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
     );
   }, []);
 
+  const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+
   async function handleSolicitarFacturacion() {
-    if (!tramite) return;
+    if (!tramite || solicitandoFacturacion) return;
     setSolicitandoFacturacion(true);
     setErrorSolicitud(null);
     try {
       await solicitarFacturacion(tramite.id);
+      toast({
+        title: "Facturación solicitada",
+        description: `${tramite.consecutivo} pasó a ENVIADO A FACTURAR.`,
+        variant: "success",
+      });
       // Recargar para reflejar el nuevo estado
-      setReloadKey((k) => k + 1);
+      reload();
     } catch (caught) {
-      setErrorSolicitud(
-        caught instanceof FacturasProveedorApiError
-          ? caught.message
-          : "No se pudo solicitar la facturación.",
-      );
+      setErrorSolicitud(describirError(caught, "No se pudo solicitar la facturación."));
     } finally {
       setSolicitandoFacturacion(false);
     }
@@ -1408,44 +1491,39 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       beneficiarios,
       valor: factura.valor,
     });
-    setActiveTab("pagos");
+    selectTab("pagos");
     setTopAction("pago");
-  }, []);
+  }, [selectTab]);
 
-  if (loadState === "loading") {
-    return (
-      <ModuleState type="loading" title="Cargando detalle del tramite" detail="Consultando API..." />
-    );
+  if (loadState === "loading" && !tramite) {
+    return <DetalleSkeleton />;
   }
 
   if (loadState === "error" || !tramite) {
     return (
-      <div className="space-y-3">
-        <ModuleState
-          type="error"
-          title="No se pudo cargar el tramite"
-          detail={loadError ?? "Error desconocido."}
-        />
-        <button
-          type="button"
-          onClick={() => setReloadKey((k) => k + 1)}
-          className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-        >
-          <RotateCcw className="h-4 w-4" aria-hidden="true" />
-          Reintentar
-        </button>
-      </div>
+      <ModuleState
+        type="error"
+        title="No se pudo cargar el trámite"
+        detail={loadError ?? "Error desconocido."}
+        action={{ label: "Reintentar", onClick: reload }}
+      />
     );
   }
 
   // ─── Permisos por acción (alineados con los roles que exige cada endpoint) ──
+  // POST /api/anticipos → ADMIN
   const puedeAnticipo = userRol === "ADMIN";
+  // POST /api/tramites/[id]/pagos → ADMIN/OPERATIVO
   const puedePago = userRol === "ADMIN" || userRol === "OPERATIVO";
+  // POST /api/tramites/[id]/estado y PUT /api/tramites/[id] → ADMIN/REVISOR/OPERATIVO
   const puedeEstado =
     userRol === "ADMIN" || userRol === "REVISOR" || userRol === "OPERATIVO";
+  const puedeEditarTramite = puedeEstado;
+  // POST /api/tramites/[id]/solicitar-facturacion → ADMIN/OPERATIVO/SOCIO
   const puedeFacturar =
     userRol === "ADMIN" || userRol === "OPERATIVO" || userRol === "SOCIO";
-  const puedeFacturaProveedor = userRol !== "REVISOR";
+  // POST /api/tramites/[id]/facturas-proveedor → ADMIN/OPERATIVO/SOCIO
+  const puedeFacturaProveedor = puedeFacturar;
   const yaEnviadoAFacturar =
     tramite.estado === "ENVIADO_A_FACTURAR" ||
     tramite.estado === "FACTURADO" ||
@@ -1458,8 +1536,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   // Excepción: la reapertura de emergencia (solo ADMIN) sigue disponible vía
   // el selector de cambio de estado, que el backend ya restringe por rol.
   const esCerrado = tramite.estado === "CERRADO";
-
-  const reload = () => setReloadKey((k) => k + 1);
+  const isRefreshing = loadState === "loading";
 
   return (
     <div className="space-y-0">
@@ -1490,6 +1567,12 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
               </span>
               {puedeEstado ? (
                 <CambioEstadoButton tramite={tramite} onChanged={handleEstadoChanged} />
+              ) : null}
+              {isRefreshing ? (
+                <span className="inline-flex items-center gap-1 text-xs text-slate-500" role="status">
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                  Actualizando…
+                </span>
               ) : null}
             </div>
           </div>
@@ -1560,7 +1643,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
           </div>
         </div>
         {errorSolicitud ? (
-          <p className="mt-2 flex items-center gap-1 text-xs text-rose-600">
+          <p className="mt-2 flex items-center gap-1 text-xs text-rose-600" role="alert">
             <AlertTriangle className="h-3 w-3" aria-hidden="true" />
             {errorSolicitud}
           </p>
@@ -1568,16 +1651,21 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       </div>
 
       {/* Nav de pestañas */}
-      <div className="flex overflow-x-auto border-b border-slate-200">
+      <div className="flex overflow-x-auto border-b border-slate-200" role="tablist" aria-label="Secciones del trámite">
         {TABS.map((tab) => (
           <button
             key={tab.id}
+            id={`tab-${tab.id}`}
             type="button"
-            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls={`panel-${tab.id}`}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            onClick={() => selectTab(tab.id)}
             className={`inline-flex h-10 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-medium transition ${
               activeTab === tab.id
                 ? "border-slate-950 text-slate-950"
-                : "border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700"
+                : "border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-900"
             }`}
           >
             {tab.label}
@@ -1585,40 +1673,65 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
         ))}
       </div>
 
-      {/* Contenido de pestañas */}
+      {/* Contenido de pestañas: las ya visitadas quedan montadas y ocultas. */}
       <div className="mt-5">
-        {activeTab === "hoja" ? (
-          <HojaTramite tramiteId={tramiteId} userRol={userRol} />
+        {visitedTabs.includes("hoja") ? (
+          <div id="panel-hoja" role="tabpanel" aria-labelledby="tab-hoja" hidden={activeTab !== "hoja"}>
+            <HojaTramite
+              tramiteId={tramiteId}
+              tramite={tramite}
+              umbralAlertaSaldo={umbralAlertaSaldo}
+              onRefresh={reload}
+              refreshToken={reloadKey}
+            />
+          </div>
         ) : null}
-        {activeTab === "resumen" ? (
-          <TabResumen
-            tramite={tramite}
-            onDateSaved={handleDateSaved}
-            onEstadoChanged={handleEstadoChanged}
-            onFieldSaved={handleFieldSaved}
-            onChecklistItemChanged={handleChecklistItemChanged}
-            puedeEditar={userRol === "ADMIN" || userRol === "REVISOR" || userRol === "OPERATIVO"}
-            onRefresh={() => setReloadKey((k) => k + 1)}
-          />
+        {visitedTabs.includes("resumen") ? (
+          <div id="panel-resumen" role="tabpanel" aria-labelledby="tab-resumen" hidden={activeTab !== "resumen"}>
+            <TabResumen
+              tramite={tramite}
+              onDateSaved={handleDateSaved}
+              onEstadoChanged={handleEstadoChanged}
+              onFieldSaved={handleFieldSaved}
+              onChecklistItemChanged={handleChecklistItemChanged}
+              puedeEditar={puedeEditarTramite}
+              onRefresh={reload}
+            />
+          </div>
         ) : null}
-        {activeTab === "documentos" ? (
-          <SeccionDocumentos tramiteId={tramiteId} />
+        {visitedTabs.includes("documentos") ? (
+          <div id="panel-documentos" role="tabpanel" aria-labelledby="tab-documentos" hidden={activeTab !== "documentos"}>
+            <SeccionDocumentos tramiteId={tramiteId} refreshToken={reloadKey} />
+          </div>
         ) : null}
-        {activeTab === "pagos" ? (
-          <LibroPagos tramiteId={tramiteId} />
+        {visitedTabs.includes("pagos") ? (
+          <div id="panel-pagos" role="tabpanel" aria-labelledby="tab-pagos" hidden={activeTab !== "pagos"}>
+            <LibroPagos tramiteId={tramiteId} refreshToken={reloadKey} />
+          </div>
         ) : null}
-        {activeTab === "facturas-proveedor" ? (
-          <SeccionFacturasProveedor
-            tramiteId={tramiteId}
-            puedeEditar={userRol !== "REVISOR"}
-            onPagarFactura={handlePagarFacturaProveedor}
-          />
+        {visitedTabs.includes("facturas-proveedor") ? (
+          <div
+            id="panel-facturas-proveedor"
+            role="tabpanel"
+            aria-labelledby="tab-facturas-proveedor"
+            hidden={activeTab !== "facturas-proveedor"}
+          >
+            <SeccionFacturasProveedor
+              tramiteId={tramiteId}
+              onPagarFactura={handlePagarFacturaProveedor}
+              refreshToken={reloadKey}
+            />
+          </div>
         ) : null}
-        {activeTab === "facturacion" ? (
-          <TabFacturacion tramite={tramite} userRol={userRol} />
+        {visitedTabs.includes("facturacion") ? (
+          <div id="panel-facturacion" role="tabpanel" aria-labelledby="tab-facturacion" hidden={activeTab !== "facturacion"}>
+            <TabFacturacion tramite={tramite} userRol={userRol} refreshToken={reloadKey} />
+          </div>
         ) : null}
-        {activeTab === "historial" ? (
-          <TabHistorial tramite={tramite} />
+        {visitedTabs.includes("historial") ? (
+          <div id="panel-historial" role="tabpanel" aria-labelledby="tab-historial" hidden={activeTab !== "historial"}>
+            <TabHistorial tramite={tramite} />
+          </div>
         ) : null}
       </div>
 

@@ -281,25 +281,33 @@ export async function listarDocumentos(
     orderBy: { createdAt: "asc" },
   });
 
+  // Las URLs prefirmadas se firman en paralelo: cada una es una llamada de red
+  // a MinIO independiente. `Promise.all` conserva el orden de `documentos`.
+  const conUrl = await Promise.all(
+    documentos.map(async (doc) => {
+      let downloadUrl = "";
+
+      try {
+        const presigned = await createPresignedDownloadUrl({ storageKey: doc.storageKey });
+        downloadUrl = presigned.url;
+      } catch {
+        // MinIO no disponible: devolver URL vacía (el UI manejará el caso)
+        downloadUrl = "";
+      }
+
+      return { ...doc, downloadUrl };
+    }),
+  );
+
   const result: DocumentosPorCategoria = {};
 
-  for (const doc of documentos) {
-    let downloadUrl = "";
-
-    try {
-      const presigned = await createPresignedDownloadUrl({ storageKey: doc.storageKey });
-      downloadUrl = presigned.url;
-    } catch {
-      // MinIO no disponible: devolver URL vacía (el UI manejará el caso)
-      downloadUrl = "";
-    }
-
+  for (const doc of conUrl) {
     const categoria = doc.categoria as string;
     if (!result[categoria]) {
       result[categoria] = [];
     }
 
-    result[categoria].push({ ...doc, downloadUrl });
+    result[categoria].push(doc);
   }
 
   return result;

@@ -9,30 +9,10 @@ import {
   type CapacidadRow,
   type ConfigCapacidad,
 } from "@/components/clientes/capacidades-api";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// Mismo patrón que en clientes-workspace.tsx / tramite-detalle.tsx.
-function useUserRol(): string {
-  const [rol, setRol] = useState<string>("OPERATIVO");
-
-  useEffect(() => {
-    fetch("/api/auth/get-session", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data: unknown) => {
-        if (isRecord(data) && isRecord(data.user) && typeof data.user.rol === "string") {
-          setRol(data.user.rol);
-        }
-      })
-      .catch(() => {
-        /* silencioso */
-      });
-  }, []);
-
-  return rol;
-}
+import { ModuleState } from "@/components/layout/module-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useEsAdmin } from "@/lib/auth/rol-context";
 
 const ETIQUETA_GRUPO: Record<string, string> = {
   Comercial: "Comercial",
@@ -145,6 +125,7 @@ function FilaCapacidad({
                   type="text"
                   defaultValue={valor}
                   disabled={!editable || guardando}
+                  aria-label={`${capacidad.nombre}: ${clave}`}
                   onBlur={(event) => {
                     if (event.target.value !== valor) {
                       onConfig(capacidad, clave, event.target.value);
@@ -174,18 +155,47 @@ function FilaCapacidad({
   );
 }
 
+/** Filas fantasma con la misma altura que `FilaCapacidad` (≈ 72 px). */
+function FilasSkeleton({ count = 5 }: { count?: number }) {
+  return (
+    <div role="status" aria-live="polite" aria-label="Cargando funciones">
+      {Array.from({ length: count }).map((_, i) => (
+        <div
+          key={i}
+          className="flex items-start gap-4 border-b border-slate-100 px-4 py-3 last:border-b-0"
+        >
+          <Skeleton className="mt-0.5 h-6 w-11" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-4 w-24" />
+            </div>
+            <Skeleton className="mt-2 h-4 w-3/4" />
+          </div>
+        </div>
+      ))}
+      <span className="sr-only">Cargando…</span>
+    </div>
+  );
+}
+
+type LoadState = "loading" | "ready" | "error";
+
 /**
  * Interruptores de función de la empresa (M1 del PLAN-CONFIGURABILIDAD).
  * Aquí se activa o desactiva cada función general para esta empresa concreta,
  * en vez de ramificar el código por tipo de cliente.
  */
 export function SeccionCapacidades({ clienteId }: { clienteId: string }) {
-  const userRol = useUserRol();
-  const editable = userRol === "ADMIN";
+  // `PUT /api/clientes/[id]/capacidades` es solo ADMIN.
+  const editable = useEsAdmin();
+  const { toast } = useToast();
 
   const [capacidades, setCapacidades] = useState<CapacidadRow[]>([]);
-  const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [errorGuardado, setErrorGuardado] = useState<string | null>(null);
   const [guardando, setGuardando] = useState<string | null>(null);
 
   useEffect(() => {
@@ -194,16 +204,22 @@ export function SeccionCapacidades({ clienteId }: { clienteId: string }) {
     fetchCapacidades(clienteId, controller.signal)
       .then((filas) => {
         setCapacidades(filas);
-        setCargando(false);
+        setLoadState("ready");
       })
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setError(caught instanceof Error ? caught.message : "Error al cargar las funciones.");
-        setCargando(false);
+        setLoadError(describirError(caught, "Error al cargar las funciones."));
+        setLoadState("error");
       });
 
     return () => controller.abort();
-  }, [clienteId]);
+  }, [clienteId, reloadKey]);
+
+  function recargar() {
+    setLoadState("loading");
+    setLoadError(null);
+    setReloadKey((k) => k + 1);
+  }
 
   const aplicar = useCallback(
     async (
@@ -211,20 +227,29 @@ export function SeccionCapacidades({ clienteId }: { clienteId: string }) {
       cambio: { heredar?: boolean; habilitado?: boolean; config?: ConfigCapacidad },
     ) => {
       setGuardando(capacidad.codigo);
-      setError(null);
+      setErrorGuardado(null);
 
       try {
         const filas = await guardarCapacidades(clienteId, [
           { codigo: capacidad.codigo, ...cambio },
         ]);
         setCapacidades(filas);
+        const nueva = filas.find((f) => f.codigo === capacidad.codigo);
+        toast({
+          title: cambio.heredar
+            ? `${capacidad.nombre}: vuelve a heredar`
+            : `${capacidad.nombre}: ${nueva?.habilitado ? "activada" : "desactivada"}`,
+          variant: "success",
+        });
       } catch (caught: unknown) {
-        setError(caught instanceof Error ? caught.message : "No fue posible guardar el cambio.");
+        const mensaje = describirError(caught, "No fue posible guardar el cambio.");
+        setErrorGuardado(mensaje);
+        toast({ title: "No se pudo guardar la función", description: mensaje, variant: "error" });
       } finally {
         setGuardando(null);
       }
     },
-    [clienteId],
+    [clienteId, toast],
   );
 
   const grupos = [...new Set(capacidades.map((capacidad) => capacidad.grupo))];
@@ -235,7 +260,8 @@ export function SeccionCapacidades({ clienteId }: { clienteId: string }) {
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
         <div>
           <p className="text-sm font-semibold text-slate-900">
-            Funciones ({activas}/{capacidades.length} activas)
+            Funciones
+            {loadState === "ready" ? ` (${activas}/${capacidades.length} activas)` : ""}
           </p>
           <p className="mt-0.5 text-xs text-slate-500">
             Se activan o desactivan por empresa. Ninguna implica desarrollo a la medida.
@@ -246,15 +272,25 @@ export function SeccionCapacidades({ clienteId }: { clienteId: string }) {
         ) : null}
       </div>
 
-      {error ? (
-        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+      {errorGuardado ? (
+        <div
+          role="alert"
+          className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+        >
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>{error}</span>
+          <span>{errorGuardado}</span>
         </div>
       ) : null}
 
-      {cargando ? (
-        <p className="px-4 py-8 text-center text-sm text-slate-500">Cargando funciones…</p>
+      {loadState === "loading" ? (
+        <FilasSkeleton />
+      ) : loadState === "error" ? (
+        <ModuleState
+          type="error"
+          title="No se pudieron cargar las funciones"
+          detail={loadError ?? undefined}
+          action={{ label: "Reintentar", onClick: recargar }}
+        />
       ) : capacidades.length === 0 ? (
         <p className="px-4 py-8 text-center text-sm text-slate-500">
           Sin catálogo de funciones. Corre el seed para sembrarlo.

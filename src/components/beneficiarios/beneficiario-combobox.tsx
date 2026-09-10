@@ -3,11 +3,16 @@
 import { Check, Loader2, Plus, Search, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { describirError, useToast } from "@/components/ui/toast";
+import { usePermiso } from "@/lib/auth/rol-context";
+
 import {
-  BeneficiarioApiError,
   createBeneficiario,
   fetchBeneficiarios,
 } from "./beneficiario-api";
+
+/** POST /api/beneficiarios (crear en línea) exige ADMIN/OPERATIVO. */
+const ROLES_CREAR_BENEFICIARIO = ["ADMIN", "OPERATIVO"] as const;
 
 export type BeneficiarioSeleccion = {
   id: string;
@@ -40,6 +45,8 @@ function isMulti(props: Props): props is PropsMulti {
 
 export function BeneficiarioCombobox(props: Props) {
   const { placeholder = "Buscar o crear beneficiario…", disabled = false } = props;
+  const puedeCrear = usePermiso(ROLES_CREAR_BENEFICIARIO);
+  const { toast } = useToast();
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -111,7 +118,9 @@ export function BeneficiarioCombobox(props: Props) {
   );
 
   const queryTrimmed = query.trim();
+  // La opción "Crear …" solo aparece si el rol puede llamar a POST /api/beneficiarios.
   const noExiste =
+    puedeCrear &&
     queryTrimmed.length > 0 &&
     !todos.some((b) => b.nombre.toLowerCase() === queryTrimmed.toLowerCase());
 
@@ -161,7 +170,7 @@ export function BeneficiarioCombobox(props: Props) {
   }
 
   async function handleConfirmCreate() {
-    if (!createNombre.trim()) return;
+    if (!createNombre.trim() || creating || !puedeCrear) return;
     setCreating(true);
     setCreateError(null);
     try {
@@ -181,8 +190,9 @@ export function BeneficiarioCombobox(props: Props) {
       }
       setCreatingForm(false);
       setQuery("");
+      toast({ title: "Beneficiario creado", description: nuevo.nombre, variant: "success" });
     } catch (e) {
-      setCreateError(e instanceof BeneficiarioApiError ? e.message : "Error al crear.");
+      setCreateError(describirError(e, "Error al crear."));
     } finally {
       setCreating(false);
     }
@@ -268,12 +278,14 @@ export function BeneficiarioCombobox(props: Props) {
                 value={createNombre}
                 onChange={(e) => setCreateNombre(e.target.value)}
                 placeholder="Nombre *"
+                aria-label="Nombre del nuevo beneficiario"
                 className="h-8 w-full border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
               />
               <input
                 value={createNit}
                 onChange={(e) => setCreateNit(e.target.value)}
                 placeholder="NIT (opcional)"
+                aria-label="NIT del nuevo beneficiario (opcional)"
                 className="h-8 w-full border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
               />
               {createError ? (
@@ -313,6 +325,7 @@ export function BeneficiarioCombobox(props: Props) {
                   }
                 }}
                 placeholder="Nombre o NIT…"
+                aria-label="Buscar beneficiario por nombre o NIT"
                 className="h-8 w-full bg-slate-50 px-2 text-sm outline-none placeholder:text-slate-400"
               />
             </div>

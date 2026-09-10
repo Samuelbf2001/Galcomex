@@ -197,13 +197,28 @@ export async function fetchClienteOptions(signal?: AbortSignal): Promise<Cliente
     .filter((c) => c.id && c.nombre);
 }
 
+/** Máximo que admite `GET /api/tramites?take=` para los selectores de DO. */
+const TRAMITE_OPTIONS_TAKE = 200;
+
+/**
+ * Opciones de DO para los selectores (nuevo pago, multi-DO). Pide `take=200`
+ * porque sin `take` el API recorta a 50 en silencio; si el servidor aún no
+ * admite ese máximo (400 de validación) reintenta con 100.
+ */
 export async function fetchTramiteOptions(signal?: AbortSignal): Promise<TramiteOption[]> {
-  const response = await fetch("/api/tramites", {
+  let response = await fetch(`/api/tramites?take=${TRAMITE_OPTIONS_TAKE}`, {
     cache: "no-store",
     headers: { Accept: "application/json" },
     signal,
   });
-  if (!response.ok) throw new PagosApiError("Error al cargar tramites.", response.status);
+  if (response.status === 400) {
+    response = await fetch("/api/tramites?take=100", {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  }
+  if (!response.ok) throw new PagosApiError("Error al cargar trámites.", response.status);
 
   const payload: unknown = await response.json().catch(() => null);
 

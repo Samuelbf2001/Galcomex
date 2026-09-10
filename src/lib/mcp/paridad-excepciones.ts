@@ -58,6 +58,7 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
   intencional("PUT", "/api/tramites/[param]", "Alias de PATCH; tramite_actualizar usa PATCH"),
   intencional("GET", "/api/configuracion/siigo/productos", "Duplicado de /api/siigo-productos, que sí tiene tool"),
   intencional("POST", "/api/importar/grupo-e-papis", "Migración histórica del Excel; se corre una vez, no es operación de agente"),
+  intencional("GET", "/api/facturacion/borradores", "Lote de GET /api/tramites/[param]/borrador para la pantalla de facturación (elimina el N+1 del cliente); el MCP usa borrador_ver por trámite"),
 
   // ── Pendientes (deuda visible) ──────────────────────────────────────────────
   pendiente("GET", "/api/pagos/multi", "Pago en bloque multi-DO: listar facturas elegibles de un beneficiario"),

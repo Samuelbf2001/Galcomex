@@ -2,6 +2,7 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 
 import { ClienteDetallePage as ClienteDetalleWorkspace } from "@/components/clientes/cliente-detalle";
+import { exigirAccesoPagina } from "@/lib/auth/page-guard";
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -9,6 +10,7 @@ type Props = {
 
 export default async function ClienteDetallePage({ params }: Props) {
   const { id } = await params;
+  await exigirAccesoPagina(`/clientes/${id}`);
 
   return (
     <section className="space-y-5">

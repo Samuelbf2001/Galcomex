@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Check, Copy, Loader2, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Loader2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -9,6 +9,9 @@ import {
   revocarEnlace,
   type EnlaceDocumento,
 } from "@/components/documentos/documentos-api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { describirError, useToast } from "@/components/ui/toast";
 
 type EnlaceDocumentoModalProps = {
   tramiteId: string;
@@ -41,6 +44,9 @@ export function EnlaceDocumentoModal({
   const [copiado, setCopiado] = useState(false);
   const [revocando, setRevocando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [intento, setIntento] = useState(0);
+  const { toast } = useToast();
+  const confirmar = useConfirm();
 
   useEffect(() => {
     let cancelado = false;
@@ -51,7 +57,7 @@ export function EnlaceDocumentoModal({
         setEnlace(e);
         setEstado("listo");
       })
-      .catch((caught) => {
+      .catch((caught: unknown) => {
         if (cancelado) return;
         setError(
           caught instanceof DocumentosApiError
@@ -64,7 +70,13 @@ export function EnlaceDocumentoModal({
     return () => {
       cancelado = true;
     };
-  }, [tramiteId, documentoId]);
+  }, [tramiteId, documentoId, intento]);
+
+  function reintentar() {
+    setError(null);
+    setEstado("cargando");
+    setIntento((n) => n + 1);
+  }
 
   async function handleCopiar() {
     if (!enlace) return;
@@ -72,70 +84,63 @@ export function EnlaceDocumentoModal({
       await navigator.clipboard.writeText(enlace.url);
       setCopiado(true);
       setTimeout(() => setCopiado(false), 2000);
+      toast({ title: "Enlace copiado", variant: "success" });
     } catch {
       setError("No fue posible copiar el enlace. Selecciónalo y cópialo manualmente.");
     }
   }
 
   async function handleRevocar() {
-    if (!enlace) return;
-    if (!confirm("¿Revocar este enlace? Quien lo tenga ya no podrá usarlo para descargar el documento.")) {
-      return;
-    }
+    if (!enlace || revocando) return;
+    const ok = await confirmar({
+      title: "¿Revocar este enlace?",
+      description: "Quien lo tenga ya no podrá usarlo para descargar el documento.",
+      confirmText: "Revocar enlace",
+      variant: "danger",
+    });
+    if (!ok) return;
     setRevocando(true);
     setError(null);
     try {
       await revocarEnlace(tramiteId, documentoId, enlace.id);
       setEstado("revocado");
+      toast({ title: "Enlace revocado", description: nombreArchivo, variant: "success" });
     } catch (caught) {
-      setError(
-        caught instanceof DocumentosApiError ? caught.message : "No fue posible revocar el enlace.",
-      );
+      setError(describirError(caught, "No fue posible revocar el enlace."));
     } finally {
       setRevocando(false);
     }
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Compartir documento"
-      onClick={onClose}
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Compartir documento"
+      description={nombreArchivo}
+      size="sm"
+      dismissible={!revocando}
     >
-      <div
-        className="w-full max-w-md border border-slate-200 bg-white p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Compartir documento</h2>
-            <p className="mt-0.5 truncate text-xs text-slate-500" title={nombreArchivo}>
-              {nombreArchivo}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center text-slate-400 transition hover:text-slate-700"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
         {estado === "cargando" && (
-          <div className="flex items-center gap-2 py-6 text-sm text-slate-500">
+          <div className="flex items-center gap-2 py-6 text-sm text-slate-500" role="status">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
             Generando enlace…
           </div>
         )}
 
         {estado === "error" && (
-          <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            {error}
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700" role="alert">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              {error}
+            </div>
+            <button
+              type="button"
+              onClick={reintentar}
+              className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              Reintentar
+            </button>
           </div>
         )}
 
@@ -173,7 +178,7 @@ export function EnlaceDocumentoModal({
             </p>
 
             {error && (
-              <p className="text-xs text-rose-600">
+              <p className="text-xs text-rose-600" role="alert">
                 <AlertTriangle className="mr-1 inline h-3 w-3" aria-hidden="true" />
                 {error}
               </p>
@@ -211,7 +216,6 @@ export function EnlaceDocumentoModal({
             </button>
           </div>
         )}
-      </div>
-    </div>
+    </ModalShell>
   );
 }

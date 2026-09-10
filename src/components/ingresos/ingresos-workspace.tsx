@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  AlertTriangle,
   ArrowDownCircle,
   ArrowUpCircle,
   BadgeCheck,
+  CalendarDays,
   Filter,
   RotateCcw,
 } from "lucide-react";
@@ -12,6 +12,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import {
   type FilaIngreso,
   type TipoIngreso,
@@ -68,6 +69,25 @@ function saldoCorridoCell(valor: string): React.ReactNode {
   return <span className={`font-semibold ${colorClass}`}>{label}</span>;
 }
 
+/** Primer y último día del mes en curso (YYYY-MM-DD, zona local). */
+function rangoMesActual(): { desde: string; hasta: string } {
+  const hoy = new Date();
+  const anio = hoy.getFullYear();
+  const mes = hoy.getMonth();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ultimoDia = new Date(anio, mes + 1, 0).getDate();
+  return {
+    desde: `${anio}-${pad(mes + 1)}-01`,
+    hasta: `${anio}-${pad(mes + 1)}-${pad(ultimoDia)}`,
+  };
+}
+
+/** "2026-09-07" → "07/09/2026" sin pasar por Date (evita desfases de zona). */
+function formatFechaCorta(ymd: string): string {
+  const [y, m, d] = ymd.split("-");
+  return y && m && d ? `${d}/${m}/${y}` : ymd;
+}
+
 // ─── Componente principal ─────────────────────────────────────────────────────
 
 type ClienteOption = { id: string; nombre: string; nit: string };
@@ -104,8 +124,12 @@ export function IngresosWorkspace() {
   const searchParams = useSearchParams();
 
   const initialClienteId = searchParams.get("clienteId") ?? "";
-  const initialDesde = searchParams.get("desde") ?? "";
-  const initialHasta = searchParams.get("hasta") ?? "";
+  // Sin fechas en la URL, el filtro arranca en el mes en curso (el API
+  // acepta desde/hasta); si la URL trae alguna fecha, se respeta tal cual.
+  const hayFechasEnUrl = searchParams.has("desde") || searchParams.has("hasta");
+  const mesActual = rangoMesActual();
+  const initialDesde = hayFechasEnUrl ? (searchParams.get("desde") ?? "") : mesActual.desde;
+  const initialHasta = hayFechasEnUrl ? (searchParams.get("hasta") ?? "") : mesActual.hasta;
 
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
   const [clienteId, setClienteId] = useState(initialClienteId);
@@ -122,14 +146,20 @@ export function IngresosWorkspace() {
     (cid: string, d: string, h: string) => {
       const params = new URLSearchParams();
       if (cid) params.set("clienteId", cid);
-      if (d) params.set("desde", d);
-      if (h) params.set("hasta", h);
-      const next =
-        params.toString() ? `?${params.toString()}` : window.location.pathname;
-      router.replace(next, { scroll: false });
+      // Se escriben siempre (aunque vacías) para que "todo el historial" no se
+      // reinterprete como "mes actual" al recargar la página.
+      params.set("desde", d);
+      params.set("hasta", h);
+      router.replace(`?${params.toString()}`, { scroll: false });
     },
     [router],
   );
+
+  function aplicarRango(d: string, h: string) {
+    setDesde(d);
+    setHasta(h);
+    syncUrl(clienteId, d, h);
+  }
 
   // ── Cargar clientes ──────────────────────────────────────────────────────
 
@@ -191,6 +221,16 @@ export function IngresosWorkspace() {
   const saldoFinal =
     filas.length > 0 ? BigInt(filas[filas.length - 1]!.saldoCorrido) : 0n;
 
+  const esMesActual = desde === mesActual.desde && hasta === mesActual.hasta;
+  const rangoActivo =
+    desde && hasta
+      ? `${formatFechaCorta(desde)} – ${formatFechaCorta(hasta)}`
+      : desde
+        ? `desde ${formatFechaCorta(desde)}`
+        : hasta
+          ? `hasta ${formatFechaCorta(hasta)}`
+          : "todo el historial";
+
   // ── Render ───────────────────────────────────────────────────────────────
 
   return (
@@ -218,7 +258,8 @@ export function IngresosWorkspace() {
               setClienteId(e.target.value);
               syncUrl(e.target.value, desde, hasta);
             }}
-            className="h-10 border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+            aria-label="Filtrar por cliente"
+            className="h-10 w-80 max-w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
           >
             <option value="">Todos los clientes</option>
             {clientes.map((c) => (
@@ -237,10 +278,9 @@ export function IngresosWorkspace() {
           <input
             type="date"
             value={desde}
-            onChange={(e) => {
-              setDesde(e.target.value);
-              syncUrl(clienteId, e.target.value, hasta);
-            }}
+            max={hasta || undefined}
+            onChange={(e) => aplicarRango(e.target.value, hasta)}
+            aria-label="Desde (fecha del movimiento)"
             className="h-10 border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
           />
         </label>
@@ -253,13 +293,45 @@ export function IngresosWorkspace() {
           <input
             type="date"
             value={hasta}
-            onChange={(e) => {
-              setHasta(e.target.value);
-              syncUrl(clienteId, desde, e.target.value);
-            }}
+            min={desde || undefined}
+            onChange={(e) => aplicarRango(desde, e.target.value)}
+            aria-label="Hasta (fecha del movimiento)"
             className="h-10 border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
           />
         </label>
+
+        {/* Atajos de rango */}
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+            Rango
+          </span>
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={() => aplicarRango(mesActual.desde, mesActual.hasta)}
+              aria-pressed={esMesActual}
+              className={`h-10 border px-3 text-xs font-semibold transition ${
+                esMesActual
+                  ? "border-slate-950 bg-slate-950 text-white"
+                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Mes actual
+            </button>
+            <button
+              type="button"
+              onClick={() => aplicarRango("", "")}
+              aria-pressed={!desde && !hasta}
+              className={`h-10 border px-3 text-xs font-semibold transition ${
+                !desde && !hasta
+                  ? "border-slate-950 bg-slate-950 text-white"
+                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Todo el historial
+            </button>
+          </div>
+        </div>
 
         {/* Refrescar */}
         <button
@@ -272,7 +344,16 @@ export function IngresosWorkspace() {
         </button>
       </div>
 
+      {/* Rango activo */}
+      <p className="flex items-center gap-1.5 text-xs text-slate-600" aria-live="polite">
+        <CalendarDays className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+        Mostrando movimientos de{" "}
+        <span className="font-semibold text-slate-800">{rangoActivo}</span>
+        {esMesActual ? <span className="text-slate-400">(mes actual)</span> : null}
+      </p>
+
       {/* Tarjetas de totales */}
+      {loadState === "loading" ? <CardsSkeleton count={3} height={100} /> : null}
       {loadState === "ready" && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div className="border border-slate-200 bg-white px-4 py-4">
@@ -323,20 +404,24 @@ export function IngresosWorkspace() {
 
       {/* Estado */}
       {loadState === "loading" ? (
-        <ModuleState type="loading" title="Cargando ingresos…" />
+        <TableSkeleton rows={8} cols={8} rowHeight={45} />
       ) : loadState === "error" ? (
-        <div className="flex items-start gap-3 border border-dashed border-rose-300 bg-rose-50 px-4 py-5 text-sm text-rose-700">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-          <div>
-            <p className="font-medium">No fue posible cargar los ingresos</p>
-            {loadError ? <p className="mt-1">{loadError}</p> : null}
-          </div>
-        </div>
+        <ModuleState
+          type="error"
+          title="No fue posible cargar los ingresos"
+          detail={loadError ?? undefined}
+          action={{ label: "Reintentar", onClick: recargar }}
+        />
       ) : loadState === "ready" && filas.length === 0 ? (
         <ModuleState
           type="empty"
           title="Sin movimientos"
-          detail="No hay anticipos, abonos ni devoluciones en el período seleccionado."
+          detail={`No hay anticipos, abonos ni devoluciones en ${rangoActivo}.`}
+          action={
+            desde || hasta
+              ? { label: "Ver todo el historial", onClick: () => aplicarRango("", ""), icon: false }
+              : undefined
+          }
         />
       ) : loadState === "ready" ? (
         <div className="overflow-hidden border border-slate-200 bg-white">

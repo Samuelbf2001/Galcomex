@@ -1,24 +1,67 @@
-import { AlertTriangle, Loader2 } from "lucide-react";
+"use client";
+
+import { AlertTriangle, Inbox, Loader2, RotateCcw } from "lucide-react";
+import type { ReactNode } from "react";
+
+type ModuleStateAction = {
+  label: string;
+  onClick: () => void;
+  /** Muestra el icono de recargar (por defecto true para errores). */
+  icon?: boolean;
+};
 
 type ModuleStateProps = {
   type: "loading" | "error" | "empty";
   title: string;
   detail?: string;
+  /** Botón de acción: "Reintentar" en errores, CTA en vacíos. */
+  action?: ModuleStateAction;
+  children?: ReactNode;
 };
 
-export function ModuleState({ type, title, detail }: ModuleStateProps) {
-  const Icon = type === "loading" ? Loader2 : AlertTriangle;
+/**
+ * Estado de módulo (cargando / error / vacío). El error y el vacío ya no
+ * comparten icono ni color, y ambos aceptan una acción.
+ */
+export function ModuleState({ type, title, detail, action, children }: ModuleStateProps) {
+  const Icon = type === "loading" ? Loader2 : type === "error" ? AlertTriangle : Inbox;
+  const tone =
+    type === "error"
+      ? "border-rose-200 bg-rose-50/60 text-rose-900"
+      : "border-slate-300 bg-white text-slate-600";
+  const iconTone = type === "error" ? "text-rose-600" : "text-slate-500";
 
   return (
-    <div className="flex min-h-40 items-center gap-3 border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-600">
-      <Icon
-        className={`h-5 w-5 text-slate-500 ${type === "loading" ? "animate-spin" : ""}`}
-        aria-hidden="true"
-      />
-      <div>
-        <p className="font-medium text-slate-900">{title}</p>
-        {detail ? <p className="mt-1">{detail}</p> : null}
+    <div
+      className={`flex min-h-40 flex-col justify-center gap-3 border border-dashed px-4 py-5 text-sm ${tone}`}
+      role={type === "error" ? "alert" : "status"}
+      aria-busy={type === "loading" ? true : undefined}
+    >
+      <div className="flex items-start gap-3">
+        <Icon
+          className={`mt-0.5 h-5 w-5 shrink-0 ${iconTone} ${type === "loading" ? "animate-spin" : ""}`}
+          aria-hidden="true"
+        />
+        <div className="min-w-0">
+          <p className={`font-medium ${type === "error" ? "text-rose-900" : "text-slate-900"}`}>{title}</p>
+          {detail ? <p className="mt-1 break-words">{detail}</p> : null}
+          {children}
+        </div>
       </div>
+      {action ? (
+        <div className="pl-8">
+          <button
+            type="button"
+            onClick={action.onClick}
+            className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+          >
+            {(action.icon ?? type === "error") ? (
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+            ) : null}
+            {action.label}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

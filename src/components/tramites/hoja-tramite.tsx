@@ -1,8 +1,9 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Loader2, RotateCcw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
+import { ModuleState } from "@/components/layout/module-state";
 import {
   type LibroPagosData,
   calcularSaldosCliente,
@@ -10,6 +11,10 @@ import {
   formatCOP,
 } from "@/components/pagos/pagos-api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useRol } from "@/lib/auth/rol-context";
 
 /**
  * Hoja del trámite — espejo de la hoja de Excel de Camila (GRUPO E PAPIS).
@@ -159,30 +164,14 @@ function bigOrZero(bigStr: string): bigint {
   }
 }
 
-// ─── Carga de datos ─────────────────────────────────────────────────────────
+// ─── Normalización de datos ───────────────────────────────────────────────────
 
-async function fetchHojaData(tramiteId: string, signal?: AbortSignal): Promise<HojaData> {
-  const res = await fetch(`/api/tramites/${tramiteId}`, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!res.ok) {
-    let msg = `Error ${res.status}`;
-    try {
-      const payload: unknown = await res.json();
-      if (isRecord(payload) && typeof payload.error === "string") msg = payload.error;
-    } catch {
-      /* noop */
-    }
-    throw new Error(msg);
-  }
-
-  const payload: unknown = await res.json();
-  if (!isRecord(payload) || !isRecord(payload.tramite)) {
-    throw new Error("Respuesta inesperada del servidor.");
-  }
-  const t = payload.tramite;
+/**
+ * Convierte el `tramite` que ya cargó `TramiteDetalle` (GET /api/tramites/[id])
+ * en la vista de la hoja. Antes esta pestaña repetía el mismo GET; ahora recibe
+ * el registro por props y solo consulta el libro de pagos.
+ */
+function parseHojaData(t: Record<string, unknown>, umbralAlertaSaldo: string): HojaData {
   const cliente = isRecord(t.cliente) ? t.cliente : {};
 
   const aplicaciones: AnticipoAplicado[] = Array.isArray(t.aplicacionesAnticipo)
@@ -256,75 +245,91 @@ async function fetchHojaData(tramiteId: string, signal?: AbortSignal): Promise<H
     },
     aplicacionesAnticipo: aplicaciones,
     borrador,
-    umbralAlertaSaldo: str(payload.umbralAlertaSaldo, "500000"),
+    umbralAlertaSaldo: str(umbralAlertaSaldo, "500000"),
   };
 }
 
+type LibroResultado =
+  | { key: string; libro: LibroPagosData; error: null }
+  | { key: string; libro: null; error: string };
+
 // ─── Componente principal ─────────────────────────────────────────────────────
+
+type HojaTramiteProps = {
+  tramiteId: string;
+  /** Registro crudo del trámite ya cargado por `TramiteDetalle`. */
+  tramite: Record<string, unknown>;
+  /** Umbral de alerta de saldo (COP como string) que acompaña al GET del trámite. */
+  umbralAlertaSaldo: string;
+  /** Pide al padre recargar el trámite (tras editar la comisión interna LM). */
+  onRefresh: () => void;
+  /** Cambia cuando el padre recargó el trámite: fuerza releer el libro de pagos. */
+  refreshToken?: number;
+};
 
 export function HojaTramite({
   tramiteId,
-  userRol = "OPERATIVO",
-}: {
-  tramiteId: string;
-  userRol?: string;
-}) {
-  const [hoja, setHoja] = useState<HojaData | null>(null);
-  const [libro, setLibro] = useState<LibroPagosData | null>(null);
-  const [loadState, setLoadState] = useState<LoadState>("loading");
-  const [loadError, setLoadError] = useState<string | null>(null);
+  tramite,
+  umbralAlertaSaldo,
+  onRefresh,
+  refreshToken = 0,
+}: HojaTramiteProps) {
+  const userRol = useRol();
+  const [resultado, setResultado] = useState<LibroResultado | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+
+  const hoja = useMemo(() => parseHojaData(tramite, umbralAlertaSaldo), [tramite, umbralAlertaSaldo]);
+
+  // Estado de carga derivado (sin setState síncrono dentro del efecto).
+  const key = `${tramiteId}:${reloadKey}:${refreshToken}`;
 
   useEffect(() => {
     const controller = new AbortController();
 
-    async function load() {
-      setLoadState("loading");
-      setLoadError(null);
-      const [hojaData, libroData] = await Promise.all([
-        fetchHojaData(tramiteId, controller.signal),
-        fetchLibroPagos(tramiteId, controller.signal),
-      ]);
-      setHoja(hojaData);
-      setLibro(libroData);
-      setLoadState("ready");
-    }
-
-    load().catch((caught: unknown) => {
-      if (caught instanceof DOMException && caught.name === "AbortError") return;
-      setLoadError(caught instanceof Error ? caught.message : "Error al cargar la hoja.");
-      setLoadState("error");
-    });
+    fetchLibroPagos(tramiteId, controller.signal)
+      .then((libroData) => setResultado({ key, libro: libroData, error: null }))
+      .catch((caught: unknown) => {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+        setResultado({
+          key,
+          libro: null,
+          error: caught instanceof Error ? caught.message : "Error al cargar la hoja.",
+        });
+      });
 
     return () => controller.abort();
-  }, [tramiteId, reloadKey]);
+  }, [tramiteId, key]);
 
-  if (loadState === "loading") {
+  const actual = resultado?.key === key ? resultado : null;
+  // Mientras se refresca se conserva el libro anterior para no vaciar la hoja.
+  const libro = actual?.libro ?? resultado?.libro ?? null;
+  const loadState: LoadState = actual ? (actual.error ? "error" : "ready") : "loading";
+  const loadError = actual?.error ?? null;
+
+  const recargarLibro = () => setReloadKey((k) => k + 1);
+  const handleUpdated = () => {
+    recargarLibro();
+    onRefresh();
+  };
+
+  if (loadState === "loading" && !libro) {
     return (
-      <div className="flex min-h-40 items-center gap-3 border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-600">
-        <Loader2 className="h-5 w-5 animate-spin text-slate-500" aria-hidden="true" />
-        <span className="font-medium text-slate-900">Cargando hoja del trámite…</span>
+      <div className="space-y-5" aria-busy="true">
+        <CardsSkeleton count={3} height={88} />
+        <TableSkeleton rows={2} cols={5} rowHeight={40} />
+        <TableSkeleton rows={6} cols={7} rowHeight={40} />
       </div>
     );
   }
 
-  if (loadState === "error" || !hoja || !libro) {
+  if (loadState === "error" || !libro) {
     return (
-      <div className="flex min-h-40 items-start gap-3 border border-dashed border-rose-300 bg-rose-50 px-4 py-5 text-sm text-rose-700">
-        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-        <div>
-          <p className="font-medium">No fue posible cargar la hoja</p>
-          {loadError ? <p className="mt-1">{loadError}</p> : null}
-          <button
-            type="button"
-            onClick={() => setReloadKey((k) => k + 1)}
-            className="mt-3 inline-flex h-9 items-center gap-2 border border-rose-300 bg-white px-3 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
-          >
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            Reintentar
-          </button>
-        </div>
-      </div>
+      <ModuleState
+        type="error"
+        title="No fue posible cargar la hoja"
+        detail={loadError ?? undefined}
+        action={{ label: "Reintentar", onClick: recargarLibro }}
+      />
     );
   }
 
@@ -410,8 +415,8 @@ export function HojaTramite({
   // umbral configurado para el tipo de cliente del DO (Parametro
   // UMBRAL_ALERTA_SALDO_TRAMITE_PROPIO / _SOCIO — ver src/lib/alertas/umbrales.ts).
   const saldoDisponible = bigOrZero(saldoTrasPagos);
-  const umbralAlertaSaldo = bigOrZero(hoja.umbralAlertaSaldo);
-  const alertaSaldoBajo = saldoDisponible < umbralAlertaSaldo;
+  const umbralBig = bigOrZero(hoja.umbralAlertaSaldo);
+  const alertaSaldoBajo = saldoDisponible < umbralBig;
   const tipoClienteLabel =
     hoja.cliente.tipo === "SOCIO_LM" ? "del socio Lucho" : "propios de Galcomex";
 
@@ -527,7 +532,7 @@ export function HojaTramite({
             (hoja.borrador.estado === "BORRADOR" ||
               hoja.borrador.estado === "EN_REVISION")
           }
-          onUpdated={() => setReloadKey((k) => k + 1)}
+          onUpdated={handleUpdated}
         />
       ) : null}
 
@@ -640,11 +645,11 @@ export function HojaTramite({
             (hoja.borrador.estado === "BORRADOR" ||
               hoja.borrador.estado === "EN_REVISION")
           }
-          onUpdated={() => setReloadKey((k) => k + 1)}
+          onUpdated={handleUpdated}
         />
       ) : null}
 
-      <p className="text-xs text-slate-400">
+      <p className="text-xs text-slate-500">
         Vista de solo lectura. Para editar pagos, anticipos o la factura usa las pestañas
         correspondientes.
       </p>
@@ -1036,6 +1041,7 @@ function ComisionInternaModal({
   );
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   const opcion = OPCIONES_TIPO_PAGO_COMISION_LM.find((o) => opcionKey(o) === opcionKeySel);
   const montoLimpio = monto.replace(/\D/g, "");
@@ -1075,39 +1081,25 @@ function ComisionInternaModal({
         }
         throw new Error(msg);
       }
+      toast({ title: "Comisión interna guardada", variant: "success" });
       onSaved();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "No se pudo guardar");
+      setError(describirError(caught, "No se pudo guardar"));
     } finally {
       setGuardando(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-md border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">
-              Comisión interna Galcomex→Lucho
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Mínimo {formatCOP(COMISION_INTERNA_LM_MINIMO_COP.toString())}. El costo
-              bancario del tipo de pago se suma al cruce LM.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={guardando}
-            className="ml-2 inline-flex h-8 w-8 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
-            aria-label="Cerrar"
-          >
-            ×
-          </button>
-        </div>
-
-        <div className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Comisión interna Galcomex→Lucho"
+      description={`Mínimo ${formatCOP(COMISION_INTERNA_LM_MINIMO_COP.toString())}. El costo bancario del tipo de pago se suma al cruce LM.`}
+      size="sm"
+      dismissible={!guardando}
+    >
+        <div className="space-y-4">
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">
               Comisión (COP) *
@@ -1202,8 +1194,7 @@ function ComisionInternaModal({
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 

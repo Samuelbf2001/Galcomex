@@ -16,7 +16,6 @@ import { useEffect, useState } from "react";
 import {
   type BorradorRow,
   type CruceFacturaRow,
-  type EstadoBorrador,
   type LineaRevisionRow,
   type SiigoFormaPagoRow,
   type TramiteParaFacturacion,
@@ -41,6 +40,9 @@ import {
   type FacturaProveedorRow,
   fetchFacturasProveedor,
 } from "@/components/facturas-proveedor/facturas-proveedor-api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { describirError, useToast } from "@/components/ui/toast";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
 
@@ -49,6 +51,22 @@ type LineaEstado = "pendiente" | "aprobada" | "observada";
 type LineaLocal = LineaRevisionRow & {
   estadoLocal: LineaEstado;
 };
+
+/**
+ * Marca interna del revisor (aprobada/observada por línea): NO se persiste en
+ * el servidor. Al recibir un borrador nuevo (transición, facturado) se
+ * conservan las marcas de las líneas que siguen existiendo, para que no se
+ * pierdan durante la sesión de revisión.
+ */
+const TOOLTIP_MARCA_INTERNA = "Marca interna del revisor; no se guarda";
+
+function fusionarMarcas(
+  nuevas: LineaRevisionRow[],
+  previas: LineaLocal[],
+): LineaLocal[] {
+  const marcas = new Map(previas.map((l) => [l.id, l.estadoLocal]));
+  return nuevas.map((l) => ({ ...l, estadoLocal: marcas.get(l.id) ?? "pendiente" }));
+}
 
 // ─── Modal: Marcar facturado ──────────────────────────────────────────────────
 
@@ -59,6 +77,7 @@ type FacturarModalProps = {
 };
 
 function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps) {
+  const { toast } = useToast();
   const [numSiigo, setNumSiigo] = useState("");
   const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
   const [submitting, setSubmitting] = useState(false);
@@ -85,12 +104,17 @@ function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps)
         numFacturaSiigo: numTrim,
         fechaFactura: new Date(`${fecha}T00:00:00.000Z`).toISOString(),
       });
+      toast({
+        title: "Borrador marcado como facturado",
+        description: `Factura SIIGO ${numTrim}`,
+        variant: "success",
+      });
       onFacturado(updated);
     } catch (caught) {
       setError(
         caught instanceof FacturacionApiError
           ? caught.message
-          : "Error al marcar como facturado.",
+          : describirError(caught, "Error al marcar como facturado."),
       );
     } finally {
       setSubmitting(false);
@@ -98,21 +122,14 @@ function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps)
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-md border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-950">Marcar como facturado</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Marcar como facturado"
+      size="sm"
+      dismissible={!submitting}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">
               Número de factura SIIGO *
@@ -164,8 +181,7 @@ function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps)
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -191,27 +207,39 @@ function ConfirmarEnvioSiigoModal({
   onClose,
 }: ConfirmarEnvioSiigoModalProps) {
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-md border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div className="flex items-center gap-2">
-            <Send className="h-4 w-4 text-cyan-700" aria-hidden="true" />
-            <h2 className="text-lg font-semibold text-slate-950">
-              {esReenvio ? "Reenviar factura a SIIGO" : "Enviar factura a SIIGO"}
-            </h2>
-          </div>
+    <ModalShell
+      open
+      onClose={onClose}
+      title={esReenvio ? "Reenviar factura a SIIGO" : "Enviar factura a SIIGO"}
+      size="sm"
+      dismissible={!enviando}
+      footer={
+        <>
           <button
             type="button"
             onClick={onClose}
             disabled={enviando}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
-            aria-label="Cerrar"
+            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
           >
-            <X className="h-4 w-4" aria-hidden="true" />
+            Cancelar
           </button>
-        </div>
-
-        <div className="space-y-4 px-5 py-5">
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={enviando}
+            className="inline-flex h-10 items-center gap-2 bg-cyan-700 px-4 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:opacity-60"
+          >
+            {enviando ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Send className="h-4 w-4" aria-hidden="true" />
+            )}
+            {esReenvio ? "Reenviar" : "Enviar a SIIGO"}
+          </button>
+        </>
+      }
+    >
+        <div className="space-y-4">
           <div className="border border-slate-200 bg-slate-50 px-3 py-2">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
               Trámite
@@ -244,32 +272,7 @@ function ConfirmarEnvioSiigoModal({
             </div>
           ) : null}
         </div>
-
-        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={enviando}
-            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
-          >
-            Cancelar
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={enviando}
-            className="inline-flex h-10 items-center gap-2 bg-cyan-700 px-4 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:opacity-60"
-          >
-            {enviando ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Send className="h-4 w-4" aria-hidden="true" />
-            )}
-            {esReenvio ? "Reenviar" : "Enviar a SIIGO"}
-          </button>
-        </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -375,10 +378,18 @@ type RevisorBorradorProps = {
   borrador: BorradorRow;
   onClose: () => void;
   onBorradorActualizado: (borrador: BorradorRow) => void;
-  /** Rol del usuario: ADMIN o REVISOR pueden aprobar; OPERATIVO no */
+  /**
+   * ADMIN o REVISOR: aprobar (PATCH /api/borradores/[id] → APROBADO), forma de
+   * pago SIIGO (ADMIN/REVISOR) y descargas PDF/Excel.
+   */
   puedeAprobar: boolean;
-  /** Solo ADMIN puede marcar como facturado */
+  /** Solo ADMIN: marcar facturado, enviar/sincronizar con SIIGO. */
   puedeFacturar: boolean;
+  /**
+   * ADMIN u OPERATIVO: "Enviar a revisión" (PATCH → EN_REVISION). REVISOR NO
+   * puede, por eso va separado de `puedeAprobar`.
+   */
+  puedeEnviarRevision: boolean;
 };
 
 export function RevisorBorrador({
@@ -388,7 +399,10 @@ export function RevisorBorrador({
   onBorradorActualizado,
   puedeAprobar,
   puedeFacturar,
+  puedeEnviarRevision,
 }: RevisorBorradorProps) {
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [borradorActual, setBorradorActual] = useState<BorradorRow>(borrador);
   const [lineas, setLineas] = useState<LineaLocal[]>(
     borrador.lineasRevision.map((l) => ({ ...l, estadoLocal: "pendiente" })),
@@ -434,11 +448,13 @@ export function RevisorBorrador({
     new Map(),
   );
 
+  // Formas de pago SIIGO: el endpoint (GET /api/configuracion/siigo/formas-pago)
+  // y el PATCH forma-pago admiten ADMIN y REVISOR.
   useEffect(() => {
-    if (puedeFacturar) {
+    if (puedeAprobar) {
       fetchFormasPagoSiigo().then(setFormasPago).catch(() => {});
     }
-  }, [puedeFacturar]);
+  }, [puedeAprobar]);
 
   useEffect(() => {
     let cancelled = false;
@@ -567,22 +583,52 @@ export function RevisorBorrador({
     });
   }
 
-  async function handleTransicion(nuevoEstado: EstadoBorrador) {
+  const CONFIRMACION_TRANSICION: Record<
+    "EN_REVISION" | "APROBADO",
+    { title: string; description: string; confirmText: string; exito: string }
+  > = {
+    EN_REVISION: {
+      title: "¿Enviar el borrador a revisión?",
+      description:
+        "El borrador pasará a EN_REVISION y no podrás editar líneas hasta que el revisor lo devuelva o lo apruebe.",
+      confirmText: "Enviar a revisión",
+      exito: "Borrador enviado a revisión",
+    },
+    APROBADO: {
+      title: "¿Aprobar el borrador?",
+      description:
+        "El borrador pasará a APROBADO y quedará listo para enviarse a SIIGO. Las líneas ya no se podrán modificar.",
+      confirmText: "Aprobar borrador",
+      exito: "Borrador aprobado",
+    },
+  };
+
+  async function handleTransicion(nuevoEstado: "EN_REVISION" | "APROBADO") {
+    if (transicionando) return;
+    const copy = CONFIRMACION_TRANSICION[nuevoEstado];
+    const ok = await confirmar({
+      title: copy.title,
+      description: copy.description,
+      confirmText: copy.confirmText,
+    });
+    if (!ok) return;
+
     setTransicionando(true);
     setErrorTransicion(null);
     try {
-      const updated = await transicionarBorrador(borradorActual.id, {
-        nuevoEstado,
-      } as Parameters<typeof transicionarBorrador>[1]);
+      const updated = await transicionarBorrador(borradorActual.id, { nuevoEstado });
       setBorradorActual(updated);
-      setLineas(updated.lineasRevision.map((l) => ({ ...l, estadoLocal: "pendiente" })));
+      // Conserva las marcas internas del revisor durante la sesión.
+      setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
       onBorradorActualizado(updated);
+      toast({ title: copy.exito, description: tramite.consecutivo, variant: "success" });
     } catch (caught) {
-      setErrorTransicion(
+      const mensaje =
         caught instanceof FacturacionApiError
           ? caught.message
-          : "Error al cambiar el estado.",
-      );
+          : describirError(caught, "Error al cambiar el estado.");
+      setErrorTransicion(mensaje);
+      toast({ title: "No se pudo cambiar el estado", description: mensaje, variant: "error" });
     } finally {
       setTransicionando(false);
     }
@@ -591,7 +637,7 @@ export function RevisorBorrador({
   function handleFacturado(updated: BorradorRow) {
     setModalFacturar(false);
     setBorradorActual(updated);
-    setLineas(updated.lineasRevision.map((l) => ({ ...l, estadoLocal: "pendiente" })));
+    setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
     onBorradorActualizado(updated);
   }
 
@@ -612,20 +658,30 @@ export function RevisorBorrador({
         };
         setBorradorActual(updated);
         onBorradorActualizado(updated);
+        toast({
+          title: "Factura sincronizada desde SIIGO",
+          description: `${result.numFacturaSiigo} · ${formatDate(result.fechaFactura)}`,
+          variant: "success",
+        });
+      } else {
+        toast({ title: "Sincronización con SIIGO", description: result.mensaje, variant: "info" });
       }
     } catch (caught) {
-      setErrorTransicion(
+      const mensaje =
         caught instanceof FacturacionApiError
           ? caught.message
-          : "Error al sincronizar con SIIGO.",
-      );
+          : describirError(caught, "Error al sincronizar con SIIGO.");
+      setErrorTransicion(mensaje);
+      toast({ title: "No se pudo sincronizar con SIIGO", description: mensaje, variant: "error" });
     } finally {
       setSincronizandoSiigo(false);
     }
   }
 
   async function handleFormaPagoChange(id: number | null) {
+    if (guardandoFormaPago) return;
     setGuardandoFormaPago(true);
+    setErrorTransicion(null);
     try {
       await actualizarFormaPago(borradorActual.id, id);
       const fp = id !== null ? formasPago.find((f) => f.id === id) ?? null : null;
@@ -634,10 +690,18 @@ export function RevisorBorrador({
         formaPagoSiigoId: id,
         formaPago: fp,
       }));
+      toast({
+        title: "Forma de pago guardada",
+        description: fp ? fp.nombre : "Sin forma de pago",
+        variant: "success",
+      });
     } catch (caught) {
-      setErrorTransicion(
-        caught instanceof FacturacionApiError ? caught.message : "Error guardando forma de pago.",
-      );
+      const mensaje =
+        caught instanceof FacturacionApiError
+          ? caught.message
+          : describirError(caught, "Error guardando la forma de pago.");
+      setErrorTransicion(mensaje);
+      toast({ title: "No se pudo guardar la forma de pago", description: mensaje, variant: "error" });
     } finally {
       setGuardandoFormaPago(false);
     }
@@ -659,12 +723,18 @@ export function RevisorBorrador({
       setBorradorActual(updated);
       onBorradorActualizado(updated);
       setMostrarConfirmEnvioSiigo(false);
+      toast({
+        title: "Factura enviada a SIIGO como borrador",
+        description: `Draft ${siigoDraftId} · ${tramite.consecutivo}`,
+        variant: "success",
+      });
     } catch (caught) {
       const mensaje =
         caught instanceof FacturacionApiError
           ? caught.message
-          : "Error al enviar a SIIGO.";
+          : describirError(caught, "Error al enviar a SIIGO.");
       setErrorTransicion(mensaje);
+      toast({ title: "No se pudo enviar a SIIGO", description: mensaje, variant: "error" });
       setBorradorActual((prev) => ({
         ...prev,
         ultimoErrorSiigo: mensaje,
@@ -729,11 +799,11 @@ export function RevisorBorrador({
             </span>
           ) : null}
 
-          {/* BORRADOR → EN_REVISION */}
-          {estado === "BORRADOR" && puedeAprobar ? (
+          {/* BORRADOR → EN_REVISION — el API solo lo admite a ADMIN/OPERATIVO */}
+          {estado === "BORRADOR" && puedeEnviarRevision ? (
             <button
               type="button"
-              onClick={() => handleTransicion("EN_REVISION")}
+              onClick={() => void handleTransicion("EN_REVISION")}
               disabled={transicionando}
               className="inline-flex h-9 items-center gap-2 border border-amber-400 bg-amber-50 px-3 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-60"
             >
@@ -748,7 +818,7 @@ export function RevisorBorrador({
           {estado === "EN_REVISION" && puedeAprobar ? (
             <button
               type="button"
-              onClick={() => handleTransicion("APROBADO")}
+              onClick={() => void handleTransicion("APROBADO")}
               disabled={transicionando || hayObservadas}
               title={hayObservadas ? "Hay líneas con observaciones pendientes" : undefined}
               className="inline-flex h-9 items-center gap-2 bg-emerald-600 px-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
@@ -781,14 +851,18 @@ export function RevisorBorrador({
             </span>
           ) : null}
 
-          {/* Selector de forma de pago Siigo — ADMIN, antes de facturar.
+          {/* Selector de forma de pago Siigo — ADMIN o REVISOR (mismo gating
+              que PATCH /api/borradores/[id]/forma-pago), antes de facturar.
               Por defecto se setea "Contado/Efectivo" al generar el borrador
-              (parámetro SIIGO_FORMA_PAGO_DEFAULT_ID); el admin la edita antes
-              de enviar a SIIGO o marcar como facturado. */}
-          {estado !== "FACTURADO" && puedeFacturar && formasPago.length > 0 ? (
+              (parámetro SIIGO_FORMA_PAGO_DEFAULT_ID); se edita antes de enviar
+              a SIIGO o marcar como facturado. */}
+          {estado !== "FACTURADO" && puedeAprobar && formasPago.length > 0 ? (
             <div className="flex items-center gap-1.5">
-              <label className="text-xs text-slate-500 whitespace-nowrap">Forma de pago:</label>
+              <label htmlFor="revisor-forma-pago" className="text-xs text-slate-500 whitespace-nowrap">
+                Forma de pago:
+              </label>
               <select
+                id="revisor-forma-pago"
                 className="h-9 border border-slate-300 bg-white px-2 text-sm text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-400 disabled:opacity-60"
                 value={borradorActual.formaPagoSiigoId ?? ""}
                 disabled={guardandoFormaPago}
@@ -1029,7 +1103,9 @@ export function RevisorBorrador({
                                     linea.estadoLocal === "aprobada" ? "pendiente" : "aprobada",
                                   );
                                 }}
-                                title="Aprobar línea"
+                                title={`Aprobar línea · ${TOOLTIP_MARCA_INTERNA}`}
+                                aria-label={`Aprobar línea ${linea.orden}`}
+                                aria-pressed={linea.estadoLocal === "aprobada"}
                                 className={`inline-flex h-7 w-7 items-center justify-center border transition ${
                                   linea.estadoLocal === "aprobada"
                                     ? "border-emerald-400 bg-emerald-100 text-emerald-700"
@@ -1047,7 +1123,9 @@ export function RevisorBorrador({
                                     linea.estadoLocal === "observada" ? "pendiente" : "observada",
                                   );
                                 }}
-                                title="Observar línea"
+                                title={`Observar línea · ${TOOLTIP_MARCA_INTERNA}`}
+                                aria-label={`Observar línea ${linea.orden}`}
+                                aria-pressed={linea.estadoLocal === "observada"}
                                 className={`inline-flex h-7 w-7 items-center justify-center border transition ${
                                   linea.estadoLocal === "observada"
                                     ? "border-amber-400 bg-amber-100 text-amber-700"

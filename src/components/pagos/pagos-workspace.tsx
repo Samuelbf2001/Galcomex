@@ -4,15 +4,16 @@ import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  Lock,
   Plus,
   RotateCcw,
   Trash2,
   Users,
-  X,
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { ModuleState } from "@/components/layout/module-state";
 import {
   CANALES_PAGO,
   type CanalPago,
@@ -21,7 +22,6 @@ import {
   type PagoGlobalRow,
   type PagosGlobalFiltros,
   type TramiteOption,
-  PagosApiError,
   crearPagoMultiDO,
   createPago,
   deletePago,
@@ -35,8 +35,23 @@ import {
   updatePago,
 } from "@/components/pagos/pagos-global-api";
 import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { usePermiso } from "@/lib/auth/rol-context";
 
 type LoadState = "loading" | "ready" | "error";
+
+/**
+ * Crear ("Nuevo pago", "Pago multi-DO" → /api/pagos/multi), editar en línea y
+ * eliminar exigen ADMIN/OPERATIVO. REVISOR consulta en solo lectura.
+ */
+const ROLES_EDITAR_PAGOS = ["ADMIN", "OPERATIVO"] as const;
+
+function canalPagoLabel(canal: CanalPago): string {
+  return CANALES_PAGO.find((c) => c.value === canal)?.label ?? canal;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers de formato / parseo
@@ -100,6 +115,7 @@ type NuevoPagoModalProps = {
 };
 
 function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: NuevoPagoModalProps) {
+  const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [valorRaw, setValorRaw] = useState("");
@@ -107,6 +123,7 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (isSubmitting) return;
     setError(null);
 
     const formData = new FormData(e.currentTarget);
@@ -136,30 +153,30 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
         canalPago,
         fechaRealPago,
       });
+      const consecutivo = tramites.find((t) => t.id === tramiteId)?.consecutivo ?? "";
+      toast({
+        title: "Pago guardado",
+        description: `${concepto} · ${formatCOP(valorBig)}${consecutivo ? ` en ${consecutivo}` : ""}`,
+        variant: "success",
+      });
       onCreated();
     } catch (caught) {
-      setError(caught instanceof PagosApiError ? caught.message : "Error al crear el pago.");
+      setError(describirError(caught, "Error al crear el pago."));
     } finally {
       setIsSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-950">Agregar pago</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Agregar pago"
+      description="Pago a proveedor cargado al DO que elijas."
+      size="lg"
+      dismissible={!isSubmitting}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Trámite (DO) *</span>
             <select
@@ -248,7 +265,8 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
             <button
               type="button"
               onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              disabled={isSubmitting}
+              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
             >
               Cancelar
             </button>
@@ -262,8 +280,7 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -286,10 +303,12 @@ type PagoMultiDOModalProps = {
 };
 
 function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
+  const { toast } = useToast();
   const [beneficiarioSel, setBeneficiarioSel] = useState<BeneficiarioSeleccion | null>(null);
   const [facturas, setFacturas] = useState<FacturaElegibleMultiDORow[]>([]);
   const [loadingFacturas, setLoadingFacturas] = useState(false);
   const [facturasError, setFacturasError] = useState<string | null>(null);
+  const [facturasReloadKey, setFacturasReloadKey] = useState(0);
 
   // facturaId → monto (string en edición). Presencia en el map = seleccionada.
   const [montos, setMontos] = useState<Record<string, string>>({});
@@ -303,16 +322,11 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Cargar facturas elegibles al elegir/cambiar el beneficiario
+  // Cargar facturas elegibles al elegir/cambiar el beneficiario (el reseteo
+  // al quitar el beneficiario ocurre en el onChange, no en el efecto).
   useEffect(() => {
-    if (!beneficiarioSel) {
-      setFacturas([]);
-      setMontos({});
-      return;
-    }
+    if (!beneficiarioSel) return;
     const controller = new AbortController();
-    setLoadingFacturas(true);
-    setFacturasError(null);
     fetchFacturasElegiblesMultiDO(beneficiarioSel.id, controller.signal)
       .then((data) => {
         setFacturas(data);
@@ -320,13 +334,11 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
       })
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setFacturasError(
-          caught instanceof PagosApiError ? caught.message : "Error al cargar las facturas.",
-        );
+        setFacturasError(describirError(caught, "Error al cargar las facturas."));
       })
       .finally(() => setLoadingFacturas(false));
     return () => controller.abort();
-  }, [beneficiarioSel]);
+  }, [beneficiarioSel, facturasReloadKey]);
 
   // Agrupar por DO para el render
   const grupos = useMemo(() => {
@@ -379,6 +391,7 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (isSubmitting) return;
     setError(null);
 
     if (!beneficiarioSel) {
@@ -431,7 +444,7 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
         comprobanteComercioId = comercio?.id ?? null;
       }
 
-      await crearPagoMultiDO({
+      const resultado = await crearPagoMultiDO({
         beneficiarioId: beneficiarioSel.id,
         facturas: facturasPayload,
         canalPago,
@@ -441,52 +454,54 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
         comprobanteComercioId,
       });
 
+      toast({
+        title: "Pago multi-DO registrado",
+        description: `${resultado.pagos.length} pago(s) · ${formatCOP(totalSeleccionado.toString())} a ${beneficiarioSel.nombre}`,
+        variant: "success",
+      });
       onCreated();
     } catch (caught) {
-      setError(caught instanceof PagosApiError ? caught.message : "Error al crear el pago multi-DO.");
+      setError(describirError(caught, "Error al crear el pago multi-DO."));
     } finally {
       setIsSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-3xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Pago multi-DO</h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Un solo comprobante cubre facturas de proveedor de varios trámites (caso Karina/Occidente).
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="max-h-[75vh] space-y-4 overflow-y-auto px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Pago multi-DO"
+      description="Un solo comprobante cubre facturas de proveedor de varios trámites (caso Karina/Occidente)."
+      size="xl"
+      dismissible={!isSubmitting}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Beneficiario / proveedor *</span>
             <BeneficiarioCombobox
               mode="single"
               value={beneficiarioSel}
-              onChange={setBeneficiarioSel}
+              onChange={(seleccion) => {
+                setBeneficiarioSel(seleccion);
+                setFacturas([]);
+                setMontos({});
+                setFacturasError(null);
+                setLoadingFacturas(seleccion !== null);
+              }}
               placeholder="Buscar beneficiario…"
             />
           </label>
 
           {loadingFacturas ? (
-            <div className="flex items-center gap-2 py-6 text-sm text-slate-500">
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              Cargando facturas del beneficiario…
-            </div>
+            <TableSkeleton rows={3} cols={4} rowHeight={40} />
           ) : facturasError ? (
-            <p className="text-sm text-rose-600">{facturasError}</p>
+            <ModuleState
+              type="error"
+              title="No se pudieron cargar las facturas del beneficiario"
+              detail={facturasError}
+              action={{ label: "Reintentar", onClick: () => setFacturasReloadKey((k) => k + 1) }}
+            />
           ) : beneficiarioSel && grupos.length === 0 ? (
             <p className="border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">
               Este beneficiario no tiene facturas de proveedor pendientes (REGISTRADA) en ningún DO.
@@ -526,6 +541,7 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
                                 checked={seleccionada}
                                 disabled={!g.tieneAnticipoAplicado}
                                 onChange={() => toggleFactura(f)}
+                                aria-label={`Incluir factura ${f.numFactura} de ${g.consecutivo}`}
                                 className="h-4 w-4"
                               />
                             </td>
@@ -539,6 +555,7 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
                                 onChange={(e) => setMonto(f.id, e.target.value)}
                                 placeholder="Monto a pagar"
                                 inputMode="numeric"
+                                aria-label={`Monto a pagar de la factura ${f.numFactura}`}
                                 className="h-8 w-32 border border-slate-300 px-2 text-right text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50"
                               />
                             </td>
@@ -652,7 +669,8 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
             <button
               type="button"
               onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              disabled={isSubmitting}
+              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
             >
               Cancelar
             </button>
@@ -666,8 +684,7 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -677,6 +694,8 @@ function PagoMultiDOModal({ onClose, onCreated }: PagoMultiDOModalProps) {
 
 type FilaPagoProps = {
   fila: FilaPago;
+  /** Solo lectura (REVISOR): sin inputs ni acciones. */
+  readOnly: boolean;
   isDeleting: boolean;
   onChange: (
     id: string,
@@ -694,7 +713,9 @@ type FilaPagoProps = {
   onDelete: (fila: FilaPago) => void;
 };
 
-function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoProps) {
+function FilaPagoRow({ fila, readOnly, isDeleting, onChange, onBlur, onDelete }: FilaPagoProps) {
+  const etiqueta = `pago "${fila.concepto}" del DO ${fila.consecutivo}`;
+
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
@@ -713,12 +734,17 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
 
         {/* Concepto */}
         <td className="px-3 py-2">
-          <input
-            value={fila.editingConcepto}
-            onChange={(e) => onChange(fila.id, "editingConcepto", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
-          />
+          {readOnly ? (
+            <span className="block min-w-[140px] px-1 text-sm text-slate-800">{fila.concepto}</span>
+          ) : (
+            <input
+              value={fila.editingConcepto}
+              onChange={(e) => onChange(fila.id, "editingConcepto", e.target.value)}
+              onBlur={() => onBlur(fila.id)}
+              aria-label={`Concepto del ${etiqueta}`}
+              className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
+            />
+          )}
           {!fila.documentoId || fila.grupoPagoId ? (
             <div className="flex flex-wrap gap-1 px-1 pb-0.5">
               {!fila.documentoId ? (
@@ -748,59 +774,81 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
 
         {/* Beneficiarios (solo lectura en vista global) */}
         <td className="px-3 py-2 text-sm text-slate-700">
-          {fila.beneficiarios || <span className="text-slate-300">—</span>}
+          {fila.beneficiarios || <span className="text-slate-400">—</span>}
         </td>
 
         {/* N° soporte */}
         <td className="px-3 py-2">
-          <input
-            value={fila.editingNumSoporte}
-            onChange={(e) => onChange(fila.id, "editingNumSoporte", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            placeholder="—"
-            className="h-8 w-full min-w-[100px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none placeholder:text-slate-300 focus:border-cyan-400 focus:bg-white"
-          />
+          {readOnly ? (
+            <span className="text-sm text-slate-700">{fila.numSoporte ?? "—"}</span>
+          ) : (
+            <input
+              value={fila.editingNumSoporte}
+              onChange={(e) => onChange(fila.id, "editingNumSoporte", e.target.value)}
+              onBlur={() => onBlur(fila.id)}
+              placeholder="—"
+              aria-label={`Número de soporte del ${etiqueta}`}
+              className="h-8 w-full min-w-[100px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-cyan-400 focus:bg-white"
+            />
+          )}
         </td>
 
         {/* Valor */}
         <td className="px-3 py-2 text-right">
-          <input
-            value={fila.editingValor}
-            onChange={(e) => onChange(fila.id, "editingValor", e.target.value)}
-            onFocus={(e) => e.target.select()}
-            onBlur={() => onBlur(fila.id)}
-            inputMode="numeric"
-            className="h-8 w-full min-w-[110px] border border-transparent bg-transparent px-1 text-right text-sm font-medium text-slate-900 outline-none focus:border-cyan-400 focus:bg-white"
-          />
+          {readOnly ? (
+            <span className="text-sm font-medium text-slate-900">{formatCOP(fila.valor)}</span>
+          ) : (
+            <input
+              value={fila.editingValor}
+              onChange={(e) => onChange(fila.id, "editingValor", e.target.value)}
+              onFocus={(e) => e.target.select()}
+              onBlur={() => onBlur(fila.id)}
+              inputMode="numeric"
+              aria-label={`Valor del ${etiqueta} (COP)`}
+              className="h-8 w-full min-w-[110px] border border-transparent bg-transparent px-1 text-right text-sm font-medium text-slate-900 outline-none focus:border-cyan-400 focus:bg-white"
+            />
+          )}
         </td>
 
         {/* Canal */}
         <td className="px-3 py-2">
-          <select
-            value={fila.editingCanal}
-            onChange={(e) => {
-              onChange(fila.id, "editingCanal", e.target.value);
-              onBlur(fila.id);
-            }}
-            className="h-8 w-full min-w-[180px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
-          >
-            {CANALES_PAGO.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+          {readOnly ? (
+            <span className="text-sm text-slate-700">{canalPagoLabel(fila.canalPago)}</span>
+          ) : (
+            <select
+              value={fila.editingCanal}
+              onChange={(e) => {
+                onChange(fila.id, "editingCanal", e.target.value);
+                onBlur(fila.id);
+              }}
+              aria-label={`Canal de pago del ${etiqueta}`}
+              className="h-8 w-full min-w-[180px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
+            >
+              {CANALES_PAGO.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          )}
         </td>
 
         {/* Fecha real */}
         <td className="px-3 py-2">
-          <input
-            type="date"
-            value={fila.editingFechaReal}
-            onChange={(e) => onChange(fila.id, "editingFechaReal", e.target.value)}
-            onBlur={() => onBlur(fila.id)}
-            className="h-8 w-full min-w-[120px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
-          />
+          {readOnly ? (
+            <span className="text-sm text-slate-700">
+              {fila.fechaRealPago ? formatDate(fila.fechaRealPago) : "—"}
+            </span>
+          ) : (
+            <input
+              type="date"
+              value={fila.editingFechaReal}
+              onChange={(e) => onChange(fila.id, "editingFechaReal", e.target.value)}
+              onBlur={() => onBlur(fila.id)}
+              aria-label={`Fecha de pago del ${etiqueta}`}
+              className="h-8 w-full min-w-[120px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
+            />
+          )}
         </td>
 
         {/* Costo bancario (solo lectura) */}
@@ -810,35 +858,37 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
 
         {/* Acciones */}
         <td className="px-3 py-2">
-          <div className="flex items-center gap-1">
-            {fila.saving ? (
-              <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
-            ) : fila.dirty ? (
-              <span className="h-2 w-2 rounded-full bg-amber-400" title="Cambios pendientes" />
-            ) : (
-              <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
-            )}
-            <button
-              type="button"
-              onClick={() => onDelete(fila)}
-              disabled={isDeleting}
-              className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
-              aria-label="Eliminar pago"
-              title="Eliminar pago"
-            >
-              {isDeleting ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          {readOnly ? null : (
+            <div className="flex items-center gap-1">
+              {fila.saving ? (
+                <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
+              ) : fila.dirty ? (
+                <span className="h-2 w-2 rounded-full bg-amber-400" title="Cambios pendientes" />
               ) : (
-                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
               )}
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={() => onDelete(fila)}
+                disabled={isDeleting}
+                className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                aria-label={`Eliminar ${etiqueta}`}
+                title="Eliminar pago"
+              >
+                {isDeleting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          )}
         </td>
       </tr>
 
       {fila.errorFila ? (
         <tr className="bg-rose-50">
-          <td colSpan={10} className="px-3 py-1.5 text-xs text-rose-700">
+          <td colSpan={10} className="px-3 py-1.5 text-xs text-rose-700" role="alert">
             <AlertTriangle className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
             {fila.errorFila} — los valores anteriores se restauraron.
           </td>
@@ -853,6 +903,9 @@ function FilaPagoRow({ fila, isDeleting, onChange, onBlur, onDelete }: FilaPagoP
 // ---------------------------------------------------------------------------
 
 export function PagosWorkspace() {
+  const puedeEditar = usePermiso(ROLES_EDITAR_PAGOS);
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [filas, setFilas] = useState<FilaPago[]>([]);
   const [totales, setTotales] = useState({ totalPagos: "0", costosBancarios: "0", totalPendiente: "0" });
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
@@ -860,7 +913,6 @@ export function PagosWorkspace() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [globalError, setGlobalError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [multiDOOpen, setMultiDOOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -997,11 +1049,17 @@ export function PagosWorkspace() {
       );
       // Recalcular totales tras edición confirmada
       setReloadTotales();
+      toast({
+        title: "Pago actualizado",
+        description: `${updated.concepto} · ${fila.consecutivo}`,
+        variant: "success",
+      });
     } catch (caught) {
-      const msg = caught instanceof PagosApiError ? caught.message : "Error al guardar.";
+      const msg = describirError(caught, "Error al guardar.");
       setFilas((prev) =>
         prev.map((f) => (f.id === id ? { ...snapshot, saving: false, errorFila: msg } : f)),
       );
+      toast({ title: "No se pudo guardar el pago", description: msg, variant: "error" });
     }
   }
 
@@ -1024,18 +1082,27 @@ export function PagosWorkspace() {
   }
 
   async function handleDelete(fila: FilaPago) {
-    if (!confirm(`¿Eliminar el pago "${fila.concepto}" del DO ${fila.consecutivo}? Esta acción no se puede deshacer.`)) {
-      return;
-    }
+    if (deletingId) return;
+    const ok = await confirmar({
+      title: `¿Eliminar el pago "${fila.concepto}"?`,
+      description: `DO ${fila.consecutivo} · ${formatCOP(fila.valor)}. Esta acción no se puede deshacer.`,
+      confirmText: "Eliminar pago",
+      variant: "danger",
+    });
+    if (!ok) return;
     setDeletingId(fila.id);
-    setGlobalError(null);
 
     try {
       await deletePago(fila.tramiteId, fila.id);
       setFilas((prev) => prev.filter((f) => f.id !== fila.id));
       setReloadTotales();
+      toast({ title: "Pago eliminado", description: `${fila.concepto} · ${fila.consecutivo}`, variant: "success" });
     } catch (caught) {
-      setGlobalError(caught instanceof PagosApiError ? caught.message : "Error al eliminar.");
+      toast({
+        title: "No se pudo eliminar el pago",
+        description: describirError(caught, "Error al eliminar."),
+        variant: "error",
+      });
     } finally {
       setDeletingId(null);
     }
@@ -1055,6 +1122,8 @@ export function PagosWorkspace() {
   // Render
   // ---------------------------------------------------------------------------
 
+  const isInitialLoading = loadState === "loading" && filas.length === 0;
+
   return (
     <section className="space-y-5">
       <div className="flex items-start justify-between gap-4">
@@ -1064,29 +1133,40 @@ export function PagosWorkspace() {
             Vista global de todos los pagos de todos los DOs. El libro por trámite sigue intacto.
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setMultiDOOpen(true)}
-            className="inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            title="Un solo comprobante cubre facturas de varios DOs (caso Karina/Occidente)"
-          >
-            <Users className="h-4 w-4" aria-hidden="true" />
-            Pago multi-DO
-          </button>
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Nuevo pago
-          </button>
-        </div>
+        {puedeEditar ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setMultiDOOpen(true)}
+              className="inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              title="Un solo comprobante cubre facturas de varios DOs (caso Karina/Occidente)"
+            >
+              <Users className="h-4 w-4" aria-hidden="true" />
+              Pago multi-DO
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Nuevo pago
+            </button>
+          </div>
+        ) : null}
       </div>
 
+      {!puedeEditar ? (
+        <p className="flex items-center gap-2 border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          Solo lectura para tu perfil: crear, editar o eliminar pagos requiere ADMIN u OPERATIVO.
+        </p>
+      ) : null}
+
       {/* Tarjetas de resumen */}
-      {loadState === "ready" && (
+      {isInitialLoading ? (
+        <CardsSkeleton count={3} height={84} />
+      ) : loadState === "ready" || filas.length > 0 ? (
         <div className="grid grid-cols-3 gap-4">
           {[
             { label: "Total pagos", value: totales.totalPagos, color: "text-slate-900" },
@@ -1099,13 +1179,14 @@ export function PagosWorkspace() {
             </div>
           ))}
         </div>
-      )}
+      ) : null}
 
       {/* Filtros */}
       <div className="flex flex-wrap items-center gap-3 border border-slate-200 bg-white px-4 py-3 text-sm">
         <select
           value={filtroCliente}
           onChange={(e) => setFiltroCliente(e.target.value)}
+          aria-label="Filtrar por cliente"
           className="h-9 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
         >
           <option value="">Todos los clientes</option>
@@ -1119,6 +1200,7 @@ export function PagosWorkspace() {
         <select
           value={filtroCanal}
           onChange={(e) => setFiltroCanal(e.target.value as CanalPago | "")}
+          aria-label="Filtrar por canal de pago"
           className="h-9 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
         >
           <option value="">Todos los canales</option>
@@ -1132,6 +1214,7 @@ export function PagosWorkspace() {
         <button
           type="button"
           onClick={() => setSoloPendientes((v) => !v)}
+          aria-pressed={soloPendientes}
           className={`h-9 border px-3 text-xs font-semibold transition ${
             soloPendientes
               ? "border-amber-600 bg-amber-600 text-white"
@@ -1145,6 +1228,7 @@ export function PagosWorkspace() {
           value={busqueda}
           onChange={(e) => setBusqueda(e.target.value)}
           placeholder="Buscar concepto, beneficiario, DO…"
+          aria-label="Buscar por concepto, beneficiario, soporte o DO"
           className="h-9 min-w-[220px] flex-1 border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
         />
 
@@ -1158,23 +1242,39 @@ export function PagosWorkspace() {
         </button>
       </div>
 
-      {/* Error global */}
-      {globalError ? (
-        <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          {globalError}
-          <button type="button" onClick={() => setGlobalError(null)} className="ml-auto" aria-label="Cerrar">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      ) : null}
-
-      {/* Tabla */}
+      {/* Tabla: la carga inicial reserva el alto con un skeleton */}
+      {isInitialLoading ? (
+        <TableSkeleton rows={6} cols={10} rowHeight={44} />
+      ) : (
       <div className="overflow-hidden border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-sm">
           <p className="font-semibold text-slate-900">Pagos</p>
-          <p className="text-slate-500">{filasVisibles.length} registros</p>
+          <p className="text-slate-500" aria-live="polite">
+            {filasVisibles.length} registros
+          </p>
         </div>
+        {loadState === "error" ? (
+          <div className="p-4">
+            <ModuleState
+              type="error"
+              title="No fue posible cargar los pagos"
+              detail={loadError ?? undefined}
+              action={{ label: "Reintentar", onClick: () => setReloadKey((k) => k + 1) }}
+            />
+          </div>
+        ) : loadState === "loading" ? (
+          <div className="p-4">
+            <ModuleState type="loading" title="Actualizando pagos…" />
+          </div>
+        ) : filasVisibles.length === 0 ? (
+          <div className="p-4">
+            <ModuleState
+              type="empty"
+              title="No hay pagos que coincidan con los filtros"
+              detail="Ajusta cliente, canal o búsqueda para ampliar la consulta."
+            />
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
@@ -1188,61 +1288,31 @@ export function PagosWorkspace() {
                 <th className="border-b border-slate-200 px-3 py-2">Canal</th>
                 <th className="border-b border-slate-200 px-3 py-2">Fecha de pago</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Costo bancario</th>
-                <th className="border-b border-slate-200 px-3 py-2 w-12"></th>
+                <th className="border-b border-slate-200 px-3 py-2 w-12">
+                  <span className="sr-only">Acciones</span>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {loadState === "loading" ? (
-                <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center">
-                    <div className="mx-auto flex max-w-md flex-col items-center text-sm text-slate-600">
-                      <Loader2 className="h-6 w-6 animate-spin text-slate-400" aria-hidden="true" />
-                      <p className="mt-3 font-medium text-slate-950">Cargando pagos…</p>
-                    </div>
-                  </td>
-                </tr>
-              ) : loadState === "error" ? (
-                <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center">
-                    <div className="mx-auto flex max-w-md flex-col items-center text-sm text-slate-600">
-                      <AlertTriangle className="h-6 w-6 text-slate-400" aria-hidden="true" />
-                      <p className="mt-3 font-medium text-slate-950">No fue posible cargar los pagos</p>
-                      {loadError ? <p className="mt-1">{loadError}</p> : null}
-                      <button
-                        type="button"
-                        onClick={() => setReloadKey((k) => k + 1)}
-                        className="mt-4 inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                      >
-                        <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                        Reintentar
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : filasVisibles.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center text-sm text-slate-500">
-                    No hay pagos que coincidan con los filtros.
-                  </td>
-                </tr>
-              ) : (
-                filasVisibles.map((fila) => (
-                  <FilaPagoRow
-                    key={fila.id}
-                    fila={fila}
-                    isDeleting={deletingId === fila.id}
-                    onChange={handleFieldChange}
-                    onBlur={handleBlurField}
-                    onDelete={handleDelete}
-                  />
-                ))
-              )}
+              {filasVisibles.map((fila) => (
+                <FilaPagoRow
+                  key={fila.id}
+                  fila={fila}
+                  readOnly={!puedeEditar}
+                  isDeleting={deletingId === fila.id}
+                  onChange={handleFieldChange}
+                  onBlur={handleBlurField}
+                  onDelete={(f) => void handleDelete(f)}
+                />
+              ))}
             </tbody>
           </table>
         </div>
+        )}
       </div>
+      )}
 
-      {createOpen ? (
+      {createOpen && puedeEditar ? (
         <NuevoPagoModal
           tramites={tramites}
           onClose={() => setCreateOpen(false)}
@@ -1250,7 +1320,7 @@ export function PagosWorkspace() {
         />
       ) : null}
 
-      {multiDOOpen ? (
+      {multiDOOpen && puedeEditar ? (
         <PagoMultiDOModal
           onClose={() => setMultiDOOpen(false)}
           onCreated={handlePagoMultiDOCreado}

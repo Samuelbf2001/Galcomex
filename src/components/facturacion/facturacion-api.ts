@@ -358,6 +358,83 @@ export async function fetchBorradoresDeTramite(
   return (payload.borradores as unknown[]).filter(isRecord).map(normalizeBorrador);
 }
 
+/** Resultado por trámite de la carga en lote: lista de borradores o error puntual. */
+export type BorradoresLoteItem =
+  | { ok: true; borradores: BorradorRow[] }
+  | { ok: false; error: string };
+
+/** Máximo de ids que acepta `GET /api/facturacion/borradores?tramiteIds=` por llamada. */
+export const MAX_IDS_LOTE_BORRADORES = 100;
+
+/**
+ * Carga los borradores de varios trámites en UNA llamada
+ * (`GET /api/facturacion/borradores?tramiteIds=id1,id2,...`, máx. 100 ids por
+ * llamada; aquí se trocea automáticamente). El payload por trámite es el mismo
+ * que `GET /api/tramites/{id}/borrador`, por lo que reutiliza `normalizeBorrador`.
+ *
+ * Devuelve `null` si el endpoint responde 404 (aún no desplegado) para que el
+ * llamador caiga al método por trámite.
+ */
+export async function fetchBorradoresPorLote(
+  tramiteIds: string[],
+  signal?: AbortSignal,
+): Promise<Map<string, BorradoresLoteItem> | null> {
+  const resultado = new Map<string, BorradoresLoteItem>();
+  if (tramiteIds.length === 0) return resultado;
+
+  for (let i = 0; i < tramiteIds.length; i += MAX_IDS_LOTE_BORRADORES) {
+    const grupo = tramiteIds.slice(i, i + MAX_IDS_LOTE_BORRADORES);
+    const url = `/api/facturacion/borradores?tramiteIds=${encodeURIComponent(grupo.join(","))}`;
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+        signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      throw new FacturacionApiError("No fue posible conectar con la API de borradores.");
+    }
+
+    // Endpoint no desplegado todavía: el llamador usa el método por trámite.
+    if (response.status === 404) return null;
+
+    if (!response.ok) {
+      const msg = await parseErrorMessage(response);
+      throw new FacturacionApiError(msg, response.status);
+    }
+
+    const payload: unknown = await response.json().catch(() => null);
+    if (!isRecord(payload) || !isRecord(payload.porTramite)) {
+      throw new FacturacionApiError("Respuesta de borradores por lote no válida.");
+    }
+
+    for (const id of grupo) {
+      const item = payload.porTramite[id];
+      if (!isRecord(item)) {
+        resultado.set(id, { ok: false, error: "El servidor no devolvió este trámite." });
+        continue;
+      }
+      if (typeof item.error === "string") {
+        resultado.set(id, { ok: false, error: item.error });
+        continue;
+      }
+      if (!Array.isArray(item.borradores)) {
+        resultado.set(id, { ok: false, error: "Respuesta de borradores no válida." });
+        continue;
+      }
+      resultado.set(id, {
+        ok: true,
+        borradores: (item.borradores as unknown[]).filter(isRecord).map(normalizeBorrador),
+      });
+    }
+  }
+
+  return resultado;
+}
+
 // ─── Generar borrador ─────────────────────────────────────────────────────────
 
 export type GenerarBorradorInput = {

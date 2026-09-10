@@ -32,13 +32,36 @@ export type TramiteFilters = {
 
 const allFilterValue = "todos";
 
-function buildTramitesQuery(filters?: TramiteFilters): string {
-  if (!filters) {
-    return "";
+/** Tamaño de página por defecto de la lista maestra (el API admite hasta 200). */
+export const TRAMITES_PAGE_SIZE = 100;
+
+export type TramitesPageOptions = {
+  take?: number;
+  skip?: number;
+};
+
+export type TramitesPage = {
+  rows: TramiteRow[];
+  /** Total de trámites que cumplen los filtros (para "Mostrando X de Y"). */
+  total: number;
+};
+
+function buildTramitesQuery(filters?: TramiteFilters, page?: TramitesPageOptions): string {
+  const params = new URLSearchParams();
+  const q = filters?.q?.trim();
+
+  if (page?.take !== undefined) {
+    params.set("take", String(page.take));
   }
 
-  const params = new URLSearchParams();
-  const q = filters.q?.trim();
+  if (page?.skip !== undefined && page.skip > 0) {
+    params.set("skip", String(page.skip));
+  }
+
+  if (!filters) {
+    const soloPagina = params.toString();
+    return soloPagina ? `?${soloPagina}` : "";
+  }
 
   if (q) {
     params.set("q", q);
@@ -248,14 +271,19 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
   };
 }
 
-export async function fetchTramites(
+/**
+ * Página de trámites con `take`/`skip` y el `total` que devuelve el API
+ * (`{ tramites, total }`). Sin `take` el servidor recorta a 50 en silencio.
+ */
+export async function fetchTramitesPage(
   signal?: AbortSignal,
   filters?: TramiteFilters,
-): Promise<TramiteRow[]> {
+  page: TramitesPageOptions = { take: TRAMITES_PAGE_SIZE, skip: 0 },
+): Promise<TramitesPage> {
   let response: Response;
 
   try {
-    response = await fetch(`/api/tramites${buildTramitesQuery(filters)}`, {
+    response = await fetch(`/api/tramites${buildTramitesQuery(filters, page)}`, {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal,
@@ -270,10 +298,10 @@ export async function fetchTramites(
 
   if (!response.ok) {
     if (response.status === 404) {
-      throw new TramitesApiError("La API /api/tramites aun no esta disponible.", 404);
+      throw new TramitesApiError("La API /api/tramites aún no está disponible.", 404);
     }
 
-    throw new TramitesApiError("No fue posible cargar los tramites.", response.status);
+    throw new TramitesApiError("No fue posible cargar los trámites.", response.status);
   }
 
   let payload: unknown;
@@ -281,12 +309,28 @@ export async function fetchTramites(
   try {
     payload = await response.json();
   } catch {
-    throw new TramitesApiError("La respuesta de /api/tramites no es JSON valido.");
+    throw new TramitesApiError("La respuesta de /api/tramites no es JSON válido.");
   }
 
-  return extractRows(payload)
+  const rows = extractRows(payload)
     .map(normalizeRow)
     .filter((row): row is TramiteRow => row !== null);
+
+  const total =
+    isRecord(payload) && typeof payload.total === "number" && Number.isFinite(payload.total)
+      ? payload.total
+      : rows.length;
+
+  return { rows, total };
+}
+
+export async function fetchTramites(
+  signal?: AbortSignal,
+  filters?: TramiteFilters,
+  page?: TramitesPageOptions,
+): Promise<TramiteRow[]> {
+  const { rows } = await fetchTramitesPage(signal, filters, page);
+  return rows;
 }
 
 export async function fetchClienteOptions(signal?: AbortSignal): Promise<ClienteOption[]> {
@@ -333,7 +377,7 @@ export async function fetchTiposTramite(
 
   if (!response.ok) {
     throw new TramitesApiError(
-      "No fue posible cargar los tipos de tramite.",
+      "No fue posible cargar los tipos de trámite.",
       response.status,
     );
   }
@@ -374,19 +418,19 @@ export async function createTramite(input: CreateTramiteInput): Promise<TramiteR
     const message =
       isRecord(payload) && typeof payload.error === "string"
         ? payload.error
-        : "No fue posible crear el tramite.";
+        : "No fue posible crear el trámite.";
 
     throw new TramitesApiError(message, response.status);
   }
 
   if (!isRecord(payload)) {
-    throw new TramitesApiError("La respuesta de creacion no es valida.");
+    throw new TramitesApiError("La respuesta de creación no es válida.");
   }
 
   const row = normalizeRow(payload.tramite, 0);
 
   if (!row) {
-    throw new TramitesApiError("No fue posible leer el tramite creado.");
+    throw new TramitesApiError("No fue posible leer el trámite creado.");
   }
 
   return row;

@@ -21,6 +21,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConciliarLoteModal } from "@/components/cartera/conciliar-lote-modal";
 import { ModuleState } from "@/components/layout/module-state";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useRol } from "@/lib/auth/rol-context";
 import {
   OPCIONES_RECAUDO_PAGO,
   type CarteraData,
@@ -149,6 +154,7 @@ function RegistrarPagoModal({
   onClose,
   onRegistrado,
 }: RegistrarPagoModalProps) {
+  const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [montoRaw, setMontoRaw] = useState("");
@@ -265,12 +271,17 @@ function RegistrarPagoModal({
     setSubmitting(true);
     try {
       await registrarAbonoDevolucion(factura.id, input);
+      toast({
+        title: tipo === "ABONO" ? "Abono registrado" : "Devolución registrada",
+        description: `${formatCOP(montoValido)} · ${factura.numSiigo}`,
+        variant: "success",
+      });
       onRegistrado();
     } catch (caught) {
       setError(
         caught instanceof CarteraApiError
           ? caught.message
-          : "Error al registrar el pago.",
+          : describirError(caught, "Error al registrar el pago."),
       );
     } finally {
       setSubmitting(false);
@@ -279,34 +290,20 @@ function RegistrarPagoModal({
 
   const titulo = tipo === "ABONO" ? "Registrar abono" : "Registrar devolución";
   const botonLabel = tipo === "ABONO" ? "Registrar abono" : "Registrar devolución";
+  const subtitulo = `${factura.numSiigo}${
+    factura.borrador?.tramite.consecutivo ? ` · ${factura.borrador.tramite.consecutivo}` : ""
+  } · ${destino === "CLIENTE" ? "Cliente" : "LM"}`;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8 overflow-y-auto">
-      <div className="w-full max-w-lg border border-slate-300 bg-white shadow-xl">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">{titulo}</h2>
-            <p className="mt-0.5 text-xs text-slate-500 font-mono">
-              {factura.numSiigo}
-              {factura.borrador?.tramite.consecutivo
-                ? ` · ${factura.borrador.tramite.consecutivo}`
-                : ""}
-              {" · "}
-              {destino === "CLIENTE" ? "Cliente" : "LM"}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
+    <ModalShell
+      open
+      onClose={onClose}
+      title={titulo}
+      description={subtitulo}
+      size="md"
+      dismissible={!submitting && uploadState !== "uploading"}
+    >
+        <form onSubmit={handleSubmit} className="space-y-4">
           {/* Resumen del pendiente */}
           <div className="grid grid-cols-2 gap-3 border border-slate-100 bg-slate-50 px-3 py-3 text-xs">
             <div>
@@ -483,8 +480,7 @@ function RegistrarPagoModal({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -494,11 +490,28 @@ type PagosListProps = {
   pagos: PagoFacturaRow[];
   destino: "CLIENTE" | "LM";
   facturaId: string;
+  /** DELETE /api/facturas/[id]/pagos/[pagoId] → solo ADMIN. */
+  puedeAnular: boolean;
+  /** PATCH …/verificar → ADMIN/OPERATIVO (REVISOR excluido). */
+  puedeVerificar: boolean;
+  /** Id del pago que se está verificando (bloquea doble clic). */
+  verificandoId: string | null;
   onAnulado: () => void;
   onVerificar: (facturaId: string, pagoId: string) => Promise<void>;
 };
 
-function PagosList({ pagos, destino, facturaId, onAnulado, onVerificar }: PagosListProps) {
+function PagosList({
+  pagos,
+  destino,
+  facturaId,
+  puedeAnular,
+  puedeVerificar,
+  verificandoId,
+  onAnulado,
+  onVerificar,
+}: PagosListProps) {
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [anulando, setAnulando] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -510,18 +523,39 @@ function PagosList({ pagos, destino, facturaId, onAnulado, onVerificar }: PagosL
     );
   }
 
-  async function handleAnular(pagoId: string) {
+  async function handleAnular(pago: PagoFacturaRow) {
+    if (anulando) return;
+    const ok = await confirmar({
+      title: "¿Anular este pago?",
+      description: `${pago.tipo === "ABONO" ? "Abono" : "Devolución"} de ${formatCOP(pago.monto)} del ${formatDate(pago.fecha)}. El saldo de la factura se recalculará y esta acción no se puede deshacer.`,
+      confirmText: "Anular pago",
+      variant: "danger",
+    });
+    if (!ok) return;
+
     setError(null);
-    setAnulando(pagoId);
+    setAnulando(pago.id);
     try {
-      await eliminarPago(facturaId, pagoId);
+      await eliminarPago(facturaId, pago.id);
+      toast({
+        title: "Pago anulado",
+        description: `${formatCOP(pago.monto)} · ${formatDate(pago.fecha)}`,
+        variant: "success",
+      });
       onAnulado();
     } catch (err) {
-      setError(err instanceof CarteraApiError ? err.message : "Error al anular el pago.");
+      const mensaje =
+        err instanceof CarteraApiError
+          ? err.message
+          : describirError(err, "Error al anular el pago.");
+      setError(mensaje);
+      toast({ title: "No se pudo anular el pago", description: mensaje, variant: "error" });
     } finally {
       setAnulando(null);
     }
   }
+
+  const mostrarColumnaAnular = puedeAnular;
 
   return (
     <div className="border-t border-slate-100 bg-slate-50/70">
@@ -542,7 +576,9 @@ function PagosList({ pagos, destino, facturaId, onAnulado, onVerificar }: PagosL
             <th className="px-4 py-1.5 font-medium">Verificado</th>
             <th className="px-4 py-1.5 font-medium">Comprobante</th>
             <th className="px-4 py-1.5 font-medium">Estado</th>
-            <th className="px-4 py-1.5 font-medium text-right">Anular</th>
+            {mostrarColumnaAnular ? (
+              <th className="px-4 py-1.5 font-medium text-right">Anular</th>
+            ) : null}
           </tr>
         </thead>
         <tbody>
@@ -621,33 +657,45 @@ function PagosList({ pagos, destino, facturaId, onAnulado, onVerificar }: PagosL
                     BORRADOR
                   </span>
                 )}
-                {p.estado === "REALIZADO" && (
+                {p.estado === "REALIZADO" && puedeVerificar && (
                   <button
                     type="button"
                     onClick={() => void onVerificar(facturaId, p.id)}
-                    className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100"
-                    title="Marcar como verificado"
+                    disabled={verificandoId !== null}
+                    className="inline-flex h-7 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
+                    title="Marcar como verificado en banco"
                   >
+                    {verificandoId === p.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                    ) : null}
                     Verificar
                   </button>
                 )}
+                {p.estado === "REALIZADO" && !puedeVerificar && (
+                  <span className="inline-flex items-center border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                    REALIZADO
+                  </span>
+                )}
               </td>
-              <td className="px-4 py-1.5 text-right">
-                <button
-                  type="button"
-                  onClick={() => void handleAnular(p.id)}
-                  disabled={anulando === p.id}
-                  className="inline-flex h-6 items-center gap-1 border border-rose-200 bg-white px-2 text-xs font-medium text-rose-600 transition hover:bg-rose-50 disabled:opacity-50"
-                  title="Anular pago"
-                >
-                  {anulando === p.id ? (
-                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Trash2 className="h-3 w-3" aria-hidden="true" />
-                  )}
-                  Anular
-                </button>
-              </td>
+              {mostrarColumnaAnular ? (
+                <td className="px-4 py-1.5 text-right">
+                  <button
+                    type="button"
+                    onClick={() => void handleAnular(p)}
+                    disabled={anulando !== null}
+                    className="inline-flex h-6 items-center gap-1 border border-rose-200 bg-white px-2 text-xs font-medium text-rose-600 transition hover:bg-rose-50 disabled:opacity-50"
+                    title="Anular pago"
+                    aria-label={`Anular pago de ${formatCOP(p.monto)} del ${formatDate(p.fecha)}`}
+                  >
+                    {anulando === p.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Trash2 className="h-3 w-3" aria-hidden="true" />
+                    )}
+                    Anular
+                  </button>
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>
@@ -663,6 +711,13 @@ type FilaFacturaProps = {
   vista: VistaMode;
   selected: boolean;
   selectable: boolean;
+  /** La columna de selección solo existe para quien puede conciliar (ADMIN). */
+  mostrarSeleccion: boolean;
+  /** POST /api/facturas/[id]/pagos → solo ADMIN. */
+  puedeRegistrarPago: boolean;
+  puedeAnular: boolean;
+  puedeVerificar: boolean;
+  verificandoId: string | null;
   onToggleSelect: () => void;
   onRegistrarAbono: (factura: FacturaRow, destino: "CLIENTE" | "LM") => void;
   onRegistrarDevolucion: (factura: FacturaRow, destino: "CLIENTE" | "LM") => void;
@@ -670,11 +725,19 @@ type FilaFacturaProps = {
   onVerificarPago: (facturaId: string, pagoId: string) => Promise<void>;
 };
 
+/** Columnas de la tabla principal (sin contar la de selección). */
+const COLUMNAS_BASE_CARTERA = 7;
+
 function FilaFactura({
   factura,
   vista,
   selected,
   selectable,
+  mostrarSeleccion,
+  puedeRegistrarPago,
+  puedeAnular,
+  puedeVerificar,
+  verificandoId,
   onToggleSelect,
   onRegistrarAbono,
   onRegistrarDevolucion,
@@ -691,6 +754,7 @@ function FilaFactura({
 
   const tieneDev = BigInt(pendienteDevolucion) > 0n;
   const pagosDestino = factura.pagos.filter((p) => p.destino === destino);
+  const referencia = factura.borrador?.tramite.consecutivo ?? factura.numSiigo;
 
   return (
     <>
@@ -701,17 +765,19 @@ function FilaFactura({
             : "hover:bg-slate-50"
         }`}
       >
-        {/* Checkbox selección batch */}
-        <td className="px-3 py-3 whitespace-nowrap">
-          <input
-            type="checkbox"
-            checked={selected}
-            disabled={!selectable}
-            onChange={onToggleSelect}
-            aria-label="Seleccionar trámite"
-            className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
-          />
-        </td>
+        {/* Checkbox selección batch (solo ADMIN) */}
+        {mostrarSeleccion ? (
+          <td className="px-3 py-3 whitespace-nowrap">
+            <input
+              type="checkbox"
+              checked={selected}
+              disabled={!selectable}
+              onChange={onToggleSelect}
+              aria-label={`Seleccionar ${referencia} para conciliar`}
+              className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
+            />
+          </td>
+        ) : null}
 
         {/* DO */}
         <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
@@ -768,18 +834,22 @@ function FilaFactura({
         {/* Acciones */}
         <td className="px-4 py-3 text-right whitespace-nowrap">
           <div className="flex items-center justify-end gap-1.5">
-            <button
-              type="button"
-              onClick={() => onRegistrarAbono(factura, destino)}
-              className="inline-flex h-7 items-center gap-1 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              <ArrowDownCircle className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
-              Abono
-            </button>
-            {tieneDev && (
+            {puedeRegistrarPago ? (
+              <button
+                type="button"
+                onClick={() => onRegistrarAbono(factura, destino)}
+                aria-label={`Registrar abono en ${referencia}`}
+                className="inline-flex h-7 items-center gap-1 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                <ArrowDownCircle className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                Abono
+              </button>
+            ) : null}
+            {puedeRegistrarPago && tieneDev && (
               <button
                 type="button"
                 onClick={() => onRegistrarDevolucion(factura, destino)}
+                aria-label={`Registrar devolución en ${referencia}`}
                 className="inline-flex h-7 items-center gap-1 border border-violet-300 bg-violet-50 px-2 text-xs font-medium text-violet-700 transition hover:bg-violet-100"
               >
                 <ArrowUpCircle className="h-3.5 w-3.5" aria-hidden="true" />
@@ -793,6 +863,12 @@ function FilaFactura({
                 expandido ? "border-cyan-600 bg-cyan-50" : "border-slate-300 bg-white hover:bg-slate-50"
               }`}
               title={expandido ? "Ocultar pagos" : "Ver pagos"}
+              aria-label={
+                expandido
+                  ? `Ocultar pagos de ${referencia}`
+                  : `Ver pagos de ${referencia} (${pagosDestino.length})`
+              }
+              aria-expanded={expandido}
             >
               {pagosDestino.length > 0 ? (
                 expandido ? (
@@ -811,11 +887,14 @@ function FilaFactura({
       {/* Fila expandible de pagos */}
       {expandido && (
         <tr>
-          <td colSpan={9} className="p-0">
+          <td colSpan={COLUMNAS_BASE_CARTERA + (mostrarSeleccion ? 1 : 0)} className="p-0">
             <PagosList
               pagos={factura.pagos}
               destino={destino}
               facturaId={factura.id}
+              puedeAnular={puedeAnular}
+              puedeVerificar={puedeVerificar}
+              verificandoId={verificandoId}
               onAnulado={onAnulado}
               onVerificar={onVerificarPago}
             />
@@ -901,6 +980,17 @@ function CruceTarjetas({
 export function CarteraWorkspace() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { toast } = useToast();
+
+  // Permisos = requireRole de cada endpoint (la página admite ADMIN/REVISOR):
+  //   POST/DELETE /api/facturas/[id]/pagos*, POST /api/cartera/conciliar-lote → ADMIN
+  //   PATCH …/pagos/[pagoId]/verificar → ADMIN/OPERATIVO (REVISOR excluido)
+  // REVISOR ve la cartera en solo lectura.
+  const rol = useRol();
+  const puedeRegistrarPago = rol === "ADMIN";
+  const puedeAnular = rol === "ADMIN";
+  const puedeConciliar = rol === "ADMIN";
+  const puedeVerificar = rol === "ADMIN" || rol === "OPERATIVO";
 
   const initialClienteId = searchParams.get("clienteId") ?? "";
   const initialPendientes = searchParams.get("pendientes") === "true";
@@ -920,6 +1010,7 @@ export function CarteraWorkspace() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [verificandoId, setVerificandoId] = useState<string | null>(null);
 
   // Modal state
   type ModalTarget = { factura: FacturaRow; destino: "CLIENTE" | "LM"; tipo: TipoModal };
@@ -1073,7 +1164,9 @@ export function CarteraWorkspace() {
   }
 
   async function handleVerificarPago(facturaId: string, pagoId: string) {
+    if (verificandoId) return; // evita doble clic
     setGlobalError(null);
+    setVerificandoId(pagoId);
     try {
       const response = await fetch(`/api/facturas/${facturaId}/pagos/${pagoId}/verificar`, {
         method: "PATCH",
@@ -1089,8 +1182,7 @@ export function CarteraWorkspace() {
           typeof (payload as Record<string, unknown>).error === "string"
             ? (payload as Record<string, unknown>).error as string
             : `Error al verificar (${response.status}).`;
-        setGlobalError(msg);
-        return;
+        throw new CarteraApiError(msg, response.status);
       }
       setCartera((prev) => {
         if (!prev) return prev;
@@ -1107,8 +1199,13 @@ export function CarteraWorkspace() {
           }),
         };
       });
-    } catch {
-      setGlobalError("Error de red al verificar.");
+      toast({ title: "Pago verificado en banco", variant: "success" });
+    } catch (caught) {
+      const mensaje = describirError(caught, "Error de red al verificar.");
+      setGlobalError(mensaje);
+      toast({ title: "No se pudo verificar el pago", description: mensaje, variant: "error" });
+    } finally {
+      setVerificandoId(null);
     }
   }
 
@@ -1256,7 +1353,7 @@ export function CarteraWorkspace() {
                 value={clienteId}
                 onChange={(e) => handleClienteChange(e.target.value)}
                 disabled={clientesLoading}
-                className="h-10 border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600 disabled:opacity-60"
+                className="h-10 w-80 max-w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600 disabled:opacity-60"
               >
                 <option value="">
                   {clientesLoading ? "Cargando…" : "Seleccionar cliente"}
@@ -1311,6 +1408,7 @@ export function CarteraWorkspace() {
               value={desde}
               max={hasta || undefined}
               onChange={(e) => handleDesdeChange(e.target.value)}
+              aria-label="Desde (fecha de emisión de la factura)"
               className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
             />
           </div>
@@ -1323,6 +1421,7 @@ export function CarteraWorkspace() {
               value={hasta}
               min={desde || undefined}
               onChange={(e) => handleHastaChange(e.target.value)}
+              aria-label="Hasta (fecha de emisión de la factura)"
               className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
             />
           </div>
@@ -1394,9 +1493,9 @@ export function CarteraWorkspace() {
               type="button"
               onClick={() => setGlobalError(null)}
               className="ml-auto"
-              aria-label="Cerrar"
+              aria-label="Cerrar aviso de error"
             >
-              <X className="h-4 w-4" />
+              <X className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         ) : null}
@@ -1409,15 +1508,17 @@ export function CarteraWorkspace() {
             detail="Elige un cliente del selector para ver su cartera."
           />
         ) : loadState === "loading" ? (
-          <ModuleState type="loading" title="Cargando cartera…" />
+          <>
+            <CardsSkeleton count={3} height={92} />
+            <TableSkeleton rows={6} cols={COLUMNAS_BASE_CARTERA + (puedeConciliar ? 1 : 0)} rowHeight={49} />
+          </>
         ) : loadState === "error" ? (
-          <div className="flex items-start gap-3 border border-dashed border-rose-300 bg-rose-50 px-4 py-5 text-sm text-rose-700">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-            <div>
-              <p className="font-medium">No fue posible cargar la cartera</p>
-              {loadError ? <p className="mt-1">{loadError}</p> : null}
-            </div>
-          </div>
+          <ModuleState
+            type="error"
+            title="No fue posible cargar la cartera"
+            detail={loadError ?? undefined}
+            action={{ label: "Reintentar", onClick: recargar }}
+          />
         ) : cartera ? (
           <>
             {/* Tarjetas de cruce */}
@@ -1458,8 +1559,8 @@ export function CarteraWorkspace() {
                   </p>
                 </div>
 
-                {/* Bulk actions bar (selección batch) */}
-                {selectedFacturas.size > 0 && (
+                {/* Bulk actions bar (selección batch) — solo ADMIN concilia */}
+                {puedeConciliar && selectedFacturas.size > 0 && (
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-indigo-200 bg-indigo-50 px-4 py-2.5">
                     <div className="text-xs text-indigo-900">
                       <span className="font-semibold">
@@ -1499,16 +1600,18 @@ export function CarteraWorkspace() {
                   <table className="w-full min-w-[860px] border-collapse text-left text-sm">
                     <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                       <tr>
-                        <th className="border-b border-slate-200 px-3 py-2.5">
-                          <input
-                            type="checkbox"
-                            checked={allElegiblesSelected}
-                            disabled={facturasElegibles.length === 0}
-                            onChange={toggleAll}
-                            aria-label="Seleccionar todos los elegibles"
-                            className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
-                          />
-                        </th>
+                        {puedeConciliar ? (
+                          <th className="border-b border-slate-200 px-3 py-2.5">
+                            <input
+                              type="checkbox"
+                              checked={allElegiblesSelected}
+                              disabled={facturasElegibles.length === 0}
+                              onChange={toggleAll}
+                              aria-label="Seleccionar todas las facturas con saldo para conciliar"
+                              className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
+                            />
+                          </th>
+                        ) : null}
                         <th className="border-b border-slate-200 px-4 py-2.5">DO</th>
                         <th className="border-b border-slate-200 px-4 py-2.5">Factura</th>
                         <th className="border-b border-slate-200 px-4 py-2.5">Fecha</th>
@@ -1529,7 +1632,12 @@ export function CarteraWorkspace() {
                           factura={f}
                           vista={vista}
                           selected={selectedFacturas.has(f.id)}
-                          selectable={isElegible(f)}
+                          selectable={puedeConciliar && isElegible(f)}
+                          mostrarSeleccion={puedeConciliar}
+                          puedeRegistrarPago={puedeRegistrarPago}
+                          puedeAnular={puedeAnular}
+                          puedeVerificar={puedeVerificar}
+                          verificandoId={verificandoId}
                           onToggleSelect={() => toggleFactura(f.id)}
                           onRegistrarAbono={(factura, destino) =>
                             setModalTarget({ factura, destino, tipo: "ABONO" })
@@ -1589,8 +1697,8 @@ export function CarteraWorkspace() {
         ) : null}
       </section>
 
-      {/* Modal registrar abono / devolución */}
-      {modalTarget ? (
+      {/* Modal registrar abono / devolución (solo ADMIN) */}
+      {modalTarget && puedeRegistrarPago ? (
         <RegistrarPagoModal
           factura={modalTarget.factura}
           destino={modalTarget.destino}
@@ -1600,8 +1708,8 @@ export function CarteraWorkspace() {
         />
       ) : null}
 
-      {/* Modal conciliación batch */}
-      {loteModalOpen && selectedFacturas.size > 0 ? (
+      {/* Modal conciliación batch (solo ADMIN) */}
+      {puedeConciliar && loteModalOpen && selectedFacturas.size > 0 ? (
         <ConciliarLoteModal
           facturas={facturas.filter((f) => selectedFacturas.has(f.id))}
           destino={destinoActivo}

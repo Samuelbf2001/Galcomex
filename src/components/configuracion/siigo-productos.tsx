@@ -1,33 +1,65 @@
 "use client";
 
-import { Check, ChevronDown, RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 
-import { ModuleState } from "@/components/layout/module-state";
 import {
-  fetchSiigoFormasPago,
-  fetchSiigoImpuestos,
-  fetchSiigoProductos,
-  fetchSiigoTiposComprobante,
-  fetchSiigoVendedores,
+  catalogoFormasPago,
+  catalogoImpuestos,
+  catalogoProductos,
+  catalogoTiposComprobante,
+  catalogoVendedores,
+  invalidarCatalogos,
+  type CatalogoConfig,
+} from "@/components/configuracion/catalogos-cache";
+import {
   setImpuestosProducto,
   triggerSync,
   triggerSyncFormasPago,
   triggerSyncImpuestos,
   triggerSyncTiposComprobante,
   triggerSyncVendedores,
-  type SiigoFormasPagoPayload,
+  type SiigoFormaPagoRow,
   type SiigoImpuestoRow,
-  type SiigoImpuestosPayload,
   type SiigoProductoRow,
-  type SiigoProductosPayload,
-  type SiigoTiposComprobantePayload,
-  type SiigoVendedoresPayload,
+  type SiigoTipoComprobanteRow,
+  type SiigoVendedorRow,
   type SyncResult,
 } from "@/components/configuracion/siigo-productos-api";
+import { ModuleState } from "@/components/layout/module-state";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { Skeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
 
-type LoadState = "loading" | "ready" | "error";
+type LoadState = "idle" | "loading" | "ready" | "error";
 type SyncState = "idle" | "syncing" | "success" | "error";
+
+/** Catálogos Siigo que se sincronizan desde esta sección (mismo orden en pantalla). */
+type Catalogo = Exclude<CatalogoConfig, "beneficiarios">;
+
+const ORDEN: Catalogo[] = ["productos", "impuestos", "formasPago", "tiposComprobante", "vendedores"];
+
+const DEF: Record<
+  Catalogo,
+  { titulo: string; plural: string; participio: string; sync: () => Promise<SyncResult> }
+> = {
+  productos: { titulo: "Productos", plural: "productos", participio: "sincronizados", sync: triggerSync },
+  impuestos: { titulo: "Impuestos", plural: "impuestos", participio: "sincronizados", sync: triggerSyncImpuestos },
+  formasPago: {
+    titulo: "Formas de pago",
+    plural: "formas de pago",
+    participio: "sincronizadas",
+    sync: triggerSyncFormasPago,
+  },
+  tiposComprobante: {
+    titulo: "Tipos de comprobante",
+    plural: "tipos de comprobante",
+    participio: "sincronizados",
+    sync: triggerSyncTiposComprobante,
+  },
+  vendedores: { titulo: "Vendedores", plural: "vendedores", participio: "sincronizados", sync: triggerSyncVendedores },
+};
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("es-CO", {
@@ -50,11 +82,56 @@ function BadgeActivo({ activo }: { activo: boolean }) {
   );
 }
 
+// ─── Carga perezosa de un catálogo (desde el caché compartido) ───────────────
+
+type Carga<T> = {
+  data: T | null;
+  loadState: LoadState;
+  loadError: string | null;
+  /** Pide (o vuelve a pedir) el catálogo. Idempotente mientras carga. */
+  recargar: () => void;
+};
+
+function useCatalogo<T>(cargar: () => Promise<T>, fallback: string): Carga<T> {
+  const [data, setData] = useState<T | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    if (version === 0) return;
+    let cancelado = false;
+    cargar()
+      .then((result) => {
+        if (cancelado) return;
+        setData(result);
+        setLoadState("ready");
+      })
+      .catch((caught: unknown) => {
+        if (cancelado) return;
+        setLoadError(describirError(caught, fallback));
+        setLoadState("error");
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [version, cargar, fallback]);
+
+  const recargar = useCallback(() => {
+    setLoadState("loading");
+    setLoadError(null);
+    setVersion((v) => v + 1);
+  }, []);
+
+  return { data, loadState, loadError, recargar };
+}
+
 // ─── Selector multi-impuesto por producto ────────────────────────────────────
 
 type ImpuestosMultiSelectProps = {
   todos: SiigoImpuestoRow[];
   asignados: SiigoImpuestoRow[];
+  /** Debe lanzar si falla, para que el desplegable siga abierto. */
   onSave: (ids: number[]) => Promise<void>;
   disabled?: boolean;
 };
@@ -67,12 +144,9 @@ function ImpuestosMultiSelect({
 }: ImpuestosMultiSelectProps) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
-  const [seleccion, setSeleccion] = useState<number[]>(asignados.map((i) => i.id));
+  // El padre remonta este componente (key) cuando cambian los asignados.
+  const [seleccion, setSeleccion] = useState<number[]>(() => asignados.map((i) => i.id));
   const ref = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    setSeleccion(asignados.map((i) => i.id));
-  }, [asignados]);
 
   useEffect(() => {
     if (!open) return;
@@ -94,6 +168,8 @@ function ImpuestosMultiSelect({
     try {
       await onSave(seleccion);
       setOpen(false);
+    } catch {
+      /* el padre ya avisó con toast; el desplegable sigue abierto */
     } finally {
       setPending(false);
     }
@@ -109,6 +185,8 @@ function ImpuestosMultiSelect({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
         className="flex items-center gap-1 border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-50 disabled:opacity-50"
       >
         {asignados.length === 0
@@ -119,7 +197,7 @@ function ImpuestosMultiSelect({
 
       {open ? (
         <div className="absolute right-0 z-20 mt-1 w-72 border border-slate-200 bg-white shadow-lg">
-          <div className="max-h-72 overflow-y-auto">
+          <div className="max-h-72 overflow-y-auto" role="listbox" aria-multiselectable="true">
             {todos.length === 0 ? (
               <p className="px-3 py-3 text-xs text-slate-500">
                 No hay impuestos sincronizados.
@@ -131,6 +209,8 @@ function ImpuestosMultiSelect({
                   <button
                     key={imp.id}
                     type="button"
+                    role="option"
+                    aria-selected={selected}
                     onClick={() => toggle(imp.id)}
                     className="flex w-full items-start gap-2 border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-slate-50"
                   >
@@ -158,7 +238,8 @@ function ImpuestosMultiSelect({
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="text-xs text-slate-600 hover:underline"
+              disabled={pending}
+              className="text-xs text-slate-600 hover:underline disabled:opacity-50"
             >
               Cancelar
             </button>
@@ -185,6 +266,7 @@ function ProductosModal({
   loadState,
   loadError,
   total,
+  onRetry,
   onSaveImpuestos,
   onClose,
 }: {
@@ -193,18 +275,11 @@ function ProductosModal({
   loadState: LoadState;
   loadError: string | null;
   total: number;
+  onRetry: () => void;
   onSaveImpuestos: (productoId: string, ids: number[]) => Promise<void>;
   onClose: () => void;
 }) {
   const [q, setQ] = useState("");
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const filtrados = q.trim()
     ? productos.filter(
@@ -215,45 +290,34 @@ function ProductosModal({
     : productos;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8 overflow-y-auto">
-      <div className="w-full max-w-5xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Productos Siigo</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {total} productos · Asigna impuestos por producto para el envío a Siigo.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Productos Siigo"
+      description={`${total} productos · Asigna impuestos por producto para el envío a Siigo.`}
+      size="xl"
+    >
+      <div className="-mx-5 -mt-4">
         <div className="border-b border-slate-200 px-5 py-3">
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Filtrar por código o nombre…"
+            aria-label="Filtrar productos por código o nombre"
             className="w-72 border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-slate-400"
           />
         </div>
 
-        <div className="overflow-auto h-[65vh]">
-          {loadState === "loading" ? (
-            <div className="px-5 py-8">
-              <ModuleState type="loading" title="Cargando productos Siigo" />
-            </div>
+        <div className="min-h-[50vh]">
+          {loadState === "loading" || loadState === "idle" ? (
+            <TableSkeleton rows={8} cols={6} />
           ) : loadState === "error" ? (
             <div className="px-5 py-8">
               <ModuleState
                 type="error"
                 title="No se pudieron cargar los productos"
                 detail={loadError ?? undefined}
+                action={{ label: "Reintentar", onClick: onRetry }}
               />
             </div>
           ) : (
@@ -300,6 +364,8 @@ function ProductosModal({
                             <span className="text-xs text-slate-400">Sin asignar</span>
                           )}
                           <ImpuestosMultiSelect
+                            // Remonta (y resetea la selección) cuando cambian los asignados.
+                            key={p.impuestos.map((i) => i.id).join(",")}
                             todos={impuestosCatalogo}
                             asignados={p.impuestos}
                             onSave={(ids) => onSaveImpuestos(p.id, ids)}
@@ -317,403 +383,128 @@ function ProductosModal({
           )}
         </div>
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
-// ─── Modal de impuestos ───────────────────────────────────────────────────────
+// ─── Modal genérico de tabla de catálogo ─────────────────────────────────────
 
-function ImpuestosModal({
-  data,
+type Columna<T> = {
+  titulo: string;
+  render: (row: T) => ReactNode;
+  className?: string;
+};
+
+function TablaCatalogoModal<T extends { id: number }>({
+  title,
+  description,
+  rows,
+  columnas,
+  vacio,
   loadState,
   loadError,
+  errorTitulo,
+  onRetry,
   onClose,
+  size = "lg",
 }: {
-  data: SiigoImpuestosPayload | null;
+  title: string;
+  description: string;
+  rows: T[];
+  columnas: Columna<T>[];
+  vacio: string;
   loadState: LoadState;
   loadError: string | null;
+  errorTitulo: string;
+  onRetry: () => void;
   onClose: () => void;
+  size?: "lg" | "xl";
 }) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const impuestos = data?.impuestos ?? [];
-
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8 overflow-y-auto">
-      <div className="w-full max-w-2xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Impuestos Siigo</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {impuestos.length} impuestos en el catálogo local.
-            </p>
+    <ModalShell open onClose={onClose} title={title} description={description} size={size}>
+      <div className="-mx-5 -my-4 min-h-[50vh]">
+        {loadState === "loading" || loadState === "idle" ? (
+          <TableSkeleton rows={8} cols={columnas.length} />
+        ) : loadState === "error" ? (
+          <div className="px-5 py-8">
+            <ModuleState
+              type="error"
+              title={errorTitulo}
+              detail={loadError ?? undefined}
+              action={{ label: "Reintentar", onClick: onRetry }}
+            />
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <div className="overflow-auto h-[70vh]">
-          {loadState === "loading" ? (
-            <div className="px-5 py-8">
-              <ModuleState type="loading" title="Cargando impuestos Siigo" />
-            </div>
-          ) : loadState === "error" ? (
-            <div className="px-5 py-8">
-              <ModuleState
-                type="error"
-                title="No se pudieron cargar los impuestos"
-                detail={loadError ?? undefined}
-              />
-            </div>
-          ) : (
-            <table className="w-full border-collapse text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500 sticky top-0">
+        ) : (
+          <table className="w-full border-collapse text-left text-sm">
+            <thead className="bg-slate-50 text-xs uppercase text-slate-500 sticky top-0">
+              <tr>
+                {columnas.map((c) => (
+                  <th key={c.titulo} className={`border-b border-slate-200 px-4 py-3 ${c.className ?? ""}`}>
+                    {c.titulo}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
                 <tr>
-                  <th className="border-b border-slate-200 px-4 py-3">ID</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Tipo</th>
-                  <th className="border-b border-slate-200 px-4 py-3 text-right">%</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Estado</th>
+                  <td className="px-4 py-8 text-center text-slate-500" colSpan={columnas.length}>
+                    {vacio}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {impuestos.length === 0 ? (
-                  <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>
-                      Sin impuestos sincronizados.
-                    </td>
+              ) : (
+                rows.map((row) => (
+                  <tr key={row.id} className="border-b border-slate-100">
+                    {columnas.map((c) => (
+                      <td key={c.titulo} className={`px-4 py-3 ${c.className ?? ""}`}>
+                        {c.render(row)}
+                      </td>
+                    ))}
                   </tr>
-                ) : (
-                  impuestos.map((i) => (
-                    <tr key={i.id} className="border-b border-slate-100">
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">{i.id}</td>
-                      <td className="px-4 py-3 font-medium">{i.nombre}</td>
-                      <td className="px-4 py-3 text-slate-600">{i.tipo}</td>
-                      <td className="px-4 py-3 text-right font-mono text-slate-700">
-                        {i.porcentaje}%
-                      </td>
-                      <td className="px-4 py-3">
-                        <BadgeActivo activo={i.activo} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          )}
-        </div>
+                ))
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
-// ─── Modal de formas de pago ──────────────────────────────────────────────────
+const COLUMNAS_IMPUESTOS: Columna<SiigoImpuestoRow>[] = [
+  { titulo: "ID", render: (i) => <span className="font-mono text-xs text-slate-500">{i.id}</span> },
+  { titulo: "Nombre", render: (i) => <span className="font-medium">{i.nombre}</span> },
+  { titulo: "Tipo", render: (i) => <span className="text-slate-600">{i.tipo}</span> },
+  {
+    titulo: "%",
+    className: "text-right",
+    render: (i) => <span className="font-mono text-slate-700">{i.porcentaje}%</span>,
+  },
+  { titulo: "Estado", render: (i) => <BadgeActivo activo={i.activo} /> },
+];
 
-function FormasPagoModal({
-  data,
-  loadState,
-  loadError,
-  onClose,
-}: {
-  data: SiigoFormasPagoPayload | null;
-  loadState: LoadState;
-  loadError: string | null;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+const COLUMNAS_FORMAS_PAGO: Columna<SiigoFormaPagoRow>[] = [
+  { titulo: "ID", render: (fp) => <span className="font-mono text-xs text-slate-500">{fp.id}</span> },
+  { titulo: "Nombre", render: (fp) => <span className="font-medium">{fp.nombre}</span> },
+  { titulo: "Tipo", render: (fp) => <span className="text-slate-600">{fp.tipo ?? "—"}</span> },
+  { titulo: "Estado", render: (fp) => <BadgeActivo activo={fp.activo} /> },
+];
 
-  const formas = data?.formasPago ?? [];
+const COLUMNAS_TIPOS: Columna<SiigoTipoComprobanteRow>[] = [
+  { titulo: "ID", render: (t) => <span className="font-mono text-xs text-slate-500">{t.id}</span> },
+  { titulo: "Code", render: (t) => <span className="font-mono text-xs">{t.code}</span> },
+  { titulo: "Nombre", render: (t) => <span className="font-medium">{t.nombre}</span> },
+  { titulo: "Tipo", render: (t) => <span className="text-slate-600">{t.tipo ?? "—"}</span> },
+  { titulo: "Estado", render: (t) => <BadgeActivo activo={t.activo} /> },
+];
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8 overflow-y-auto">
-      <div className="w-full max-w-2xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">
-              Formas de pago Siigo
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {formas.length} formas de pago en el catálogo local. Se seleccionan
-              por borrador antes de enviar a Siigo.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <div className="overflow-auto h-[70vh]">
-          {loadState === "loading" ? (
-            <div className="px-5 py-8">
-              <ModuleState type="loading" title="Cargando formas de pago Siigo" />
-            </div>
-          ) : loadState === "error" ? (
-            <div className="px-5 py-8">
-              <ModuleState
-                type="error"
-                title="No se pudieron cargar las formas de pago"
-                detail={loadError ?? undefined}
-              />
-            </div>
-          ) : (
-            <table className="w-full border-collapse text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500 sticky top-0">
-                <tr>
-                  <th className="border-b border-slate-200 px-4 py-3">ID</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Tipo</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {formas.length === 0 ? (
-                  <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan={4}>
-                      Sin formas de pago sincronizadas.
-                    </td>
-                  </tr>
-                ) : (
-                  formas.map((fp) => (
-                    <tr key={fp.id} className="border-b border-slate-100">
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">
-                        {fp.id}
-                      </td>
-                      <td className="px-4 py-3 font-medium">{fp.nombre}</td>
-                      <td className="px-4 py-3 text-slate-600">{fp.tipo ?? "—"}</td>
-                      <td className="px-4 py-3">
-                        <BadgeActivo activo={fp.activo} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Modal de tipos de comprobante ────────────────────────────────────────────
-
-function TiposComprobanteModal({
-  data,
-  loadState,
-  loadError,
-  onClose,
-}: {
-  data: SiigoTiposComprobantePayload | null;
-  loadState: LoadState;
-  loadError: string | null;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const tipos = data?.tiposComprobante ?? [];
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8 overflow-y-auto">
-      <div className="w-full max-w-2xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">
-              Tipos de comprobante Siigo
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {tipos.length} tipos en el catálogo local. Se selecciona uno en la
-              configuración de envío.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <div className="overflow-auto h-[70vh]">
-          {loadState === "loading" ? (
-            <div className="px-5 py-8">
-              <ModuleState type="loading" title="Cargando tipos de comprobante" />
-            </div>
-          ) : loadState === "error" ? (
-            <div className="px-5 py-8">
-              <ModuleState
-                type="error"
-                title="No se pudieron cargar los tipos"
-                detail={loadError ?? undefined}
-              />
-            </div>
-          ) : (
-            <table className="w-full border-collapse text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500 sticky top-0">
-                <tr>
-                  <th className="border-b border-slate-200 px-4 py-3">ID</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Code</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Tipo</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tipos.length === 0 ? (
-                  <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>
-                      Sin tipos de comprobante sincronizados.
-                    </td>
-                  </tr>
-                ) : (
-                  tipos.map((t) => (
-                    <tr key={t.id} className="border-b border-slate-100">
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">{t.id}</td>
-                      <td className="px-4 py-3 font-mono text-xs">{t.code}</td>
-                      <td className="px-4 py-3 font-medium">{t.nombre}</td>
-                      <td className="px-4 py-3 text-slate-600">{t.tipo ?? "—"}</td>
-                      <td className="px-4 py-3">
-                        <BadgeActivo activo={t.activo} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Modal de vendedores ──────────────────────────────────────────────────────
-
-function VendedoresModal({
-  data,
-  loadState,
-  loadError,
-  onClose,
-}: {
-  data: SiigoVendedoresPayload | null;
-  loadState: LoadState;
-  loadError: string | null;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const vendedores = data?.vendedores ?? [];
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8 overflow-y-auto">
-      <div className="w-full max-w-3xl border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">
-              Vendedores Siigo
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {vendedores.length} usuarios en el catálogo local.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <div className="overflow-auto h-[70vh]">
-          {loadState === "loading" ? (
-            <div className="px-5 py-8">
-              <ModuleState type="loading" title="Cargando vendedores" />
-            </div>
-          ) : loadState === "error" ? (
-            <div className="px-5 py-8">
-              <ModuleState
-                type="error"
-                title="No se pudieron cargar los vendedores"
-                detail={loadError ?? undefined}
-              />
-            </div>
-          ) : (
-            <table className="w-full border-collapse text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500 sticky top-0">
-                <tr>
-                  <th className="border-b border-slate-200 px-4 py-3">ID</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Username</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Email</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {vendedores.length === 0 ? (
-                  <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>
-                      Sin vendedores sincronizados.
-                    </td>
-                  </tr>
-                ) : (
-                  vendedores.map((v) => (
-                    <tr key={v.id} className="border-b border-slate-100">
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">{v.id}</td>
-                      <td className="px-4 py-3 font-mono text-xs">{v.username ?? "—"}</td>
-                      <td className="px-4 py-3 font-medium">{v.nombre ?? "—"}</td>
-                      <td className="px-4 py-3 text-slate-600">{v.email ?? "—"}</td>
-                      <td className="px-4 py-3">
-                        <BadgeActivo activo={v.activo} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+const COLUMNAS_VENDEDORES: Columna<SiigoVendedorRow>[] = [
+  { titulo: "ID", render: (v) => <span className="font-mono text-xs text-slate-500">{v.id}</span> },
+  { titulo: "Username", render: (v) => <span className="font-mono text-xs">{v.username ?? "—"}</span> },
+  { titulo: "Nombre", render: (v) => <span className="font-medium">{v.nombre ?? "—"}</span> },
+  { titulo: "Email", render: (v) => <span className="text-slate-600">{v.email ?? "—"}</span> },
+  { titulo: "Estado", render: (v) => <BadgeActivo activo={v.activo} /> },
+];
 
 // ─── Fila de sincronización ───────────────────────────────────────────────────
 
@@ -721,41 +512,56 @@ function SyncRow({
   titulo,
   ultimaSync,
   total,
+  loadState,
+  loadError,
   syncState,
   syncMessage,
   onSync,
   onVerCatalogo,
-  labelSync,
-  labelVer,
+  onRetry,
 }: {
   titulo: string;
   ultimaSync: string | null;
   total: number;
+  loadState: LoadState;
+  loadError: string | null;
   syncState: SyncState;
   syncMessage: string | null;
   onSync: () => void;
   onVerCatalogo: () => void;
-  labelSync: string;
-  labelVer: string;
+  onRetry: () => void;
 }) {
+  const cargando = loadState === "loading" || loadState === "idle";
+
   return (
     <div className="border border-slate-200 bg-white px-5 py-4">
       <div className="flex items-center justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <p className="font-medium text-slate-900">{titulo}</p>
-          <p className="mt-0.5 text-xs text-slate-500">
-            {total > 0 ? `${total} registros` : "Sin datos"}{" "}
-            {ultimaSync ? `· Última sync: ${formatDate(ultimaSync)}` : "· Nunca sincronizado"}
-          </p>
+          {cargando ? (
+            <Skeleton className="mt-1.5 h-3 w-56" />
+          ) : loadState === "error" ? (
+            <p className="mt-0.5 text-xs text-rose-700">
+              {loadError ?? "No se pudo cargar el catálogo."}{" "}
+              <button type="button" onClick={onRetry} className="font-semibold underline">
+                Reintentar
+              </button>
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs text-slate-500">
+              {total > 0 ? `${total} registros` : "Sin datos"}{" "}
+              {ultimaSync ? `· Última sync: ${formatDate(ultimaSync)}` : "· Nunca sincronizado"}
+            </p>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {total > 0 && (
             <button
               type="button"
               onClick={onVerCatalogo}
               className="border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             >
-              {labelVer}
+              Ver catálogo ({total})
             </button>
           )}
           <button
@@ -768,12 +574,13 @@ function SyncRow({
               className={`h-3.5 w-3.5 ${syncState === "syncing" ? "animate-spin" : ""}`}
               aria-hidden="true"
             />
-            {syncState === "syncing" ? "Sincronizando…" : labelSync}
+            {syncState === "syncing" ? "Sincronizando…" : "Sincronizar"}
           </button>
         </div>
       </div>
       {syncMessage ? (
         <div
+          role={syncState === "error" ? "alert" : "status"}
           className={`mt-3 border px-3 py-2 text-xs ${
             syncState === "success"
               ? "border-emerald-200 bg-emerald-50 text-emerald-700"
@@ -789,377 +596,250 @@ function SyncRow({
 
 // ─── Componente principal ────────────────────────────────────────────────────
 
+type EstadoSync = Record<Catalogo, { state: SyncState; message: string | null }>;
+
+function syncInicial(): EstadoSync {
+  return Object.fromEntries(
+    ORDEN.map((c) => [c, { state: "idle", message: null }]),
+  ) as EstadoSync;
+}
+
+const FALLBACK: Record<Catalogo, string> = {
+  productos: "Error al cargar productos.",
+  impuestos: "Error al cargar impuestos.",
+  formasPago: "Error al cargar formas de pago.",
+  tiposComprobante: "Error al cargar tipos de comprobante.",
+  vendedores: "Error al cargar vendedores.",
+};
+
+/**
+ * Sección plegable "Catálogos Siigo". Los 5 catálogos se piden SOLO al
+ * expandirla (antes se disparaban al montar la página) y salen del caché
+ * compartido con "Configuración de envío Siigo".
+ */
 export function SiigoProductos() {
-  const [data, setData] = useState<SiigoProductosPayload | null>(null);
-  const [loadState, setLoadState] = useState<LoadState>("loading");
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { toast } = useToast();
+  const confirmar = useConfirm();
+  const panelId = useId();
 
-  const [impuestosData, setImpuestosData] = useState<SiigoImpuestosPayload | null>(null);
-  const [impuestosLoadState, setImpuestosLoadState] = useState<LoadState>("loading");
-  const [impuestosLoadError, setImpuestosLoadError] = useState<string | null>(null);
+  const [expandido, setExpandido] = useState(false);
+  const [cargado, setCargado] = useState(false);
 
-  const [formasPagoData, setFormasPagoData] = useState<SiigoFormasPagoPayload | null>(null);
-  const [formasPagoLoadState, setFormasPagoLoadState] = useState<LoadState>("loading");
-  const [formasPagoLoadError, setFormasPagoLoadError] = useState<string | null>(null);
+  const productos = useCatalogo(catalogoProductos, FALLBACK.productos);
+  const impuestos = useCatalogo(catalogoImpuestos, FALLBACK.impuestos);
+  const formasPago = useCatalogo(catalogoFormasPago, FALLBACK.formasPago);
+  const tiposComprobante = useCatalogo(catalogoTiposComprobante, FALLBACK.tiposComprobante);
+  const vendedores = useCatalogo(catalogoVendedores, FALLBACK.vendedores);
 
-  const [tiposComprobanteData, setTiposComprobanteData] = useState<SiigoTiposComprobantePayload | null>(null);
-  const [tiposComprobanteLoadState, setTiposComprobanteLoadState] = useState<LoadState>("loading");
-  const [tiposComprobanteLoadError, setTiposComprobanteLoadError] = useState<string | null>(null);
+  const cargas: Record<Catalogo, { loadState: LoadState; loadError: string | null; recargar: () => void }> = {
+    productos,
+    impuestos,
+    formasPago,
+    tiposComprobante,
+    vendedores,
+  };
 
-  const [vendedoresData, setVendedoresData] = useState<SiigoVendedoresPayload | null>(null);
-  const [vendedoresLoadState, setVendedoresLoadState] = useState<LoadState>("loading");
-  const [vendedoresLoadError, setVendedoresLoadError] = useState<string | null>(null);
+  const [sync, setSync] = useState<EstadoSync>(syncInicial);
+  const [modal, setModal] = useState<Catalogo | null>(null);
 
-  const [syncState, setSyncState] = useState<SyncState>("idle");
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
-  const [syncImpuestosState, setSyncImpuestosState] = useState<SyncState>("idle");
-  const [syncImpuestosMessage, setSyncImpuestosMessage] = useState<string | null>(null);
-  const [syncFormasPagoState, setSyncFormasPagoState] = useState<SyncState>("idle");
-  const [syncFormasPagoMessage, setSyncFormasPagoMessage] = useState<string | null>(null);
-  const [syncTiposComprobanteState, setSyncTiposComprobanteState] = useState<SyncState>("idle");
-  const [syncTiposComprobanteMessage, setSyncTiposComprobanteMessage] = useState<string | null>(null);
-  const [syncVendedoresState, setSyncVendedoresState] = useState<SyncState>("idle");
-  const [syncVendedoresMessage, setSyncVendedoresMessage] = useState<string | null>(null);
-
-  const [reloadKey, setReloadKey] = useState(0);
-  const [reloadImpuestosKey, setReloadImpuestosKey] = useState(0);
-  const [reloadFormasPagoKey, setReloadFormasPagoKey] = useState(0);
-  const [reloadTiposComprobanteKey, setReloadTiposComprobanteKey] = useState(0);
-  const [reloadVendedoresKey, setReloadVendedoresKey] = useState(0);
-
-  const [modalProductos, setModalProductos] = useState(false);
-  const [modalImpuestos, setModalImpuestos] = useState(false);
-  const [modalFormasPago, setModalFormasPago] = useState(false);
-  const [modalTiposComprobante, setModalTiposComprobante] = useState(false);
-  const [modalVendedores, setModalVendedores] = useState(false);
-
-  const cargarProductos = useCallback(async (signal?: AbortSignal) => {
-    setLoadState("loading");
-    setLoadError(null);
-    try {
-      const result = await fetchSiigoProductos(signal);
-      setData(result);
-      setLoadState("ready");
-    } catch (caught) {
-      if ((caught as { name?: string }).name === "AbortError") return;
-      setLoadError(caught instanceof Error ? caught.message : "Error al cargar productos.");
-      setLoadState("error");
-    }
-  }, []);
-
-  const cargarImpuestos = useCallback(async (signal?: AbortSignal) => {
-    setImpuestosLoadState("loading");
-    setImpuestosLoadError(null);
-    try {
-      const result = await fetchSiigoImpuestos(signal);
-      setImpuestosData(result);
-      setImpuestosLoadState("ready");
-    } catch (caught) {
-      if ((caught as { name?: string }).name === "AbortError") return;
-      setImpuestosLoadError(caught instanceof Error ? caught.message : "Error al cargar impuestos.");
-      setImpuestosLoadState("error");
-    }
-  }, []);
-
-  const cargarFormasPago = useCallback(async (signal?: AbortSignal) => {
-    setFormasPagoLoadState("loading");
-    setFormasPagoLoadError(null);
-    try {
-      const result = await fetchSiigoFormasPago(signal);
-      setFormasPagoData(result);
-      setFormasPagoLoadState("ready");
-    } catch (caught) {
-      if ((caught as { name?: string }).name === "AbortError") return;
-      setFormasPagoLoadError(
-        caught instanceof Error ? caught.message : "Error al cargar formas de pago.",
-      );
-      setFormasPagoLoadState("error");
-    }
-  }, []);
-
-  const cargarTiposComprobante = useCallback(async (signal?: AbortSignal) => {
-    setTiposComprobanteLoadState("loading");
-    setTiposComprobanteLoadError(null);
-    try {
-      const result = await fetchSiigoTiposComprobante(signal);
-      setTiposComprobanteData(result);
-      setTiposComprobanteLoadState("ready");
-    } catch (caught) {
-      if ((caught as { name?: string }).name === "AbortError") return;
-      setTiposComprobanteLoadError(
-        caught instanceof Error ? caught.message : "Error al cargar tipos de comprobante.",
-      );
-      setTiposComprobanteLoadState("error");
-    }
-  }, []);
-
-  const cargarVendedores = useCallback(async (signal?: AbortSignal) => {
-    setVendedoresLoadState("loading");
-    setVendedoresLoadError(null);
-    try {
-      const result = await fetchSiigoVendedores(signal);
-      setVendedoresData(result);
-      setVendedoresLoadState("ready");
-    } catch (caught) {
-      if ((caught as { name?: string }).name === "AbortError") return;
-      setVendedoresLoadError(
-        caught instanceof Error ? caught.message : "Error al cargar vendedores.",
-      );
-      setVendedoresLoadState("error");
-    }
-  }, []);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    void cargarProductos(ctrl.signal);
-    return () => ctrl.abort();
-  }, [reloadKey, cargarProductos]);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    void cargarImpuestos(ctrl.signal);
-    return () => ctrl.abort();
-  }, [reloadImpuestosKey, cargarImpuestos]);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    void cargarFormasPago(ctrl.signal);
-    return () => ctrl.abort();
-  }, [reloadFormasPagoKey, cargarFormasPago]);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    void cargarTiposComprobante(ctrl.signal);
-    return () => ctrl.abort();
-  }, [reloadTiposComprobanteKey, cargarTiposComprobante]);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    void cargarVendedores(ctrl.signal);
-    return () => ctrl.abort();
-  }, [reloadVendedoresKey, cargarVendedores]);
-
-  async function handleSync() {
-    setSyncState("syncing");
-    setSyncMessage(null);
-    const result: SyncResult = await triggerSync();
-    if (result.ok) {
-      setSyncState("success");
-      setSyncMessage(`${result.total} productos sincronizados.`);
-      setReloadKey((k) => k + 1);
-    } else {
-      setSyncState("error");
-      const prefijo =
-        result.tipo === "config"
-          ? "Credenciales Siigo no configuradas."
-          : result.tipo === "api"
-            ? "Error al conectar con Siigo."
-            : "Error interno al guardar.";
-      setSyncMessage(`${prefijo} ${result.error}`);
+  function alternar() {
+    const abrir = !expandido;
+    setExpandido(abrir);
+    if (abrir && !cargado) {
+      setCargado(true);
+      for (const c of ORDEN) cargas[c].recargar();
     }
   }
 
-  async function handleSyncImpuestos() {
-    setSyncImpuestosState("syncing");
-    setSyncImpuestosMessage(null);
-    const result: SyncResult = await triggerSyncImpuestos();
-    if (result.ok) {
-      setSyncImpuestosState("success");
-      setSyncImpuestosMessage(`${result.total} impuestos sincronizados.`);
-      setReloadImpuestosKey((k) => k + 1);
-    } else {
-      setSyncImpuestosState("error");
-      const prefijo =
-        result.tipo === "config"
-          ? "Credenciales Siigo no configuradas."
-          : result.tipo === "api"
-            ? "Error al conectar con Siigo."
-            : "Error interno al guardar.";
-      setSyncImpuestosMessage(`${prefijo} ${result.error}`);
-    }
+  function refrescar(catalogo: Catalogo) {
+    invalidarCatalogos(catalogo);
+    cargas[catalogo].recargar();
   }
 
-  async function handleSyncFormasPago() {
-    setSyncFormasPagoState("syncing");
-    setSyncFormasPagoMessage(null);
-    const result: SyncResult = await triggerSyncFormasPago();
-    if (result.ok) {
-      setSyncFormasPagoState("success");
-      setSyncFormasPagoMessage(`${result.total} formas de pago sincronizadas.`);
-      setReloadFormasPagoKey((k) => k + 1);
-    } else {
-      setSyncFormasPagoState("error");
-      const prefijo =
-        result.tipo === "config"
-          ? "Credenciales Siigo no configuradas."
-          : result.tipo === "api"
-            ? "Error al conectar con Siigo."
-            : "Error interno al guardar.";
-      setSyncFormasPagoMessage(`${prefijo} ${result.error}`);
-    }
-  }
+  async function sincronizar(catalogo: Catalogo) {
+    const def = DEF[catalogo];
+    // Sobrescribe el catálogo local con lo que haya en Siigo: se confirma.
+    const ok = await confirmar({
+      title: `¿Sincronizar ${def.plural} desde Siigo?`,
+      description: `El catálogo local de ${def.plural} se reemplaza con los datos actuales de Siigo.`,
+      confirmText: "Sincronizar",
+    });
+    if (!ok) return;
 
-  async function handleSyncTiposComprobante() {
-    setSyncTiposComprobanteState("syncing");
-    setSyncTiposComprobanteMessage(null);
-    const result: SyncResult = await triggerSyncTiposComprobante();
-    if (result.ok) {
-      setSyncTiposComprobanteState("success");
-      setSyncTiposComprobanteMessage(`${result.total} tipos de comprobante sincronizados.`);
-      setReloadTiposComprobanteKey((k) => k + 1);
-    } else {
-      setSyncTiposComprobanteState("error");
-      const prefijo =
-        result.tipo === "config"
-          ? "Credenciales Siigo no configuradas."
-          : result.tipo === "api"
-            ? "Error al conectar con Siigo."
-            : "Error interno al guardar.";
-      setSyncTiposComprobanteMessage(`${prefijo} ${result.error}`);
-    }
-  }
-
-  async function handleSyncVendedores() {
-    setSyncVendedoresState("syncing");
-    setSyncVendedoresMessage(null);
-    const result: SyncResult = await triggerSyncVendedores();
-    if (result.ok) {
-      setSyncVendedoresState("success");
-      setSyncVendedoresMessage(`${result.total} vendedores sincronizados.`);
-      setReloadVendedoresKey((k) => k + 1);
-    } else {
-      setSyncVendedoresState("error");
-      const prefijo =
-        result.tipo === "config"
-          ? "Credenciales Siigo no configuradas."
-          : result.tipo === "api"
-            ? "Error al conectar con Siigo."
-            : "Error interno al guardar.";
-      setSyncVendedoresMessage(`${prefijo} ${result.error}`);
+    setSync((prev) => ({ ...prev, [catalogo]: { state: "syncing", message: null } }));
+    let resultado: { state: SyncState; message: string } = {
+      state: "error",
+      message: `No fue posible sincronizar los ${def.plural}.`,
+    };
+    try {
+      const result = await def.sync();
+      if (result.ok) {
+        resultado = { state: "success", message: `${result.total} ${def.plural} ${def.participio}.` };
+        toast({ title: `${def.titulo} sincronizados`, description: resultado.message, variant: "success" });
+        refrescar(catalogo);
+      } else {
+        const prefijo =
+          result.tipo === "config"
+            ? "Credenciales Siigo no configuradas."
+            : result.tipo === "api"
+              ? "Error al conectar con Siigo."
+              : "Error interno al guardar.";
+        resultado = { state: "error", message: `${prefijo} ${result.error}` };
+        toast({ title: `No se pudo sincronizar ${def.plural}`, description: resultado.message, variant: "error" });
+      }
+    } catch (caught) {
+      resultado = { state: "error", message: describirError(caught, resultado.message) };
+      toast({ title: `No se pudo sincronizar ${def.plural}`, description: resultado.message, variant: "error" });
+    } finally {
+      // Pase lo que pase, el botón sale de "Sincronizando…".
+      setSync((prev) => ({ ...prev, [catalogo]: resultado }));
     }
   }
 
   async function handleSaveImpuestos(productoId: string, impuestoIds: number[]) {
-    const result = await setImpuestosProducto(productoId, impuestoIds);
-    if (!result.ok) {
-      setSyncMessage(result.error ?? "Error al guardar impuestos.");
-      setSyncState("error");
-    } else {
-      setReloadKey((k) => k + 1);
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await setImpuestosProducto(productoId, impuestoIds);
+    } catch (caught) {
+      result = { ok: false, error: describirError(caught, "Error al guardar impuestos.") };
     }
+    if (!result.ok) {
+      const mensaje = result.error ?? "Error al guardar impuestos.";
+      toast({ title: "No se pudieron guardar los impuestos", description: mensaje, variant: "error" });
+      throw new Error(mensaje);
+    }
+    toast({ title: "Impuestos del producto guardados", variant: "success" });
+    refrescar("productos");
   }
 
-  const productos = data?.productos ?? [];
-  const impuestosCatalogo = impuestosData?.impuestos ?? [];
+  const datos: Record<Catalogo, { total: number; ultimaSync: string | null }> = {
+    productos: { total: productos.data?.total ?? 0, ultimaSync: productos.data?.ultimaSync ?? null },
+    impuestos: { total: impuestos.data?.total ?? 0, ultimaSync: impuestos.data?.ultimaSync ?? null },
+    formasPago: { total: formasPago.data?.total ?? 0, ultimaSync: formasPago.data?.ultimaSync ?? null },
+    tiposComprobante: {
+      total: tiposComprobante.data?.total ?? 0,
+      ultimaSync: tiposComprobante.data?.ultimaSync ?? null,
+    },
+    vendedores: { total: vendedores.data?.total ?? 0, ultimaSync: vendedores.data?.ultimaSync ?? null },
+  };
 
   return (
     <>
       <div className="space-y-2">
-        <h2 className="text-base font-semibold">Catálogos Siigo</h2>
-        <SyncRow
-          titulo="Productos"
-          ultimaSync={data?.ultimaSync ?? null}
-          total={data?.total ?? 0}
-          syncState={syncState}
-          syncMessage={syncMessage}
-          onSync={() => void handleSync()}
-          onVerCatalogo={() => setModalProductos(true)}
-          labelSync="Sincronizar"
-          labelVer={`Ver catálogo (${data?.total ?? 0})`}
-        />
-        <SyncRow
-          titulo="Impuestos"
-          ultimaSync={impuestosData?.ultimaSync ?? null}
-          total={impuestosData?.total ?? 0}
-          syncState={syncImpuestosState}
-          syncMessage={syncImpuestosMessage}
-          onSync={() => void handleSyncImpuestos()}
-          onVerCatalogo={() => setModalImpuestos(true)}
-          labelSync="Sincronizar"
-          labelVer={`Ver catálogo (${impuestosData?.total ?? 0})`}
-        />
-        <SyncRow
-          titulo="Formas de pago"
-          ultimaSync={formasPagoData?.ultimaSync ?? null}
-          total={formasPagoData?.total ?? 0}
-          syncState={syncFormasPagoState}
-          syncMessage={syncFormasPagoMessage}
-          onSync={() => void handleSyncFormasPago()}
-          onVerCatalogo={() => setModalFormasPago(true)}
-          labelSync="Sincronizar"
-          labelVer={`Ver catálogo (${formasPagoData?.total ?? 0})`}
-        />
-        <SyncRow
-          titulo="Tipos de comprobante"
-          ultimaSync={tiposComprobanteData?.ultimaSync ?? null}
-          total={tiposComprobanteData?.total ?? 0}
-          syncState={syncTiposComprobanteState}
-          syncMessage={syncTiposComprobanteMessage}
-          onSync={() => void handleSyncTiposComprobante()}
-          onVerCatalogo={() => setModalTiposComprobante(true)}
-          labelSync="Sincronizar"
-          labelVer={`Ver catálogo (${tiposComprobanteData?.total ?? 0})`}
-        />
-        <SyncRow
-          titulo="Vendedores"
-          ultimaSync={vendedoresData?.ultimaSync ?? null}
-          total={vendedoresData?.total ?? 0}
-          syncState={syncVendedoresState}
-          syncMessage={syncVendedoresMessage}
-          onSync={() => void handleSyncVendedores()}
-          onVerCatalogo={() => setModalVendedores(true)}
-          labelSync="Sincronizar"
-          labelVer={`Ver catálogo (${vendedoresData?.total ?? 0})`}
-        />
+        <button
+          type="button"
+          onClick={alternar}
+          aria-expanded={expandido}
+          aria-controls={panelId}
+          className="flex w-full items-center justify-between gap-4 border border-slate-200 bg-white px-5 py-3 text-left transition hover:bg-slate-50"
+        >
+          <div>
+            <h2 className="text-base font-semibold">Catálogos Siigo</h2>
+            <p className="text-xs text-slate-500">
+              Productos, impuestos, formas de pago, tipos de comprobante y vendedores
+              sincronizados desde Siigo.
+            </p>
+          </div>
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 text-slate-500 transition ${expandido ? "rotate-180" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
+
+        {expandido ? (
+          <div id={panelId} className="space-y-2">
+            {ORDEN.map((catalogo) => (
+              <SyncRow
+                key={catalogo}
+                titulo={DEF[catalogo].titulo}
+                ultimaSync={datos[catalogo].ultimaSync}
+                total={datos[catalogo].total}
+                loadState={cargas[catalogo].loadState}
+                loadError={cargas[catalogo].loadError}
+                syncState={sync[catalogo].state}
+                syncMessage={sync[catalogo].message}
+                onSync={() => void sincronizar(catalogo)}
+                onVerCatalogo={() => setModal(catalogo)}
+                onRetry={() => refrescar(catalogo)}
+              />
+            ))}
+          </div>
+        ) : null}
       </div>
 
-      {modalProductos && (
+      {modal === "productos" ? (
         <ProductosModal
-          productos={productos}
-          impuestosCatalogo={impuestosCatalogo}
-          loadState={loadState}
-          loadError={loadError}
-          total={data?.total ?? 0}
+          productos={productos.data?.productos ?? []}
+          impuestosCatalogo={impuestos.data?.impuestos ?? []}
+          loadState={productos.loadState}
+          loadError={productos.loadError}
+          total={datos.productos.total}
+          onRetry={() => refrescar("productos")}
           onSaveImpuestos={handleSaveImpuestos}
-          onClose={() => setModalProductos(false)}
+          onClose={() => setModal(null)}
         />
-      )}
+      ) : null}
 
-      {modalImpuestos && (
-        <ImpuestosModal
-          data={impuestosData}
-          loadState={impuestosLoadState}
-          loadError={impuestosLoadError}
-          onClose={() => setModalImpuestos(false)}
+      {modal === "impuestos" ? (
+        <TablaCatalogoModal
+          title="Impuestos Siigo"
+          description={`${datos.impuestos.total} impuestos en el catálogo local.`}
+          rows={impuestos.data?.impuestos ?? []}
+          columnas={COLUMNAS_IMPUESTOS}
+          vacio="Sin impuestos sincronizados."
+          loadState={impuestos.loadState}
+          loadError={impuestos.loadError}
+          errorTitulo="No se pudieron cargar los impuestos"
+          onRetry={() => refrescar("impuestos")}
+          onClose={() => setModal(null)}
         />
-      )}
+      ) : null}
 
-      {modalFormasPago && (
-        <FormasPagoModal
-          data={formasPagoData}
-          loadState={formasPagoLoadState}
-          loadError={formasPagoLoadError}
-          onClose={() => setModalFormasPago(false)}
+      {modal === "formasPago" ? (
+        <TablaCatalogoModal
+          title="Formas de pago Siigo"
+          description={`${datos.formasPago.total} formas de pago en el catálogo local. Se seleccionan por borrador antes de enviar a Siigo.`}
+          rows={formasPago.data?.formasPago ?? []}
+          columnas={COLUMNAS_FORMAS_PAGO}
+          vacio="Sin formas de pago sincronizadas."
+          loadState={formasPago.loadState}
+          loadError={formasPago.loadError}
+          errorTitulo="No se pudieron cargar las formas de pago"
+          onRetry={() => refrescar("formasPago")}
+          onClose={() => setModal(null)}
         />
-      )}
+      ) : null}
 
-      {modalTiposComprobante && (
-        <TiposComprobanteModal
-          data={tiposComprobanteData}
-          loadState={tiposComprobanteLoadState}
-          loadError={tiposComprobanteLoadError}
-          onClose={() => setModalTiposComprobante(false)}
+      {modal === "tiposComprobante" ? (
+        <TablaCatalogoModal
+          title="Tipos de comprobante Siigo"
+          description={`${datos.tiposComprobante.total} tipos en el catálogo local. Se selecciona uno en la configuración de envío.`}
+          rows={tiposComprobante.data?.tiposComprobante ?? []}
+          columnas={COLUMNAS_TIPOS}
+          vacio="Sin tipos de comprobante sincronizados."
+          loadState={tiposComprobante.loadState}
+          loadError={tiposComprobante.loadError}
+          errorTitulo="No se pudieron cargar los tipos"
+          onRetry={() => refrescar("tiposComprobante")}
+          onClose={() => setModal(null)}
         />
-      )}
+      ) : null}
 
-      {modalVendedores && (
-        <VendedoresModal
-          data={vendedoresData}
-          loadState={vendedoresLoadState}
-          loadError={vendedoresLoadError}
-          onClose={() => setModalVendedores(false)}
+      {modal === "vendedores" ? (
+        <TablaCatalogoModal
+          title="Vendedores Siigo"
+          description={`${datos.vendedores.total} usuarios en el catálogo local.`}
+          rows={vendedores.data?.vendedores ?? []}
+          columnas={COLUMNAS_VENDEDORES}
+          vacio="Sin vendedores sincronizados."
+          loadState={vendedores.loadState}
+          loadError={vendedores.loadError}
+          errorTitulo="No se pudieron cargar los vendedores"
+          onRetry={() => refrescar("vendedores")}
+          onClose={() => setModal(null)}
+          size="xl"
         />
-      )}
+      ) : null}
     </>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
-import { AlertCircle, Plus, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AlertCircle, Loader2, Plus } from "lucide-react";
+import { useEffect, useId, useState } from "react";
 
 import {
   fetchCuentaCorriente,
@@ -10,30 +10,12 @@ import {
   type MovimientoCuentaRow,
   type NuevoMovimiento,
 } from "@/components/clientes/cuenta-api";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// Mismo patrón que en el resto de secciones de la ficha.
-function useUserRol(): string {
-  const [rol, setRol] = useState<string>("OPERATIVO");
-
-  useEffect(() => {
-    fetch("/api/auth/get-session", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data: unknown) => {
-        if (isRecord(data) && isRecord(data.user) && typeof data.user.rol === "string") {
-          setRol(data.user.rol);
-        }
-      })
-      .catch(() => {
-        /* silencioso */
-      });
-  }, []);
-
-  return rol;
-}
+import { claseCampo } from "@/components/clientes/form-campos";
+import { ModuleState } from "@/components/layout/module-state";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
 
 function formatCOP(valor: string): string {
   let entero: bigint;
@@ -83,6 +65,8 @@ function MovimientoModal({
   onClose: () => void;
   onGuardado: (cuenta: CuentaCorriente) => void;
 }) {
+  const { toast } = useToast();
+  const formId = useId();
   const [error, setError] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
 
@@ -105,144 +89,132 @@ function MovimientoModal({
     try {
       const cuenta = await registrarMovimiento(clienteId, movimiento);
       if (cuenta) onGuardado(cuenta);
+      toast({
+        title: "Movimiento registrado",
+        description: `${movimiento.concepto} · ${formatCOP(movimiento.valor || "0")}`,
+        variant: "success",
+      });
       onClose();
     } catch (caught: unknown) {
-      setError(caught instanceof Error ? caught.message : "No fue posible guardar.");
+      const mensaje = describirError(caught, "No fue posible guardar.");
+      setError(mensaje);
+      toast({ title: "No se pudo registrar el movimiento", description: mensaje, variant: "error" });
     } finally {
       setGuardando(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/40 px-4 py-8">
-      <div className="w-full max-w-lg border border-slate-300 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Registrar movimiento</h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Importes que no nacen de un trámite: mensualidades, comisiones, ajustes.
-            </p>
-          </div>
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Registrar movimiento"
+      description="Importes que no nacen de un trámite: mensualidades, comisiones, ajustes."
+      size="md"
+      dismissible={!guardando}
+      footer={
+        <>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center border border-slate-300 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Cerrar"
+            disabled={guardando}
+            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
           >
-            <X className="h-4 w-4" aria-hidden="true" />
+            Cancelar
           </button>
+          <button
+            type="submit"
+            form={formId}
+            disabled={guardando}
+            className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+          >
+            {guardando ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            {guardando ? "Guardando…" : "Registrar"}
+          </button>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Concepto *</span>
+            <input
+              name="concepto"
+              required
+              placeholder="Servicios aduaneros marzo"
+              className={claseCampo(false)}
+            />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
+            <input
+              name="valor"
+              required
+              inputMode="numeric"
+              placeholder="4000000"
+              className={claseCampo(false, "font-mono")}
+            />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Tipo *</span>
+            <select name="tipo" required defaultValue="ABONO" className={claseCampo(false, "bg-white")}>
+              <option value="ABONO">Le debemos (sube el saldo a su favor)</option>
+              <option value="CARGO">Nos debe (sube el saldo a su cargo)</option>
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Origen *</span>
+            <select
+              name="origen"
+              required
+              defaultValue="CARGO_MANUAL"
+              className={claseCampo(false, "bg-white")}
+            >
+              <option value="CARGO_MANUAL">Cargo manual</option>
+              <option value="COMISION">Comisión</option>
+              <option value="AJUSTE">Ajuste</option>
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Rol *</span>
+            <select name="rol" required defaultValue="PROVEEDOR" className={claseCampo(false, "bg-white")}>
+              <option value="PROVEEDOR">Como proveedor</option>
+              <option value="CLIENTE">Como cliente</option>
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Línea de servicio</span>
+            <select name="lineaServicio" defaultValue="TRAMITE" className={claseCampo(false, "bg-white")}>
+              {LINEAS_SERVICIO.map((linea) => (
+                <option key={linea} value={linea}>
+                  {linea}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Fecha *</span>
+            <input
+              name="fecha"
+              type="date"
+              required
+              defaultValue={new Date().toISOString().slice(0, 10)}
+              className={claseCampo(false)}
+            />
+          </label>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Concepto *</span>
-              <input
-                name="concepto"
-                required
-                placeholder="Servicios aduaneros marzo"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
-              <input
-                name="valor"
-                required
-                inputMode="numeric"
-                placeholder="4000000"
-                className="h-10 w-full border border-slate-300 px-3 font-mono text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Tipo *</span>
-              <select
-                name="tipo"
-                required
-                defaultValue="ABONO"
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-              >
-                <option value="ABONO">Le debemos (sube el saldo a su favor)</option>
-                <option value="CARGO">Nos debe (sube el saldo a su cargo)</option>
-              </select>
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Origen *</span>
-              <select
-                name="origen"
-                required
-                defaultValue="CARGO_MANUAL"
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-              >
-                <option value="CARGO_MANUAL">Cargo manual</option>
-                <option value="COMISION">Comisión</option>
-                <option value="AJUSTE">Ajuste</option>
-              </select>
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Rol *</span>
-              <select
-                name="rol"
-                required
-                defaultValue="PROVEEDOR"
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-              >
-                <option value="PROVEEDOR">Como proveedor</option>
-                <option value="CLIENTE">Como cliente</option>
-              </select>
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Línea de servicio</span>
-              <select
-                name="lineaServicio"
-                defaultValue="TRAMITE"
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-              >
-                {LINEAS_SERVICIO.map((linea) => (
-                  <option key={linea} value={linea}>
-                    {linea}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Fecha *</span>
-              <input
-                name="fecha"
-                type="date"
-                required
-                defaultValue={new Date().toISOString().slice(0, 10)}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
+        {error ? (
+          <div
+            role="alert"
+            className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
+          >
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            {error}
           </div>
-
-          {error ? (
-            <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-              {error}
-            </div>
-          ) : null}
-
-          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={guardando}
-              className="h-10 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
-            >
-              {guardando ? "Guardando…" : "Registrar"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        ) : null}
+      </form>
+    </ModalShell>
   );
 }
 
@@ -271,40 +243,53 @@ function FilaMovimiento({ movimiento }: { movimiento: MovimientoCuentaRow }) {
   );
 }
 
+type LoadState = "loading" | "ready" | "error" | "sin-permiso";
+
 /**
  * Cuenta corriente de la contraparte (M5): junta en un solo saldo lo que la
  * empresa nos debe como cliente y lo que le debemos como proveedor.
  */
 export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
-  const userRol = useUserRol();
-  const puedeRegistrar = userRol === "ADMIN";
+  // GET /api/clientes/[id]/cuenta → ADMIN y REVISOR; POST → solo ADMIN.
+  const puedeVer = usePermiso(["ADMIN", "REVISOR"]);
+  const puedeRegistrar = useEsAdmin();
 
   const [cuenta, setCuenta] = useState<CuentaCorriente | null>(null);
-  const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>(puedeVer ? "loading" : "sin-permiso");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [modalAbierto, setModalAbierto] = useState(false);
   const [verTodo, setVerTodo] = useState(false);
 
   useEffect(() => {
+    // Con criterio explícito: si el rol no puede, ni se consulta.
+    if (!puedeVer) return;
+
     const controller = new AbortController();
 
     fetchCuentaCorriente(clienteId, controller.signal)
       .then((datos) => {
+        // `null` = el API respondió 403 (el rol no puede ver cartera).
+        if (!datos) {
+          setLoadState("sin-permiso");
+          return;
+        }
         setCuenta(datos);
-        setCargando(false);
+        setLoadState("ready");
       })
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setError(caught instanceof Error ? caught.message : "Error al cargar la cuenta.");
-        setCargando(false);
+        setLoadError(describirError(caught, "Error al cargar la cuenta."));
+        setLoadState("error");
       });
 
     return () => controller.abort();
-  }, [clienteId]);
+  }, [clienteId, reloadKey, puedeVer]);
 
-  // Sin permiso para ver cartera la sección no se muestra en absoluto.
-  if (!cargando && !error && !cuenta) {
-    return null;
+  function recargar() {
+    setLoadState("loading");
+    setLoadError(null);
+    setReloadKey((k) => k + 1);
   }
 
   const neto = cuenta ? BigInt(cuenta.neto) : 0n;
@@ -321,7 +306,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
             proveedor.
           </p>
         </div>
-        {puedeRegistrar ? (
+        {puedeRegistrar && loadState === "ready" ? (
           <button
             type="button"
             onClick={() => setModalAbierto(true)}
@@ -333,16 +318,26 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
         ) : null}
       </div>
 
-      {error ? (
-        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>{error}</span>
+      {loadState === "sin-permiso" ? (
+        <ModuleState
+          type="empty"
+          title="Sin permiso para ver la cuenta corriente"
+          detail="Solo ADMIN y REVISOR pueden consultarla."
+        />
+      ) : loadState === "error" ? (
+        <ModuleState
+          type="error"
+          title="No se pudo cargar la cuenta corriente"
+          detail={loadError ?? undefined}
+          action={{ label: "Reintentar", onClick: recargar }}
+        />
+      ) : loadState === "loading" || !cuenta ? (
+        <div role="status" aria-live="polite" aria-label="Cargando cuenta corriente">
+          <CardsSkeleton count={3} height={72} />
+          <TableSkeleton rows={5} cols={4} />
+          <span className="sr-only">Cargando…</span>
         </div>
-      ) : null}
-
-      {cargando ? (
-        <p className="px-4 py-8 text-center text-sm text-slate-500">Cargando cuenta…</p>
-      ) : cuenta ? (
+      ) : (
         <>
           <div className="grid gap-px border-b border-slate-200 bg-slate-200 sm:grid-cols-3">
             <div className="bg-white px-4 py-3">
@@ -438,9 +433,9 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
             </>
           )}
         </>
-      ) : null}
+      )}
 
-      {modalAbierto ? (
+      {modalAbierto && puedeRegistrar ? (
         <MovimientoModal
           clienteId={clienteId}
           onClose={() => setModalAbierto(false)}

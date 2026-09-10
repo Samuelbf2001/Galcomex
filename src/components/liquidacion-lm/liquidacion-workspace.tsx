@@ -9,6 +9,8 @@ import type {
   FacturaRow,
 } from "@/components/cartera/cartera-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { useRol } from "@/lib/auth/rol-context";
 
 import {
   fetchLiquidacionLM,
@@ -97,6 +99,8 @@ function toLoteFacturaRow(t: LiquidacionTramiteRow): FacturaRow {
 // ─── Componente principal ─────────────────────────────────────────────────────
 
 export function LiquidacionWorkspace() {
+  // POST /api/cartera/conciliar-lote → solo ADMIN. REVISOR consulta en solo lectura.
+  const puedeConciliar = useRol() === "ADMIN";
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
   const [data, setData] = useState<LiquidacionData | null>(null);
@@ -106,8 +110,9 @@ export function LiquidacionWorkspace() {
   // Filtro pendientes
   const [soloPendientes, setSoloPendientes] = useState(false);
 
-  // Selección batch
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Selección batch (cruda; la selección efectiva se deriva más abajo podando
+  // los ids que ya no están visibles, sin efectos ni renders en cascada)
+  const [selectedIdsRaw, setSelectedIds] = useState<Set<string>>(new Set());
   const [loteModalOpen, setLoteModalOpen] = useState(false);
 
   const cargar = useCallback((d: string, h: string, signal?: AbortSignal) => {
@@ -177,6 +182,14 @@ export function LiquidacionWorkspace() {
     [tramitesVisibles, isElegible],
   );
 
+  // Selección efectiva: solo ids que siguen visibles tras cambiar filtros.
+  const selectedIds = useMemo(() => {
+    if (selectedIdsRaw.size === 0) return selectedIdsRaw;
+    const ids = new Set(tramitesVisibles.map((t) => t.facturaId));
+    const filtered = new Set(Array.from(selectedIdsRaw).filter((id) => ids.has(id)));
+    return filtered.size === selectedIdsRaw.size ? selectedIdsRaw : filtered;
+  }, [selectedIdsRaw, tramitesVisibles]);
+
   const allElegiblesSelected = useMemo(
     () =>
       elegibles.length > 0 && elegibles.every((t) => selectedIds.has(t.facturaId)),
@@ -210,16 +223,6 @@ export function LiquidacionWorkspace() {
       return new Set(elegibles.map((t) => t.facturaId));
     });
   }, [elegibles]);
-
-  // Poda automática: quita ids que ya no están en la lista visible
-  useEffect(() => {
-    setSelectedIds((prev) => {
-      if (prev.size === 0) return prev;
-      const ids = new Set(tramitesVisibles.map((t) => t.facturaId));
-      const filtered = new Set(Array.from(prev).filter((id) => ids.has(id)));
-      return filtered.size === prev.size ? prev : filtered;
-    });
-  }, [tramitesVisibles]);
 
   const facturasSeleccionadas = useMemo(
     () =>
@@ -260,7 +263,9 @@ export function LiquidacionWorkspace() {
             <input
               type="date"
               value={desde}
+              max={hasta || undefined}
               onChange={(e) => setDesde(e.target.value)}
+              aria-label="Desde (fecha de factura)"
               className="h-9 rounded-md border border-slate-300 px-2 text-sm"
             />
           </label>
@@ -269,7 +274,9 @@ export function LiquidacionWorkspace() {
             <input
               type="date"
               value={hasta}
+              min={desde || undefined}
               onChange={(e) => setHasta(e.target.value)}
+              aria-label="Hasta (fecha de factura)"
               className="h-9 rounded-md border border-slate-300 px-2 text-sm"
             />
           </label>
@@ -322,9 +329,17 @@ export function LiquidacionWorkspace() {
         </div>
 
         {loading ? (
-          <ModuleState type="loading" title="Cargando liquidación…" />
+          <>
+            <CardsSkeleton count={3} height={124} />
+            <TableSkeleton rows={6} cols={puedeConciliar ? 8 : 7} rowHeight={49} />
+          </>
         ) : error ? (
-          <ModuleState type="error" title="No se pudo cargar" detail={error} />
+          <ModuleState
+            type="error"
+            title="No se pudo cargar la liquidación"
+            detail={error}
+            action={{ label: "Reintentar", onClick: () => cargar(desde, hasta) }}
+          />
         ) : !data || tramites.length === 0 ? (
           <ModuleState
             type="empty"
@@ -379,8 +394,8 @@ export function LiquidacionWorkspace() {
 
             {/* Tabla */}
             <div className="overflow-hidden border border-slate-200 bg-white">
-              {/* Bulk actions bar */}
-              {selectedIds.size > 0 && (
+              {/* Bulk actions bar — solo ADMIN concilia */}
+              {puedeConciliar && selectedIds.size > 0 && (
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-indigo-200 bg-indigo-50 px-4 py-2.5">
                   <div className="text-xs text-indigo-900">
                     <span className="font-semibold">{selectedIds.size}</span>{" "}
@@ -414,16 +429,18 @@ export function LiquidacionWorkspace() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                      <th className="px-3 py-3">
-                        <input
-                          type="checkbox"
-                          checked={allElegiblesSelected}
-                          disabled={elegibles.length === 0}
-                          onChange={toggleAll}
-                          aria-label="Seleccionar todos los elegibles"
-                          className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
-                        />
-                      </th>
+                      {puedeConciliar ? (
+                        <th className="px-3 py-3">
+                          <input
+                            type="checkbox"
+                            checked={allElegiblesSelected}
+                            disabled={elegibles.length === 0}
+                            onChange={toggleAll}
+                            aria-label="Seleccionar todos los trámites pendientes por saldar"
+                            className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
+                          />
+                        </th>
+                      ) : null}
                       <th className="px-4 py-3 font-medium">Trámite</th>
                       <th className="px-4 py-3 font-medium">Cliente</th>
                       <th className="px-4 py-3 font-medium">Factura Siigo</th>
@@ -447,16 +464,18 @@ export function LiquidacionWorkspace() {
                               : "hover:bg-slate-50"
                           }`}
                         >
-                          <td className="px-3 py-3">
-                            <input
-                              type="checkbox"
-                              checked={selected}
-                              disabled={!eligible}
-                              onChange={() => toggleRow(t.facturaId)}
-                              aria-label="Seleccionar trámite"
-                              className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
-                            />
-                          </td>
+                          {puedeConciliar ? (
+                            <td className="px-3 py-3">
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                disabled={!eligible}
+                                onChange={() => toggleRow(t.facturaId)}
+                                aria-label={`Seleccionar ${t.consecutivo} para conciliar`}
+                                className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
+                              />
+                            </td>
+                          ) : null}
                           <td className="px-4 py-3 font-medium text-slate-900">
                             <Link
                               href={`/tramites/${t.tramiteId}`}
@@ -499,7 +518,7 @@ export function LiquidacionWorkspace() {
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
-                      <td className="px-3 py-3" />
+                      {puedeConciliar ? <td className="px-3 py-3" /> : null}
                       <td className="px-4 py-3 text-slate-900" colSpan={6}>
                         Saldo neto ({tramitesVisibles.length} trámite{tramitesVisibles.length !== 1 ? "s" : ""}{soloPendientes ? " pendientes" : ""})
                       </td>
@@ -517,8 +536,8 @@ export function LiquidacionWorkspace() {
         )}
       </div>
 
-      {/* Modal conciliación batch */}
-      {loteModalOpen && facturasSeleccionadas.length > 0 ? (
+      {/* Modal conciliación batch (solo ADMIN) */}
+      {puedeConciliar && loteModalOpen && facturasSeleccionadas.length > 0 ? (
         <ConciliarLoteModal
           facturas={facturasSeleccionadas}
           destino="LM"

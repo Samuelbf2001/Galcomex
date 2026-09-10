@@ -7,7 +7,6 @@ import {
   CATEGORIAS_DOCUMENTO,
   type DocumentoRow,
   type DocumentosPorCategoria,
-  DocumentosApiError,
   eliminarDocumento,
   formatBytes,
   puedeCompartirDocumentoUI,
@@ -20,6 +19,8 @@ import {
   validarArchivo,
 } from "@/components/documentos/documentos-api";
 import { EnlaceDocumentoModal } from "@/components/documentos/enlace-documento-modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { describirError, useToast } from "@/components/ui/toast";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -86,6 +87,8 @@ function TarjetaDocumento({
   const [abriendo, setAbriendo] = useState(false);
   const [mostrarCompartir, setMostrarCompartir] = useState(false);
   const inputReemplazoRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+  const confirmar = useConfirm();
 
   const puedeEliminar = puedeEliminarDocumentoUI(currentUserRol);
   const puedeReemplazar = puedeReemplazarDocumentoUI(currentUserRol, doc.subidoPorId, currentUserId);
@@ -94,14 +97,13 @@ function TarjetaDocumento({
   async function abrirDocumento() {
     if (!doc.downloadUrl) {
       // URL vacía (MinIO no disponible), intentar refrescar
+      if (abriendo) return;
       setAbriendo(true);
       try {
         const url = await refrescarUrl(tramiteId, doc.id);
         window.open(url, "_blank", "noopener,noreferrer");
       } catch (caught) {
-        setError(
-          caught instanceof DocumentosApiError ? caught.message : "No fue posible abrir el documento.",
-        );
+        setError(describirError(caught, "No fue posible abrir el documento."));
       } finally {
         setAbriendo(false);
       }
@@ -111,17 +113,25 @@ function TarjetaDocumento({
   }
 
   async function handleEliminar() {
-    if (!confirm(`¿Eliminar "${doc.nombreArchivo}"? Esta acción no se puede deshacer.`)) return;
+    if (eliminando) return;
+    const ok = await confirmar({
+      title: `¿Eliminar "${doc.nombreArchivo}"?`,
+      description: "Esta acción no se puede deshacer.",
+      confirmText: "Eliminar documento",
+      variant: "danger",
+    });
+    if (!ok) return;
     setEliminando(true);
     setError(null);
 
     try {
       await eliminarDocumento(tramiteId, doc.id);
+      toast({ title: "Documento eliminado", description: doc.nombreArchivo, variant: "success" });
       onEliminado(doc.id, doc.categoria);
     } catch (caught) {
-      setError(
-        caught instanceof DocumentosApiError ? caught.message : "Error al eliminar el documento.",
-      );
+      const msg = describirError(caught, "Error al eliminar el documento.");
+      setError(msg);
+      toast({ title: "No se pudo eliminar el documento", description: msg, variant: "error" });
     } finally {
       setEliminando(false);
     }
@@ -134,7 +144,7 @@ function TarjetaDocumento({
   async function handleArchivoReemplazo(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (!file) return;
+    if (!file || reemplazando) return;
 
     const errorValidacion = validarArchivo(file);
     if (errorValidacion) {
@@ -142,13 +152,13 @@ function TarjetaDocumento({
       return;
     }
 
-    if (
-      !confirm(
-        `¿Reemplazar "${doc.nombreArchivo}" por "${file.name}"? El archivo anterior dejará de estar disponible.`,
-      )
-    ) {
-      return;
-    }
+    const ok = await confirmar({
+      title: `¿Reemplazar "${doc.nombreArchivo}"?`,
+      description: `Se sustituirá por "${file.name}". El archivo anterior dejará de estar disponible.`,
+      confirmText: "Reemplazar",
+      variant: "danger",
+    });
+    if (!ok) return;
 
     setReemplazando(true);
     setError(null);
@@ -170,11 +180,12 @@ function TarjetaDocumento({
         tamanoBytes: file.size,
       });
 
+      toast({ title: "Documento reemplazado", description: file.name, variant: "success" });
       onReemplazado(actualizado);
     } catch (caught) {
-      setError(
-        caught instanceof DocumentosApiError ? caught.message : "Error al reemplazar el documento.",
-      );
+      const msg = describirError(caught, "Error al reemplazar el documento.");
+      setError(msg);
+      toast({ title: "No se pudo reemplazar el documento", description: msg, variant: "error" });
     } finally {
       setReemplazando(false);
     }
