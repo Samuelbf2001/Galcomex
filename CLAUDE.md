@@ -137,6 +137,34 @@ editable solo por ADMIN. API: `GET|PUT /api/clientes/[id]/capacidades`.
 capacidad `anticipos_cliente` hasta retirar la columna. Plan completo y orden de
 fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
 
+## Tarifario y eventos (M2 + M3) — la propuesta comercial como datos
+
+- **Motor puro:** `src/lib/tarifas/motor.ts` (`calcularLineasTarifa(items, ctx)`),
+  sin BD, BigInt, tolerancia 0. Cinco formas de cálculo (`FIJO`, `POR_UNIDAD`,
+  `PORCENTAJE_MIN` con mínimos por tipo de carga, `PRIMERO_MAS_ADICIONAL`,
+  `ESPEJO_DE_COSTO`) y tres disparadores (`SIEMPRE`, `EVENTO`, `MANUAL`). Si
+  falta un dato de la base de cálculo devuelve `pendientes`, nunca un cero.
+- **Datos:** `Tarifario` (por empresa y `alcance` = línea de servicio, con
+  vigencia real y versión; BORRADOR → VIGENTE → VENCIDO | REEMPLAZADO) +
+  `TarifaItem`. Solo se editan ítems de un BORRADOR; para cambiar precios se
+  duplica (con incremento opcional, p. ej. IPC) y se publica. Plantillas de las
+  propuestas 2026 en `src/lib/tarifas/plantillas.ts`.
+- **Eventos:** `CatalogoEvento` (global) + `TramiteEvento`. Marcar un evento
+  crea sus documentos en el checklist y habilita el ítem del tarifario que lo
+  cobra. Base de cálculo del DO: `valorCif`, `tipoCarga`, `numContenedores`,
+  `numDeclaraciones`, `numDocumentos`, `numItems`.
+- **Facturación:** `generarBorrador` usa el tarifario vigente como desglose de
+  la comisión SOLO si la empresa tiene `tarifario_propio` y no se pasó comisión
+  ni conceptos a mano; con pendientes lanza `TarifaIncompletaError` (422). Sin
+  tarifario, nada cambia (casos dorados intactos). `BorradorFactura.tarifarioId`
+  registra con qué versión se calculó.
+- **Capacidades que lo gobiernan:** `tarifario_propio`, `eventos_facturables`,
+  `base_cif`. Sin ellas los endpoints responden 422 y la UI no muestra las
+  secciones.
+- UI: sección "Tarifario" en la ficha (`seccion-tarifario.tsx`), panel "Base de
+  cálculo y eventos" en el Resumen del DO (`seccion-eventos-tramite.tsx`),
+  PDF en `GET /api/tarifarios/[id]/pdf`. Demo: `npx tsx scripts/demo-tarifario.ts`.
+
 ## Invariantes de código — NUNCA violar
 
 1. **Dinero SIEMPRE como `BigInt` (COP enteros).** Cero flotantes en cálculos financieros.

@@ -15,6 +15,7 @@ import { COMISION_INTERNA_LM_MINIMO } from "@/lib/validations/borradores";
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { calcularSaldoLMInterno } from "@/lib/calculations/cruce-lm";
 import { prisma } from "@/lib/db/prisma";
+import { propuestaParaTramite } from "@/lib/tarifas/service";
 import { getParametrosSistema } from "@/lib/parametros/service";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 
@@ -32,6 +33,8 @@ import { recalcularTotalBorrador } from "./recalculo";
 export type ConceptoOperacional = {
   concepto: string;
   valor: bigint;
+  /** Producto Siigo al que se lleva el concepto cuando viene del tarifario (M2). */
+  siigoCodigo?: string | null;
 };
 
 type GenerarBorradorInput = {
@@ -105,6 +108,25 @@ export class ConceptosOperacionalesInvalidosError extends Error {
       `La suma de conceptosOperacionales (${sumaConceptos}) debe igualar la comisión (${comision})`,
     );
     this.name = "ConceptosOperacionalesInvalidosError";
+  }
+}
+
+/**
+ * La empresa tiene tarifario vigente pero al trámite le faltan datos de la
+ * base de cálculo (CIF, contenedores, declaraciones…). Antes que facturar de
+ * menos, se pide completar el trámite.
+ */
+export class TarifaIncompletaError extends Error {
+  public readonly status = 422;
+  public readonly pendientes: { concepto: string; nombrePublico: string; motivo: string }[];
+  constructor(pendientes: { concepto: string; nombrePublico: string; motivo: string }[]) {
+    super(
+      `El tarifario no se puede aplicar completo: ${pendientes
+        .map((p) => `${p.nombrePublico} (${p.motivo.toLowerCase()})`)
+        .join("; ")}. Completa la base de cálculo del trámite o pasa la comisión a mano.`,
+    );
+    this.name = "TarifaIncompletaError";
+    this.pendientes = pendientes;
   }
 }
 
@@ -184,7 +206,8 @@ async function getBorradorCompleto(borradorId: string) {
  * 4. Genera AuditLog.
  */
 export async function generarBorrador(input: GenerarBorradorInput) {
-  const { tramiteId, usuarioId, retenciones = 0n, conceptosOperacionales } = input;
+  const { tramiteId, usuarioId, retenciones = 0n } = input;
+  let conceptosOperacionales = input.conceptosOperacionales;
 
   // ── Verificar que el trámite está en estado facturable ────────────────────
   const tramiteEstado = await prisma.tramiteDO.findUnique({
@@ -247,7 +270,32 @@ export async function generarBorrador(input: GenerarBorradorInput) {
     .reduce((sum, a) => sum + a.anticipo.costoRecaudo, 0n);
   void anticiposDistintosIds; // referenciado implícitamente
 
-  const comision = input.comision ?? params.comisionDefault;
+  // ── Tarifario propio (M2) ─────────────────────────────────────────────────
+  // Si nadie pasó comisión ni desglose y la empresa tiene tarifario vigente,
+  // el desglose sale del motor de tarifas y la comisión es su suma. Con datos
+  // de base incompletos se corta aquí: nunca se factura de menos en silencio.
+  // Sin tarifario, todo sigue exactamente como antes (casos dorados intactos).
+  let tarifarioId: string | null = null;
+  let comisionTarifa: bigint | null = null;
+  if (input.comision === undefined && !conceptosOperacionales) {
+    const propuesta = await propuestaParaTramite(tramiteId);
+    if (propuesta.tarifario && propuesta.resultado) {
+      if (propuesta.resultado.pendientes.length > 0) {
+        throw new TarifaIncompletaError(propuesta.resultado.pendientes);
+      }
+      if (propuesta.resultado.lineas.length > 0) {
+        tarifarioId = propuesta.tarifario.id;
+        comisionTarifa = propuesta.resultado.total;
+        conceptosOperacionales = propuesta.resultado.lineas.map((l) => ({
+          concepto: l.nombrePublico,
+          valor: l.valor,
+          siigoCodigo: l.siigoCodigo,
+        }));
+      }
+    }
+  }
+
+  const comision = input.comision ?? comisionTarifa ?? params.comisionDefault;
 
   // Validar conceptosOperacionales si se proporcionan
   if (conceptosOperacionales && conceptosOperacionales.length > 0) {
@@ -334,6 +382,7 @@ export async function generarBorrador(input: GenerarBorradorInput) {
         retenciones: resultado.retenciones,
         totalFacturaLineas: 0n,
         formaPagoSiigoId: formaPagoDefault,
+        tarifarioId,
         conceptosOperacionales: conceptosOperacionales
           ? normalizeSerializable(conceptosOperacionales)
           : undefined,

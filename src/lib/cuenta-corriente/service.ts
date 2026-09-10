@@ -24,9 +24,11 @@ import {
 
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { tiene } from "@/lib/capacidades/resolver";
+import { eliminarPagoFactura, registrarPagoFacturaAbono } from "@/lib/cartera/service";
 import {
   asientoDesde,
   calcularCuentaCorriente,
+  maximoCompensable,
   type AsientoCuenta,
   type ResumenCuenta,
 } from "@/lib/cuenta-corriente/calculo";
@@ -47,6 +49,22 @@ export class CargosManualesNoHabilitadosError extends Error {
       `${nombreEmpresa} no tiene habilitados los cargos manuales de contraparte. Actívalos en la ficha, pestaña Funciones.`,
     );
     this.name = "CargosManualesNoHabilitadosError";
+  }
+}
+
+export class CompensacionInvalidaError extends Error {
+  public readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = "CompensacionInvalidaError";
+  }
+}
+
+export class CompensacionNoEncontradaError extends Error {
+  public readonly status = 404;
+  constructor(id: string) {
+    super(`Cruce ${id} no encontrado en esta empresa`);
+    this.name = "CompensacionNoEncontradaError";
   }
 }
 
@@ -84,7 +102,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
       },
       pagos: {
         where: { destino: "CLIENTE" },
-        select: { id: true, tipo: true, monto: true, fecha: true },
+        select: { id: true, tipo: true, monto: true, fecha: true, compensacionId: true },
       },
     },
   });
@@ -101,6 +119,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
         asientoDesde({
           id: `factura:${factura.id}`,
           fuente: "FACTURA_VENTA",
+          rol: "CLIENTE",
           lineaServicio,
           concepto: `Factura ${factura.numSiigo}`,
           fecha: factura.fecha,
@@ -115,6 +134,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
       asientos.push({
         id: `factura-favor:${factura.id}`,
         fuente: "AJUSTE",
+        rol: "CLIENTE",
         lineaServicio,
         concepto: `Saldo a favor del cliente · factura ${factura.numSiigo}`,
         fecha: factura.fecha,
@@ -128,14 +148,18 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
         asientoDesde({
           id: `pago-factura:${pago.id}`,
           fuente: pago.tipo === "ABONO" ? "ABONO_CLIENTE" : "DEVOLUCION_CLIENTE",
+          rol: "CLIENTE",
           lineaServicio,
           concepto:
             pago.tipo === "ABONO"
-              ? `Abono a factura ${factura.numSiigo}`
+              ? pago.compensacionId
+                ? `Cruce · abono a factura ${factura.numSiigo}`
+                : `Abono a factura ${factura.numSiigo}`
               : `Devolución sobre factura ${factura.numSiigo}`,
           fecha: pago.fecha,
           valor: pago.monto,
           referencia,
+          compensacionId: pago.compensacionId,
         }),
       );
     }
@@ -183,6 +207,7 @@ async function asientosComoProveedor(empresaId: string): Promise<AsientoCuenta[]
     asientoDesde({
       id: `factura-proveedor:${factura.id}`,
       fuente: "FACTURA_PROVEEDOR",
+      rol: "PROVEEDOR",
       lineaServicio: factura.repercutible
         ? (factura.tramite.tipoTramite?.lineaServicio ?? "TRAMITE")
         : "ASESORIA",
@@ -202,24 +227,29 @@ async function asientosManuales(empresaId: string): Promise<AsientoCuenta[]> {
     where: { empresaId },
     select: {
       id: true,
+      rol: true,
       tipo: true,
       origen: true,
       lineaServicio: true,
       concepto: true,
       valor: true,
       fecha: true,
+      compensacionId: true,
       tramite: { select: { consecutivo: true } },
     },
   });
 
   return movimientos.map((movimiento) => ({
     id: `movimiento:${movimiento.id}`,
+    rol: movimiento.rol,
     fuente:
       movimiento.origen === OrigenMovimientoCuenta.COMISION
         ? ("COMISION" as const)
         : movimiento.origen === OrigenMovimientoCuenta.CARGO_MANUAL
           ? ("CARGO_MANUAL" as const)
-          : ("AJUSTE" as const),
+          : movimiento.origen === OrigenMovimientoCuenta.COMPENSACION
+            ? ("COMPENSACION" as const)
+            : ("AJUSTE" as const),
     lineaServicio: movimiento.lineaServicio,
     concepto: movimiento.concepto,
     fecha: movimiento.fecha,
@@ -228,7 +258,63 @@ async function asientosManuales(empresaId: string): Promise<AsientoCuenta[]> {
         ? movimiento.valor
         : -movimiento.valor,
     referencia: movimiento.tramite?.consecutivo ?? null,
+    compensacionId: movimiento.compensacionId,
   }));
+}
+
+/** Documentos contra los que se puede cruzar hoy. */
+export interface CompensablesEmpresa {
+  facturasVenta: { id: string; numSiigo: string; referencia: string | null; pendiente: bigint }[];
+  facturasProveedor: { id: string; numFactura: string; referencia: string; valor: bigint }[];
+}
+
+async function compensablesDe(empresaId: string): Promise<CompensablesEmpresa> {
+  const [facturas, beneficiarios] = await Promise.all([
+    prisma.factura.findMany({
+      where: { clienteId: empresaId },
+      select: {
+        id: true,
+        numSiigo: true,
+        saldoAFavorCliente: true,
+        saldoACargoCliente: true,
+        borrador: { select: { tramite: { select: { consecutivo: true } } } },
+        pagos: { where: { destino: "CLIENTE" }, select: { tipo: true, monto: true } },
+      },
+    }),
+    prisma.beneficiario.findMany({ where: { empresaId }, select: { id: true } }),
+  ]);
+
+  const facturasVenta = facturas
+    .map((f) => {
+      const abonos = f.pagos.filter((p) => p.tipo === "ABONO").reduce((s, p) => s + p.monto, 0n);
+      const devoluciones = f.pagos.filter((p) => p.tipo === "DEVOLUCION").reduce((s, p) => s + p.monto, 0n);
+      // Misma fórmula que cartera: negativo = el cliente debe.
+      const saldoNeto = f.saldoAFavorCliente - f.saldoACargoCliente + abonos - devoluciones;
+      return {
+        id: f.id,
+        numSiigo: f.numSiigo,
+        referencia: f.borrador?.tramite?.consecutivo ?? null,
+        pendiente: saldoNeto < 0n ? -saldoNeto : 0n,
+      };
+    })
+    .filter((f) => f.pendiente > 0n);
+
+  const facturasProveedor =
+    beneficiarios.length === 0
+      ? []
+      : (
+          await prisma.facturaProveedor.findMany({
+            where: {
+              beneficiarioId: { in: beneficiarios.map((b) => b.id) },
+              estado: "REGISTRADA",
+              repercutible: false,
+            },
+            select: { id: true, numFactura: true, valor: true, tramite: { select: { consecutivo: true } } },
+            orderBy: { fecha: "asc" },
+          })
+        ).map((f) => ({ id: f.id, numFactura: f.numFactura, referencia: f.tramite.consecutivo, valor: f.valor }));
+
+  return { facturasVenta, facturasProveedor };
 }
 
 export interface CuentaCorrienteEmpresa extends ResumenCuenta {
@@ -241,6 +327,9 @@ export interface CuentaCorrienteEmpresa extends ResumenCuenta {
   };
   /** `true` si la ficha puede registrar cargos manuales (capacidad M1). */
   permiteCargosManuales: boolean;
+  /** Cuánto se puede cruzar hoy (la punta menor). */
+  maximoCompensable: bigint;
+  compensables: CompensablesEmpresa;
 }
 
 export async function getCuentaCorriente(
@@ -255,11 +344,12 @@ export async function getCuentaCorriente(
     throw new EmpresaCuentaNoEncontradaError(empresaId);
   }
 
-  const [comoCliente, comoProveedor, manuales, capacidades] = await Promise.all([
+  const [comoCliente, comoProveedor, manuales, capacidades, compensables] = await Promise.all([
     asientosComoCliente(empresaId),
     asientosComoProveedor(empresaId),
     asientosManuales(empresaId),
     capacidadesDeEmpresa(empresaId),
+    compensablesDe(empresaId),
   ]);
 
   const resumen = calcularCuentaCorriente([
@@ -272,6 +362,8 @@ export async function getCuentaCorriente(
     ...resumen,
     empresa,
     permiteCargosManuales: tiene(capacidades, "cargos_manuales_contraparte"),
+    maximoCompensable: maximoCompensable(resumen),
+    compensables,
   };
 }
 
@@ -370,5 +462,207 @@ export async function eliminarMovimientoCuenta(
     });
 
     return movimiento;
+  });
+}
+
+// ─── Cruce de saldos (compensación) ───────────────────────────────────────────
+
+export interface RegistrarCompensacionInput {
+  empresaId: string;
+  valor?: bigint;
+  fecha: Date;
+  concepto: string;
+  lineaServicio?: string;
+  facturaId?: string | null;
+  facturaProveedorId?: string | null;
+  usuarioId: string;
+}
+
+/**
+ * Salda el mismo importe en las dos puntas sin que se mueva plata — lo que
+ * Camila hace hoy a mano con Coldex ("meto esa factura y la cruzo con lo que
+ * ellos nos deben, para no hacer doble transferencia").
+ *
+ * Cada punta se registra donde su módulo la lee, para que cartera, el trámite
+ * y la cuenta corriente cuenten lo mismo:
+ *   · Punta cliente: abono (sin canal, costo 0) a la factura de venta elegida,
+ *     o un ABONO manual con origen COMPENSACION.
+ *   · Punta proveedor: la factura de proveedor elegida pasa a PAGADA por su
+ *     total (solo no repercutibles: las que se cobran al cliente necesitan el
+ *     pago real del libro), o un CARGO manual con origen COMPENSACION.
+ * El neto de la cuenta no cambia; bajan las dos puntas.
+ */
+export async function registrarCompensacion(input: RegistrarCompensacionInput) {
+  const empresa = await prisma.cliente.findUnique({
+    where: { id: input.empresaId },
+    select: { id: true, nombre: true },
+  });
+  if (!empresa) throw new EmpresaCuentaNoEncontradaError(input.empresaId);
+
+  const cuenta = await getCuentaCorriente(input.empresaId);
+
+  // Punta proveedor: la factura fija el valor.
+  let facturaProveedor: { id: string; numFactura: string; valor: bigint } | null = null;
+  if (input.facturaProveedorId) {
+    const fp = cuenta.compensables.facturasProveedor.find((f) => f.id === input.facturaProveedorId);
+    if (!fp) {
+      throw new CompensacionInvalidaError(
+        "La factura de proveedor no está pendiente, no es de esta empresa o se le cobra al cliente (esas se pagan por el libro de pagos).",
+      );
+    }
+    facturaProveedor = fp;
+    if (input.valor !== undefined && input.valor !== fp.valor) {
+      throw new CompensacionInvalidaError(
+        `Al cruzar una factura de proveedor el valor es su total: ${fp.valor.toString()}.`,
+      );
+    }
+  }
+
+  const valor = facturaProveedor ? facturaProveedor.valor : (input.valor ?? 0n);
+  if (valor <= 0n) throw new CompensacionInvalidaError("El valor debe ser mayor a 0.");
+  if (valor > cuenta.maximoCompensable) {
+    throw new CompensacionInvalidaError(
+      `Solo se pueden cruzar hasta ${cuenta.maximoCompensable.toString()}: pendiente nos deben ${cuenta.pendienteCliente.toString()} y les debemos ${cuenta.pendienteProveedor.toString()}.`,
+    );
+  }
+
+  // Punta cliente: la factura de venta debe tener ese pendiente.
+  let facturaVenta: { id: string; numSiigo: string; pendiente: bigint } | null = null;
+  if (input.facturaId) {
+    const fv = cuenta.compensables.facturasVenta.find((f) => f.id === input.facturaId);
+    if (!fv) throw new CompensacionInvalidaError("La factura de venta no tiene saldo pendiente o no es de esta empresa.");
+    if (valor > fv.pendiente) {
+      throw new CompensacionInvalidaError(
+        `La factura ${fv.numSiigo} solo tiene pendientes ${fv.pendiente.toString()}.`,
+      );
+    }
+    facturaVenta = fv;
+  }
+
+  const lineaServicio = input.lineaServicio ?? "TRAMITE";
+
+  return prisma.$transaction(async (tx) => {
+    const compensacionId = (
+      await tx.auditLog.create({
+        data: {
+          entidad: "Cliente",
+          entidadId: input.empresaId,
+          accion: "COMPENSACION",
+          usuarioId: input.usuarioId,
+          despues: normalizeSerializable({
+            valor,
+            fecha: input.fecha,
+            concepto: input.concepto,
+            lineaServicio,
+            facturaId: facturaVenta?.id ?? null,
+            facturaProveedorId: facturaProveedor?.id ?? null,
+          }),
+        },
+        select: { id: true },
+      })
+    ).id;
+
+    // Punta cliente
+    if (facturaVenta) {
+      const abono = await registrarPagoFacturaAbono({
+        facturaId: facturaVenta.id,
+        destino: "CLIENTE",
+        tipo: "ABONO",
+        monto: valor,
+        fecha: input.fecha,
+        compensacionId,
+        tx,
+        usuarioId: input.usuarioId,
+      });
+      if (!abono.ok) throw new CompensacionInvalidaError(abono.message);
+    } else {
+      await tx.movimientoCuenta.create({
+        data: {
+          empresaId: input.empresaId,
+          rol: RolCuenta.CLIENTE,
+          tipo: TipoMovimientoCuenta.ABONO,
+          origen: OrigenMovimientoCuenta.COMPENSACION,
+          lineaServicio,
+          concepto: `Cruce · ${input.concepto}`,
+          valor,
+          fecha: input.fecha,
+          registradoPorId: input.usuarioId,
+          compensacionId,
+        },
+      });
+    }
+
+    // Punta proveedor
+    if (facturaProveedor) {
+      await tx.facturaProveedor.update({
+        where: { id: facturaProveedor.id },
+        data: { estado: "PAGADA", compensacionId },
+      });
+      await tx.auditLog.create({
+        data: {
+          entidad: "FacturaProveedor",
+          entidadId: facturaProveedor.id,
+          accion: "PAGADA_POR_COMPENSACION",
+          usuarioId: input.usuarioId,
+          antes: { estado: "REGISTRADA" },
+          despues: { estado: "PAGADA", compensacionId },
+        },
+      });
+    } else {
+      await tx.movimientoCuenta.create({
+        data: {
+          empresaId: input.empresaId,
+          rol: RolCuenta.PROVEEDOR,
+          tipo: TipoMovimientoCuenta.CARGO,
+          origen: OrigenMovimientoCuenta.COMPENSACION,
+          lineaServicio,
+          concepto: `Cruce · ${input.concepto}`,
+          valor,
+          fecha: input.fecha,
+          registradoPorId: input.usuarioId,
+          compensacionId,
+        },
+      });
+    }
+
+    return { compensacionId, valor };
+  });
+}
+
+/** Deshace un cruce: retira sus dos puntas y devuelve la factura de proveedor a REGISTRADA. */
+export async function eliminarCompensacion(empresaId: string, compensacionId: string, usuarioId: string) {
+  return prisma.$transaction(async (tx) => {
+    const [movimientos, pagos, facturasProveedor] = await Promise.all([
+      tx.movimientoCuenta.findMany({ where: { compensacionId, empresaId } }),
+      tx.pagoFactura.findMany({ where: { compensacionId, factura: { clienteId: empresaId } }, select: { id: true } }),
+      tx.facturaProveedor.findMany({ where: { compensacionId, beneficiario: { empresaId } }, select: { id: true, estado: true } }),
+    ]);
+    if (movimientos.length === 0 && pagos.length === 0 && facturasProveedor.length === 0) {
+      throw new CompensacionNoEncontradaError(compensacionId);
+    }
+
+    for (const m of movimientos) await tx.movimientoCuenta.delete({ where: { id: m.id } });
+    for (const p of pagos) {
+      const r = await eliminarPagoFactura(p.id, usuarioId, tx);
+      if (!r.ok) throw new CompensacionInvalidaError(r.message);
+    }
+    for (const f of facturasProveedor) {
+      if (f.estado !== "PAGADA") {
+        throw new CompensacionInvalidaError("La factura de proveedor ya no está en PAGADA; no se puede deshacer el cruce.");
+      }
+      await tx.facturaProveedor.update({ where: { id: f.id }, data: { estado: "REGISTRADA", compensacionId: null } });
+    }
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "Cliente",
+        entidadId: empresaId,
+        accion: "DESHACER_COMPENSACION",
+        usuarioId,
+        antes: normalizeSerializable({ compensacionId, movimientos: movimientos.length, abonos: pagos.length, facturasProveedor: facturasProveedor.length }),
+      },
+    });
+
+    return { compensacionId };
   });
 }

@@ -49,6 +49,7 @@ import {
   type ChecklistItem,
 } from "@/components/tramites/checklist-api";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
+import { SeccionEventosTramite } from "@/components/tramites/seccion-eventos-tramite";
 import {
   type FacturaProveedorRow,
   solicitarFacturacion,
@@ -1054,6 +1055,14 @@ function TabResumen({
           </ul>
         </div>
       ) : null}
+
+      {/* Base de cálculo del tarifario y eventos (M2 + M3) */}
+      <SeccionEventosTramite
+        tramiteId={tramite.id}
+        clienteId={tramite.cliente.id}
+        puedeEditar={puedeEditar}
+        onRefresh={onRefresh}
+      />
 
       {/* Comentarios */}
       {tramite.comentarios ? (

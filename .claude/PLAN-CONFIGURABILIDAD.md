@@ -23,9 +23,10 @@ Mientras llegan, se trabaja con datos de demo: `scripts/demo-configurabilidad.ts
 | **M6 Repercusión** | ✅ Implementado | `FacturaProveedor.repercutible` + guard en líneas + cruce + UI |
 | **M4 Tipos de trámite** | ✅ Implementado | `TipoTramite` + consecutivo parametrizado + `referenciaExterna` + gate por capacidad |
 | **Regla de Litoplas** | ✅ Migrada | Era `if (nombre.includes("litoplas"))`; ahora es la capacidad `regla_agencia_fija` con config |
-| **M2 Tarifario** | ⬜ Pendiente | Bloqueado por el catálogo Siigo depurado (Camila + contador) |
-| **M3 Eventos** | ⬜ Pendiente | Requiere M2 |
-| **M5 Cartera bidireccional** | ✅ Implementado | Ledger `MovimientoCuenta` + cuenta corriente cruzada + cargos manuales + comisiones. El pago en bloque multi-DO YA existía (`/api/pagos/multi`) |
+| **M2 Tarifario** | ✅ Implementado (2026-09-10) | `Tarifario` + `TarifaItem`, motor puro con 16 tests, plantillas de las propuestas 2026, ciclo BORRADOR→VIGENTE, duplicar con IPC, PDF, integración en `generarBorrador`. Faltan los **casos dorados** con facturas reales de Camila y confirmar códigos Siigo |
+| **M3 Eventos** | ✅ Implementado (2026-09-10) | `CatalogoEvento` (7 eventos de la reunión) + `TramiteEvento` + base de cálculo del DO; marcar exige documentos en el checklist y dispara el ítem del tarifario |
+| **M5 Cartera bidireccional** | ✅ Implementado | Ledger `MovimientoCuenta` + cuenta corriente cruzada + cargos manuales + comisiones. Pago en bloque multi-DO desde la ficha del proveedor (2026-09-10) |
+| **Cartera por línea** | ✅ Implementado (2026-09-10) | `GET /api/cartera?lineaServicio=` + selector "Línea" en el módulo Cartera |
 
 ### Archivos entregados
 
@@ -537,3 +538,99 @@ Orden sugerido (de menor a mayor riesgo), un PR por bloque, 418 tests verdes com
 - ✗ Mostrarle al cliente el nombre del producto Siigo. `etiquetaPublica` y `siigoProductoId` son
   campos distintos; el código contable no se toca nunca.
 - ✗ Ampliar `TipoCliente` con un tercer valor. Cada valor nuevo del enum multiplica las 131 ramas.
+
+## Tarifario, eventos, cartera por línea y pago en bloque (2026-09-10)
+
+Ejecutado sobre la rama `feat/tarifario-eventos` (parte de `9eccde0`). Verificado
+con tsc, lint, 545 tests, el demo `scripts/demo-tarifario.ts` contra la BD local y
+un smoke MCP en vivo de 26 checks contra la app reconstruida en :3003.
+
+### Qué quedó
+
+- **Migración `20260910120000_tarifario_eventos`** (aditiva): enums
+  `EstadoTarifario`, `TipoCalculoTarifa`, `DisparadorTarifa`, `UnidadTarifa`,
+  `TipoCarga`; tablas `tarifario`, `tarifa_item`, `catalogo_evento` (7 filas
+  sembradas), `tramite_evento`; `tramite_do` gana `valorCif`, `tipoCarga`,
+  `numContenedores`, `numDeclaraciones`, `numDocumentos`, `numItems`;
+  `borrador_factura.tarifarioId`.
+- **Motor puro** `src/lib/tarifas/motor.ts` (16 tests en
+  `__tests__/motor.test.ts`, casos de referencia construidos desde las dos
+  propuestas PDF: Litoplas y CW ASIA). Redondeo half-up en enteros; los mínimos
+  por tipo de carga resuelven la duda del 40′: la propuesta dice **554.000**, no
+  154.000.
+- **Plantillas** `src/lib/tarifas/plantillas.ts`: LITOPLAS_IMPO_2026 (8 ítems),
+  LITOPLAS_CLAS_2026, LITOPLAS_EXPO_2026, CW_ASIA_2026 (9 ítems) y la lista
+  `CONCEPTOS_VENTA_DEMO` con los códigos Siigo vistos en pantalla (9 marcados
+  `confirmar`).
+- **Servicio y API**: `src/lib/tarifas/service.ts`, `src/lib/eventos/service.ts`;
+  rutas `GET|POST /api/clientes/[id]/tarifarios`, `GET|PATCH|DELETE
+  /api/tarifarios/[id]`, `/items`, `/items/[itemId]`, `/estado`, `/duplicar`,
+  `/pdf`, `GET /api/tarifarios/plantillas`, `GET /api/eventos`, `GET|PUT
+  /api/tramites/[id]/eventos`, `GET /api/tramites/[id]/tarifa`;
+  `PATCH /api/tramites/[id]` acepta la base de cálculo; `GET /api/cartera`
+  acepta `lineaServicio`; `GET /api/beneficiarios` acepta `empresaId`.
+- **Facturación**: `generarBorrador` usa la propuesta del tarifario como
+  `conceptosOperacionales` (con `siigoCodigo`) y `comision = Σ` cuando la
+  empresa tiene `tarifario_propio` y no se pasó comisión a mano. Con datos de
+  base incompletos: `TarifaIncompletaError` 422. El IVA sigue calculándose
+  sobre toda la comisión (19 %); `aplicaIva=false` solo afecta la vista y el PDF
+  por ahora.
+- **UI**: `seccion-tarifario.tsx` (ficha; reemplaza la vieja "Tarifas (N)" de
+  `TarifaCliente`, cuya tabla queda sin uso), `seccion-eventos-tramite.tsx`
+  (Resumen del DO), selector de línea en cartera, `seccion-pagos-proveedor.tsx`
+  (ficha de proveedor → pago en bloque, modal extraído a
+  `pago-multi-do-modal.tsx`).
+- **MCP**: 16 tools nuevas (`tarifario_*`, `eventos_catalogo`,
+  `tramite_eventos_*`, `tramite_tarifa_propuesta`) + `tramite_actualizar`,
+  `cartera_ver` y `beneficiarios_listar` extendidas. Paridad 103/128 (80 %), 25
+  intencionales, 0 pendientes.
+
+### Lo que sigue dependiendo de Camila
+
+- Facturas reales de Litoplas y CW para convertir los casos de referencia en
+  casos dorados (tolerancia 0).
+- Confirmar los 9 códigos Siigo marcados `confirmar` en `CONCEPTOS_VENTA_DEMO` y
+  el concepto vivo de "Documentación" (20.000 en la propuesta vs 10.000 por
+  declaración en la práctica).
+- Nombre real de "CW": la propuesta dice **CW ASIA SAS** (en Siigo,
+  900775062-7); en la BD local sigue como CW EXPRESS con NIT provisional.
+
+### Deuda técnica dejada a propósito
+
+- `TarifaCliente` (tabla vieja `tarifa_cliente`) sigue en el esquema y en la API
+  de clientes; ya no tiene UI. Retirarla cuando se confirme que producción no
+  la usa (0 filas en local).
+- Comisión automática por contenedor (Eltrans): el catálogo de eventos y la
+  base de cálculo ya dan el número de contenedores; falta el consumidor de
+  `comision_por_evento` que genere el `MovimientoCuenta` al cerrar el DO.
+
+## Cruce de saldos en la cuenta corriente (2026-09-10)
+
+Lo que Camila hace hoy a mano con Coldex (min 68:45): "meto esa factura aquí y la
+cruzo con lo que ellos nos deben, para no hacer doble transferencia". Ahora es
+una acción: **Cruzar saldos** en la sección Cuenta corriente de la ficha.
+
+- **Regla:** un cruce salda el mismo importe en las dos puntas sin que se mueva
+  plata. El neto de la cuenta no cambia; bajan los dos pendientes. Tope:
+  `maximoCompensable = min(pendienteCliente, pendienteProveedor)`.
+- **Pendientes netos por punta** (`pendienteCliente`, `pendienteProveedor`) se
+  agregaron a `calcularCuentaCorriente` porque `totalACargo/totalAFavor` son
+  flujos brutos (una factura de 10M con abono de 8M da 10M "a cargo"). Cada
+  asiento lleva ahora su `rol`; los que no lo traen lo deducen de la fuente.
+- **Cada punta se registra donde su módulo la lee**, para que cartera, el
+  trámite y la cuenta corriente cuenten lo mismo:
+  · punta cliente → `PagoFactura` ABONO sin canal ni costo (con
+    `compensacionId`) sobre la factura de venta elegida, o un ABONO manual con
+    origen `COMPENSACION`;
+  · punta proveedor → la `FacturaProveedor` elegida pasa a PAGADA (solo las
+    **no repercutibles**: las que se cobran al cliente necesitan el pago real del
+    libro), o un CARGO manual con origen `COMPENSACION`.
+- **Deshacer** retira las dos puntas (`DELETE …/compensaciones/[id]`).
+- Migración `20260910130000_compensacion` (aditiva): valor `COMPENSACION` en el
+  enum, `compensacionId` en `movimiento_cuenta`, `pago_factura` y
+  `factura_proveedor`. `registrarPagoFacturaAbono` y `eliminarPagoFactura`
+  aceptan un cliente de transacción externo.
+- MCP: `cuenta_compensar`, `cuenta_compensacion_eliminar`. Smoke en vivo con
+  Coldex: cargo de 1,5M como cliente contra la mensualidad de 4M, cruce, deshacer.
+- **Pendiente anotado (no se construye hasta respuesta):** orden de compra en la
+  revisión (Polired). Ver `PENDIENTES-MARIA-CAMILA.md`, pregunta 10.

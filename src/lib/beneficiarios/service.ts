@@ -29,16 +29,20 @@ export class BeneficiarioNoEncontradoError extends Error {
   }
 }
 
-export async function listarBeneficiarios(query?: string): Promise<Beneficiario[]> {
+export async function listarBeneficiarios(query?: string, empresaId?: string): Promise<Beneficiario[]> {
   return prisma.beneficiario.findMany({
-    where: query
-      ? {
-          OR: [
-            { nombre: { contains: query, mode: "insensitive" } },
-            { nit: { contains: query, mode: "insensitive" } },
-          ],
-        }
-      : undefined,
+    where: {
+      // Fichas de pago enlazadas a una empresa (puente Beneficiario.empresaId, M5).
+      ...(empresaId ? { empresaId } : {}),
+      ...(query
+        ? {
+            OR: [
+              { nombre: { contains: query, mode: "insensitive" } },
+              { nit: { contains: query, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    },
     orderBy: { nombre: "asc" },
   });
 }

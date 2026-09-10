@@ -11,6 +11,13 @@ export type MovimientoCuentaRow = {
   fecha: string;
   valor: string; // BigInt serializado, con signo
   referencia: string | null;
+  /** Cruce de saldos al que pertenece (las dos puntas comparten id). */
+  compensacionId: string | null;
+};
+
+export type CompensablesRow = {
+  facturasVenta: { id: string; numSiigo: string; referencia: string | null; pendiente: string }[];
+  facturasProveedor: { id: string; numFactura: string; referencia: string; valor: string }[];
 };
 
 export type SaldoLineaRow = {
@@ -25,10 +32,25 @@ export type CuentaCorriente = {
   totalACargo: string;
   totalAFavor: string;
   neto: string;
+  /** Pendientes netos por punta: lo que de verdad se puede cruzar. */
+  pendienteCliente: string;
+  pendienteProveedor: string;
   porLinea: SaldoLineaRow[];
   movimientos: MovimientoCuentaRow[];
   cantidad: number;
   permiteCargosManuales: boolean;
+  /** Cuánto se puede cruzar hoy (la punta menor). */
+  maximoCompensable: string;
+  compensables: CompensablesRow;
+};
+
+export type NuevaCompensacion = {
+  valor?: string;
+  fecha: string;
+  concepto: string;
+  lineaServicio: string;
+  facturaId?: string | null;
+  facturaProveedorId?: string | null;
 };
 
 export type NuevoMovimiento = {
@@ -85,6 +107,8 @@ function normalizar(payload: unknown): CuentaCorriente | null {
     totalACargo: String(cuenta.totalACargo ?? "0"),
     totalAFavor: String(cuenta.totalAFavor ?? "0"),
     neto: String(cuenta.neto ?? "0"),
+    pendienteCliente: String(cuenta.pendienteCliente ?? "0"),
+    pendienteProveedor: String(cuenta.pendienteProveedor ?? "0"),
     porLinea: Array.isArray(cuenta.porLinea)
       ? cuenta.porLinea.filter(isRecord).map((linea) => ({
           lineaServicio: String(linea.lineaServicio ?? ""),
@@ -103,11 +127,76 @@ function normalizar(payload: unknown): CuentaCorriente | null {
           valor: String(movimiento.valor ?? "0"),
           referencia:
             typeof movimiento.referencia === "string" ? movimiento.referencia : null,
+          compensacionId:
+            typeof movimiento.compensacionId === "string" ? movimiento.compensacionId : null,
         }))
       : [],
     cantidad: typeof cuenta.cantidad === "number" ? cuenta.cantidad : 0,
     permiteCargosManuales: cuenta.permiteCargosManuales === true,
+    maximoCompensable: String(cuenta.maximoCompensable ?? "0"),
+    compensables: normalizarCompensables(cuenta.compensables),
   };
+}
+
+function normalizarCompensables(value: unknown): CompensablesRow {
+  const c = isRecord(value) ? value : {};
+  return {
+    facturasVenta: Array.isArray(c.facturasVenta)
+      ? c.facturasVenta.filter(isRecord).map((f) => ({
+          id: String(f.id ?? ""),
+          numSiigo: String(f.numSiigo ?? ""),
+          referencia: typeof f.referencia === "string" ? f.referencia : null,
+          pendiente: String(f.pendiente ?? "0"),
+        }))
+      : [],
+    facturasProveedor: Array.isArray(c.facturasProveedor)
+      ? c.facturasProveedor.filter(isRecord).map((f) => ({
+          id: String(f.id ?? ""),
+          numFactura: String(f.numFactura ?? ""),
+          referencia: String(f.referencia ?? ""),
+          valor: String(f.valor ?? "0"),
+        }))
+      : [],
+  };
+}
+
+export async function registrarCompensacion(
+  clienteId: string,
+  compensacion: NuevaCompensacion,
+): Promise<CuentaCorriente | null> {
+  const response = await fetch(`/api/clientes/${clienteId}/cuenta/compensaciones`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(compensacion),
+  });
+
+  if (!response.ok) {
+    throw new CuentaApiError(
+      await mensajeDeError(response, "No fue posible registrar el cruce."),
+      response.status,
+    );
+  }
+
+  return normalizar(await response.json());
+}
+
+export async function eliminarCompensacion(
+  clienteId: string,
+  compensacionId: string,
+): Promise<CuentaCorriente | null> {
+  const response = await fetch(
+    `/api/clientes/${clienteId}/cuenta/compensaciones/${encodeURIComponent(compensacionId)}`,
+    { method: "DELETE", headers: { Accept: "application/json" } },
+  );
+
+  if (!response.ok) {
+    throw new CuentaApiError(
+      await mensajeDeError(response, "No fue posible deshacer el cruce."),
+      response.status,
+    );
+  }
+
+  return normalizar(await response.json());
 }
 
 export async function fetchCuentaCorriente(

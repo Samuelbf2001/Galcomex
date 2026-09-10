@@ -21,6 +21,8 @@ import {
 import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
 import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
 import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
+import { SeccionPagosProveedor } from "@/components/clientes/seccion-pagos-proveedor";
+import { SeccionTarifario } from "@/components/clientes/seccion-tarifario";
 import { ModuleState } from "@/components/layout/module-state";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, Skeleton, TableSkeleton } from "@/components/ui/skeleton";
@@ -81,16 +83,6 @@ function estadoBadgeClass(estado: string): string {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
-/** Para el modal de tarifa el path de Zod es `tarifas.N.valor`: mapea por último segmento. */
-function erroresTarifa(details?: DetalleValidacion[]): Record<string, string> {
-  const mapa: Record<string, string> = {};
-  for (const d of details ?? []) {
-    const partes = d.campo.split(".");
-    const hoja = partes[partes.length - 1] || d.campo;
-    if (!(hoja in mapa)) mapa[hoja] = d.mensaje;
-  }
-  return mapa;
-}
 
 // ---------------------------------------------------------------------------
 // Sub-componente: modal editar cliente
@@ -311,266 +303,6 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
         ) : null}
       </form>
     </ModalShell>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sub-componente: modal agregar/editar tarifa
-// ---------------------------------------------------------------------------
-
-type TarifaModalProps = {
-  clienteId: string;
-  initial?: TarifaCliente;
-  onClose: () => void;
-  onSaved: (tarifas: TarifaCliente[]) => void;
-};
-
-function TarifaModal({ clienteId, initial, onClose, onSaved }: TarifaModalProps) {
-  const { toast } = useToast();
-  const formId = useId();
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [errores, setErrores] = useState<Record<string, string>>({});
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError(null);
-    setErrores({});
-    setIsSubmitting(true);
-
-    const fd = new FormData(e.currentTarget);
-    const valorRaw = String(fd.get("valor") ?? "")
-      .replace(/\./g, "")
-      .replace(/,/g, "")
-      .replace(/\$/g, "")
-      .trim();
-
-    const tarifa: TarifaCliente = {
-      anio: Number(fd.get("anio") ?? new Date().getFullYear()),
-      tipo: String(fd.get("tipo") ?? "fijo"),
-      valor: valorRaw,
-    };
-
-    try {
-      const updated = await upsertTarifa(clienteId, tarifa);
-      toast({
-        title: initial ? "Tarifa actualizada" : "Tarifa agregada",
-        description: `${tarifa.anio} · ${tipoLabel(tarifa.tipo)} · ${formatCOP(tarifa.valor)}`,
-        variant: "success",
-      });
-      onSaved(updated.tarifas);
-    } catch (caught) {
-      const mensaje = describirError(caught, "No fue posible guardar la tarifa.");
-      if (caught instanceof ClientesApiError && caught.details?.length) {
-        setErrores(erroresTarifa(caught.details));
-        setError("Revisa los campos marcados.");
-      } else {
-        setError(mensaje);
-      }
-      toast({ title: "No se pudo guardar la tarifa", description: mensaje, variant: "error" });
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  const campo = (nombre: string) => ({
-    invalido: Boolean(errores[nombre]),
-    describedBy: errores[nombre] ? `${formId}-${nombre}-error` : undefined,
-    errorId: `${formId}-${nombre}-error`,
-  });
-
-  return (
-    <ModalShell
-      open
-      onClose={onClose}
-      title={initial ? "Editar tarifa" : "Agregar tarifa"}
-      size="sm"
-      dismissible={!isSubmitting}
-      footer={
-        <>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
-          >
-            Cancelar
-          </button>
-          <button
-            type="submit"
-            form={formId}
-            disabled={isSubmitting}
-            className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
-          >
-            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-            {isSubmitting ? "Guardando…" : "Guardar tarifa"}
-          </button>
-        </>
-      }
-    >
-      <form id={formId} onSubmit={handleSubmit} className="space-y-4">
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Año</span>
-            <input
-              name="anio"
-              type="number"
-              min="2020"
-              max="2100"
-              required
-              defaultValue={initial?.anio ?? new Date().getFullYear()}
-              aria-invalid={campo("anio").invalido || undefined}
-              aria-describedby={campo("anio").describedBy}
-              className={claseCampo(campo("anio").invalido)}
-            />
-            <MensajeCampo id={campo("anio").errorId} error={errores.anio} />
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Tipo tarifa</span>
-            <select
-              name="tipo"
-              defaultValue={initial?.tipo ?? "fijo"}
-              aria-invalid={campo("tipo").invalido || undefined}
-              className={claseCampo(campo("tipo").invalido, "bg-white")}
-            >
-              <option value="fijo">Fijo</option>
-              <option value="por_contenedor">Por contenedor</option>
-              <option value="porcentaje_cif">% sobre CIF</option>
-            </select>
-            <MensajeCampo id={campo("tipo").errorId} error={errores.tipo} />
-          </label>
-        </div>
-
-        <label className="space-y-1.5">
-          <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
-          <input
-            name="valor"
-            required
-            inputMode="numeric"
-            defaultValue={initial?.valor ?? ""}
-            placeholder="150000"
-            aria-invalid={campo("valor").invalido || undefined}
-            aria-describedby={campo("valor").describedBy}
-            className={claseCampo(campo("valor").invalido)}
-          />
-          <MensajeCampo id={campo("valor").errorId} error={errores.valor} />
-        </label>
-
-        {error ? (
-          <div role="alert" className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
-          </div>
-        ) : null}
-      </form>
-    </ModalShell>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sub-componente: sección de tarifas
-// ---------------------------------------------------------------------------
-
-function SeccionTarifas({
-  clienteId,
-  tarifas,
-  puedeEditar,
-  onTarifasChanged,
-}: {
-  clienteId: string;
-  tarifas: TarifaCliente[];
-  /** `PATCH /api/clientes/[id]` es solo ADMIN: sin permiso no se muestran los botones. */
-  puedeEditar: boolean;
-  onTarifasChanged: (tarifas: TarifaCliente[]) => void;
-}) {
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingTarifa, setEditingTarifa] = useState<TarifaCliente | undefined>();
-
-  function openEdit(tarifa: TarifaCliente) {
-    setEditingTarifa(tarifa);
-    setModalOpen(true);
-  }
-
-  function openNew() {
-    setEditingTarifa(undefined);
-    setModalOpen(true);
-  }
-
-  return (
-    <div className="overflow-hidden border border-slate-200 bg-white">
-      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-        <p className="text-sm font-semibold text-slate-900">Tarifas ({tarifas.length})</p>
-        {puedeEditar ? (
-          <button
-            type="button"
-            onClick={openNew}
-            className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Agregar tarifa
-          </button>
-        ) : (
-          <span className="text-xs text-slate-500">Solo ADMIN edita tarifas</span>
-        )}
-      </div>
-
-      <table className="w-full border-collapse text-left text-sm">
-        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-          <tr>
-            <th className="border-b border-slate-200 px-4 py-3">Año</th>
-            <th className="border-b border-slate-200 px-4 py-3">Tipo</th>
-            <th className="border-b border-slate-200 px-4 py-3 text-right">Valor (COP)</th>
-            {puedeEditar ? <th className="border-b border-slate-200 px-4 py-3 w-14"></th> : null}
-          </tr>
-        </thead>
-        <tbody>
-          {tarifas.length === 0 ? (
-            <tr>
-              <td colSpan={puedeEditar ? 4 : 3} className="px-4 py-8 text-center text-slate-500">
-                Sin tarifas registradas
-              </td>
-            </tr>
-          ) : (
-            tarifas.map((tarifa) => (
-              <tr
-                key={`${tarifa.anio}-${tarifa.tipo}`}
-                className="border-b border-slate-100 last:border-b-0"
-              >
-                <td className="px-4 py-3 font-medium">{tarifa.anio}</td>
-                <td className="px-4 py-3 text-slate-600">{tipoLabel(tarifa.tipo)}</td>
-                <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
-                  {formatCOP(tarifa.valor)}
-                </td>
-                {puedeEditar ? (
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => openEdit(tarifa)}
-                      className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-cyan-700"
-                      aria-label={`Editar tarifa ${tarifa.anio} ${tipoLabel(tarifa.tipo)}`}
-                      title="Editar tarifa"
-                    >
-                      <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  </td>
-                ) : null}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-
-      {modalOpen && puedeEditar ? (
-        <TarifaModal
-          clienteId={clienteId}
-          initial={editingTarifa}
-          onClose={() => setModalOpen(false)}
-          onSaved={(updated) => {
-            onTarifasChanged(updated);
-            setModalOpen(false);
-          }}
-        />
-      ) : null}
-    </div>
   );
 }
 
@@ -1016,12 +748,9 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
 
       <SeccionCuentaCorriente clienteId={cliente.id} />
 
-      <SeccionTarifas
-        clienteId={cliente.id}
-        tarifas={cliente.tarifas}
-        puedeEditar={puedeEditar}
-        onTarifasChanged={(tarifas) => setCliente((prev) => (prev ? { ...prev, tarifas } : prev))}
-      />
+      <SeccionTarifario clienteId={cliente.id} />
+
+      {cliente.esProveedor ? <SeccionPagosProveedor empresaId={cliente.id} nombreEmpresa={cliente.nombre} /> : null}
 
       <SeccionTramites tramites={cliente.tramites} />
 
