@@ -49,6 +49,8 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
   intencional("POST", "/api/solicitudes", "Formulario público para que un cliente pida apertura de DO"),
   intencional("GET", "/api/storage", "Presign interno de MinIO; documento_subir lo usa por debajo"),
   intencional("POST", "/api/storage", "Presign interno de MinIO"),
+  intencional("GET", "/api/storage/objeto", "Enlace firmado de descarga; lo consumen documento_descargar y el navegador"),
+  intencional("PUT", "/api/storage/objeto", "Enlace firmado de subida; lo consume documento_subir por debajo"),
   intencional("DELETE", "/api/storage", "Presign interno de MinIO"),
   intencional("GET", "/api/borradores/[param]/pdf", "Binario — cubierto por exportar_archivo"),
   intencional("GET", "/api/borradores/[param]/export", "Binario — cubierto por exportar_archivo"),
