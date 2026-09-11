@@ -322,7 +322,7 @@ function SubidaInlinePDF({ tramiteId, onDocumentoSubido }: SubidaInlineProps) {
           className="inline-flex h-9 items-center gap-2 border border-dashed border-slate-300 bg-slate-50 px-3 text-xs font-medium text-slate-600 transition hover:border-slate-400 hover:bg-white"
         >
           <FileText className="h-3.5 w-3.5" aria-hidden="true" />
-          Adjuntar PDF (opcional)
+          Adjuntar PDF
         </button>
       )}
       {estado === "uploading" && (
@@ -631,7 +631,7 @@ export function ModalFacturaProveedor({
           {/* Adjuntar PDF */}
           <div>
             <p className="mb-1.5 text-sm font-medium text-slate-700">
-              Archivo PDF{!isEdit ? " *" : ""}
+              Archivo PDF (opcional)
             </p>
             {documentoId && !documentoNombre ? (
               <p className="text-xs text-slate-500">

@@ -11,6 +11,21 @@ import {
   type AllowedStorageContentType,
 } from "@/lib/storage/config";
 import { getStorageClient, getStoragePublicClient } from "@/lib/storage/client";
+import { urlFirmada } from "@/lib/storage/proxy";
+
+/**
+ * Por defecto los enlaces de subida y descarga pasan por la app
+ * (`/api/storage/objeto`, ver `proxy.ts`): funcionan aunque MinIO no sea
+ * público. `STORAGE_DIRECT_PRESIGN=true` vuelve a las URLs prefirmadas de
+ * MinIO para quien sí tenga `MINIO_PUBLIC_ENDPOINT` expuesto con HTTPS y CORS.
+ */
+function usarPresignDirecto(): boolean {
+  return process.env.STORAGE_DIRECT_PRESIGN === "true";
+}
+
+function vencimientoEpoch(expiresInSeconds: number): number {
+  return Math.floor(Date.now() / 1000) + expiresInSeconds;
+}
 
 const DELETED_PREFIX = "deleted/";
 
@@ -103,11 +118,15 @@ export async function createPresignedUploadUrl(input: {
   const storageKey = generateStorageKey(input);
   const expiresInSeconds = normalizeExpiry(input.expiresInSeconds);
   const { bucket } = getStorageConfig();
-  const url = await getStoragePublicClient().presignedPutObject(
-    bucket,
-    storageKey,
-    expiresInSeconds,
-  );
+  const url = usarPresignDirecto()
+    ? await getStoragePublicClient().presignedPutObject(bucket, storageKey, expiresInSeconds)
+    : urlFirmada({
+        metodo: "PUT",
+        storageKey,
+        contentType,
+        sizeBytes: input.sizeBytes,
+        exp: vencimientoEpoch(expiresInSeconds),
+      });
 
   return {
     storageKey,
@@ -126,11 +145,9 @@ export async function createPresignedDownloadUrl(input: {
   const storageKey = validateStorageKey(input.storageKey);
   const expiresInSeconds = normalizeExpiry(input.expiresInSeconds);
   const { bucket } = getStorageConfig();
-  const url = await getStoragePublicClient().presignedGetObject(
-    bucket,
-    storageKey,
-    expiresInSeconds,
-  );
+  const url = usarPresignDirecto()
+    ? await getStoragePublicClient().presignedGetObject(bucket, storageKey, expiresInSeconds)
+    : urlFirmada({ metodo: "GET", storageKey, exp: vencimientoEpoch(expiresInSeconds) });
 
   return {
     storageKey,
