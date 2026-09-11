@@ -57,15 +57,6 @@ function formatDate(iso: string | null): string {
   }).format(d);
 }
 
-function tipoLabel(tipo: string): string {
-  const map: Record<string, string> = {
-    por_contenedor: "Por contenedor",
-    fijo: "Fijo",
-    porcentaje_cif: "% sobre CIF",
-  };
-  return map[tipo] ?? tipo;
-}
-
 function estadoBadgeClass(estado: string): string {
   const n = estado.toLowerCase();
   if (n.includes("cerr") || n.includes("pagad")) {
@@ -545,9 +536,14 @@ function ClienteCabecera({
             </p>
           </div>
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Tipo</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Rol</p>
             <p className="mt-0.5 text-sm text-slate-700">
-              {cliente.tipo === "SOCIO_LM" ? "Socio LM" : "Propio"}
+              {cliente.esCliente && cliente.esProveedor
+                ? "Cliente y proveedor"
+                : cliente.esProveedor
+                  ? "Proveedor"
+                  : "Cliente"}
+              {cliente.tipo === "SOCIO_LM" ? " · Socio LM" : ""}
             </p>
           </div>
           <div>

@@ -5,6 +5,31 @@ import { prisma } from "@/lib/db/prisma";
 export type { Beneficiario };
 
 /**
+ * Una empresa marcada como proveedor necesita su ficha de pago (`Beneficiario`)
+ * enlazada por `empresaId`: sin ese puente no aparece en el libro de pagos, en
+ * las facturas de proveedor ni en la punta proveedor de la cuenta corriente.
+ * Idempotente: reutiliza la ficha ya enlazada, enlaza una existente con el
+ * mismo NIT o crea una nueva. Devuelve la ficha resultante.
+ */
+export async function asegurarBeneficiarioDeEmpresa(
+  tx: Prisma.TransactionClient,
+  empresa: { id: string; nombre: string; nit: string },
+): Promise<Beneficiario> {
+  const enlazado = await tx.beneficiario.findFirst({ where: { empresaId: empresa.id } });
+  if (enlazado) return enlazado;
+
+  const nit = empresa.nit.trim();
+  const porNit = nit ? await tx.beneficiario.findFirst({ where: { nit, empresaId: null } }) : null;
+  if (porNit) {
+    return tx.beneficiario.update({ where: { id: porNit.id }, data: { empresaId: empresa.id } });
+  }
+
+  return tx.beneficiario.create({
+    data: { nombre: empresa.nombre.trim(), nit: nit || null, empresaId: empresa.id },
+  });
+}
+
+/**
  * Serializa un snapshot a JSON apto para columnas Json de Prisma, convirtiendo
  * BigInt → string. Mismo replacer usado en el resto de services.
  */

@@ -634,3 +634,15 @@ una acción: **Cruzar saldos** en la sección Cuenta corriente de la ficha.
   Coldex: cargo de 1,5M como cliente contra la mensualidad de 4M, cruce, deshacer.
 - **Pendiente anotado (no se construye hasta respuesta):** orden de compra en la
   revisión (Polired). Ver `PENDIENTES-MARIA-CAMILA.md`, pregunta 10.
+
+## Empresas con rol (2026-09-10, tarde)
+
+- El módulo "Clientes" pasa a llamarse **Empresas**; columna y cabecera "Rol":
+  Cliente, Proveedor o Cliente y proveedor, más "Socio LM" cuando la facturación
+  va por Lucho. Rutas y API no cambian (`/clientes`, `/api/clientes`).
+- Los formularios de crear y editar exponen `esCliente` / `esProveedor`.
+- **Al marcar una empresa como proveedor se le asegura su ficha de pago**
+  (`asegurarBeneficiarioDeEmpresa` en `lib/beneficiarios/service.ts`): reutiliza
+  la ya enlazada, enlaza una suelta con el mismo NIT o la crea. Sin ese puente
+  la empresa no aparecía en el libro de pagos ni en la punta proveedor de la
+  cuenta corriente. Verificado contra la BD local (crea, idempotente, enlaza).
