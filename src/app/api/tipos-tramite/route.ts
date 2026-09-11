@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { requireRole } from "@/lib/auth/session";
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
-import { tiene } from "@/lib/capacidades/resolver";
+import { configDe, tiene } from "@/lib/capacidades/resolver";
+import { reglaAgenciaDe, type ConfigReglaAgencia } from "@/lib/tramites/reglas";
 import { prisma } from "@/lib/db/prisma";
 import { jsonResponse } from "@/lib/http/json";
 
@@ -47,5 +48,11 @@ export async function GET(request: NextRequest) {
     (tipo) => !tipo.capacidadRequerida || tiene(capacidades, tipo.capacidadRequerida),
   );
 
-  return jsonResponse({ tipos: disponibles });
+  // Agencia fija de la empresa (regla_agencia_fija): el formulario la deja
+  // puesta y bloqueada, y muestra el formato del DO de agencia que exige.
+  const reglaAgencia = reglaAgenciaDe(
+    configDe<ConfigReglaAgencia>(capacidades, "regla_agencia_fija"),
+  );
+
+  return jsonResponse({ tipos: disponibles, reglaAgencia });
 }

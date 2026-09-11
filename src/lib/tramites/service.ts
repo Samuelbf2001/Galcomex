@@ -14,6 +14,7 @@ import { configDe, tiene } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeSerializable } from "@/lib/db/serializable";
 import {
+  aplicarReglaAgenciaAlCrear,
   validateReglaAgenciaFija,
   type ConfigReglaAgencia,
 } from "@/lib/tramites/reglas";
@@ -56,6 +57,15 @@ export class TipoTramiteNoHabilitadoError extends Error {
       `${nombreEmpresa} no tiene habilitada la función "${nombreTipo}". Actívala en la ficha de la empresa, pestaña Funciones.`,
     );
     this.name = "TipoTramiteNoHabilitadoError";
+  }
+}
+
+/** La empresa tiene agencia fija y el trámite no la cumple (agencia o formato del DO). */
+export class ReglaAgenciaFijaError extends Error {
+  public readonly status = 422;
+  constructor(mensaje: string) {
+    super(mensaje);
+    this.name = "ReglaAgenciaFijaError";
   }
 }
 
@@ -133,8 +143,24 @@ export async function createTramite(input: CreateTramiteInput) {
   // Cada tipo decide si pide agencia de aduanas. La clasificación arancelaria
   // no la necesita y queda en null, en vez de inventar un valor para llenar la
   // columna.
-  const agenciaAduanas =
+  // Agencia fija de la empresa (capacidad `regla_agencia_fija`, caso Litoplas →
+  // Moviaduanas): si el tipo pide agencia, la de la regla manda desde la creación.
+  let agenciaAduanas: AgenciaAduanas | null =
     input.agenciaAduanas ?? tipo.agenciaAduanasPorDefecto ?? null;
+
+  if (tipo.requiereAgenciaAduanas) {
+    const [capacidades, empresa] = await Promise.all([
+      capacidadesDeEmpresa(input.clienteId),
+      prisma.cliente.findUnique({ where: { id: input.clienteId }, select: { nombre: true } }),
+    ]);
+    const regla = aplicarReglaAgenciaAlCrear(
+      configDe<ConfigReglaAgencia>(capacidades, "regla_agencia_fija"),
+      { agenciaAduanas: input.agenciaAduanas ?? null, doAgencia: input.doAgencia ?? null },
+      empresa?.nombre ?? "La empresa",
+    );
+    if (!regla.ok) throw new ReglaAgenciaFijaError(regla.mensaje);
+    if (regla.agenciaAduanas) agenciaAduanas = regla.agenciaAduanas as AgenciaAduanas;
+  }
 
   if (tipo.requiereAgenciaAduanas && !agenciaAduanas) {
     throw new AgenciaAduanasRequeridaError(tipo.nombre);

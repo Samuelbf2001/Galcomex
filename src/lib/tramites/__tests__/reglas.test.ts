@@ -8,6 +8,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aplicarReglaAgenciaAlCrear,
+  reglaAgenciaDe,
   validateReglaAgenciaFija,
   type ConfigReglaAgencia,
 } from "@/lib/tramites/reglas";
@@ -94,5 +96,38 @@ describe("validateReglaAgenciaFija — es general, no específica de una empresa
     const config = { agencia: 42, formatoDoAgencia: null } as ConfigReglaAgencia;
 
     expect(validateReglaAgenciaFija(litoplas("COLDEX", null), config)).toBeNull();
+  });
+});
+
+describe("aplicarReglaAgenciaAlCrear — la agencia fija manda desde la creación", () => {
+  const LITOPLAS = {
+    agencia: "MOVIADUANAS",
+    formatoDoAgencia: "^I\\d{8}$",
+    mensajeAgencia: "Litoplas debe operar con Moviaduanas",
+    mensajeFormato: "Litoplas requiere DO de agencia con formato I########",
+  };
+
+  it("sin agencia en el formulario, queda la fija", () => {
+    expect(aplicarReglaAgenciaAlCrear(LITOPLAS, {}, "LITOPLAS")).toEqual({ ok: true, agenciaAduanas: "MOVIADUANAS" });
+  });
+
+  it("otra agencia se rechaza con el mensaje de la config", () => {
+    expect(aplicarReglaAgenciaAlCrear(LITOPLAS, { agenciaAduanas: "COLDEX" }, "LITOPLAS")).toEqual({
+      ok: false,
+      mensaje: "Litoplas debe operar con Moviaduanas",
+    });
+  });
+
+  it("el DO de agencia solo se valida si viene, y con el formato de la config", () => {
+    expect(aplicarReglaAgenciaAlCrear(LITOPLAS, { doAgencia: "I12345678" }, "LITOPLAS").ok).toBe(true);
+    expect(aplicarReglaAgenciaAlCrear(LITOPLAS, { doAgencia: "123" }, "LITOPLAS")).toEqual({
+      ok: false,
+      mensaje: "Litoplas requiere DO de agencia con formato I########",
+    });
+  });
+
+  it("sin regla, la agencia es la que venga", () => {
+    expect(aplicarReglaAgenciaAlCrear(null, { agenciaAduanas: "COLDEX" }, "OTRA")).toEqual({ ok: true, agenciaAduanas: "COLDEX" });
+    expect(reglaAgenciaDe({ agencia: "  " })).toBeNull();
   });
 });

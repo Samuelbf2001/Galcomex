@@ -102,6 +102,19 @@ export type TipoTramiteOption = {
   etiquetaReferenciaExterna: string | null;
 };
 
+/** Agencia fija de la empresa (capacidad regla_agencia_fija), si la tiene. */
+export type ReglaAgenciaEmpresa = {
+  agencia: string | null;
+  formatoDoAgencia: string | null;
+  mensajeAgencia: string | null;
+  mensajeFormato: string | null;
+};
+
+export type TiposTramiteEmpresa = {
+  tipos: TipoTramiteOption[];
+  reglaAgencia: ReglaAgenciaEmpresa | null;
+};
+
 export type CreateTramiteInput = {
   ciudad: string;
   anio?: number;
@@ -370,6 +383,26 @@ export async function fetchTiposTramite(
   clienteId: string,
   signal?: AbortSignal,
 ): Promise<TipoTramiteOption[]> {
+  return (await fetchTiposTramiteEmpresa(clienteId, signal)).tipos;
+}
+
+function normalizarReglaAgencia(v: unknown): ReglaAgenciaEmpresa | null {
+  if (!isRecord(v)) return null;
+  const t = (x: unknown) => (typeof x === "string" && x ? x : null);
+  const regla = {
+    agencia: t(v.agencia),
+    formatoDoAgencia: t(v.formatoDoAgencia),
+    mensajeAgencia: t(v.mensajeAgencia),
+    mensajeFormato: t(v.mensajeFormato),
+  };
+  return regla.agencia || regla.formatoDoAgencia ? regla : null;
+}
+
+/** Tipos que la empresa puede abrir y su agencia fija, en una sola llamada. */
+export async function fetchTiposTramiteEmpresa(
+  clienteId: string,
+  signal?: AbortSignal,
+): Promise<TiposTramiteEmpresa> {
   const response = await fetch(
     `/api/tipos-tramite?clienteId=${encodeURIComponent(clienteId)}`,
     { cache: "no-store", headers: { Accept: "application/json" }, signal },
@@ -385,10 +418,12 @@ export async function fetchTiposTramite(
   const payload: unknown = await response.json();
 
   if (!isRecord(payload) || !Array.isArray(payload.tipos)) {
-    return [];
+    return { tipos: [], reglaAgencia: null };
   }
 
-  return payload.tipos.filter(isRecord).map((tipo) => ({
+  const reglaAgencia = normalizarReglaAgencia(payload.reglaAgencia);
+
+  const tipos = payload.tipos.filter(isRecord).map((tipo) => ({
     codigo: readText(tipo, ["codigo"]),
     nombre: readText(tipo, ["nombre"]),
     descripcion: typeof tipo.descripcion === "string" ? tipo.descripcion : null,
@@ -400,6 +435,8 @@ export async function fetchTiposTramite(
         ? tipo.etiquetaReferenciaExterna
         : null,
   }));
+
+  return { tipos, reglaAgencia };
 }
 
 export async function createTramite(input: CreateTramiteInput): Promise<TramiteRow> {
