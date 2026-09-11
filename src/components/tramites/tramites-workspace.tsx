@@ -30,7 +30,8 @@ import { usePermiso } from "@/lib/auth/rol-context";
 import {
   createTramite,
   fetchClienteOptions,
-  fetchTiposTramite,
+  fetchTiposTramiteEmpresa,
+  type ReglaAgenciaEmpresa,
   fetchTramitesPage,
   TRAMITES_PAGE_SIZE,
   type ClienteOption,
@@ -42,6 +43,21 @@ import {
 } from "@/components/tramites/tramites-api";
 
 type LoadState = "loading" | "ready" | "error";
+
+const AGENCIA_LABEL: Record<string, string> = {
+  COLDEX: "Coldex",
+  MOVIADUANAS: "Moviaduanas",
+  AR_LOGISTY: "AR Logisty",
+};
+
+/** Convierte una expresión regular sencilla en una pista legible (^I\d{8}$ → I########). */
+function pistaFormato(regex: string): string {
+  return regex
+    .replace(/^\^/, "")
+    .replace(/\$$/, "")
+    .replace(/\\d\{(\d+)\}/g, (_, n: string) => "#".repeat(Number(n)))
+    .replace(/\\d/g, "#");
+}
 
 /** POST /api/tramites exige ADMIN/REVISOR/OPERATIVO (SOCIO solo consulta). */
 const ROLES_CREAR_DO = ["ADMIN", "REVISOR", "OPERATIVO"] as const;
@@ -306,7 +322,8 @@ function CreateTramiteDialog({
   const [tiposCargados, setTiposCargados] = useState<{
     clienteId: string;
     tipos: TipoTramiteOption[];
-  }>({ clienteId: "", tipos: [] });
+    reglaAgencia: ReglaAgenciaEmpresa | null;
+  }>({ clienteId: "", tipos: [], reglaAgencia: null });
   const [tipoElegido, setTipoElegido] = useState("");
   const { toast } = useToast();
 
@@ -353,6 +370,9 @@ function CreateTramiteDialog({
   // Qué campos pide el formulario lo decide el tipo de trámite, no un if por
   // cliente. Sin tipo cargado todavía se asume el comportamiento histórico.
   const pideAgencia = tipoTramiteSeleccionado?.requiereAgenciaAduanas ?? true;
+  // Agencia fija de la empresa (Litoplas → Moviaduanas): queda puesta y bloqueada.
+  const agenciaFija =
+    tiposCargados.clienteId === clienteId ? tiposCargados.reglaAgencia : null;
   const pideEta = tipoTramiteSeleccionado?.requiereEta ?? true;
   const etiquetaReferencia = tipoTramiteSeleccionado?.etiquetaReferenciaExterna ?? null;
 
@@ -405,12 +425,12 @@ function CreateTramiteDialog({
 
     const controller = new AbortController();
 
-    fetchTiposTramite(clienteId, controller.signal)
-      .then((tipos) => setTiposCargados({ clienteId, tipos }))
+    fetchTiposTramiteEmpresa(clienteId, controller.signal)
+      .then(({ tipos, reglaAgencia }) => setTiposCargados({ clienteId, tipos, reglaAgencia }))
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
         // Sin tipos cargados el formulario se comporta como siempre (importación).
-        setTiposCargados({ clienteId, tipos: [] });
+        setTiposCargados({ clienteId, tipos: [], reglaAgencia: null });
       });
 
     return () => controller.abort();
@@ -449,7 +469,7 @@ function CreateTramiteDialog({
         ? optionalText(formData.get("referenciaExterna"))
         : undefined,
       agenciaAduanas: pideAgencia
-        ? String(formData.get("agenciaAduanas") ?? "")
+        ? (agenciaFija?.agencia ?? String(formData.get("agenciaAduanas") ?? ""))
         : undefined,
       doAgencia: optionalText(formData.get("doAgencia")),
       doCliente: optionalText(formData.get("doCliente")),
@@ -654,24 +674,43 @@ function CreateTramiteDialog({
             {pideAgencia ? (
               <label className="space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">Agencia aduanas</span>
-                <select
-                  name="agenciaAduanas"
-                  required
-                  className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-                >
-                  <option value="COLDEX">Coldex</option>
-                  <option value="MOVIADUANAS">Moviaduanas</option>
-                  <option value="AR_LOGISTY">AR Logisty</option>
-                </select>
+                {agenciaFija?.agencia ? (
+                  <>
+                    <div
+                      className="flex h-10 w-full items-center border border-emerald-200 bg-emerald-50 px-3 text-sm font-medium text-emerald-800"
+                      title={agenciaFija.mensajeAgencia ?? undefined}
+                    >
+                      {AGENCIA_LABEL[agenciaFija.agencia] ?? agenciaFija.agencia}
+                    </div>
+                    <span className="block text-xs text-slate-500">
+                      Fija para esta empresa (pestaña Funciones de la ficha).
+                    </span>
+                  </>
+                ) : (
+                  <select
+                    name="agenciaAduanas"
+                    required
+                    className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+                  >
+                    <option value="COLDEX">Coldex</option>
+                    <option value="MOVIADUANAS">Moviaduanas</option>
+                    <option value="AR_LOGISTY">AR Logisty</option>
+                  </select>
+                )}
               </label>
             ) : null}
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">DO agencia</span>
               <input
                 name="doAgencia"
-                placeholder="I########"
+                placeholder={agenciaFija?.formatoDoAgencia ? pistaFormato(agenciaFija.formatoDoAgencia) : "I########"}
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
+              {agenciaFija?.formatoDoAgencia ? (
+                <span className="block text-xs text-slate-500">
+                  {agenciaFija.mensajeFormato ?? `Formato exigido: ${pistaFormato(agenciaFija.formatoDoAgencia)}`}
+                </span>
+              ) : null}
             </label>
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">DO cliente</span>
