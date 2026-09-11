@@ -235,6 +235,8 @@ function NuevoClienteModal({
       contactoEmail: optionalText(formData.get("contactoEmail")),
       contactoTel: optionalText(formData.get("contactoTel")),
       manejaAnticipo: formData.get("manejaAnticipo") === "on",
+      esCliente: formData.get("esCliente") === "on",
+      esProveedor: formData.get("esProveedor") === "on",
       tarifas,
     };
 
@@ -414,6 +416,21 @@ function NuevoClienteModal({
           <input name="manejaAnticipo" type="checkbox" defaultChecked className="h-4 w-4" />
           <span className="text-sm text-slate-700">Maneja anticipo</span>
         </label>
+
+        <fieldset className="space-y-2 border border-slate-200 p-3">
+          <legend className="px-1 text-sm font-medium text-slate-700">Rol de la empresa</legend>
+          <p className="text-xs text-slate-500">
+            Puede ser las dos cosas a la vez (Coldex, Eltrans, Ascinter). Si es proveedor, se le crea su ficha de pago.
+          </p>
+          <label className="flex items-center gap-2">
+            <input name="esCliente" type="checkbox" defaultChecked className="h-4 w-4" />
+            <span className="text-sm text-slate-700">Es cliente: le facturamos</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input name="esProveedor" type="checkbox" className="h-4 w-4" />
+            <span className="text-sm text-slate-700">Es proveedor: nos factura y le pagamos</span>
+          </label>
+        </fieldset>
 
         {error ? (
           <div

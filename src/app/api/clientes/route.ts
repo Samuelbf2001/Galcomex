@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
+import { asegurarBeneficiarioDeEmpresa } from "@/lib/beneficiarios/service";
 import { prisma } from "@/lib/db/prisma";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
@@ -84,14 +85,23 @@ export async function POST(request: NextRequest) {
     const payload = clientePayloadSchema.parse(await request.json());
     const { tarifas, ...cliente } = payload;
 
-    const created = await prisma.cliente.create({
-      data: {
-        ...cliente,
-        tarifas: {
-          create: tarifas,
+    const created = await prisma.$transaction(async (tx) => {
+      const nuevo = await tx.cliente.create({
+        data: {
+          ...cliente,
+          tarifas: {
+            create: tarifas,
+          },
         },
-      },
-      include: { tarifas: true },
+        include: { tarifas: true },
+      });
+
+      // Una empresa proveedora necesita su ficha de pago desde el primer día.
+      if (nuevo.esProveedor) {
+        await asegurarBeneficiarioDeEmpresa(tx, nuevo);
+      }
+
+      return nuevo;
     });
 
     return jsonResponse({ cliente: created }, { status: 201 });

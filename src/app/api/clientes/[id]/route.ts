@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
+import { asegurarBeneficiarioDeEmpresa } from "@/lib/beneficiarios/service";
 import { prisma } from "@/lib/db/prisma";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
@@ -76,6 +77,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
         data: clienteData,
       });
 
+      if (nextCliente.esProveedor) {
+        await asegurarBeneficiarioDeEmpresa(tx, nextCliente);
+      }
+
       if (tarifas) {
         await tx.tarifaCliente.deleteMany({ where: { clienteId: id } });
         await tx.tarifaCliente.createMany({
@@ -136,6 +141,10 @@ export async function PUT(request: NextRequest, context: RouteContext) {
         where: { id },
         data: cliente,
       });
+
+      if (nextCliente.esProveedor) {
+        await asegurarBeneficiarioDeEmpresa(tx, nextCliente);
+      }
 
       if (tarifas) {
         await tx.tarifaCliente.deleteMany({ where: { clienteId: id } });
