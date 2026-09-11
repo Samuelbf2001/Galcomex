@@ -26,6 +26,33 @@ function optionalText(value: FormDataEntryValue | null): string | null {
   return text.length > 0 ? text : null;
 }
 
+/** Cliente, proveedor o las dos cosas; y si su facturación va por el socio LM. */
+function RolEmpresa({ cliente }: { cliente: { esCliente: boolean; esProveedor: boolean; tipo: string } }) {
+  const rol =
+    cliente.esCliente && cliente.esProveedor
+      ? "Cliente y proveedor"
+      : cliente.esProveedor
+        ? "Proveedor"
+        : "Cliente";
+  const claseRol =
+    cliente.esCliente && cliente.esProveedor
+      ? "border-violet-200 bg-violet-50 text-violet-700"
+      : cliente.esProveedor
+        ? "border-amber-200 bg-amber-50 text-amber-700"
+        : "border-cyan-200 bg-cyan-50 text-cyan-700";
+
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <span className={`border px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${claseRol}`}>{rol}</span>
+      {cliente.tipo === "SOCIO_LM" ? (
+        <span className="border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+          Socio LM
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function ClientesWorkspace() {
   // Solo ADMIN crea clientes (`POST /api/clientes` → requireRole(["ADMIN"])).
   const esAdmin = useEsAdmin();
@@ -64,9 +91,9 @@ export function ClientesWorkspace() {
     <section className="space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Clientes</h1>
+          <h1 className="text-2xl font-semibold">Empresas</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Clientes propios y facturación por socio LM.
+            Clientes, proveedores y las que son las dos cosas a la vez. Cada una con sus funciones encendidas.
           </p>
         </div>
         <div className="flex gap-2">
@@ -85,7 +112,7 @@ export function ClientesWorkspace() {
               className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
-              Nuevo cliente
+              Nueva empresa
             </button>
           ) : null}
         </div>
@@ -106,12 +133,12 @@ export function ClientesWorkspace() {
           title="Aún no hay clientes."
           detail={
             esAdmin
-              ? "Crea el primero con «Nuevo cliente»."
-              : "Un administrador puede crear el primero con «Nuevo cliente»."
+              ? "Crea la primera con «Nueva empresa»."
+              : "Un administrador puede crear la primera con «Nueva empresa»."
           }
           action={
             esAdmin
-              ? { label: "Nuevo cliente", onClick: () => setModalOpen(true), icon: false }
+              ? { label: "Nueva empresa", onClick: () => setModalOpen(true), icon: false }
               : undefined
           }
         />
@@ -122,7 +149,7 @@ export function ClientesWorkspace() {
               <tr>
                 <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
                 <th className="border-b border-slate-200 px-4 py-3">NIT</th>
-                <th className="border-b border-slate-200 px-4 py-3">Tipo</th>
+                <th className="border-b border-slate-200 px-4 py-3">Rol</th>
                 <th className="border-b border-slate-200 px-4 py-3">Contacto</th>
                 <th className="border-b border-slate-200 px-4 py-3">Tarifas</th>
                 <th className="border-b border-slate-200 px-4 py-3">Estado</th>
@@ -141,7 +168,7 @@ export function ClientesWorkspace() {
                   </td>
                   <td className="px-4 py-3">{cliente.nit}</td>
                   <td className="px-4 py-3">
-                    {cliente.tipo === "SOCIO_LM" ? "Socio LM" : "Propio"}
+                    <RolEmpresa cliente={cliente} />
                   </td>
                   <td className="px-4 py-3 text-slate-600">{cliente.contactoNombre ?? "-"}</td>
                   <td className="px-4 py-3">{cliente.tarifas.length}</td>
@@ -240,7 +267,7 @@ function NuevoClienteModal({
     <ModalShell
       open
       onClose={onClose}
-      title="Nuevo cliente"
+      title="Nueva empresa"
       description="Cliente propio de Galcomex o del socio Luis Martínez."
       size="lg"
       dismissible={!isSubmitting}
