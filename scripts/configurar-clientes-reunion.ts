@@ -542,13 +542,26 @@ async function ejemplos(ids: Map<string, string>, usuarioId: string) {
       ok(`2. Otros servicios para Litoplas: ${otro.consecutivo} (Plan Vallejo) — sin agencia, sin ETA, sin checklist`);
     }
 
-    // 3. Eventos + base de cálculo sobre el DO de importación más reciente de Litoplas.
-    const doLitoplas = await prisma.tramiteDO.findFirst({
-      where: { clienteId: litoplasId, tipoTramiteCodigo: "IMPORTACION", estado: { notIn: ["CERRADO"] } },
-      orderBy: { createdAt: "desc" },
+    // 3. Eventos + base de cálculo sobre un DO de importación DE EJEMPLO de
+    //    Litoplas. Nunca sobre uno real: si no existe, se crea (Moviaduanas y
+    //    DO de agencia con el formato que exige la regla fija).
+    let doLitoplas = await prisma.tramiteDO.findFirst({
+      where: { clienteId: litoplasId, tipoTramiteCodigo: "IMPORTACION", comentarios: { contains: MARCA_EJEMPLO } },
       select: { id: true, consecutivo: true },
     });
-    if (doLitoplas) {
+    if (!doLitoplas) {
+      const creado = await createTramite({
+        ciudad: Ciudad.BAQ,
+        clienteId: litoplasId,
+        agenciaAduanas: "MOVIADUANAS",
+        doAgencia: "I00000001",
+        proveedorCliente: "Proveedor de ejemplo",
+        comentarios: `${MARCA_EJEMPLO} DO de importación de ejemplo para la simulación: 3 declaraciones, contenedor de 20′, revisión en despacho y registro elaborado.`,
+        creadoPorId: usuarioId,
+      });
+      doLitoplas = { id: creado.id, consecutivo: creado.consecutivo };
+    }
+    {
       await prisma.tramiteDO.update({
         where: { id: doLitoplas.id },
         data: { numDeclaraciones: 3, tipoCarga: "CONTENEDOR_20", numContenedores: 1, numDocumentos: 4 },
@@ -568,8 +581,6 @@ async function ejemplos(ids: Map<string, string>, usuarioId: string) {
       }
       if (propuesta.resultado) nota(`${"Total conceptos".padEnd(58)} ${cop(propuesta.resultado.total).padStart(14)}`);
       if (propuesta.motivo) aviso(propuesta.motivo);
-    } else {
-      aviso("3. Litoplas no tiene DO de importación abierto para marcar eventos (Camila va a recargar 2026 desde cero).");
     }
   }
 
