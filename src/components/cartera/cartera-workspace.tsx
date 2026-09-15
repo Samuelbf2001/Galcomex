@@ -62,6 +62,7 @@ const LINEAS_SERVICIO: { value: string; label: string }[] = [
   { value: "CLASIFICACION", label: "Clasificación arancelaria" },
   { value: "PLAN_VALLEJO", label: "Plan Vallejo" },
   { value: "EXPORTACION", label: "Exportación" },
+  { value: "OTROS", label: "Otros servicios" },
 ];
 type VistaMode = "cliente" | "lm";
 type TipoModal = "ABONO" | "DEVOLUCION";

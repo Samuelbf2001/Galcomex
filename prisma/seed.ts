@@ -138,6 +138,25 @@ async function main() {
       etiquetaReferenciaExterna: "N° de informe de la clasificadora",
       orden: 20,
     },
+    {
+      // Plan Vallejo, sellos, coordinación logística: "eso también se cobra,
+      // no es un DO" (reunión 10-sep-2026). Sin agencia, sin ETA, sin checklist.
+      codigo: "OTRO",
+      nombre: "Otros servicios",
+      descripcion:
+        "Servicios sueltos que se cobran sin DO: firma de Plan Vallejo, sellos, coordinación logística. Consecutivo propio (OTR26-0001), sin agencia, sin ETA ni checklist; se factura aparte.",
+      prefijoConsecutivo: "OTR",
+      secuenciaPor: SecuenciaTramite.ANIO,
+      incluyeCiudadEnConsecutivo: false,
+      lineaServicio: "OTROS",
+      facturacionSeparada: true,
+      capacidadRequerida: null,
+      requiereAgenciaAduanas: false,
+      requiereEta: false,
+      usaChecklist: false,
+      etiquetaReferenciaExterna: "Servicio prestado",
+      orden: 30,
+    },
   ];
 
   for (const tipo of tiposTramite) {

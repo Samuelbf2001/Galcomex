@@ -140,10 +140,12 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
 ## Tarifario y eventos (M2 + M3) — la propuesta comercial como datos
 
 - **Motor puro:** `src/lib/tarifas/motor.ts` (`calcularLineasTarifa(items, ctx)`),
-  sin BD, BigInt, tolerancia 0. Cinco formas de cálculo (`FIJO`, `POR_UNIDAD`,
+  sin BD, BigInt, tolerancia 0. Seis formas de cálculo (`FIJO`, `POR_UNIDAD`,
   `PORCENTAJE_MIN` con mínimos por tipo de carga, `PRIMERO_MAS_ADICIONAL`,
-  `ESPEJO_DE_COSTO`) y tres disparadores (`SIEMPRE`, `EVENTO`, `MANUAL`). Si
-  falta un dato de la base de cálculo devuelve `pendientes`, nunca un cero.
+  `ESPEJO_DE_COSTO`, `POR_TRAMO` = precio unitario según cuántas unidades haya,
+  Polyrec ZF: 1 contenedor 300.000, 2 o más 250.000 c/u) y tres disparadores
+  (`SIEMPRE`, `EVENTO`, `MANUAL`). Si falta un dato de la base de cálculo
+  devuelve `pendientes`, nunca un cero.
 - **Datos:** `Tarifario` (por empresa y `alcance` = línea de servicio, con
   vigencia real y versión; BORRADOR → VIGENTE → VENCIDO | REEMPLAZADO) +
   `TarifaItem`. Solo se editan ítems de un BORRADOR; para cambiar precios se
@@ -161,6 +163,15 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
 - **Capacidades que lo gobiernan:** `tarifario_propio`, `eventos_facturables`,
   `base_cif`. Sin ellas los endpoints responden 422 y la UI no muestra las
   secciones.
+- **Orden de compra** (`orden_compra_en_revision`, caso Polyrec): el DO guarda
+  `ordenCompraNumero` y `ordenCompraValor` (COP sin IVA); `generarBorrador`
+  siembra "ORDEN DE COMPRA N° …" en `comentariosCabecera` y el revisor muestra
+  si la factura sin IVA cuadra con la OC.
+- **Tipos de trámite:** `IMPORTACION` (DO.BAQ26-0001), `CLASIFICACION`
+  (CLAS26-0001, exige `clasificacion_arancelaria`) y `OTRO` (OTR26-0001:
+  Plan Vallejo, sellos, coordinación logística; sin agencia, ETA ni checklist,
+  factura aparte, línea de cartera `OTROS`). Agencias: Moviaduanas, Coldex,
+  AR Logisty, Cortes.
 - UI: sección "Tarifario" en la ficha (`seccion-tarifario.tsx`), panel "Base de
   cálculo y eventos" en el Resumen del DO (`seccion-eventos-tramite.tsx`),
   PDF en `GET /api/tarifarios/[id]/pdf`. Demo: `npx tsx scripts/demo-tarifario.ts`.

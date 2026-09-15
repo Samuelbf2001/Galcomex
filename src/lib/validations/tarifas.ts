@@ -23,11 +23,40 @@ export const minimosTarifaSchema = z
   })
   .strict();
 
+/**
+ * Tramos de un ítem POR_TRAMO. `hasta` inclusive; `null` = "en adelante".
+ * Polyrec ZF: `[{ hasta: 1, valor: "300000" }, { hasta: null, valor: "250000" }]`.
+ */
+export const tramosTarifaSchema = z
+  .array(
+    z
+      .object({
+        hasta: z.number().int().min(1).max(100_000).nullable(),
+        valor: copString,
+      })
+      .strict(),
+  )
+  .min(1, "Un ítem por tramos necesita al menos un tramo")
+  .max(20)
+  .superRefine((tramos, ctx) => {
+    const abiertos = tramos.filter((t) => t.hasta === null).length;
+    if (abiertos > 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Solo puede haber un tramo abierto (en adelante)" });
+    }
+    const topes = tramos.filter((t) => t.hasta !== null).map((t) => t.hasta as number);
+    if (new Set(topes).size !== topes.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Dos tramos terminan en la misma cantidad" });
+    }
+  });
+
+export type TramosTarifaInput = z.infer<typeof tramosTarifaSchema>;
+
 export const ALCANCES_TARIFARIO = [
   "TRAMITE",
   "CLASIFICACION",
   "PLAN_VALLEJO",
   "EXPORTACION",
+  "OTROS",
 ] as const;
 
 const tarifaItemBase = z.object({
@@ -50,6 +79,7 @@ const tarifaItemBase = z.object({
   porcentajeBps: z.number().int().min(1).max(100_000).optional().nullable(),
   minimos: minimosTarifaSchema.optional().nullable(),
   conceptoCosto: z.string().trim().min(1).max(120).optional().nullable(),
+  tramos: tramosTarifaSchema.optional().nullable(),
   aplicaIva: z.boolean().default(true),
   notas: z.string().trim().max(500).optional().nullable(),
   orden: z.number().int().min(0).max(9_999).default(0),
@@ -78,6 +108,13 @@ export function validarCoherenciaItem(item: TarifaItemInput, ctx: z.RefinementCt
       code: z.ZodIssueCode.custom,
       path: ["conceptoCosto"],
       message: "Indica qué pago o factura de proveedor se espeja",
+    });
+  }
+  if (item.tipoCalculo === TipoCalculoTarifa.POR_TRAMO && (!item.tramos || item.tramos.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["tramos"],
+      message: "Indica los tramos (hasta cuántas unidades y a qué precio cada una)",
     });
   }
   if (

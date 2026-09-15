@@ -12,7 +12,7 @@ import React from "react";
 
 export type TarifaItemPdfDto = {
   nombrePublico: string;
-  tipoCalculo: "FIJO" | "POR_UNIDAD" | "PORCENTAJE_MIN" | "PRIMERO_MAS_ADICIONAL" | "ESPEJO_DE_COSTO";
+  tipoCalculo: "FIJO" | "POR_UNIDAD" | "PORCENTAJE_MIN" | "PRIMERO_MAS_ADICIONAL" | "ESPEJO_DE_COSTO" | "POR_TRAMO";
   disparador: "SIEMPRE" | "EVENTO" | "MANUAL";
   unidad: "TRAMITE" | "CONTENEDOR" | "DECLARACION" | "DOCUMENTO" | "ITEM" | "MES";
   valor: bigint;
@@ -20,6 +20,7 @@ export type TarifaItemPdfDto = {
   porcentajeBps: number | null;
   minimos: { SUELTA?: string; CONTENEDOR_20?: string; CONTENEDOR_40?: string } | null;
   conceptoCosto: string | null;
+  tramos: { hasta: number | null; valor: string }[] | null;
   aplicaIva: boolean;
   notas: string | null;
 };
@@ -44,6 +45,16 @@ const ALCANCE_REF: Record<string, string> = {
   CLASIFICACION: "PARA CLASIFICACIÓN ARANCELARIA",
   PLAN_VALLEJO: "PARA PLAN VALLEJO",
   EXPORTACION: "PARA EXPORTACIONES",
+  OTROS: "PARA OTROS SERVICIOS",
+};
+
+const UNIDAD_PLURAL_TXT: Record<TarifaItemPdfDto["unidad"], string> = {
+  TRAMITE: "trámites",
+  CONTENEDOR: "contenedores",
+  DECLARACION: "declaraciones",
+  DOCUMENTO: "documentos",
+  ITEM: "ítems",
+  MES: "meses",
 };
 
 const UNIDAD_TXT: Record<TarifaItemPdfDto["unidad"], string> = {
@@ -98,6 +109,20 @@ export function filasDeItem(item: TarifaItemPdfDto): { concepto: string; valor: 
       ];
     case "ESPEJO_DE_COSTO":
       return [{ concepto: item.nombrePublico, valor: "Al costo, con soporte" }];
+    case "POR_TRAMO": {
+      const tramos = [...(item.tramos ?? [])].sort((a, b) => (a.hasta ?? Infinity) - (b.hasta ?? Infinity));
+      const plural = UNIDAD_PLURAL_TXT[item.unidad];
+      return tramos.map((t, i) => {
+        const anterior = i > 0 ? tramos[i - 1]!.hasta ?? 0 : 0;
+        const rango =
+          t.hasta === null
+            ? `${anterior + 1} o más ${plural}`
+            : t.hasta === 1
+              ? `1 ${UNIDAD_TXT[item.unidad]}`
+              : `de ${anterior + 1} a ${t.hasta} ${plural}`;
+        return { concepto: `${item.nombrePublico} (${rango}, por ${UNIDAD_TXT[item.unidad]})`, valor: `${formatCOPTarifa(BigInt(t.valor))}${item.aplicaIva ? " + IVA" : ""}` };
+      });
+    }
   }
 }
 

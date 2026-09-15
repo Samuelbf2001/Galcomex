@@ -13,6 +13,8 @@
  *                          por tipo de carga
  *   PRIMERO_MAS_ADICIONAL  valor + valorAdicional × (n − 1)  (clasificación: 380.000 + 180.000/ítem)
  *   ESPEJO_DE_COSTO        lo que costó, tal cual            (pago del registro VUCE)
+ *   POR_TRAMO              precio unitario según el total    (Polyrec ZF: 1 contenedor 300.000;
+ *                          de unidades, × todas               2 o más, 250.000 cada uno)
  *
  * Disparador:
  *   SIEMPRE  → en todo trámite.
@@ -29,7 +31,8 @@ export type TipoCalculoTarifa =
   | "POR_UNIDAD"
   | "PORCENTAJE_MIN"
   | "PRIMERO_MAS_ADICIONAL"
-  | "ESPEJO_DE_COSTO";
+  | "ESPEJO_DE_COSTO"
+  | "POR_TRAMO";
 
 export type DisparadorTarifa = "SIEMPRE" | "EVENTO" | "MANUAL";
 
@@ -46,6 +49,12 @@ export type TipoCarga = "SUELTA" | "CONTENEDOR_20" | "CONTENEDOR_40";
 /** Mínimos de un ítem PORCENTAJE_MIN, en COP string (JSON en BD). */
 export type MinimosTarifa = Partial<Record<TipoCarga, string>>;
 
+/**
+ * Tramo de un ítem POR_TRAMO: hasta `hasta` unidades (inclusive) el precio
+ * unitario es `valor`; `hasta = null` es "en adelante". COP string (JSON en BD).
+ */
+export type TramoTarifa = { hasta: number | null; valor: string };
+
 export interface ItemTarifaCalculable {
   concepto: string;
   nombrePublico: string;
@@ -59,6 +68,7 @@ export interface ItemTarifaCalculable {
   porcentajeBps: number | null;
   minimos: MinimosTarifa | null;
   conceptoCosto: string | null;
+  tramos: TramoTarifa[] | null;
   aplicaIva: boolean;
   orden: number;
 }
@@ -197,6 +207,40 @@ function minimoDe(minimos: MinimosTarifa | null, tipoCarga: TipoCarga): bigint |
   }
 }
 
+/**
+ * Tramo que aplica a `n` unidades: el primero cuyo `hasta` la cubre, o el
+ * abierto (`hasta = null`). Los tramos se ordenan aquí, así que el orden en
+ * que se guardaron no importa. Sin tramo que cubra → null (dato incompleto).
+ */
+export function tramoPara(tramos: TramoTarifa[], n: number): TramoTarifa | null {
+  const ordenados = [...tramos].sort((a, b) => {
+    if (a.hasta === null) return 1;
+    if (b.hasta === null) return -1;
+    return a.hasta - b.hasta;
+  });
+  for (const tramo of ordenados) {
+    if (tramo.hasta === null || n <= tramo.hasta) return tramo;
+  }
+  return null;
+}
+
+function valorTramo(tramo: TramoTarifa): bigint | null {
+  try {
+    return /^\d+$/.test(tramo.valor) ? BigInt(tramo.valor) : null;
+  } catch {
+    return null;
+  }
+}
+
+function etiquetaTramo(tramo: TramoTarifa, tramos: TramoTarifa[], unidad: UnidadTarifa): string {
+  if (tramo.hasta === null) {
+    const previos = tramos.filter((t) => t.hasta !== null).map((t) => t.hasta as number);
+    const desde = previos.length ? Math.max(...previos) + 1 : 1;
+    return `${desde} o más ${PLURAL_UNIDAD[unidad]}`;
+  }
+  return tramo.hasta === 1 ? `1 ${ETIQUETA_UNIDAD[unidad]}` : `hasta ${tramo.hasta} ${PLURAL_UNIDAD[unidad]}`;
+}
+
 function buscarCosto(costos: CostoEspejable[], conceptoCosto: string): CostoEspejable | null {
   const clave = conceptoCosto.trim().toLowerCase();
   if (!clave) return null;
@@ -299,6 +343,24 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
         valorUnitario: costo.valor,
         valor: costo.valor,
         detalle: `Espejo de "${costo.concepto}"`,
+      };
+    }
+
+    case "POR_TRAMO": {
+      if (!item.tramos || item.tramos.length === 0) return { ok: false, motivo: "El ítem no tiene tramos configurados" };
+      const n = cantidadEvento ?? cantidadDeUnidad(item.unidad, ctx);
+      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad) };
+      if (n <= 0) return { ok: true, cantidad: 0, valorUnitario: 0n, valor: 0n, detalle: "Sin unidades" };
+      const tramo = tramoPara(item.tramos, n);
+      if (!tramo) return { ok: false, motivo: `Ningún tramo cubre ${n} ${unidades(item.unidad, n)}` };
+      const unitario = valorTramo(tramo);
+      if (unitario === null) return { ok: false, motivo: "Un tramo tiene un valor que no es un entero en COP" };
+      return {
+        ok: true,
+        cantidad: n,
+        valorUnitario: unitario,
+        valor: unitario * BigInt(n),
+        detalle: `${formatoCOP(unitario)} × ${n} ${unidades(item.unidad, n)} (tramo ${etiquetaTramo(tramo, item.tramos, item.unidad)})`,
       };
     }
   }

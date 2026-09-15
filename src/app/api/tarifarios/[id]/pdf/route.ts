@@ -15,6 +15,19 @@ import { getTarifario } from "@/lib/tarifas/service";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
+function tramosDe(json: unknown): TarifaItemPdfDto["tramos"] {
+  if (!Array.isArray(json)) return null;
+  const out: NonNullable<TarifaItemPdfDto["tramos"]> = [];
+  for (const t of json) {
+    if (!t || typeof t !== "object") continue;
+    const { hasta, valor } = t as Record<string, unknown>;
+    if (typeof valor === "string" && /^\d+$/.test(valor) && (hasta === null || typeof hasta === "number")) {
+      out.push({ hasta: hasta as number | null, valor });
+    }
+  }
+  return out.length ? out : null;
+}
+
 function minimosDe(json: unknown): TarifaItemPdfDto["minimos"] {
   if (!json || typeof json !== "object" || Array.isArray(json)) return null;
   const rec = json as Record<string, unknown>;
@@ -59,6 +72,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
         porcentajeBps: i.porcentajeBps,
         minimos: minimosDe(i.minimos),
         conceptoCosto: i.conceptoCosto,
+        tramos: tramosDe(i.tramos),
         aplicaIva: i.aplicaIva,
         notas: i.notas,
       })),

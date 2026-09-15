@@ -646,3 +646,52 @@ una acción: **Cruzar saldos** en la sección Cuenta corriente de la ficha.
   la ya enlazada, enlaza una suelta con el mismo NIT o la crea. Sin ese puente
   la empresa no aparecía en el libro de pagos ni en la punta proveedor de la
   cuenta corriente. Verificado contra la BD local (crea, idempotente, enlaza).
+
+## Reunión del 10-sep-2026: tipo OTRO, tarifa por tramos, orden de compra, Cortes (2026-09-14)
+
+Extracto de la reunión en `../reunion-2026-09-10-relevante.md`. Todo aditivo,
+sobre `feat/tarifario-eventos`; migración `20260914120000_tipo_otro_cortes_oc`.
+
+### Qué quedó
+
+- **Tipo de trámite `OTRO` ("Otros servicios")**: fila nueva en `tipo_tramite`
+  (prefijo `OTR`, contador por año, sin ciudad en el consecutivo, sin agencia,
+  sin ETA, sin checklist, `facturacionSeparada`, `lineaServicio = OTROS`,
+  `etiquetaReferenciaExterna = "Servicio prestado"`). Cero código nuevo para
+  soportarlo: el formulario, el consecutivo y la cartera ya leían todo del tipo.
+  Solo se agregó `OTROS` a las listas de líneas de servicio (cartera, cuenta
+  corriente, alcances del tarifario, MCP). Motivo: "Plan Vallejo también se
+  cobra, no es un DO" (min 15:27).
+- **`POR_TRAMO`** en `TipoCalculoTarifa` + `tarifa_item.tramos` (JSON
+  `[{hasta, valor}]`, `hasta = null` = en adelante). El precio del tramo aplica
+  a TODAS las unidades (2 contenedores = 2 × 250.000, no 300 + 250). Motor,
+  validación Zod (`tramosTarifaSchema`: un solo tramo abierto, topes únicos),
+  duplicar con incremento, editor de tramos en el modal del ítem, PDF, MCP.
+  Plantilla `POLYREC_ZF_2026`. 6 tests nuevos en `motor.test.ts` (22 total).
+- **Orden de compra**: `tramite_do.ordenCompraNumero` / `ordenCompraValor`
+  (COP sin IVA). Se capturan en el panel "Base de cálculo" del DO solo si la
+  empresa tiene `orden_compra_en_revision` (la capacidad por fin tiene
+  consumidor). `generarBorrador` siembra `ORDEN DE COMPRA N° …` en
+  `comentariosCabecera` (sale en Siigo como observación) y el revisor muestra
+  una franja verde/ámbar comparando la OC con la factura sin IVA
+  (`totalFacturaLineas − ivaComision + retenciones`). La base exacta de
+  comparación se fija cuando haya una factura real de Polyrec con su OC.
+- **`CORTES`** en `AgenciaAduanas` (UI del DO, MCP).
+- **Conceptos Siigo reales**: `CONCEPTOS_VENTA_DEMO` ahora apunta a los 83
+  productos sincronizados en producción (004 Sistematización, 002
+  Documentación, 003 Papelería, 010 Elaboración reg imp, 007 Servicio
+  logístico, 016 Zona secundaria, 24 Pago VUCE, 014 Plan Vallejo, 12 Sellos…).
+  Los que no tienen producto exacto siguen marcados `confirmar`.
+- `scripts/configurar-clientes-reunion.ts` reescrito con los nombres reales de
+  producción (LITOPLAS SA, CW ASIA SAS cliente, POLYREC S.A.S. + POLYREC ZONA
+  FRANCA en "Grupo Polyrec", SESDERMA COLOMBIA, LTRANS SAS, COLDEX; OX fuera
+  por liquidada). Publica las plantillas y, con `--ejemplos`, deja un ejemplo
+  por tema marcado `[EJEMPLO REUNIÓN]`: clasificación, otro servicio (Plan
+  Vallejo), eventos + base de cálculo, traslado ZF por tramos, DO con OC y
+  agencia Cortes, cargo manual de Coldex.
+
+### Lo que sigue dependiendo de Camila
+
+Tarifario de Polyrec S.A.S., tarifa de la firma del Plan Vallejo, productos
+Siigo marcados `confirmar`, una factura real de Polyrec con OC, carpetas 2026,
+y la decisión de borrar los 196 DOs para arrancar el consecutivo en cero.
