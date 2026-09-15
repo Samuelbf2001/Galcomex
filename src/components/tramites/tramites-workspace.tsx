@@ -48,6 +48,7 @@ const AGENCIA_LABEL: Record<string, string> = {
   COLDEX: "Coldex",
   MOVIADUANAS: "Moviaduanas",
   AR_LOGISTY: "AR Logisty",
+  CORTES: "Cortes",
 };
 
 /** Convierte una expresión regular sencilla en una pista legible (^I\d{8}$ → I########). */
@@ -695,6 +696,7 @@ function CreateTramiteDialog({
                     <option value="COLDEX">Coldex</option>
                     <option value="MOVIADUANAS">Moviaduanas</option>
                     <option value="AR_LOGISTY">AR Logisty</option>
+                    <option value="CORTES">Cortes</option>
                   </select>
                 )}
               </label>

@@ -120,10 +120,13 @@ async function main() {
 
   titulo("2. Funciones por empresa");
   const litoplas = await localizar(["litoplas"]);
-  const cw = await localizar(["cw asia", "cw express", "cw "]);
+  // El cliente es CW ASIA SAS (NIT 900775062-7); CW Express es su transportador.
+  const cw = await localizar(["cw asia"]);
+  const polyrecZf = await localizar(["polyrec zona franca", "polired zona franca"]);
   const empresas = [
     { empresa: litoplas, etiqueta: "LITOPLAS", capacidades: ["tarifario_propio", "eventos_facturables"] as CodigoCapacidad[], plantillas: ["LITOPLAS_IMPO_2026", "LITOPLAS_CLAS_2026", "LITOPLAS_EXPO_2026"] },
     { empresa: cw, etiqueta: "CW ASIA", capacidades: ["tarifario_propio", "eventos_facturables", "base_cif"] as CodigoCapacidad[], plantillas: ["CW_ASIA_2026"] },
+    { empresa: polyrecZf, etiqueta: "POLYREC ZF", capacidades: ["tarifario_propio"] as CodigoCapacidad[], plantillas: ["POLYREC_ZF_2026"] },
   ];
   for (const e of empresas) {
     if (!e.empresa) continue;
@@ -149,8 +152,8 @@ async function main() {
       const creado = await crearTarifario({
         empresaId: e.empresa.id,
         plantilla: codigo,
-        vigenteDesde: codigo.startsWith("CW") ? new Date("2026-03-11T00:00:00.000Z") : new Date("2026-02-02T00:00:00.000Z"),
-        vigenteHasta: codigo.startsWith("CW") ? new Date("2027-03-10T00:00:00.000Z") : new Date("2027-01-31T00:00:00.000Z"),
+        vigenteDesde: codigo.startsWith("CW") ? new Date("2026-03-11T00:00:00.000Z") : codigo.startsWith("POLYREC") ? new Date("2026-01-01T00:00:00.000Z") : new Date("2026-02-02T00:00:00.000Z"),
+        vigenteHasta: codigo.startsWith("CW") ? new Date("2027-03-10T00:00:00.000Z") : codigo.startsWith("POLYREC") ? new Date("2026-12-31T00:00:00.000Z") : new Date("2027-01-31T00:00:00.000Z"),
         notas: `${marcaPlantilla} · ${plantilla.fuente}`,
         items: [],
         usuarioId,

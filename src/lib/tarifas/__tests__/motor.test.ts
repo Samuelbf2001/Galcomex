@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   calcularLineasTarifa,
   porcentajeSobre,
+  tramoPara,
   vigenteEn,
   type ContextoTarifa,
   type ItemTarifaCalculable,
@@ -30,6 +31,7 @@ function item(parcial: Partial<ItemTarifaCalculable> & Pick<ItemTarifaCalculable
     porcentajeBps: null,
     minimos: null,
     conceptoCosto: null,
+    tramos: null,
     aplicaIva: true,
     orden: 0,
     ...parcial,
@@ -227,6 +229,78 @@ describe("CW ASIA — tarifa única sobre el CIF con mínimos", () => {
     expect(sin.pendientes.find((p) => p.concepto === "PAGO_REGISTRO")?.motivo).toBe(
       'No hay un pago o factura de proveedor que contenga "registro"',
     );
+  });
+});
+
+// Polyrec ZF, traslados (reunión 10-sep-2026, min 83:31): "si es un contenedor
+// son 300; si son dos o más, 250 cada contenedor".
+const POLYREC_ZF: ItemTarifaCalculable[] = [
+  item({
+    concepto: "TRASLADO_ZF",
+    nombrePublico: "Traslado de contenedor en zona franca",
+    tipoCalculo: "POR_TRAMO",
+    unidad: "CONTENEDOR",
+    // A propósito desordenados: el motor los ordena.
+    tramos: [
+      { hasta: null, valor: "250000" },
+      { hasta: 1, valor: "300000" },
+    ],
+    orden: 1,
+  }),
+];
+
+describe("Polyrec ZF — tarifa por tramos", () => {
+  it("un contenedor: 300.000", () => {
+    const r = calcularLineasTarifa(POLYREC_ZF, ctx({ numContenedores: 1 }));
+    expect(r.lineas).toHaveLength(1);
+    expect(r.lineas[0].valorUnitario).toBe(300_000n);
+    expect(r.lineas[0].valor).toBe(300_000n);
+    expect(r.lineas[0].detalle).toBe("300.000 × 1 contenedor (tramo 1 contenedor)");
+  });
+
+  it("dos contenedores: 250.000 cada uno = 500.000 (no 300 + 250)", () => {
+    const r = calcularLineasTarifa(POLYREC_ZF, ctx({ numContenedores: 2 }));
+    expect(r.lineas[0].valorUnitario).toBe(250_000n);
+    expect(r.lineas[0].valor).toBe(500_000n);
+    expect(r.lineas[0].detalle).toBe("250.000 × 2 contenedores (tramo 2 o más contenedores)");
+  });
+
+  it("cinco contenedores: 1.250.000", () => {
+    expect(calcularLineasTarifa(POLYREC_ZF, ctx({ numContenedores: 5 })).total).toBe(1_250_000n);
+  });
+
+  it("sin número de contenedores queda pendiente, nunca en cero", () => {
+    const r = calcularLineasTarifa(POLYREC_ZF, ctx());
+    expect(r.lineas).toEqual([]);
+    expect(r.pendientes[0].motivo).toBe("Falta el número de contenedores del trámite");
+  });
+
+  it("tramos cerrados que no cubren la cantidad → pendiente con el motivo", () => {
+    const cerrado = [item({ concepto: "X", tipoCalculo: "POR_TRAMO", unidad: "CONTENEDOR", tramos: [{ hasta: 2, valor: "1000" }] })];
+    const r = calcularLineasTarifa(cerrado, ctx({ numContenedores: 3 }));
+    expect(r.pendientes[0].motivo).toBe("Ningún tramo cubre 3 contenedores");
+  });
+
+  it("tres tramos cerrados + abierto: cada cantidad cae en el suyo", () => {
+    const escalonado = [
+      item({
+        concepto: "E",
+        tipoCalculo: "POR_TRAMO",
+        unidad: "DECLARACION",
+        tramos: [
+          { hasta: 1, valor: "100" },
+          { hasta: 3, valor: "80" },
+          { hasta: null, valor: "60" },
+        ],
+      }),
+    ];
+    expect(tramoPara(escalonado[0].tramos!, 1)?.valor).toBe("100");
+    expect(tramoPara(escalonado[0].tramos!, 2)?.valor).toBe("80");
+    expect(tramoPara(escalonado[0].tramos!, 3)?.valor).toBe("80");
+    expect(tramoPara(escalonado[0].tramos!, 4)?.valor).toBe("60");
+    const r = calcularLineasTarifa(escalonado, ctx({ numDeclaraciones: 4 }));
+    expect(r.lineas[0].valor).toBe(240n);
+    expect(r.lineas[0].detalle).toBe("60 × 4 declaraciones (tramo 4 o más declaraciones)");
   });
 });
 

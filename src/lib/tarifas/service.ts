@@ -30,6 +30,7 @@ import {
   type ItemTarifaCalculable,
   type MinimosTarifa,
   type ResultadoTarifa,
+  type TramoTarifa,
 } from "@/lib/tarifas/motor";
 import {
   tarifaItemSchema,
@@ -144,6 +145,20 @@ function minimosDe(json: Prisma.JsonValue | null): MinimosTarifa | null {
   return out;
 }
 
+function tramosDe(json: Prisma.JsonValue | null): TramoTarifa[] | null {
+  if (!Array.isArray(json)) return null;
+  const out: TramoTarifa[] = [];
+  for (const t of json) {
+    if (!t || typeof t !== "object" || Array.isArray(t)) continue;
+    const { hasta, valor } = t as Record<string, unknown>;
+    if (typeof valor !== "string" || !/^\d+$/.test(valor)) continue;
+    if (hasta === null || (typeof hasta === "number" && Number.isInteger(hasta) && hasta >= 1)) {
+      out.push({ hasta: hasta as number | null, valor });
+    }
+  }
+  return out.length ? out : null;
+}
+
 export function itemCalculableDe(item: TarifaItem): ItemTarifaCalculable {
   return {
     concepto: item.concepto,
@@ -158,6 +173,7 @@ export function itemCalculableDe(item: TarifaItem): ItemTarifaCalculable {
     porcentajeBps: item.porcentajeBps,
     minimos: minimosDe(item.minimos),
     conceptoCosto: item.conceptoCosto,
+    tramos: tramosDe(item.tramos),
     aplicaIva: item.aplicaIva,
     orden: item.orden,
   };
@@ -177,6 +193,7 @@ function itemCreateData(item: TarifaItemPayload): Prisma.TarifaItemCreateWithout
     porcentajeBps: item.porcentajeBps ?? null,
     minimos: item.minimos ? normalizeSerializable(item.minimos) : undefined,
     conceptoCosto: item.conceptoCosto ?? null,
+    tramos: item.tramos ? normalizeSerializable(item.tramos) : undefined,
     aplicaIva: item.aplicaIva,
     notas: item.notas ?? null,
     ...(item.eventoCodigo ? { evento: { connect: { codigo: item.eventoCodigo } } } : {}),
@@ -445,6 +462,13 @@ export async function duplicarTarifario(
           ]),
         )
       : null;
+    const tramos = tramosDe(it.tramos);
+    const tramosAjustados = tramos
+      ? tramos.map((t) => ({
+          hasta: t.hasta,
+          valor: aplicarIncremento(BigInt(t.valor), payload.incrementoPct, payload.redondeoA).toString(),
+        }))
+      : null;
     return {
       orden: it.orden,
       concepto: it.concepto,
@@ -461,6 +485,7 @@ export async function duplicarTarifario(
       porcentajeBps: it.porcentajeBps,
       minimos: minimosAjustados ? normalizeSerializable(minimosAjustados) : undefined,
       conceptoCosto: it.conceptoCosto,
+      tramos: tramosAjustados ? normalizeSerializable(tramosAjustados) : undefined,
       aplicaIva: it.aplicaIva,
       notas: it.notas,
       ...(it.eventoCodigo ? { evento: { connect: { codigo: it.eventoCodigo } } } : {}),
@@ -552,6 +577,7 @@ export async function actualizarItemTarifario(
   const fusionado = tarifaItemSchema.parse({
     ...itemCalculableDe(antes),
     minimos: minimosDe(antes.minimos),
+    tramos: tramosDe(antes.tramos),
     notas: antes.notas,
     ...payload,
   });
@@ -568,6 +594,7 @@ export async function actualizarItemTarifario(
         // `connect` no desconecta: si el evento se quitó, hay que hacerlo explícito.
         ...(fusionado.eventoCodigo ? {} : { evento: { disconnect: true } }),
         ...(fusionado.minimos ? {} : { minimos: Prisma.DbNull }),
+        ...(fusionado.tramos ? {} : { tramos: Prisma.DbNull }),
       },
     });
     await tx.auditLog.create({
@@ -625,10 +652,16 @@ export interface PropuestaTarifa {
   /** Por qué no hay propuesta, en palabras para la UI. */
   motivo: string | null;
   resultado: ResultadoTarifa | null;
-  contexto: ContextoTarifa;
+  contexto: ContextoTramite;
 }
 
-export async function contextoDeTramite(tramiteId: string): Promise<ContextoTarifa> {
+/** Contexto del motor más la orden de compra del cliente (no entra al cálculo). */
+export type ContextoTramite = ContextoTarifa & {
+  ordenCompraNumero: string | null;
+  ordenCompraValor: bigint | null;
+};
+
+export async function contextoDeTramite(tramiteId: string): Promise<ContextoTramite> {
   const tramite = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
     select: {
@@ -638,6 +671,8 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTari
       numDeclaraciones: true,
       numDocumentos: true,
       numItems: true,
+      ordenCompraNumero: true,
+      ordenCompraValor: true,
       eventos: { select: { eventoCodigo: true, cantidad: true } },
       pagos: { select: { concepto: true, valor: true } },
       facturasProveedor: { select: { concepto: true, valor: true } },
@@ -659,6 +694,10 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTari
     numItems: tramite.numItems,
     eventos: tramite.eventos.map((e) => ({ codigo: e.eventoCodigo, cantidad: e.cantidad })),
     costos,
+    // No entra al motor: viaja con el contexto para que el panel del DO y la
+    // revisión de la factura vean la OC del cliente (Polyrec).
+    ordenCompraNumero: tramite.ordenCompraNumero,
+    ordenCompraValor: tramite.ordenCompraValor,
   };
 }
 

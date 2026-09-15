@@ -31,6 +31,8 @@ type FormAtributos = {
   numDeclaraciones: string;
   numDocumentos: string;
   numItems: string;
+  ordenCompraNumero: string;
+  ordenCompraValor: string;
 };
 
 function formDesde(ctx: AtributosTramite): FormAtributos {
@@ -41,6 +43,8 @@ function formDesde(ctx: AtributosTramite): FormAtributos {
     numDeclaraciones: ctx.numDeclaraciones === null ? "" : String(ctx.numDeclaraciones),
     numDocumentos: ctx.numDocumentos === null ? "" : String(ctx.numDocumentos),
     numItems: ctx.numItems === null ? "" : String(ctx.numItems),
+    ordenCompraNumero: ctx.ordenCompraNumero ?? "",
+    ordenCompraValor: ctx.ordenCompraValor ?? "",
   };
 }
 
@@ -69,7 +73,7 @@ export function SeccionEventosTramite({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const [aplica, setAplica] = useState<{ tarifario: boolean; eventos: boolean; cif: boolean }>({ tarifario: false, eventos: false, cif: false });
+  const [aplica, setAplica] = useState<{ tarifario: boolean; eventos: boolean; cif: boolean; oc: boolean }>({ tarifario: false, eventos: false, cif: false, oc: false });
   const [catalogo, setCatalogo] = useState<EventoCatalogoRow[]>([]);
   const [marcados, setMarcados] = useState<EventoTramiteRow[]>([]);
   const [propuesta, setPropuesta] = useState<PropuestaTarifaRow | null>(null);
@@ -88,7 +92,7 @@ export function SeccionEventosTramite({
     ])
       .then(([caps, cat, ev, prop]) => {
         const tiene = (codigo: string) => caps.some((c) => c.codigo === codigo && c.habilitado);
-        setAplica({ tarifario: tiene("tarifario_propio"), eventos: tiene("eventos_facturables"), cif: tiene("base_cif") });
+        setAplica({ tarifario: tiene("tarifario_propio"), eventos: tiene("eventos_facturables"), cif: tiene("base_cif"), oc: tiene("orden_compra_en_revision") });
         setCatalogo(cat);
         setMarcados(ev);
         setPropuesta(prop);
@@ -119,7 +123,7 @@ export function SeccionEventosTramite({
     }
   }, [tramiteId]);
 
-  if (loadState === "ready" && !aplica.tarifario && !aplica.eventos && !aplica.cif) {
+  if (loadState === "ready" && !aplica.tarifario && !aplica.eventos && !aplica.cif && !aplica.oc) {
     return null;
   }
 
@@ -134,6 +138,12 @@ export function SeccionEventosTramite({
         numDeclaraciones: enteroONull(form.numDeclaraciones),
         numDocumentos: enteroONull(form.numDocumentos),
         numItems: enteroONull(form.numItems),
+        ...(aplica.oc
+          ? {
+              ordenCompraNumero: form.ordenCompraNumero.trim() === "" ? null : form.ordenCompraNumero.trim(),
+              ordenCompraValor: form.ordenCompraValor.trim() === "" ? null : form.ordenCompraValor.replace(/\D/g, ""),
+            }
+          : {}),
       });
       toast({ title: "Base de cálculo guardada", variant: "success" });
       await refrescarPropuesta();
@@ -236,6 +246,19 @@ export function SeccionEventosTramite({
                   <span className={LABEL}>Ítems clasificados</span>
                   <input value={form.numItems} onChange={(e) => setForm({ ...form, numItems: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
                 </label>
+                {aplica.oc ? (
+                  <>
+                    <label className="block space-y-1">
+                      <span className={LABEL}>N° orden de compra</span>
+                      <input value={form.ordenCompraNumero} onChange={(e) => setForm({ ...form, ordenCompraNumero: e.target.value })} disabled={!puedeEditar} className={INPUT} placeholder="OC-2026-0154" />
+                    </label>
+                    <label className="block space-y-1">
+                      <span className={LABEL}>Valor de la OC (COP, sin IVA)</span>
+                      <input value={form.ordenCompraValor} onChange={(e) => setForm({ ...form, ordenCompraValor: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} placeholder="4500000" />
+                    </label>
+                    <p className="col-span-2 text-xs text-slate-500">El cliente devuelve la OC por el valor de la solicitud de fondos. En la revisión de la factura se contrasta y el número va en la descripción.</p>
+                  </>
+                ) : null}
               </div>
               {puedeEditar ? (
                 <button type="button" onClick={() => void guardarAtributos()} disabled={guardandoAtributos} className="mt-3 inline-flex h-9 items-center gap-1.5 border border-slate-950 bg-slate-950 px-3 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50">

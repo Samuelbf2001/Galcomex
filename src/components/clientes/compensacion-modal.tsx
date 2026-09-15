@@ -20,7 +20,7 @@ function formatCOP(valor: string): string {
   return `${negativo ? "−" : ""}$ ${absoluto}`;
 }
 
-const LINEAS_SERVICIO = ["TRAMITE", "CLASIFICACION", "PLAN_VALLEJO", "COMISION", "ASESORIA"];
+const LINEAS_SERVICIO = ["TRAMITE", "CLASIFICACION", "PLAN_VALLEJO", "OTROS", "COMISION", "ASESORIA"];
 
 /**
  * Cruce de saldos: salda el mismo importe en las dos puntas sin plata. Es lo

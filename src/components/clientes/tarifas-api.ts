@@ -8,7 +8,8 @@ export type TipoCalculoTarifa =
   | "POR_UNIDAD"
   | "PORCENTAJE_MIN"
   | "PRIMERO_MAS_ADICIONAL"
-  | "ESPEJO_DE_COSTO";
+  | "ESPEJO_DE_COSTO"
+  | "POR_TRAMO";
 export type DisparadorTarifa = "SIEMPRE" | "EVENTO" | "MANUAL";
 export type UnidadTarifa = "TRAMITE" | "CONTENEDOR" | "DECLARACION" | "DOCUMENTO" | "ITEM" | "MES";
 export type EstadoTarifario = "BORRADOR" | "VIGENTE" | "VENCIDO" | "REEMPLAZADO";
@@ -19,6 +20,7 @@ export const TIPOS_CALCULO: { value: TipoCalculoTarifa; label: string; ayuda: st
   { value: "PORCENTAJE_MIN", label: "% sobre CIF con mínimo", ayuda: "Porcentaje sobre el valor en aduana, con mínimo por tipo de carga (CW: 0,37 %)." },
   { value: "PRIMERO_MAS_ADICIONAL", label: "Primero + adicionales", ayuda: "El primero a un precio y cada adicional a otro (clasificación: 380.000 + 180.000)." },
   { value: "ESPEJO_DE_COSTO", label: "Espejo de un costo", ayuda: "Se cobra lo mismo que costó (pago del registro VUCE)." },
+  { value: "POR_TRAMO", label: "Por tramos", ayuda: "El precio de cada unidad depende de cuántas haya (Polyrec ZF: 1 contenedor 300.000; 2 o más, 250.000 cada uno)." },
 ];
 
 export const DISPARADORES: { value: DisparadorTarifa; label: string }[] = [
@@ -41,9 +43,11 @@ export const ALCANCES: { value: string; label: string }[] = [
   { value: "CLASIFICACION", label: "Clasificación arancelaria" },
   { value: "PLAN_VALLEJO", label: "Plan Vallejo" },
   { value: "EXPORTACION", label: "Exportaciones" },
+  { value: "OTROS", label: "Otros servicios" },
 ];
 
 export type MinimosTarifa = { SUELTA?: string; CONTENEDOR_20?: string; CONTENEDOR_40?: string };
+export type TramoTarifa = { hasta: number | null; valor: string };
 
 export type TarifaItemRow = {
   id: string;
@@ -60,6 +64,7 @@ export type TarifaItemRow = {
   porcentajeBps: number | null;
   minimos: MinimosTarifa | null;
   conceptoCosto: string | null;
+  tramos: TramoTarifa[] | null;
   aplicaIva: boolean;
   notas: string | null;
 };
@@ -93,6 +98,7 @@ export type TarifaItemForm = {
   porcentajeBps?: number | null;
   minimos?: MinimosTarifa | null;
   conceptoCosto?: string | null;
+  tramos?: TramoTarifa[] | null;
   aplicaIva: boolean;
   notas?: string | null;
   orden: number;
@@ -168,9 +174,23 @@ function normalizeItem(row: unknown): TarifaItemRow | null {
     porcentajeBps: typeof row.porcentajeBps === "number" ? row.porcentajeBps : null,
     minimos: normalizeMinimos(row.minimos),
     conceptoCosto: strOrNull(row.conceptoCosto),
+    tramos: normalizeTramos(row.tramos),
     aplicaIva: row.aplicaIva !== false,
     notas: strOrNull(row.notas),
   };
+}
+
+function normalizeTramos(v: unknown): TramoTarifa[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: TramoTarifa[] = [];
+  for (const t of v) {
+    if (!isRecord(t)) continue;
+    const valor = str(t.valor);
+    if (!/^\d+$/.test(valor)) continue;
+    const hasta = t.hasta === null ? null : typeof t.hasta === "number" ? t.hasta : null;
+    out.push({ hasta, valor });
+  }
+  return out.length ? out.sort((a, b) => (a.hasta ?? Infinity) - (b.hasta ?? Infinity)) : null;
 }
 
 function normalizeTarifario(row: unknown): TarifarioRow | null {
@@ -380,6 +400,17 @@ export function describirCalculo(item: TarifaItemRow): string {
       return `${formatCOP(item.valor)} el primer ${etiquetaUnidad(item.unidad)} + ${formatCOP(item.valorAdicional)} cada adicional`;
     case "ESPEJO_DE_COSTO":
       return `Lo que costó "${item.conceptoCosto ?? ""}"`;
+    case "POR_TRAMO": {
+      const tramos = item.tramos ?? [];
+      return tramos
+        .map((t, i) => {
+          const anterior = i > 0 ? (tramos[i - 1]?.hasta ?? 0) : 0;
+          const rango = t.hasta === null ? `${anterior + 1} o más` : t.hasta === 1 ? "1" : `${anterior + 1}–${t.hasta}`;
+          return `${rango}: ${formatCOP(t.valor)} c/u`;
+        })
+        .join(" · ")
+        .concat(` (por ${etiquetaUnidad(item.unidad)})`);
+    }
   }
 }
 

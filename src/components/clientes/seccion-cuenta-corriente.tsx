@@ -58,7 +58,7 @@ const ETIQUETA_FUENTE: Record<string, string> = {
   COMPENSACION: "Cruce de saldos",
 };
 
-const LINEAS_SERVICIO = ["TRAMITE", "CLASIFICACION", "PLAN_VALLEJO", "COMISION", "ASESORIA"];
+const LINEAS_SERVICIO = ["TRAMITE", "CLASIFICACION", "PLAN_VALLEJO", "OTROS", "COMISION", "ASESORIA"];
 
 function MovimientoModal({
   clienteId,

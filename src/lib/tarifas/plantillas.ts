@@ -20,15 +20,18 @@ export type PlantillaTarifario = {
   codigo: string;
   nombre: string;
   descripcion: string;
-  alcance: "TRAMITE" | "CLASIFICACION" | "PLAN_VALLEJO" | "EXPORTACION";
+  alcance: "TRAMITE" | "CLASIFICACION" | "PLAN_VALLEJO" | "EXPORTACION" | "OTROS";
   fuente: string;
   items: TarifaItemInput[];
 };
 
 /**
- * Conceptos de venta depurados. `siigoCodigo` es el código que se vio en
- * pantalla en la reunión; los marcados con `confirmar` no aparecieron y hay
- * que confirmarlos con Camila y el contador antes de facturar con ellos.
+ * Conceptos de venta cruzados con el catálogo REAL de productos Siigo que ya
+ * está sincronizado en producción (83 productos, 14-sep-2026). Decisión de la
+ * reunión del 10-sep (min 03:46): el nombre del concepto en la plataforma y
+ * en la factura Siigo debe ser el mismo. Los marcados con `confirmar` no
+ * tienen producto exacto en Siigo: se llevan al más cercano hasta que el
+ * contador cree uno o Camila diga cuál usar.
  */
 export const CONCEPTOS_VENTA_DEMO: {
   concepto: string;
@@ -39,20 +42,23 @@ export const CONCEPTOS_VENTA_DEMO: {
   confirmar?: boolean;
 }[] = [
   { concepto: "GASTOS_TRAMITE", siigoCodigo: "005", nombreSiigo: "GASTOS OPERATIVOS", tipoCobro: "Fijo", iva: true },
-  { concepto: "SISTEMATIZACION", siigoCodigo: "041", nombreSiigo: "SISTEMATIZACIÓN", tipoCobro: "Fijo", iva: true, confirmar: true },
-  { concepto: "DOCUMENTACION", siigoCodigo: "001", nombreSiigo: "DOCUMENTACIÓN", tipoCobro: "Por unidad", iva: true },
-  { concepto: "DOCUMENTOS_DESPACHO", siigoCodigo: "042", nombreSiigo: "DOCUMENTOS DE DESPACHO", tipoCobro: "Fijo", iva: true, confirmar: true },
-  { concepto: "PAPELERIA", siigoCodigo: "008", nombreSiigo: "GASTOS Y FOTOCOPIAS", tipoCobro: "Fijo", iva: true },
+  { concepto: "SISTEMATIZACION", siigoCodigo: "004", nombreSiigo: "SISTEMATIZACIÓN", tipoCobro: "Fijo", iva: true },
+  { concepto: "DOCUMENTACION", siigoCodigo: "002", nombreSiigo: "DOCUMENTACIÓN", tipoCobro: "Por unidad", iva: true },
+  { concepto: "DOCUMENTOS_DESPACHO", siigoCodigo: "006", nombreSiigo: "LOGÍSTICA DE SUPERVISIÓN Y DESPACHO", tipoCobro: "Fijo", iva: true, confirmar: true },
+  { concepto: "PAPELERIA", siigoCodigo: "003", nombreSiigo: "PAPELERÍA", tipoCobro: "Fijo", iva: true },
   { concepto: "REVISION_DESPACHO", siigoCodigo: "022", nombreSiigo: "LOGÍSTICA DE REVISIÓN", tipoCobro: "Circunstancial", iva: true },
-  { concepto: "ENTREGA_DIRECTA", siigoCodigo: "043", nombreSiigo: "SERVICIO LOGÍSTICO ENTREGA DIRECTA", tipoCobro: "Circunstancial", iva: true, confirmar: true },
-  { concepto: "ELABORACION_REGISTRO", siigoCodigo: "044", nombreSiigo: "ELABORACIÓN REG IMP", tipoCobro: "Circunstancial", iva: true, confirmar: true },
-  { concepto: "MODIFICACION_REGISTRO", siigoCodigo: "045", nombreSiigo: "MODIFICACIÓN REG IMP", tipoCobro: "Circunstancial", iva: true, confirmar: true },
+  { concepto: "ENTREGA_DIRECTA", siigoCodigo: "007", nombreSiigo: "SERVICIO LOGÍSTICO", tipoCobro: "Circunstancial", iva: true, confirmar: true },
+  { concepto: "ELABORACION_REGISTRO", siigoCodigo: "010", nombreSiigo: "ELABORACION REG IMP", tipoCobro: "Circunstancial", iva: true },
+  { concepto: "MODIFICACION_REGISTRO", siigoCodigo: "010", nombreSiigo: "ELABORACION REG IMP", tipoCobro: "Circunstancial", iva: true, confirmar: true },
   { concepto: "CLASIFICACION", siigoCodigo: "015", nombreSiigo: "CLASIFICACIÓN PARTIDA ARANCELARIA", tipoCobro: "Por unidad", iva: true },
-  { concepto: "SERVICIO_UNICO", siigoCodigo: "046", nombreSiigo: "SERVICIO LOGÍSTICO", tipoCobro: "Calculado", iva: true, confirmar: true },
-  { concepto: "DESPACHO_PARCIAL", siigoCodigo: "047", nombreSiigo: "GASTOS TRÁMITE DESPACHO PARCIAL", tipoCobro: "Circunstancial", iva: true, confirmar: true },
-  { concepto: "INGRESO_ZF", siigoCodigo: "048", nombreSiigo: "TRÁMITE INGRESO ZONA FRANCA", tipoCobro: "Circunstancial", iva: true, confirmar: true },
-  { concepto: "ZONA_SECUNDARIA", siigoCodigo: "049", nombreSiigo: "ZONA SECUNDARIA ADUANERA", tipoCobro: "Circunstancial", iva: true, confirmar: true },
-  { concepto: "PAGO_REGISTRO", siigoCodigo: "002", nombreSiigo: "TRIBUTOS ADUANEROS", tipoCobro: "Calculado", iva: false },
+  { concepto: "SERVICIO_UNICO", siigoCodigo: "007", nombreSiigo: "SERVICIO LOGÍSTICO", tipoCobro: "Calculado", iva: true },
+  { concepto: "DESPACHO_PARCIAL", siigoCodigo: "005", nombreSiigo: "GASTOS OPERATIVOS", tipoCobro: "Circunstancial", iva: true, confirmar: true },
+  { concepto: "INGRESO_ZF", siigoCodigo: "007", nombreSiigo: "SERVICIO LOGÍSTICO", tipoCobro: "Circunstancial", iva: true, confirmar: true },
+  { concepto: "ZONA_SECUNDARIA", siigoCodigo: "016", nombreSiigo: "ZONA SECUNDARIA", tipoCobro: "Circunstancial", iva: true },
+  { concepto: "PAGO_REGISTRO", siigoCodigo: "24", nombreSiigo: "PAGO VUCE REG IMP", tipoCobro: "Calculado", iva: false },
+  { concepto: "TRASLADO_ZF", siigoCodigo: "013", nombreSiigo: "LOGÍSTICA DE TRANSPORTE", tipoCobro: "Por unidad", iva: true, confirmar: true },
+  { concepto: "PLAN_VALLEJO", siigoCodigo: "014", nombreSiigo: "PROGRAMA PLAN VALLEJO", tipoCobro: "Fijo", iva: true },
+  { concepto: "SELLOS", siigoCodigo: "12", nombreSiigo: "SELLOS DE SEGURIDAD", tipoCobro: "Por unidad", iva: false },
 ];
 
 function siigoDe(concepto: string): string | null {
@@ -70,6 +76,7 @@ function item(parcial: Partial<TarifaItemInput> & Pick<TarifaItemInput, "concept
     porcentajeBps: null,
     minimos: null,
     conceptoCosto: null,
+    tramos: null,
     aplicaIva: true,
     notas: null,
     orden: 0,
@@ -153,11 +160,40 @@ export const PLANTILLA_CW_ASIA: PlantillaTarifario = {
   ],
 };
 
+/**
+ * POLYREC ZONA FRANCA S.A.S — traslados de contenedores (reunión 10-sep-2026,
+ * min 83:31): "si es un contenedor son 300; si son dos o más, 250 cada
+ * contenedor". Sin carpeta de documentos: solo la factura. La nacionalización
+ * de Polyrec S.A.S. es otro tarifario que Camila aún no ha dictado.
+ */
+export const PLANTILLA_POLYREC_ZF: PlantillaTarifario = {
+  codigo: "POLYREC_ZF_2026",
+  nombre: "Traslados zona franca 2026",
+  descripcion: "Traslado de contenedores en zona franca: 300.000 si es un contenedor; 250.000 por contenedor si son dos o más.",
+  alcance: "TRAMITE",
+  fuente: "Reunión 10-sep-2026 (Camila, min 83:31). Sin propuesta escrita: confirmar valores.",
+  items: [
+    item({
+      concepto: "TRASLADO_ZF",
+      nombrePublico: "Traslado de contenedor en zona franca",
+      tipoCalculo: "POR_TRAMO",
+      unidad: "CONTENEDOR",
+      tramos: [
+        { hasta: 1, valor: "300000" },
+        { hasta: null, valor: "250000" },
+      ],
+      orden: 10,
+      notas: "El precio del tramo aplica a todos los contenedores del trámite: 2 contenedores = 500.000, no 550.000.",
+    }),
+  ],
+};
+
 export const PLANTILLAS_TARIFARIO: PlantillaTarifario[] = [
   PLANTILLA_LITOPLAS_IMPO,
   PLANTILLA_LITOPLAS_CLASIFICACION,
   PLANTILLA_LITOPLAS_EXPO,
   PLANTILLA_CW_ASIA,
+  PLANTILLA_POLYREC_ZF,
 ];
 
 export function plantillaPorCodigo(codigo: string): PlantillaTarifario | null {

@@ -1,25 +1,29 @@
 /**
- * Configura en la BD las empresas de la reunión de tarifas y cartera con las
- * funciones que Camila describió, para que el sistema se comporte con cada una
- * como ella explicó — sin una sola rama nueva en el código.
+ * Configura en la BD las empresas de las reuniones de tarifas y cartera (julio)
+ * y del 10-sep-2026 con las funciones que Camila describió, para que el sistema
+ * se comporte con cada una como ella explicó — sin una sola rama nueva en el
+ * código.
  *
  *   npx tsx scripts/configurar-clientes-reunion.ts             # empresas + funciones
- *   npx tsx scripts/configurar-clientes-reunion.ts --ejemplos  # además, dos casos de ejemplo
+ *   npx tsx scripts/configurar-clientes-reunion.ts --ejemplos  # además, un ejemplo por tema
  *
  * Idempotente: se puede correr las veces que haga falta.
  *
  * Cómo trata a cada empresa:
- *   · Si ya existe una (y solo una) con ese nombre, la reutiliza y le ajusta
- *     roles y funciones. NUNCA le cambia el NIT ni el `tipo`.
- *   · Si no existe, la crea con NIT `PENDIENTE-NIT-<CLAVE>` para que quede a la
- *     vista que Camila debe completarlo desde la ficha. No se inventan NITs.
+ *   · Busca por las palabras de `buscar` entre las empresas ya cargadas (en
+ *     producción Camila las cargó con sus NIT reales: LITOPLAS SA, CW ASIA SAS,
+ *     POLYREC S.A.S., POLYREC ZONA FRANCA S.A.S, SESDERMA COLOMBIA S.A.,
+ *     LTRANS SAS, AGENCIA DE ADUANAS COLDEX…). NUNCA cambia NIT ni `tipo`.
+ *   · Si no existe y es solo proveedor, la crea con NIT `PENDIENTE-NIT-<CLAVE>`
+ *     para que quede a la vista que Camila debe completarlo. No se inventan NITs.
  *   · Si hay varias con ese nombre, la salta y avisa: mejor no adivinar.
  *   · Ignora las empresas de la demo (`DEMO ...`) y las de prueba.
+ *   · OX S.A.S. no se configura: liquidaron la empresa (10-sep, min 00:42).
  *
  * Lo que NO decide este script (queda en PENDIENTES-MARIA-CAMILA.md):
- *   · El valor de la comisión por contenedor de Eltrans (no se dijo en la reunión).
- *   · Si Sesderma e Inversiones Triplex pertenecen al grupo Polired.
- *   · El NIT de Ascinter (hay dos candidatos).
+ *   · El valor de la comisión por contenedor de Ltrans (no se dijo).
+ *   · Si Sesderma pertenece al grupo Polyrec.
+ *   · El NIT de Ascinter (hay dos candidatos) y de Almacarga.
  */
 
 import "dotenv/config";
@@ -35,10 +39,13 @@ import { capacidadesActivas } from "../src/lib/capacidades/resolver";
 import { capacidadesDeEmpresa, setCapacidadesEmpresa } from "../src/lib/capacidades/service";
 import { registrarMovimientoCuenta } from "../src/lib/cuenta-corriente/service";
 import { prisma } from "../src/lib/db/prisma";
+import { marcarEventosTramite } from "../src/lib/eventos/service";
+import { PLANTILLAS_TARIFARIO } from "../src/lib/tarifas/plantillas";
+import { cambiarEstadoTarifario, crearTarifario, propuestaParaTramite } from "../src/lib/tarifas/service";
 import { createTramite } from "../src/lib/tramites/service";
 
 const MARCA_EJEMPLO = "[EJEMPLO REUNIÓN]";
-const NOMBRE_GRUPO_POLIRED = "Grupo Polired";
+const NOMBRE_GRUPO_POLYREC = "Grupo Polyrec";
 
 // ─── Lo que se dijo en la reunión, empresa por empresa ────────────────────────
 
@@ -46,16 +53,20 @@ type Capacidad = { codigo: string; habilitado: boolean; config?: Record<string, 
 
 type EmpresaReunion = {
   clave: string;
-  /** Nombre con el que se crea si no existe. */
+  /** Nombre con el que se crea si no existe (solo proveedores). */
   nombre: string;
   /** Palabras que identifican a la empresa en los nombres ya cargados (minúsculas). */
   buscar: string[];
-  /** Palabras que EXCLUYEN una coincidencia (p. ej. "zona franca" para Polired matriz). */
+  /** Palabras que EXCLUYEN una coincidencia (p. ej. "zona franca" para Polyrec matriz). */
   excluir?: string[];
   esCliente: boolean;
   esProveedor: boolean;
-  grupo?: "polired";
+  grupo?: "polyrec";
+  /** Si no existe: crearla (proveedores sin ficha) o solo avisar (clientes: Camila los carga con NIT real). */
+  crearSiFalta: boolean;
   capacidades: Capacidad[];
+  /** Plantillas de tarifario que se publican (solo con `tarifario_propio`). */
+  plantillas?: { codigo: string; desde: string; hasta: string }[];
   /** Qué dijo Camila; queda en la salida para poder contrastarlo. */
   fuente: string;
 };
@@ -63,10 +74,11 @@ type EmpresaReunion = {
 const EMPRESAS: EmpresaReunion[] = [
   {
     clave: "LITOPLAS",
-    nombre: "LITOPLAS S.A.",
+    nombre: "LITOPLAS SA",
     buscar: ["litoplas"],
     esCliente: true,
     esProveedor: false,
+    crearSiFalta: false,
     capacidades: [
       { codigo: "anticipos_cliente", habilitado: true },
       { codigo: "tarifario_propio", habilitado: true },
@@ -85,75 +97,98 @@ const EMPRESAS: EmpresaReunion[] = [
         },
       },
     ],
+    plantillas: [
+      { codigo: "LITOPLAS_IMPO_2026", desde: "2026-02-02", hasta: "2027-01-31" },
+      { codigo: "LITOPLAS_CLAS_2026", desde: "2026-02-02", hasta: "2027-01-31" },
+      { codigo: "LITOPLAS_EXPO_2026", desde: "2026-02-02", hasta: "2027-01-31" },
+    ],
     fuente:
-      "Pide anticipos (04:25). Tarifas propias, NO usa CIF (37:49). Clasificación arancelaria facturada aparte (14:48). Eventos: despacho con revisión 180k, entrega directa 200k, registro 433k (48:44). Moviaduanas + DO I######## (regla histórica).",
+      "Pide anticipos (jul 04:25). Tarifas propias, NO usa CIF (37:49). Clasificación aparte (14:48). Eventos: revisión 180k, entrega directa 200k, registro 433k (48:44). Moviaduanas + DO I######## (regla histórica). Plan Vallejo y sellos van como 'Otros servicios' (10-sep, 15:27).",
   },
   {
-    clave: "CW_EXPRESS",
-    nombre: "CW EXPRESS",
-    buscar: ["cw express", "cwexpress", "c.w. express", "cw  express"],
+    clave: "CW_ASIA",
+    nombre: "CW ASIA SAS",
+    buscar: ["cw asia"],
     esCliente: true,
-    esProveedor: true,
+    esProveedor: false,
+    crearSiFalta: false,
     capacidades: [
       { codigo: "tarifario_propio", habilitado: true },
       { codigo: "base_cif", habilitado: true },
       { codigo: "eventos_facturables", habilitado: true },
     ],
+    plantillas: [{ codigo: "CW_ASIA_2026", desde: "2026-03-11", hasta: "2027-03-10" }],
     fuente:
-      "Servicio logístico = CIF × 0,37% con mínimos por tipo de carga (75:20). Despacho parcial 50k (81:07). También es proveedor (83:37).",
+      "Servicio logístico = CIF × 0,37 % con mínimos por tipo de carga (jul 75:20). Despacho parcial 50k (81:07). 'Facturas esperando': las tarifas son las de la propuesta (10-sep, 01:37).",
   },
   {
-    clave: "POLIRED",
-    nombre: "POLIRED SAS",
-    buscar: ["polired", "polirred"],
+    clave: "CW_EXPRESS",
+    nombre: "CW EXPRESS",
+    buscar: ["cw express", "cwexpress", "c.w. express"],
+    esCliente: false,
+    esProveedor: true,
+    crearSiFalta: true,
+    capacidades: [{ codigo: "anticipos_cliente", habilitado: false }],
+    fuente: "Proveedor (transporte) de los trámites de CW (jul 83:37). El cliente es CW ASIA SAS.",
+  },
+  {
+    clave: "POLYREC",
+    nombre: "POLYREC S.A.S.",
+    buscar: ["polyrec", "polired", "polirred"],
     excluir: ["zona franca", " zf"],
     esCliente: true,
     esProveedor: false,
-    grupo: "polired",
+    grupo: "polyrec",
+    crearSiFalta: false,
     capacidades: [{ codigo: "tarifario_propio", habilitado: true }],
     fuente:
-      "Misma casa que Polired Zona Franca (89:02). El nº de contenedores del BL alimenta la comisión de Eltrans (89:27). Se revisa contra orden de compra (pendiente anterior).",
+      "Nacionalización: manda ORDEN DE COMPRA por el valor de la solicitud de fondos; la factura debe dar ese valor sin IVA y llevar el n° de OC en la descripción (10-sep, 84:30). Otra OC va a Cortes, la otra agencia. Falta su tarifario (Camila).",
   },
   {
-    clave: "POLIRED_ZF",
-    nombre: "POLIRED ZONA FRANCA",
-    buscar: ["polired zona franca", "polired zf", "polirred zona franca"],
+    clave: "POLYREC_ZF",
+    nombre: "POLYREC ZONA FRANCA S.A.S",
+    buscar: ["polyrec zona franca", "polired zona franca", "polyrec zf", "polired zf"],
     esCliente: true,
     esProveedor: false,
-    grupo: "polired",
-    // No declara nada propio: hereda del grupo.
-    capacidades: [],
-    fuente: "Misma empresa que Polired, dos NIT (89:02).",
+    grupo: "polyrec",
+    crearSiFalta: false,
+    capacidades: [{ codigo: "tarifario_propio", habilitado: true }],
+    plantillas: [{ codigo: "POLYREC_ZF_2026", desde: "2026-01-01", hasta: "2026-12-31" }],
+    fuente:
+      "Traslados: 'si es un contenedor son 300; si son dos o más, 250 cada contenedor' (10-sep, 83:31). Sin carpeta de documentos, solo facturas.",
   },
   {
     clave: "SESDERMA",
-    nombre: "SESDERMA",
+    nombre: "SESDERMA COLOMBIA S.A.",
     buscar: ["sesderma", "setderma"],
     esCliente: true,
     esProveedor: false,
+    crearSiFalta: false,
     capacidades: [{ codigo: "tarifario_propio", habilitado: true }],
     fuente:
-      "Cliente propio con DOs (frame 16:03, DO.BIGT26-0244). Ascinter le factura transporte (60:05). ¿Grupo Polired? — no se dijo.",
+      "Cliente propio con DOs (jul, DO.BIGT26-0244). 'Genera más plata pero menos trámites' (10-sep, 02:24). Ascinter le factura transporte (60:05). ¿Grupo Polyrec? — no se dijo.",
   },
   {
     clave: "COLDEX",
-    nombre: "COLDEX",
+    nombre: "AGENCIA DE ADUANAS COLDEX S.A.S NIVEL DOS",
     buscar: ["coldex"],
     esCliente: true,
     esProveedor: true,
+    crearSiFalta: false,
     capacidades: [
       { codigo: "anticipos_cliente", habilitado: false },
       { codigo: "cargos_manuales_contraparte", habilitado: true },
     ],
     fuente:
-      "Agencia de aduanas: proveedor, pero también se le hacen trámites (liberación de BLs). Mensualidad variable ~4M por servicios aduaneros + quincenas y primas (68:45, 72:50).",
+      "Agencia de aduanas: proveedor, pero también se le hacen trámites (liberación de BLs). Mensualidad variable ~4M por servicios aduaneros + quincenas y primas (jul 68:45, 72:50). Se cruzan saldos.",
   },
   {
-    clave: "ELTRANS",
-    nombre: "ELTRANS",
-    buscar: ["eltrans", "el trans", "eltran"],
+    clave: "LTRANS",
+    nombre: "LTRANS SAS",
+    buscar: ["ltrans", "eltrans", "el trans", "eltran"],
     esCliente: true,
     esProveedor: true,
+    crearSiFalta: false,
     capacidades: [
       { codigo: "anticipos_cliente", habilitado: false },
       { codigo: "contenedores_obligatorio", habilitado: true },
@@ -165,7 +200,7 @@ const EMPRESAS: EmpresaReunion[] = [
       },
     ],
     fuente:
-      "Proveedor de Polired que le paga a Galcomex una comisión por contenedor (84:02–89:27). Para Camila es 'un cliente que te va a pagar una comisión' (86:32).",
+      "Proveedor de Polyrec que le paga a Galcomex una comisión por contenedor (jul 84:02–89:27). Para Camila es 'un cliente que te va a pagar una comisión' (86:32).",
   },
   {
     clave: "ASCINTER",
@@ -173,9 +208,10 @@ const EMPRESAS: EmpresaReunion[] = [
     buscar: ["ascinter", "asinter", "acinter"],
     esCliente: true,
     esProveedor: true,
+    crearSiFalta: true,
     capacidades: [{ codigo: "anticipos_cliente", habilitado: false }],
     fuente:
-      "Proveedor (asesoría a nombre de Galcomex, transporte trasladable) y fue cliente el año pasado (58:50). Pendiente: Guillermo decide si vuelve a serlo.",
+      "Proveedor (asesoría a nombre de Galcomex, transporte trasladable) y fue cliente el año pasado (jul 58:50). Pendiente: Guillermo decide si vuelve a serlo.",
   },
   {
     clave: "ALMACARGA",
@@ -183,13 +219,14 @@ const EMPRESAS: EmpresaReunion[] = [
     buscar: ["almacarga"],
     esCliente: false,
     esProveedor: true,
+    crearSiFalta: true,
     capacidades: [{ codigo: "anticipos_cliente", habilitado: false }],
-    fuente: "Proveedor de almacenaje, solo le presta a Litoplas; se paga en bloque a mitad de mes (53:09).",
+    fuente: "Proveedor de almacenaje, solo le presta a Litoplas; se paga en bloque a mitad de mes (jul 53:09).",
   },
 ];
 
-/** Funciones que el grupo Polired enciende para todas sus empresas. */
-const CAPACIDADES_GRUPO_POLIRED: Capacidad[] = [
+/** Funciones que el grupo Polyrec enciende para todas sus empresas. */
+const CAPACIDADES_GRUPO_POLYREC: Capacidad[] = [
   { codigo: "contenedores_obligatorio", habilitado: true },
   { codigo: "eventos_facturables", habilitado: true },
   { codigo: "orden_compra_en_revision", habilitado: true },
@@ -200,6 +237,7 @@ const CAPACIDADES_GRUPO_POLIRED: Capacidad[] = [
 const ok = (t: string) => console.log(`    ✓ ${t}`);
 const aviso = (t: string) => console.log(`    ⚠ ${t}`);
 const nota = (t: string) => console.log(`      ${t}`);
+const cop = (v: bigint) => `$ ${v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
 
 function titulo(t: string) {
   console.log(`\n${"─".repeat(78)}\n${t}\n${"─".repeat(78)}`);
@@ -247,6 +285,40 @@ async function localizar(
   return encontradas[0]!;
 }
 
+function fecha(iso: string): Date {
+  return new Date(`${iso}T00:00:00.000Z`);
+}
+
+async function publicarPlantillas(empresa: EmpresaReunion, empresaId: string, usuarioId: string) {
+  for (const p of empresa.plantillas ?? []) {
+    const plantilla = PLANTILLAS_TARIFARIO.find((x) => x.codigo === p.codigo);
+    if (!plantilla) {
+      aviso(`Plantilla ${p.codigo} no existe en lib/tarifas/plantillas.ts`);
+      continue;
+    }
+    const marca = `[PLANTILLA ${p.codigo}]`;
+    const ya = await prisma.tarifario.findFirst({
+      where: { empresaId, alcance: plantilla.alcance, estado: { in: ["VIGENTE", "BORRADOR"] } },
+      select: { id: true, nombre: true, version: true, estado: true, notas: true },
+    });
+    if (ya) {
+      nota(`Tarifario ${plantilla.alcance.toLowerCase()} ya existe: "${ya.nombre}" v${ya.version} (${ya.estado}); no se toca.`);
+      continue;
+    }
+    const creado = await crearTarifario({
+      empresaId,
+      plantilla: p.codigo,
+      vigenteDesde: fecha(p.desde),
+      vigenteHasta: fecha(p.hasta),
+      notas: `${marca} · ${plantilla.fuente}`,
+      items: [],
+      usuarioId,
+    });
+    await cambiarEstadoTarifario(creado.id, "VIGENTE", usuarioId);
+    ok(`Tarifario "${plantilla.nombre}" v${creado.version} publicado con ${creado.items.length} ítems (${p.desde} → ${p.hasta})`);
+  }
+}
+
 // ─── Principal ────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -261,23 +333,32 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  const tipoOtro = await prisma.tipoTramite.findUnique({ where: { codigo: "OTRO" }, select: { codigo: true } });
+  if (!tipoOtro) {
+    console.error("✗ Falta el tipo de trámite OTRO: aplica la migración 20260914120000_tipo_otro_cortes_oc.");
+    process.exitCode = 1;
+    return;
+  }
 
   // ── Grupo económico ────────────────────────────────────────────────────────
-  const grupoPolired = await prisma.grupoEmpresa.upsert({
-    where: { nombre: NOMBRE_GRUPO_POLIRED },
-    update: {},
-    create: { nombre: NOMBRE_GRUPO_POLIRED },
-  });
+  const grupoViejo = await prisma.grupoEmpresa.findUnique({ where: { nombre: "Grupo Polired" } });
+  const grupoPolyrec = grupoViejo
+    ? await prisma.grupoEmpresa.update({ where: { id: grupoViejo.id }, data: { nombre: NOMBRE_GRUPO_POLYREC } })
+    : await prisma.grupoEmpresa.upsert({
+        where: { nombre: NOMBRE_GRUPO_POLYREC },
+        update: {},
+        create: { nombre: NOMBRE_GRUPO_POLYREC },
+      });
 
-  for (const cap of CAPACIDADES_GRUPO_POLIRED) {
+  for (const cap of CAPACIDADES_GRUPO_POLYREC) {
     await prisma.grupoEmpresaCapacidad.upsert({
-      where: { grupoId_codigo: { grupoId: grupoPolired.id, codigo: cap.codigo } },
+      where: { grupoId_codigo: { grupoId: grupoPolyrec.id, codigo: cap.codigo } },
       update: { habilitado: cap.habilitado },
-      create: { grupoId: grupoPolired.id, codigo: cap.codigo, habilitado: cap.habilitado },
+      create: { grupoId: grupoPolyrec.id, codigo: cap.codigo, habilitado: cap.habilitado },
     });
   }
   ok(
-    `${NOMBRE_GRUPO_POLIRED}: enciende ${CAPACIDADES_GRUPO_POLIRED.map((c) => c.codigo).join(", ")} para todas sus empresas.`,
+    `${NOMBRE_GRUPO_POLYREC}: enciende ${CAPACIDADES_GRUPO_POLYREC.map((c) => c.codigo).join(", ")} para todas sus empresas.`,
   );
 
   // ── Empresas ───────────────────────────────────────────────────────────────
@@ -310,10 +391,10 @@ async function main() {
         data: {
           esCliente: empresa.esCliente,
           esProveedor: empresa.esProveedor,
-          grupoEmpresaId: empresa.grupo === "polired" ? grupoPolired.id : undefined,
+          grupoEmpresaId: empresa.grupo === "polyrec" ? grupoPolyrec.id : undefined,
         },
       });
-    } else {
+    } else if (empresa.crearSiFalta) {
       const nit = `PENDIENTE-NIT-${empresa.clave}`;
       const creada = await prisma.cliente.create({
         data: {
@@ -322,11 +403,15 @@ async function main() {
           tipo: "PROPIO",
           esCliente: empresa.esCliente,
           esProveedor: empresa.esProveedor,
-          grupoEmpresaId: empresa.grupo === "polired" ? grupoPolired.id : null,
+          grupoEmpresaId: empresa.grupo === "polyrec" ? grupoPolyrec.id : null,
         },
       });
       id = creada.id;
       origen = `CREADA · NIT ${nit} — Camila debe completar el NIT real desde la ficha`;
+    } else {
+      aviso(`No existe ninguna empresa que coincida con "${empresa.buscar.join('" / "')}": Camila debe crearla con su NIT real.`);
+      resumen.push([empresa.nombre, "NO EXISTE", "", ""]);
+      continue;
     }
     ids.set(empresa.clave, id);
     ok(origen);
@@ -345,6 +430,10 @@ async function main() {
 
     const efectivas = capacidadesActivas(await capacidadesDeEmpresa(id));
     ok(`Funciones activas: ${efectivas.join(", ") || "ninguna"}`);
+
+    if (empresa.plantillas?.length && efectivas.includes("tarifario_propio")) {
+      await publicarPlantillas(empresa, id, usuarioId);
+    }
 
     resumen.push([
       empresa.nombre,
@@ -381,55 +470,7 @@ async function main() {
 
   // ── Ejemplos ───────────────────────────────────────────────────────────────
   if (conEjemplos) {
-    titulo("Ejemplos");
-
-    const litoplasId = ids.get("LITOPLAS");
-    if (litoplasId) {
-      const yaExiste = await prisma.tramiteDO.findFirst({
-        where: { clienteId: litoplasId, tipoTramiteCodigo: "CLASIFICACION", comentarios: { contains: MARCA_EJEMPLO } },
-        select: { consecutivo: true },
-      });
-      if (yaExiste) {
-        ok(`Clasificación de ejemplo ya existe: ${yaExiste.consecutivo}`);
-      } else {
-        // Datos literales del informe que se vio en pantalla en la reunión (22:12).
-        const clas = await createTramite({
-          ciudad: Ciudad.BAQ,
-          clienteId: litoplasId,
-          tipoTramiteCodigo: "CLASIFICACION",
-          referenciaExterna: "2140",
-          comentarios: `${MARCA_EJEMPLO} Informe de clasificación 2140 del 16/07/2026 · Generador de aire caliente a gas · subpartida 7322.90.00.00 · tarifa 380.000 + IVA`,
-          creadoPorId: usuarioId,
-        });
-        ok(`Clasificación arancelaria para Litoplas: ${clas.consecutivo} (informe externo 2140)`);
-        nota("Consecutivo propio, sin ETA ni agencia, factura aparte. Tal como se acordó en 26:26.");
-      }
-    }
-
-    const coldexId = ids.get("COLDEX");
-    if (coldexId) {
-      const yaExiste = await prisma.movimientoCuenta.findFirst({
-        where: { empresaId: coldexId, concepto: { contains: MARCA_EJEMPLO } },
-        select: { id: true },
-      });
-      if (yaExiste) {
-        ok("Cargo manual de ejemplo para Coldex ya existe.");
-      } else {
-        await registrarMovimientoCuenta({
-          empresaId: coldexId,
-          rol: RolCuenta.PROVEEDOR,
-          tipo: TipoMovimientoCuenta.ABONO,
-          origen: OrigenMovimientoCuenta.CARGO_MANUAL,
-          lineaServicio: "TRAMITE",
-          concepto: `${MARCA_EJEMPLO} Servicios aduaneros + quincenas y primas del mes`,
-          valor: 4_000_000n,
-          fecha: new Date(),
-          usuarioId,
-        });
-        ok("Cargo manual para Coldex: 4.000.000 a su favor ('como 4 millones… varía', 72:50).");
-        nota("Aparece en la sección Cuenta corriente de la ficha de Coldex.");
-      }
-    }
+    await ejemplos(ids, usuarioId);
   }
 
   // ── Resumen ────────────────────────────────────────────────────────────────
@@ -448,8 +489,159 @@ async function main() {
     );
   }
   console.log(
-    "\nSin decidir (ver PENDIENTES-MARIA-CAMILA.md): valor de la comisión de Eltrans, NIT de Ascinter, si Sesderma va en el grupo Polired.",
+    "\nSin decidir (ver PENDIENTES-MARIA-CAMILA.md): tarifario de Polyrec S.A.S., valor de la comisión de Ltrans, NIT de Ascinter y Almacarga, si Sesderma va en el grupo Polyrec.",
   );
+}
+
+// ─── Un ejemplo por tema, marcado [EJEMPLO REUNIÓN] ────────────────────────────
+
+async function ejemplos(ids: Map<string, string>, usuarioId: string) {
+  titulo("Ejemplos (uno por tema, todos marcados [EJEMPLO REUNIÓN])");
+
+  const litoplasId = ids.get("LITOPLAS");
+  const polyrecId = ids.get("POLYREC");
+  const polyrecZfId = ids.get("POLYREC_ZF");
+  const coldexId = ids.get("COLDEX");
+
+  // 1. Clasificación arancelaria con consecutivo propio (Litoplas).
+  if (litoplasId) {
+    const yaExiste = await prisma.tramiteDO.findFirst({
+      where: { clienteId: litoplasId, tipoTramiteCodigo: "CLASIFICACION", comentarios: { contains: MARCA_EJEMPLO } },
+      select: { consecutivo: true },
+    });
+    if (yaExiste) {
+      ok(`1. Clasificación de ejemplo ya existe: ${yaExiste.consecutivo}`);
+    } else {
+      const clas = await createTramite({
+        ciudad: Ciudad.BAQ,
+        clienteId: litoplasId,
+        tipoTramiteCodigo: "CLASIFICACION",
+        referenciaExterna: "2140",
+        comentarios: `${MARCA_EJEMPLO} Informe de clasificación 2140 del 16/07/2026 · Generador de aire caliente a gas · subpartida 7322.90.00.00 · tarifa 380.000 + IVA`,
+        creadoPorId: usuarioId,
+      });
+      ok(`1. Clasificación arancelaria para Litoplas: ${clas.consecutivo} (informe externo 2140)`);
+    }
+
+    // 2. Otros servicios: firma de Plan Vallejo (consecutivo OTR26-XXXX).
+    const yaOtro = await prisma.tramiteDO.findFirst({
+      where: { clienteId: litoplasId, tipoTramiteCodigo: "OTRO", comentarios: { contains: MARCA_EJEMPLO } },
+      select: { consecutivo: true },
+    });
+    if (yaOtro) {
+      ok(`2. Servicio 'otro' de ejemplo ya existe: ${yaOtro.consecutivo}`);
+    } else {
+      const otro = await createTramite({
+        ciudad: Ciudad.BAQ,
+        clienteId: litoplasId,
+        tipoTramiteCodigo: "OTRO",
+        referenciaExterna: "Firma Plan Vallejo — programa de materias primas",
+        comentarios: `${MARCA_EJEMPLO} Servicio sin DO: firma del Plan Vallejo de Litoplas. Se cobra con el producto Siigo 014 PROGRAMA PLAN VALLEJO, factura aparte, línea de cartera OTROS (10-sep, min 15:27).`,
+        creadoPorId: usuarioId,
+      });
+      ok(`2. Otros servicios para Litoplas: ${otro.consecutivo} (Plan Vallejo) — sin agencia, sin ETA, sin checklist`);
+    }
+
+    // 3. Eventos + base de cálculo sobre el DO de importación más reciente de Litoplas.
+    const doLitoplas = await prisma.tramiteDO.findFirst({
+      where: { clienteId: litoplasId, tipoTramiteCodigo: "IMPORTACION", estado: { notIn: ["CERRADO"] } },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, consecutivo: true },
+    });
+    if (doLitoplas) {
+      await prisma.tramiteDO.update({
+        where: { id: doLitoplas.id },
+        data: { numDeclaraciones: 3, tipoCarga: "CONTENEDOR_20", numContenedores: 1, numDocumentos: 4 },
+      });
+      await marcarEventosTramite({
+        tramiteId: doLitoplas.id,
+        usuarioId,
+        eventos: [
+          { codigo: "REVISION_DESPACHO", cantidad: 1, observacion: MARCA_EJEMPLO },
+          { codigo: "ELABORACION_REGISTRO", cantidad: 1, observacion: MARCA_EJEMPLO },
+        ],
+      });
+      const propuesta = await propuestaParaTramite(doLitoplas.id);
+      ok(`3. Eventos en ${doLitoplas.consecutivo}: revisión en despacho + registro elaborado; 3 declaraciones, contenedor 20′`);
+      for (const l of propuesta.resultado?.lineas ?? []) {
+        nota(`${l.nombrePublico.padEnd(58)} ${cop(l.valor).padStart(14)}  ${l.origen === "EVENTO" ? "(evento)" : ""}`);
+      }
+      if (propuesta.resultado) nota(`${"Total conceptos".padEnd(58)} ${cop(propuesta.resultado.total).padStart(14)}`);
+      if (propuesta.motivo) aviso(propuesta.motivo);
+    } else {
+      aviso("3. Litoplas no tiene DO de importación abierto para marcar eventos (Camila va a recargar 2026 desde cero).");
+    }
+  }
+
+  // 4. Polyrec ZF: traslado de 2 contenedores → tarifa por tramos (250.000 × 2).
+  if (polyrecZfId) {
+    let traslado = await prisma.tramiteDO.findFirst({
+      where: { clienteId: polyrecZfId, comentarios: { contains: MARCA_EJEMPLO } },
+      select: { id: true, consecutivo: true },
+    });
+    if (!traslado) {
+      const creado = await createTramite({
+        ciudad: Ciudad.BAQ,
+        clienteId: polyrecZfId,
+        agenciaAduanas: "COLDEX",
+        comentarios: `${MARCA_EJEMPLO} Traslado de 2 contenedores en zona franca: 1 contenedor 300.000; 2 o más 250.000 c/u (10-sep, min 83:31).`,
+        creadoPorId: usuarioId,
+      });
+      traslado = { id: creado.id, consecutivo: creado.consecutivo };
+    }
+    await prisma.tramiteDO.update({ where: { id: traslado.id }, data: { numContenedores: 2 } });
+    const propuesta = await propuestaParaTramite(traslado.id);
+    ok(`4. Polyrec ZF ${traslado.consecutivo}: 2 contenedores`);
+    for (const l of propuesta.resultado?.lineas ?? []) nota(`${l.nombrePublico}: ${cop(l.valor)} — ${l.detalle}`);
+    if (propuesta.motivo) aviso(propuesta.motivo);
+  }
+
+  // 5. Polyrec nacionalización: orden de compra en el DO (número + valor sin IVA).
+  if (polyrecId) {
+    let oc = await prisma.tramiteDO.findFirst({
+      where: { clienteId: polyrecId, comentarios: { contains: MARCA_EJEMPLO } },
+      select: { id: true, consecutivo: true },
+    });
+    if (!oc) {
+      const creado = await createTramite({
+        ciudad: Ciudad.BAQ,
+        clienteId: polyrecId,
+        agenciaAduanas: "CORTES",
+        comentarios: `${MARCA_EJEMPLO} Nacionalización con orden de compra: Polyrec devuelve una OC por el valor de la solicitud de fondos; la factura debe dar ese valor sin IVA y llevar el n° de OC (10-sep, min 84:30).`,
+        creadoPorId: usuarioId,
+      });
+      oc = { id: creado.id, consecutivo: creado.consecutivo };
+    }
+    await prisma.tramiteDO.update({
+      where: { id: oc.id },
+      data: { ordenCompraNumero: "OC-EJEMPLO-2026-0154", ordenCompraValor: 4_500_000n, numContenedores: 1 },
+    });
+    ok(`5. Polyrec ${oc.consecutivo}: agencia Cortes, OC-EJEMPLO-2026-0154 por ${cop(4_500_000n)} sin IVA — al generar el borrador la cabecera lleva "ORDEN DE COMPRA N° …" y la revisión contrasta el valor`);
+  }
+
+  // 6. Coldex: cargo manual a favor del proveedor (mensualidad variable).
+  if (coldexId) {
+    const yaExiste = await prisma.movimientoCuenta.findFirst({
+      where: { empresaId: coldexId, concepto: { contains: MARCA_EJEMPLO } },
+      select: { id: true },
+    });
+    if (yaExiste) {
+      ok("6. Cargo manual de ejemplo para Coldex ya existe.");
+    } else {
+      await registrarMovimientoCuenta({
+        empresaId: coldexId,
+        rol: RolCuenta.PROVEEDOR,
+        tipo: TipoMovimientoCuenta.ABONO,
+        origen: OrigenMovimientoCuenta.CARGO_MANUAL,
+        lineaServicio: "TRAMITE",
+        concepto: `${MARCA_EJEMPLO} Servicios aduaneros + quincenas y primas del mes`,
+        valor: 4_000_000n,
+        fecha: new Date(),
+        usuarioId,
+      });
+      ok("6. Cargo manual para Coldex: 4.000.000 a su favor ('como 4 millones… varía', jul 72:50). Se ve en Cuenta corriente y se puede cruzar con lo que Coldex deba.");
+    }
+  }
 }
 
 main()

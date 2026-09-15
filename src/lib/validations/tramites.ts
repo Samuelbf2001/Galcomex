@@ -48,6 +48,13 @@ export const atributosTramiteSchema = z.object({
   numDeclaraciones: enteroOpcional,
   numDocumentos: enteroOpcional,
   numItems: enteroOpcional,
+  /** Orden de compra del cliente (capacidad `orden_compra_en_revision`, caso Polyrec). */
+  ordenCompraNumero: z.string().trim().min(1).max(60).optional().nullable(),
+  ordenCompraValor: z.coerce
+    .bigint()
+    .refine((v) => v >= 0n, { message: "El valor de la orden de compra no puede ser negativo" })
+    .optional()
+    .nullable(),
 });
 
 export const tramiteUpdateSchema = atributosTramiteSchema.extend({

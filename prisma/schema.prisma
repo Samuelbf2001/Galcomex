@@ -307,6 +307,7 @@ enum AgenciaAduanas {
   MOVIADUANAS
   COLDEX
   AR_LOGISTY
+  CORTES // segunda agencia de Polyrec (reunión 10-sep-2026, min 84:30)
 }
 
 // ─── Tipos de trámite (M4) ────────────────────────────────────────────────────
@@ -408,6 +409,12 @@ model TramiteDO {
   numDeclaraciones Int?
   numDocumentos    Int?
   numItems         Int? // ítems clasificados
+
+  // Orden de compra del cliente (capacidad `orden_compra_en_revision`, caso
+  // Polyrec: la OC llega por el valor de la solicitud de fondos y su número
+  // va en la descripción de la factura). Reunión 10-sep-2026, min 84:30.
+  ordenCompraNumero String?
+  ordenCompraValor  BigInt? // COP sin IVA, tal como viene en la OC
 
   creadoPorId String
   creadoPor   User     @relation("CreadoPor", fields: [creadoPorId], references: [id])
@@ -1136,6 +1143,7 @@ enum TipoCalculoTarifa {
   PORCENTAJE_MIN // % sobre el CIF con mínimo por tipo de carga (CW: 0,37 %)
   PRIMERO_MAS_ADICIONAL // primero a un precio y cada adicional a otro (clasificación)
   ESPEJO_DE_COSTO // se cobra lo mismo que costó (pago del registro VUCE)
+  POR_TRAMO // precio unitario según cuántas unidades haya (Polyrec ZF: 1 contenedor 300.000, 2 o más 250.000 c/u)
 }
 
 /// Cuándo entra a la factura.
@@ -1225,6 +1233,9 @@ model TarifaItem {
   minimos        Json?
   /// ESPEJO_DE_COSTO: texto que identifica el pago/factura de proveedor que se espeja.
   conceptoCosto  String?
+  /// POR_TRAMO: `[{ hasta: 1, valor: "300000" }, { hasta: null, valor: "250000" }]`,
+  /// ordenados; `hasta = null` es "en adelante". El precio del tramo aplica a TODAS las unidades.
+  tramos         Json?
 
   aplicaIva Boolean @default(true)
   notas     String?

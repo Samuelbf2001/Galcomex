@@ -146,6 +146,9 @@ export type TramiteParaFacturacion = {
     nombre: string;
     nit: string;
   };
+  /** Orden de compra del cliente (capacidad `orden_compra_en_revision`). Valor en COP string, sin IVA. */
+  ordenCompraNumero: string | null;
+  ordenCompraValor: string | null;
   borradores: BorradorRow[];
 };
 
@@ -323,6 +326,11 @@ export async function fetchTramitesParaFacturacion(
           nombre: String(cliente.nombre ?? ""),
           nit: String(cliente.nit ?? ""),
         },
+        ordenCompraNumero: typeof t.ordenCompraNumero === "string" && t.ordenCompraNumero ? t.ordenCompraNumero : null,
+        ordenCompraValor:
+          typeof t.ordenCompraValor === "string" || typeof t.ordenCompraValor === "number"
+            ? String(t.ordenCompraValor)
+            : null,
         borradores: [],
       };
     },

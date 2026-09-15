@@ -212,7 +212,13 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   // ── Verificar que el trámite está en estado facturable ────────────────────
   const tramiteEstado = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
-    select: { id: true, consecutivo: true, estado: true, cliente: { select: { tipo: true } } },
+    select: {
+      id: true,
+      consecutivo: true,
+      estado: true,
+      ordenCompraNumero: true,
+      cliente: { select: { tipo: true } },
+    },
   });
   if (!tramiteEstado) {
     throw new TramiteNoFacturableError("no encontrado");
@@ -358,6 +364,13 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   const OBSERVACION_NO_RETENCIONES = "NO PRACTICAR RETEFUENTE NI RETEICA";
   const comentariosCabeceraInicial: string[] =
     tipoCliente === TipoCliente.SOCIO_LM ? [OBSERVACION_NO_RETENCIONES] : [];
+
+  // Orden de compra del cliente (Polyrec): "el número de la OC debe ir en la
+  // descripción de la factura" (reunión 10-sep-2026, min 84:30). Se siembra en
+  // la cabecera si el DO la trae; la revisión contrasta el valor.
+  if (tramiteEstado.ordenCompraNumero) {
+    comentariosCabeceraInicial.push(`ORDEN DE COMPRA N° ${tramiteEstado.ordenCompraNumero}`);
+  }
 
   // ── Persistir en transacción ──────────────────────────────────────────────
   return prisma.$transaction(async (tx) => {

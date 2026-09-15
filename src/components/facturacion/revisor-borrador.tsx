@@ -1013,6 +1013,39 @@ export function RevisorBorrador({
         </div>
       </header>
 
+      {/* Orden de compra del cliente (capacidad orden_compra_en_revision, caso Polyrec):
+          la factura debe dar el valor de la OC sin IVA y llevar su número en la descripción. */}
+      {tramite.ordenCompraNumero ? (() => {
+        const oc = tramite.ordenCompraValor ? BigInt(tramite.ordenCompraValor) : null;
+        const sinIva =
+          BigInt(borradorActual.totalFacturaLineas) - BigInt(borradorActual.ivaComision) + BigInt(borradorActual.retenciones);
+        const diferencia = oc === null ? null : sinIva - oc;
+        const cuadra = diferencia === 0n;
+        return (
+          <div
+            role={cuadra || oc === null ? "status" : "alert"}
+            className={`flex items-start gap-2 border-b px-4 py-2 text-sm ${
+              oc === null ? "border-slate-200 bg-slate-50 text-slate-700" : cuadra ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"
+            }`}
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <div>
+              <p className="font-semibold">
+                Orden de compra N° {tramite.ordenCompraNumero}
+                {oc !== null ? ` por ${formatCOP(oc.toString())} (sin IVA)` : " (sin valor registrado en el DO)"}
+              </p>
+              <p className="text-xs">
+                {oc === null
+                  ? "Registra el valor de la OC en el Resumen del DO para contrastarla aquí."
+                  : cuadra
+                    ? `La factura sin IVA suma ${formatCOP(sinIva.toString())}: cuadra con la OC. El número ya va en la cabecera.`
+                    : `La factura sin IVA suma ${formatCOP(sinIva.toString())}: ${diferencia! > 0n ? "supera" : "queda por debajo de"} la OC en ${formatCOP((diferencia! < 0n ? -diferencia! : diferencia!).toString())}. Revisa antes de aprobar.`}
+              </p>
+            </div>
+          </div>
+        );
+      })() : null}
+
       {/* Cuerpo split-screen */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* IZQUIERDA — visor de soporte */}

@@ -302,10 +302,17 @@ type ItemFormState = {
   min20: string;
   min40: string;
   conceptoCosto: string;
+  /** POR_TRAMO: filas "hasta N unidades → valor". `hasta` vacío = en adelante. */
+  tramos: { hasta: string; valor: string }[];
   aplicaIva: boolean;
   orden: string;
   notas: string;
 };
+
+const TRAMOS_VACIOS = [
+  { hasta: "1", valor: "" },
+  { hasta: "", valor: "" },
+];
 
 function estadoDesdeItem(item: TarifaItemRow | null, orden: number): ItemFormState {
   return {
@@ -323,6 +330,9 @@ function estadoDesdeItem(item: TarifaItemRow | null, orden: number): ItemFormSta
     min20: item?.minimos?.CONTENEDOR_20 ?? "",
     min40: item?.minimos?.CONTENEDOR_40 ?? "",
     conceptoCosto: item?.conceptoCosto ?? "",
+    tramos: item?.tramos?.length
+      ? item.tramos.map((t) => ({ hasta: t.hasta === null ? "" : String(t.hasta), valor: t.valor }))
+      : TRAMOS_VACIOS.map((t) => ({ ...t })),
     aplicaIva: item?.aplicaIva ?? true,
     orden: String(item?.orden ?? orden),
     notas: item?.notas ?? "",
@@ -351,6 +361,12 @@ function formDesdeEstado(s: ItemFormState): TarifaItemForm {
     porcentajeBps: s.tipoCalculo === "PORCENTAJE_MIN" && !Number.isNaN(pct) ? Math.round(pct * 100) : null,
     minimos: minimos && Object.keys(minimos).length ? minimos : null,
     conceptoCosto: s.tipoCalculo === "ESPEJO_DE_COSTO" ? s.conceptoCosto.trim() || null : null,
+    tramos:
+      s.tipoCalculo === "POR_TRAMO"
+        ? s.tramos
+            .filter((t) => t.valor.trim() !== "")
+            .map((t) => ({ hasta: t.hasta.trim() === "" ? null : Number(t.hasta), valor: t.valor.trim() }))
+        : null,
     aplicaIva: s.aplicaIva,
     notas: s.notas.trim() || null,
     orden: Number(s.orden) || 0,
@@ -392,7 +408,17 @@ function ItemModal({
   }
 
   const tipo = TIPOS_CALCULO.find((t) => t.value === s.tipoCalculo);
-  const usaUnidad = s.tipoCalculo === "POR_UNIDAD" || s.tipoCalculo === "PRIMERO_MAS_ADICIONAL";
+  const usaUnidad = s.tipoCalculo === "POR_UNIDAD" || s.tipoCalculo === "PRIMERO_MAS_ADICIONAL" || s.tipoCalculo === "POR_TRAMO";
+
+  function setTramo(i: number, campo: "hasta" | "valor", v: string) {
+    setS((prev) => ({ ...prev, tramos: prev.tramos.map((t, j) => (j === i ? { ...t, [campo]: soloDigitos(v) } : t)) }));
+  }
+  function quitarTramo(i: number) {
+    setS((prev) => ({ ...prev, tramos: prev.tramos.filter((_, j) => j !== i) }));
+  }
+  function agregarTramo() {
+    setS((prev) => ({ ...prev, tramos: [...prev.tramos, { hasta: "", valor: "" }] }));
+  }
 
   return (
     <ModalShell open onClose={onClose} title={item ? `Editar ${item.nombrePublico}` : "Agregar ítem al tarifario"} size="lg" dismissible={!enviando}>
@@ -442,7 +468,7 @@ function ItemModal({
             </label>
           ) : null}
 
-          {s.tipoCalculo !== "PORCENTAJE_MIN" && s.tipoCalculo !== "ESPEJO_DE_COSTO" ? (
+          {s.tipoCalculo !== "PORCENTAJE_MIN" && s.tipoCalculo !== "ESPEJO_DE_COSTO" && s.tipoCalculo !== "POR_TRAMO" ? (
             <label className="block space-y-1">
               <span className={LABEL}>{s.tipoCalculo === "PRIMERO_MAS_ADICIONAL" ? "Valor del primero (COP) *" : "Valor (COP) *"}</span>
               <input value={s.valor} onChange={(e) => set("valor", soloDigitos(e.target.value))} inputMode="numeric" required className={INPUT} placeholder="100000" />
@@ -488,6 +514,31 @@ function ItemModal({
                 </label>
               </div>
             </>
+          ) : null}
+
+          {s.tipoCalculo === "POR_TRAMO" ? (
+            <div className="space-y-2 sm:col-span-2">
+              <span className={LABEL}>Tramos (el precio del tramo aplica a todas las unidades) *</span>
+              <ul className="space-y-1.5">
+                {s.tramos.map((t, i) => (
+                  <li key={i} className="flex items-center gap-2 text-sm">
+                    <span className="w-14 shrink-0 text-slate-500">Hasta</span>
+                    <input value={t.hasta} onChange={(e) => setTramo(i, "hasta", e.target.value)} inputMode="numeric" className={`${INPUT} w-20`} placeholder="∞" aria-label={`Tramo ${i + 1}: hasta cuántas unidades (vacío = en adelante)`} />
+                    <span className="shrink-0 text-slate-500">{UNIDADES.find((u) => u.value === s.unidad)?.label.toLowerCase() ?? "unidades"} →</span>
+                    <input value={t.valor} onChange={(e) => setTramo(i, "valor", e.target.value)} inputMode="numeric" required className={`${INPUT} flex-1`} placeholder="300000" aria-label={`Tramo ${i + 1}: valor por unidad en COP`} />
+                    <span className="shrink-0 text-slate-500">c/u</span>
+                    <button type="button" onClick={() => quitarTramo(i)} disabled={s.tramos.length <= 1} className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-slate-300 text-slate-500 hover:bg-slate-50 disabled:opacity-40" aria-label={`Quitar tramo ${i + 1}`}>
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button type="button" onClick={agregarTramo} className="inline-flex h-8 items-center gap-1 border border-slate-300 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                Agregar tramo
+              </button>
+              <p className="text-xs text-slate-500">Deja &quot;hasta&quot; vacío en el último tramo para &quot;en adelante&quot;. Polyrec ZF: hasta 1 → 300.000; vacío → 250.000.</p>
+            </div>
           ) : null}
 
           {s.tipoCalculo === "ESPEJO_DE_COSTO" ? (
