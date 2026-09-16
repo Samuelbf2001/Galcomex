@@ -8,6 +8,7 @@ import {
   DocumentoNoEncontradoError,
   DocumentoPermisoError,
   DocumentoYaEliminadoError,
+  actualizarDocumento,
   eliminarDocumento,
   reemplazarDocumento,
   refrescarUrlDescarga,
@@ -15,7 +16,7 @@ import {
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { StorageValidationError } from "@/lib/storage/service";
-import { reemplazarDocumentoSchema } from "@/lib/validations/documentos";
+import { actualizarDocumentoSchema, reemplazarDocumentoSchema } from "@/lib/validations/documentos";
 
 type RouteContext = {
   params: Promise<{ id: string; documentoId: string }>;
@@ -108,6 +109,74 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
     if (error instanceof DocumentoPermisoError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
+    }
+    throw error;
+  }
+}
+
+/**
+ * PATCH /api/tramites/[id]/documentos/[documentoId]
+ * Edita metadatos sin volver a subir: `nombreArchivo` y/o `categoria`. Al
+ * cambiar de categoría el archivo se mueve de carpeta en el bucket. Pensado
+ * para que un agente (o Camila) ordene lo que el importador dejó en OTRO.
+ *
+ * Matriz de roles: igual que PUT (ADMIN/REVISOR cualquiera; OPERATIVO solo los
+ * que subió él mismo; SOCIO no).
+ */
+export async function PATCH(request: NextRequest, context: RouteContext) {
+  const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO"]);
+
+  if (session instanceof NextResponse) {
+    return session;
+  }
+
+  const { id, documentoId } = await context.params;
+
+  const permiso = await resolverTramiteConPermiso(id, session.user.rol);
+  if (permiso === null) {
+    return NextResponse.json({ error: "Trámite no encontrado" }, { status: 404 });
+  }
+  if (permiso === "forbidden") {
+    return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+  }
+
+  const doc = await prisma.documento.findUnique({
+    where: { id: documentoId },
+    select: { tramiteId: true },
+  });
+  if (!doc || doc.tramiteId !== id) {
+    return NextResponse.json({ error: "Documento no encontrado" }, { status: 404 });
+  }
+
+  try {
+    const body: unknown = await request.json();
+    const payload = actualizarDocumentoSchema.parse(body);
+
+    const documento = await actualizarDocumento({
+      documentoId,
+      usuarioId: session.user.id,
+      rol: session.user.rol,
+      nombreArchivo: payload.nombreArchivo,
+      categoria: payload.categoria,
+    });
+
+    return jsonResponse({ documento });
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return validationError(error);
+    }
+    if (error instanceof StorageValidationError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (
+      error instanceof DocumentoNoEncontradoError ||
+      error instanceof DocumentoYaEliminadoError ||
+      error instanceof DocumentoPermisoError
+    ) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
     if (isDomainError(error)) {

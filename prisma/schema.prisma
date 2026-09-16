@@ -416,6 +416,11 @@ model TramiteDO {
   ordenCompraNumero String?
   ordenCompraValor  BigInt? // COP sin IVA, tal como viene en la OC
 
+  /// Trámite cargado desde el archivo histórico (Drive 2026): existe para que
+  /// se vean su carpeta y sus documentos, sin detalle financiero. La UI lo
+  /// marca con un distintivo y los importadores lo usan para no pisar DOs reales.
+  esHistorico Boolean @default(false)
+
   creadoPorId String
   creadoPor   User     @relation("CreadoPor", fields: [creadoPorId], references: [id])
   createdAt   DateTime @default(now())
@@ -512,7 +517,7 @@ model Documento {
   tramite       TramiteDO          @relation(fields: [tramiteId], references: [id], onDelete: Cascade)
   categoria     CategoriaDocumento
   nombreArchivo String
-  // Estructura en MinIO: tramites/{consecutivo}/{categoria}/{uuid}.ext
+  // Estructura en el bucket: tramites/{consecutivo}/{categoria}/{uuid}.ext
   storageKey    String
   mimeType      String
   tamanoBytes   Int
@@ -594,7 +599,7 @@ model Anticipo {
   fecha           DateTime
   tipoRecaudo     TipoRecaudo
   costoRecaudo    BigInt           @default(0) // Snapshot del costo al momento del registro
-  soporteKey      String? // Comprobante bancario en MinIO
+  soporteKey      String? // Comprobante bancario en el bucket
   verificadoBanco Boolean          @default(false)
   estado          EstadoMovimiento @default(REALIZADO)
   createdAt       DateTime         @default(now())
@@ -931,7 +936,7 @@ model Factura {
   saldoACargoCliente BigInt
   saldoAFavorLM      BigInt
   saldoACargoLM      BigInt
-  pdfKey             String? // PDF en MinIO
+  pdfKey             String? // PDF en el bucket
 
   // Derivadas: se setean cuando saldoNeto del destino llega a 0
   fechaPagoCliente DateTime?
@@ -972,7 +977,7 @@ model PagoFactura {
   tipoRecaudo     TipoRecaudo? // Recaudo (entra plata) → costo de matriz_recaudo
   canalPago       CanalPago? // Pago (sale plata)  → costo de matriz_pago
   costoBancario   BigInt           @default(0) // Snapshot del cobro al momento del registro
-  comprobanteKey  String? // Clave en MinIO del comprobante bancario
+  comprobanteKey  String? // Clave en el bucket del comprobante bancario
   verificadoBanco Boolean          @default(false)
   estado          EstadoMovimiento @default(REALIZADO)
   registradoPorId String

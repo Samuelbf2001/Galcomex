@@ -27,6 +27,18 @@ export const reemplazarDocumentoSchema = z.object({
   tamanoBytes: z.number().int().positive(),
 });
 
+/** PATCH: renombrar y/o recategorizar sin volver a subir. Al menos un campo. */
+export const actualizarDocumentoSchema = z
+  .object({
+    nombreArchivo: z.string().trim().min(1).max(255).optional(),
+    categoria: z.nativeEnum(CategoriaDocumento).optional(),
+  })
+  .refine((v) => v.nombreArchivo !== undefined || v.categoria !== undefined, {
+    message: "Indica nombreArchivo y/o categoria",
+  });
+
+export type ActualizarDocumentoPayload = z.infer<typeof actualizarDocumentoSchema>;
+
 export type SolicitarSubidaInput = z.infer<typeof solicitarSubidaSchema>;
 export type RegistrarDocumentoInput = z.infer<typeof registrarDocumentoSchema>;
 export type ReemplazarDocumentoInput = z.infer<typeof reemplazarDocumentoSchema>;
