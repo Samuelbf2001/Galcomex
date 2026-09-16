@@ -116,6 +116,9 @@ export function ImportarExcelWorkspace() {
 
   // ─── Selección de archivo ──────────────────────────────────────────────────
   const seleccionarArchivo = useCallback((seleccionado: File | null) => {
+    setPreviewOk(false);
+    setReporte(null);
+    setError(null);
     if (!seleccionado) {
       setFile(null);
       setFileError(null);
@@ -175,7 +178,7 @@ export function ImportarExcelWorkspace() {
         const msg = describirError(caught, "Error inesperado durante la importación.");
         setError(msg);
         setReporte(null);
-        if (dryRun) setPreviewOk(false);
+        setPreviewOk(false);
         toast({
           title: dryRun ? "No se pudo previsualizar" : "No se pudo importar",
           description: msg,
@@ -206,6 +209,9 @@ export function ImportarExcelWorkspace() {
 
   return (
     <div className="space-y-6">
+      <ol aria-label="Pasos para importar" className="grid gap-2 text-sm sm:grid-cols-3">
+        {["1. Selecciona cliente y archivo", "2. Revisa la previsualización", "3. Confirma la importación"].map((paso, index) => <li key={paso} aria-current={(!file || !clienteId ? 0 : !previewOk ? 1 : 2) === index ? "step" : undefined} className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-slate-600 aria-[current=step]:border-cyan-600 aria-[current=step]:bg-cyan-50 aria-[current=step]:font-semibold aria-[current=step]:text-cyan-900">{paso}</li>)}
+      </ol>
       {/* ── Formulario de carga ── */}
       <div className="space-y-5 border border-slate-200 bg-white p-5">
         <div className="space-y-2">
@@ -222,6 +228,8 @@ export function ImportarExcelWorkspace() {
               detail={clientesError}
               action={{ label: "Reintentar", onClick: recargarClientes }}
             />
+          ) : !cargandoClientes && clientes.length === 0 ? (
+            <ModuleState type="empty" title="No hay clientes activos" detail="Registra o activa un cliente antes de importar sus trámites." />
           ) : (
             <select
               id="cliente-import"
@@ -295,7 +303,7 @@ export function ImportarExcelWorkspace() {
             className="sr-only"
             aria-hidden="true"
           />
-          {fileError && <p className="text-xs text-rose-600">{fileError}</p>}
+          {fileError && <p role="alert" className="text-xs text-rose-600">{fileError}</p>}
         </div>
 
         {/* Acciones */}
@@ -309,10 +317,10 @@ export function ImportarExcelWorkspace() {
             {ejecutando === "preview" && (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
             )}
-            Previsualizar
+            {ejecutando === "preview" ? "Previsualizando…" : previewOk ? "Volver a revisar" : "Previsualizar"}
           </button>
 
-          <button
+          {previewOk && <button
             type="button"
             onClick={() => void confirmarImportacion()}
             disabled={!puedeEjecutar || !previewOk}
@@ -328,21 +336,10 @@ export function ImportarExcelWorkspace() {
             {ejecutando === "import" && (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
             )}
-            Confirmar importación
-          </button>
+            {ejecutando === "import" ? "Importando…" : "Confirmar importación"}
+          </button>}
 
-          {ocupado && (
-            <span
-              role="status"
-              aria-live="polite"
-              className="inline-flex items-center gap-2 text-sm font-medium text-cyan-700"
-            >
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              {ejecutando === "preview"
-                ? "Procesando previsualización… leyendo las hojas del Excel"
-                : "Importando datos… escribiendo en la base de datos"}
-            </span>
-          )}
+          {!ocupado && !previewOk && <p className="text-xs text-slate-500">{!clienteId || !file ? "Selecciona el cliente y el archivo para continuar." : "Revisa el resultado antes de confirmar; previsualizar no guarda datos."}</p>}
         </div>
       </div>
 
@@ -362,7 +359,7 @@ export function ImportarExcelWorkspace() {
             </p>
             <p className="text-xs text-cyan-700">
               Leyendo y validando las hojas del Excel. Esto puede tardar unos
-              segundos; puedes seguir trabajando mientras tanto.
+              segundos. Mantén esta página abierta hasta ver el resultado.
             </p>
           </div>
         </div>
@@ -375,7 +372,7 @@ export function ImportarExcelWorkspace() {
           className="flex items-start gap-3 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <p>{error}</p>
+          <p>{error} Conservamos el cliente y el archivo. Vuelve a previsualizar para revisar el estado antes de confirmar.</p>
         </div>
       )}
 
@@ -403,7 +400,7 @@ function ReporteImport({
         {esPreview && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
             <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-            Sin escribir en BD
+            Aún no se han guardado datos
           </span>
         )}
       </div>
@@ -421,7 +418,7 @@ function ReporteImport({
       </div>
 
       {/* Tabla por hoja */}
-      <div className="overflow-hidden border border-slate-200 bg-white">
+      <div className="overflow-x-auto border border-slate-200 bg-white">
         <table className="w-full border-collapse text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500">
             <tr>
@@ -528,19 +525,7 @@ function FilaHoja({ hoja }: { hoja: ResultadoHoja }) {
           </div>
         </td>
         <td className="px-4 py-3 align-top text-slate-600">
-          {hoja.motivo ??
-            (tieneReconciliacion ? (
-              <button
-                type="button"
-                onClick={() => setAbierta((v) => !v)}
-                aria-expanded={abierta}
-                className="font-medium text-cyan-700 underline-offset-2 transition hover:underline"
-              >
-                {abierta ? "Ocultar reconciliación" : "Ver reconciliación"}
-              </button>
-            ) : (
-              "—"
-            ))}
+          {hoja.motivo ?? (tieneReconciliacion ? "Despliega la fila para comparar los valores." : "—")}
         </td>
       </tr>
       {abierta && tieneReconciliacion && (

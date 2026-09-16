@@ -5,7 +5,7 @@
 export function Skeleton({ className = "" }: { className?: string }) {
   return (
     <div
-      className={`animate-pulse bg-slate-200/80 ${className}`}
+      className={`motion-safe:animate-pulse rounded bg-slate-200/80 ${className}`}
       aria-hidden="true"
     />
   );
@@ -22,7 +22,7 @@ type TableSkeletonProps = {
 export function TableSkeleton({ rows = 6, cols = 5, rowHeight = 44 }: TableSkeletonProps) {
   return (
     <div
-      className="w-full border border-slate-200 bg-white"
+      className="w-full overflow-hidden rounded-xl border border-slate-200 bg-white"
       role="status"
       aria-live="polite"
       aria-label="Cargando datos"
@@ -52,8 +52,7 @@ export function TableSkeleton({ rows = 6, cols = 5, rowHeight = 44 }: TableSkele
 export function CardsSkeleton({ count = 4, height = 120 }: { count?: number; height?: number }) {
   return (
     <div
-      className="grid gap-3"
-      style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4"
       aria-hidden="true"
     >
       {Array.from({ length: count }).map((_, i) => (

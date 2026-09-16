@@ -20,6 +20,7 @@ import {
 } from "@/components/configuracion/siigo-productos-api";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { describirError, useToast } from "@/components/ui/toast";
+import { ModuleState } from "@/components/layout/module-state";
 
 import {
   actualizarComentariosCabecera as apiActualizarComentarios,
@@ -44,7 +45,7 @@ const ETIQUETA_SECCION: Record<SeccionLinea, string> = {
  * `exito` es el título del toast de éxito (si se omite, no se muestra —
  * p. ej. ediciones inline muy frecuentes).
  */
-type Ejecutar = (accion: () => Promise<BorradorRow>, exito?: string) => Promise<void>;
+type Ejecutar = (accion: () => Promise<BorradorRow>, exito?: string) => Promise<boolean>;
 
 // Refleja la asociación real producto↔impuesto (tabla SiigoProductoImpuesto).
 // `clasificacionIva` viene de Siigo y es solo descriptivo: "Taxed" significa
@@ -134,6 +135,7 @@ function FacturasMultiSelect({
       <button
         type="button"
         disabled={disabled}
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={`flex min-h-11 w-full items-center justify-between gap-2 border border-slate-300 bg-white px-3 py-2 text-left text-base transition ${
           disabled ? "cursor-default opacity-70" : "hover:border-slate-400"
@@ -153,7 +155,7 @@ function FacturasMultiSelect({
       </button>
 
       {open && !disabled ? (
-        <div className="absolute z-20 mt-1 max-h-96 w-96 overflow-auto border border-slate-200 bg-white shadow-lg">
+        <div className="relative z-20 mt-1 max-h-96 w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
           {hayBloqueo ? (
             <p className="border-b border-slate-100 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700">
               Solo facturas del mismo proveedor pueden compartir una línea.
@@ -168,6 +170,7 @@ function FacturasMultiSelect({
                 key={f.id}
                 type="button"
                 disabled={otraClave}
+                aria-pressed={activa}
                 onClick={() => onToggle(f.id)}
                 className={`flex w-full items-start gap-3 border-b border-slate-100 px-3 py-3 text-left text-base last:border-b-0 transition ${
                   activa
@@ -275,10 +278,11 @@ function SiigoProductoSelect({
   }, [productos, query]);
 
   return (
-    <div ref={containerRef} className="relative inline-block w-64">
+    <div ref={containerRef} className="relative inline-block w-64 max-w-full">
       <button
         type="button"
         disabled={disabled}
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={`mt-1 flex h-[34px] w-full items-center justify-between gap-2 border border-slate-300 bg-white px-2 py-1 text-left text-sm transition ${
           disabled ? "cursor-default opacity-70" : "hover:border-slate-400"
@@ -298,7 +302,7 @@ function SiigoProductoSelect({
       </button>
 
       {open && !disabled ? (
-        <div className="absolute z-30 mt-1 max-h-96 w-96 overflow-hidden border border-slate-200 bg-white shadow-lg">
+        <div className="absolute z-30 mt-1 max-h-96 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
           <div className="border-b border-slate-200 p-2">
             <input
               ref={searchRef}
@@ -323,7 +327,7 @@ function SiigoProductoSelect({
             ) : null}
             {filtrados.length === 0 ? (
               <p className="px-3 py-3 text-center text-xs text-slate-400">
-                Sin resultados.
+                {productos.length === 0 ? "No hay productos disponibles en Siigo." : "No hay productos con ese código o nombre."}
               </p>
             ) : (
               filtrados.map((p) => {
@@ -378,13 +382,22 @@ function ComentariosCabecera({
   // Resincronizar cuando llega un borrador nuevo desde el server: patrón
   // "ajustar estado durante el render" (sin efecto, sin render en cascada).
   const [comentariosPrevios, setComentariosPrevios] = useState(borrador.comentariosCabecera);
+  const [errorComentarios, setErrorComentarios] = useState(false);
+  const pendienteComentarios = useRef(false);
+  const cancelarComentarioBlur = useRef(false);
   if (comentariosPrevios !== borrador.comentariosCabecera) {
+    if (JSON.stringify(borradorLocal) === JSON.stringify(comentariosPrevios)) {
+      setBorradorLocal(borrador.comentariosCabecera);
+    }
     setComentariosPrevios(borrador.comentariosCabecera);
-    setBorradorLocal(borrador.comentariosCabecera);
   }
 
   async function commit(siguiente: string[]) {
-    await ejecutar(() => apiActualizarComentarios(borrador.id, siguiente));
+    if (pendienteComentarios.current) return;
+    pendienteComentarios.current = true;
+    const ok = await ejecutar(() => apiActualizarComentarios(borrador.id, siguiente));
+    pendienteComentarios.current = false;
+    setErrorComentarios(!ok);
   }
 
   function actualizar(idx: number, valor: string) {
@@ -396,6 +409,7 @@ function ComentariosCabecera({
   }
 
   function commitFila(idx: number) {
+    if (cancelarComentarioBlur.current) { cancelarComentarioBlur.current = false; return; }
     const original = borrador.comentariosCabecera[idx] ?? "";
     const actual = borradorLocal[idx] ?? "";
     if (actual.trim() === original.trim()) return;
@@ -435,7 +449,7 @@ function ComentariosCabecera({
 
   return (
     <div className="border border-slate-300 bg-white">
-      <div className="flex items-center justify-between border-b border-slate-300 bg-slate-100 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-300 bg-slate-100 px-3 py-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-slate-700">
           Comentarios de cabecera (formato factura)
         </span>
@@ -443,7 +457,7 @@ function ComentariosCabecera({
           type="button"
           onClick={agregar}
           disabled={guardando || borradorLocal.length >= 20}
-          className="inline-flex h-8 items-center gap-1 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+          className="inline-flex min-h-11 shrink-0 items-center gap-1 whitespace-nowrap border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
         >
           <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           Agregar fila
@@ -466,7 +480,9 @@ function ComentariosCabecera({
               onKeyDown={(e) => {
                 if (e.key === "Enter") e.currentTarget.blur();
                 if (e.key === "Escape") {
+                  cancelarComentarioBlur.current = true;
                   setBorradorLocal(borrador.comentariosCabecera);
+                  setErrorComentarios(false);
                   e.currentTarget.blur();
                 }
               }}
@@ -480,7 +496,7 @@ function ComentariosCabecera({
                       ? "Ej. Mercancía. Puerto de entrada."
                       : "Otro comentario…"
               }
-              className="flex-1 border border-transparent bg-transparent px-2 py-1.5 text-sm text-slate-800 placeholder:text-slate-400 hover:border-slate-200 focus:border-slate-400 focus:outline-none"
+              className="min-w-0 flex-1 border border-transparent bg-transparent px-2 py-1.5 text-sm text-slate-800 placeholder:text-slate-400 hover:border-slate-200 focus:border-slate-400 focus:outline-none"
             />
             <button
               type="button"
@@ -494,6 +510,10 @@ function ComentariosCabecera({
           </div>
         ))
       )}
+      {errorComentarios ? <div role="alert" className="border-t border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+        <p>Los comentarios tienen cambios sin guardar. Conservamos tu versión.</p>
+        <button type="button" disabled={guardando} onClick={() => void commit(borradorLocal)} className="mt-1 min-h-11 underline disabled:opacity-50">Reintentar comentarios</button>
+      </div> : null}
     </div>
   );
 }
@@ -611,6 +631,70 @@ function sumaLineas(lineas: LineaRevisionRow[]): bigint {
 
 // ─── Subsección (tabla + formulario "Nueva línea") ───────────────────────────
 
+function CampoLinea({ valor, etiqueta, numerico = false, guardando, guardar }: {
+  valor: string;
+  etiqueta: string;
+  numerico?: boolean;
+  guardando: boolean;
+  guardar: (valor: string) => Promise<boolean>;
+}) {
+  const [local, setLocal] = useState(valor);
+  const [anterior, setAnterior] = useState(valor);
+  const [errorCampo, setErrorCampo] = useState<string | null>(null);
+  const pendiente = useRef(false);
+  const cancelarBlur = useRef(false);
+  // Una respuesta a otro campo no puede borrar un cambio local pendiente.
+  if (anterior !== valor) {
+    if (local === anterior) setLocal(valor);
+    setAnterior(valor);
+  }
+
+  async function commit() {
+    if (cancelarBlur.current) { cancelarBlur.current = false; return; }
+    if (pendiente.current) return;
+    const limpio = numerico ? parseBigIntInput(local) : local.trim();
+    if (limpio === null || limpio === "" || (numerico && BigInt(limpio) <= 0n)) {
+      setErrorCampo(numerico ? "Escribe un valor mayor que cero en COP." : "Escribe el concepto de la línea.");
+      return;
+    }
+    if (limpio === valor) { setErrorCampo(null); return; }
+    pendiente.current = true;
+    const ok = await guardar(limpio);
+    pendiente.current = false;
+    setErrorCampo(ok ? null : "Sin guardar. Tu cambio sigue aquí.");
+    if (ok) setLocal(limpio);
+  }
+
+  return (
+    <div className={numerico ? "w-36" : "min-w-48"}>
+      <input
+        value={local}
+        aria-label={etiqueta}
+        aria-invalid={Boolean(errorCampo)}
+        inputMode={numerico ? "numeric" : undefined}
+        disabled={guardando}
+        onChange={(e) => { setLocal(e.target.value); setErrorCampo(null); }}
+        onBlur={() => void commit()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            cancelarBlur.current = true;
+            setLocal(valor);
+            setErrorCampo(null);
+          }
+          if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+        }}
+        className={`min-h-11 w-full rounded-md border bg-white px-2 font-medium focus:outline-none focus:ring-2 disabled:opacity-60 ${numerico ? "text-right" : "text-left"} ${errorCampo ? "border-rose-400 focus:ring-rose-100" : "border-slate-200 focus:border-cyan-600 focus:ring-cyan-100"}`}
+      />
+      {errorCampo ? (
+        <div className="mt-1 text-left text-xs font-normal text-rose-700" role="alert">
+          <p>{errorCampo}</p>
+          <button type="button" disabled={guardando} onClick={() => void commit()} className="min-h-9 underline underline-offset-2 disabled:opacity-50">Reintentar este cambio</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 type SubseccionProps = {
   titulo: string;
   seccion: SeccionLinea;
@@ -665,7 +749,7 @@ function SubseccionLineas({
 
   async function handleCrear() {
     const valor = parseBigIntInput(nuevoValor);
-    if (!nuevoConcepto.trim() || !valor) {
+    if (!nuevoConcepto.trim() || valor === null || BigInt(valor) <= 0n) {
       setError("Concepto y valor (positivo) son obligatorios.");
       return;
     }
@@ -673,7 +757,7 @@ function SubseccionLineas({
     // por eso no se envía numSoporte desde el formulario.
     const facturaIds = compacto ? [] : nuevasFacturas;
     const nitTrimmed = nuevoNitTercero.trim();
-    await ejecutar(
+    const guardado = await ejecutar(
       () =>
         apiCrearLinea(borradorId, {
           concepto: nuevoConcepto.trim(),
@@ -690,6 +774,7 @@ function SubseccionLineas({
         }),
       "Línea agregada",
     );
+    if (!guardado) return;
     setNuevoConcepto("");
     setNuevoValor("");
     setNuevasFacturas([]);
@@ -736,7 +821,9 @@ function SubseccionLineas({
         {titulo}
       </header>
 
-      <table className="w-full border-collapse text-sm">
+      <p className="px-3 py-2 text-xs text-slate-500 sm:hidden">Desliza la tabla para ver valores y facturas vinculadas.</p>
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[640px] border-collapse text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
             <th className="px-2 py-2">#</th>
@@ -754,7 +841,9 @@ function SubseccionLineas({
             <tr key={linea.id} className="border-b border-slate-100 align-top">
               <td className="px-2 py-2 text-slate-400">{linea.orden}</td>
               <td className="px-2 py-2">
-                <span className="font-medium text-slate-800">{linea.concepto}</span>
+                {puedeEditar && !linea.tipoFija ? (
+                  <CampoLinea valor={linea.concepto} etiqueta={`Concepto de la línea ${linea.orden}`} guardando={guardando} guardar={(concepto) => ejecutar(() => apiActualizarLinea(borradorId, linea.id, { concepto }))} />
+                ) : <span className="font-medium text-slate-800">{linea.concepto}</span>}
                 {linea.tipoFija ? (
                   <span className="ml-1.5 inline-block rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
                     Fija
@@ -778,7 +867,9 @@ function SubseccionLineas({
                 </td>
               ) : null}
               <td className="px-2 py-2 text-right font-semibold text-slate-900">
-                {formatCOP(linea.valor)}
+                {puedeEditar && !linea.tipoFija ? (
+                  <CampoLinea valor={linea.valor} etiqueta={`Valor en COP de la línea ${linea.orden}`} numerico guardando={guardando} guardar={(valor) => ejecutar(() => apiActualizarLinea(borradorId, linea.id, { valor }))} />
+                ) : formatCOP(linea.valor)}
               </td>
               {!compacto ? (
                 <td className="px-2 py-2">
@@ -908,9 +999,10 @@ function SubseccionLineas({
           ) : null}
         </tbody>
       </table>
+      </div>
 
       {puedeEditar ? (
-        <div className="border-t border-slate-200 bg-slate-50 p-3">
+        <fieldset disabled={guardando} className="min-w-0 border-t border-slate-200 bg-slate-50 p-3 disabled:opacity-60">
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
             Nueva línea en {titulo.toLowerCase()}
           </p>
@@ -932,7 +1024,7 @@ function SubseccionLineas({
               <input
                 value={nuevoConcepto}
                 onChange={(e) => setNuevoConcepto(e.target.value)}
-                className="mt-1 w-56 border border-slate-300 px-2 py-1 text-sm"
+                className="mt-1 min-h-11 w-56 max-w-full border border-slate-300 px-2 py-1 text-sm"
                 placeholder={
                   seccion === "TERCEROS"
                     ? "Ej. Impuestos aduanas importación"
@@ -955,7 +1047,7 @@ function SubseccionLineas({
               <input
                 value={nuevoValor}
                 onChange={(e) => setNuevoValor(e.target.value)}
-                className="mt-1 w-36 border border-slate-300 px-2 py-1 text-right text-sm"
+                className="mt-1 min-h-11 w-36 border border-slate-300 px-2 py-1 text-right text-sm"
                 placeholder="0"
                 inputMode="numeric"
               />
@@ -964,9 +1056,9 @@ function SubseccionLineas({
               type="button"
               disabled={guardando}
               onClick={handleCrear}
-              className="border border-cyan-600 bg-cyan-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-cyan-700 disabled:opacity-50"
+              className="min-h-11 border border-cyan-600 bg-cyan-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-cyan-700 disabled:opacity-50"
             >
-              Agregar
+              {guardando ? "Guardando…" : "Agregar línea"}
             </button>
           </div>
           {!compacto && facturas.length > 0 ? (
@@ -988,7 +1080,7 @@ function SubseccionLineas({
               a vincular factura. Si después se vincula una factura, el NIT del
               beneficiario tendrá prioridad sobre este campo manual. */}
           {!compacto && nuevasFacturas.length === 0 ? (
-            <div className="mt-2 flex items-center gap-2">
+            <div className="mt-2 flex flex-wrap items-center gap-2">
               <label className="text-xs text-slate-500">
                 Id. Tercero (sin factura):
               </label>
@@ -1004,7 +1096,7 @@ function SubseccionLineas({
               </span>
             </div>
           ) : null}
-        </div>
+        </fieldset>
       ) : null}
     </section>
   );
@@ -1021,33 +1113,38 @@ export function EditorLineas({
   const [productos, setProductos] = useState<SiigoProductoRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
+  const guardandoRef = useRef(false);
+  const [ultimoGuardado, setUltimoGuardado] = useState(false);
+  const [catalogos, setCatalogos] = useState<{ cargando: boolean; errores: string[] }>({ cargando: true, errores: [] });
+  const [recargaCatalogos, setRecargaCatalogos] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
-    fetchFacturasProveedor(tramiteId, controller.signal)
-      .then((filas) =>
-        // Las facturas que no se le cobran al cliente (asesoría a nombre de
-        // Galcomex) no se pueden vincular a una línea de la factura de venta:
-        // ni siquiera se ofrecen en el selector (M6).
-        setFacturas(filas.filter((f) => f.repercutible)),
-      )
-      .catch((e) => {
-        if (e instanceof DOMException && e.name === "AbortError") return;
-        // Sin facturas no se bloquea la edición de líneas.
-      });
+    async function cargar() {
+      setCatalogos({ cargando: true, errores: [] });
+      const [facturasResult, productosResult] = await Promise.allSettled([
+        fetchFacturasProveedor(tramiteId, controller.signal),
+        fetchSiigoProductos(controller.signal),
+      ]);
+      if (controller.signal.aborted) return;
+      const errores: string[] = [];
+      if (facturasResult.status === "fulfilled") {
+        setFacturas(facturasResult.value.filter((f) => f.repercutible));
+      } else {
+        setFacturas([]);
+        errores.push("No se pudieron consultar las facturas de proveedor.");
+      }
+      if (productosResult.status === "fulfilled") {
+        setProductos(productosResult.value.productos);
+      } else {
+        setProductos([]);
+        errores.push("No se pudo consultar el catálogo de productos Siigo.");
+      }
+      setCatalogos({ cargando: false, errores });
+    }
+    void cargar();
     return () => controller.abort();
-  }, [tramiteId]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetchSiigoProductos(controller.signal)
-      .then((payload) => setProductos(payload.productos))
-      .catch((e) => {
-        if (e instanceof DOMException && e.name === "AbortError") return;
-        // Sin productos el selector queda vacío — no bloquea la edición.
-      });
-    return () => controller.abort();
-  }, []);
+  }, [tramiteId, recargaCatalogos]);
 
   const lineasTerceros = useMemo(
     () => borrador.lineasRevision.filter((l) => l.seccion === "TERCEROS"),
@@ -1089,27 +1186,45 @@ export function EditorLineas({
   const desviacion = totalLineasVivo - totalMotor;
 
   const ejecutar: Ejecutar = async (accion, exito) => {
+    if (guardandoRef.current) { setError("Hay otro cambio guardándose. Reintenta el nuevo cambio cuando termine."); return false; }
+    guardandoRef.current = true;
     setGuardando(true);
+    setUltimoGuardado(false);
     setError(null);
     try {
       const actualizado = await accion();
       onBorradorActualizado(actualizado);
       if (exito) toast({ title: exito, variant: "success" });
+      setUltimoGuardado(true);
+      return true;
     } catch (e) {
       const mensaje = describirError(e, "Error al guardar la línea.");
       setError(mensaje);
       toast({ title: "No se pudo guardar", description: mensaje, variant: "error" });
+      return false;
     } finally {
+      guardandoRef.current = false;
       setGuardando(false);
     }
   };
 
   return (
     <div className="flex flex-col gap-4">
+      {puedeEditar ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-cyan-100 bg-cyan-50/60 px-4 py-3 text-sm">
+          <p className="text-slate-700">Edita directamente el concepto o valor. Enter o salir del campo guarda; Escape cancela.</p>
+          <span role="status" className="shrink-0 font-medium text-cyan-800">
+            {guardando ? "Guardando cambio…" : error ? "Cambio sin guardar" : ultimoGuardado ? "Cambio guardado" : "Edición directa"}
+          </span>
+        </div>
+      ) : null}
+      {catalogos.cargando ? (
+        <ModuleState type="loading" title="Cargando facturas y productos…" detail="Preparando las opciones para vincular cada línea." />
+      ) : catalogos.errores.length > 0 ? (
+        <ModuleState type="error" title="Algunas opciones no están disponibles" detail={catalogos.errores.join(" ")} action={{ label: "Reintentar carga", onClick: () => setRecargaCatalogos((n) => n + 1) }} />
+      ) : null}
       {error ? (
-        <p className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {error}
-        </p>
+        <ModuleState type="error" title="No se guardó el cambio" detail={`${error} Revisa el campo y vuelve a salir de él para guardar. Si agregabas una línea, los datos siguen en el formulario.`} />
       ) : null}
 
       <ComentariosCabecera

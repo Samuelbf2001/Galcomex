@@ -4,6 +4,7 @@ import { KeyRound, Loader2 } from "lucide-react";
 import { FormEvent, useId, useState } from "react";
 
 import { leerErrorRespuesta } from "@/components/configuracion/respuesta-api";
+import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { describirError, useToast } from "@/components/ui/toast";
 
@@ -39,6 +40,7 @@ export function UsuariosConfig({ usuarios }: { usuarios: UsuarioRow[] }) {
 
   async function guardar(event: FormEvent<HTMLFormElement>, usuario: UsuarioRow) {
     event.preventDefault();
+    if (guardando) return;
     setError(null);
     setExito(null);
 
@@ -103,7 +105,8 @@ export function UsuariosConfig({ usuarios }: { usuarios: UsuarioRow[] }) {
           {exito}
         </p>
       ) : null}
-      <div className="overflow-hidden border border-slate-200 bg-white">
+      {usuarios.length === 0 && <ModuleState type="empty" title="No hay usuarios disponibles" detail="Los usuarios registrados aparecerán aquí para administrar su acceso." />}
+      <div className="overflow-x-auto border border-slate-200 bg-white">
         <table className="w-full border-collapse text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500">
             <tr>
@@ -172,6 +175,7 @@ export function UsuariosConfig({ usuarios }: { usuarios: UsuarioRow[] }) {
                   ) : (
                     <button
                       type="button"
+                      disabled={activo !== null}
                       onClick={() => abrir(usuario.id)}
                       className="inline-flex h-8 items-center gap-1.5 border border-slate-300 px-3 text-xs text-slate-700 hover:bg-slate-100"
                     >

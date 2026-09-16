@@ -19,6 +19,7 @@ import {
   validarArchivo,
 } from "@/components/documentos/documentos-api";
 import { EnlaceDocumentoModal } from "@/components/documentos/enlace-documento-modal";
+import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { describirError, useToast } from "@/components/ui/toast";
 
@@ -95,8 +96,9 @@ function TarjetaDocumento({
   const puedeCompartir = puedeCompartirDocumentoUI(currentUserRol);
 
   async function abrirDocumento() {
+    setError(null);
     if (!doc.downloadUrl) {
-      // URL vacía (MinIO no disponible), intentar refrescar
+      // URL vacía (bodega de archivos no disponible), intentar refrescar
       if (abriendo) return;
       setAbriendo(true);
       try {
@@ -232,7 +234,7 @@ function TarjetaDocumento({
           </div>
         )}
         {/* Overlay en hover */}
-        <div className="absolute inset-0 flex items-center justify-center gap-2 bg-slate-950/60 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="absolute inset-x-0 top-0 flex min-h-32 flex-wrap items-center justify-center gap-2 bg-slate-950/40 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
           <button
             type="button"
             onClick={abrirDocumento}
@@ -309,7 +311,7 @@ function TarjetaDocumento({
 
   // Vista en lista (para no imágenes o categorías normales)
   return (
-    <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 hover:bg-slate-50">
+    <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 hover:bg-slate-50">
       {inputReemplazo}
       {modalCompartir}
       {/* Icono tipo */}
@@ -318,7 +320,7 @@ function TarjetaDocumento({
       </div>
 
       {/* Info */}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-40">
         <p className="truncate text-sm font-medium text-slate-900" title={doc.nombreArchivo}>
           {doc.nombreArchivo}
         </p>
@@ -415,9 +417,7 @@ export function ListaDocumentos({
 
   if (categorias.length === 0) {
     return (
-      <p className="py-6 text-center text-sm text-slate-500">
-        No hay documentos subidos para este trámite.
-      </p>
+      <ModuleState type="empty" title="Este trámite aún no tiene documentos" detail="Los archivos aparecerán aquí organizados por categoría cuando se suban al trámite." />
     );
   }
 

@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { useId, useState } from "react";
 
 import { patchJson } from "@/components/configuracion/respuesta-api";
+import { ModuleState } from "@/components/layout/module-state";
 import { describirError, useToast } from "@/components/ui/toast";
 
 export type ParametroRow = {
@@ -48,6 +49,7 @@ export function ParametrosConfig({
   }
 
   async function guardar(clave: string) {
+    if (guardando) return;
     setError(null);
     const trimmed = valor.trim();
     if (trimmed.length === 0) {
@@ -82,9 +84,11 @@ export function ParametrosConfig({
         <h2 className="text-lg font-semibold">Parámetros del sistema</h2>
         <p className="text-sm text-slate-600">
           Tasas y valores por defecto usados por el motor de cálculo.
+          {esAdmin && " Pulsa un valor para editar; Enter guarda y Escape cancela."}
         </p>
       </div>
-      <div className="overflow-hidden border border-slate-200 bg-white">
+      {parametros.length === 0 && <ModuleState type="empty" title="No hay parámetros configurados" detail="Los parámetros disponibles aparecerán aquí cuando se configure el sistema." />}
+      <div className="overflow-x-auto border border-slate-200 bg-white">
         <table className="w-full border-collapse text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500">
             <tr>
@@ -128,7 +132,7 @@ export function ParametrosConfig({
                       ) : null}
                     </div>
                   ) : (
-                    parametro.valor
+                    esAdmin ? <button type="button" disabled={editando !== null} onClick={() => abrir(parametro)} aria-label={`Editar valor de ${parametro.clave}`} className="min-h-10 rounded border border-dashed border-slate-300 px-3 text-left font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60">{parametro.valor}</button> : parametro.valor
                   )}
                 </td>
                 <td className="px-4 py-3 text-slate-600">
@@ -158,15 +162,7 @@ export function ParametrosConfig({
                           {guardando ? "Guardando…" : "Guardar"}
                         </button>
                       </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => abrir(parametro)}
-                        className="inline-flex h-8 items-center gap-1.5 border border-slate-300 px-3 text-xs text-slate-700 hover:bg-slate-100"
-                      >
-                        Editar
-                      </button>
-                    )}
+                    ) : null}
                   </td>
                 ) : null}
               </tr>

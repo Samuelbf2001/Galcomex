@@ -39,15 +39,18 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
   const [cola, setCola] = useState<ArchivoEnCola[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const subidasActivas = useRef(new Set<string>());
   const { toast } = useToast();
 
   // ─── Subida de un archivo ──────────────────────────────────────────────────
 
   const subirArchivo = useCallback(
     async (archivo: ArchivoEnCola) => {
+      if (subidasActivas.current.has(archivo.id) || validarArchivo(archivo.file)) return;
+      subidasActivas.current.add(archivo.id);
       setCola((prev) =>
         prev.map((a) =>
-          a.id === archivo.id ? { ...a, estado: "uploading", progreso: 0 } : a,
+          a.id === archivo.id ? { ...a, estado: "uploading", progreso: 0, error: null } : a,
         ),
       );
 
@@ -64,7 +67,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
           prev.map((a) => (a.id === archivo.id ? { ...a, progreso: 10 } : a)),
         );
 
-        // Paso 2: Subir directo a MinIO con progreso
+        // Paso 2: Subir con el enlace firmado, con progreso
         await subirArchivoDirecto(urlResult.uploadUrl, archivo.file, (percent) => {
           setCola((prev) =>
             prev.map((a) =>
@@ -113,6 +116,8 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
           description: `${archivo.file.name}: ${msg}`,
           variant: "error",
         });
+      } finally {
+        subidasActivas.current.delete(archivo.id);
       }
     },
     [tramiteId, onDocumentoSubido, toast],
@@ -210,7 +215,10 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
         role="button"
         tabIndex={0}
         onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
         }}
         aria-label="Zona de subida de archivos. Arrastra archivos aquí o haz clic para seleccionar"
         className={`flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-2 border-2 border-dashed px-4 py-6 text-center transition ${
@@ -228,7 +236,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
           para seleccionar
         </p>
         <p className="text-xs text-slate-500">
-          PDF, JPG, PNG, XLSX — máx 25 MB por archivo
+          PDF, JPG, PNG, XLSX — máx 25 MB por archivo. La subida comienza al seleccionar.
         </p>
         <input
           ref={inputRef}
@@ -287,6 +295,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
                       className="h-full bg-cyan-500 transition-all"
                       style={{ width: `${archivo.progreso}%` }}
                       role="progressbar"
+                      aria-label={`Subiendo ${archivo.file.name}`}
                       aria-valuenow={archivo.progreso}
                       aria-valuemin={0}
                       aria-valuemax={100}
@@ -294,7 +303,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
                   </div>
                 )}
                 {archivo.error && (
-                  <p className="mt-0.5 text-xs text-rose-600">{archivo.error}</p>
+                  <p role="alert" className="mt-0.5 text-xs text-rose-600">{archivo.error}</p>
                 )}
                 {archivo.estado === "done" && (
                   <p className="mt-0.5 text-xs text-emerald-600">Subido correctamente</p>
@@ -302,6 +311,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
               </div>
 
               {/* Botón quitar */}
+              {archivo.estado === "error" && !validarArchivo(archivo.file) && <button type="button" onClick={() => void subirArchivo(archivo)} className="min-h-10 px-2 text-xs font-semibold text-cyan-800 hover:underline">Reintentar</button>}
               {archivo.estado !== "uploading" && (
                 <button
                   type="button"
@@ -309,7 +319,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
                     e.stopPropagation();
                     quitarDeCola(archivo.id);
                   }}
-                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-slate-400 transition hover:text-slate-700"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center text-slate-400 transition hover:text-slate-700"
                   aria-label={`Quitar ${archivo.file.name} de la cola`}
                 >
                   <X className="h-3.5 w-3.5" aria-hidden="true" />

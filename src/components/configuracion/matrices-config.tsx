@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { useId, useState } from "react";
 
 import { patchJson } from "@/components/configuracion/respuesta-api";
+import { ModuleState } from "@/components/layout/module-state";
 import { describirError, useToast } from "@/components/ui/toast";
 
 export type MatrizRecaudoRow = {
@@ -105,6 +106,7 @@ export function MatricesConfig({
 
   /** Un solo camino de guardado para las dos tablas (antes estaba duplicado). */
   async function guardarCosto(tabla: Tabla, clave: string, etiqueta: string) {
+    if (guardando) return;
     setError(null);
     const costoFijo = validarValor();
     if (costoFijo === null) return;
@@ -140,7 +142,8 @@ export function MatricesConfig({
   }
 
   function renderCelda(key: string, costoFijo: string, etiqueta: string) {
-    if (!(esAdmin && editando === key)) return formatCOP(costoFijo);
+    const [tabla, clave] = key.split(":") as [Tabla, string];
+    if (!(esAdmin && editando === key)) return esAdmin ? <button type="button" disabled={editando !== null} onClick={() => abrir(tabla, clave, costoFijo)} aria-label={`Editar costo de ${etiqueta}`} className="min-h-10 rounded border border-dashed border-slate-300 px-3 font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60">{formatCOP(costoFijo)}</button> : formatCOP(costoFijo);
     return (
       <div className="flex flex-col gap-1">
         <input
@@ -149,6 +152,7 @@ export function MatricesConfig({
           value={valor}
           onChange={(e) => setValor(e.target.value)}
           onKeyDown={(e) => {
+            if (e.key === "Enter") void guardarCosto(tabla, clave, etiqueta);
             if (e.key === "Escape") cerrar();
           }}
           autoFocus
@@ -172,7 +176,6 @@ export function MatricesConfig({
   function renderAcciones(
     key: string,
     onGuardar: () => void,
-    onAbrir: () => void,
   ) {
     if (editando === key) {
       return (
@@ -199,15 +202,7 @@ export function MatricesConfig({
         </div>
       );
     }
-    return (
-      <button
-        type="button"
-        onClick={onAbrir}
-        className="inline-flex h-8 items-center gap-1.5 border border-slate-300 px-3 text-xs text-slate-700 hover:bg-slate-100"
-      >
-        Editar
-      </button>
-    );
+    return null;
   }
 
   return (
@@ -217,11 +212,11 @@ export function MatricesConfig({
         <p className="text-sm text-slate-600">
           Costo fijo por tipo de recaudo y canal de pago. Cambiar un valor solo
           afecta a los movimientos nuevos: los anticipos y pagos ya registrados
-          conservan su costo snapshoteado.
+          conservan su costo original. {esAdmin && "Pulsa un costo para editar; Enter guarda y Escape cancela."}
         </p>
       </div>
 
-      <div className="overflow-hidden border border-slate-200 bg-white">
+      <div className="overflow-x-auto border border-slate-200 bg-white">
         <div className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold uppercase text-slate-500">
           Tipos de recaudo
         </div>
@@ -239,6 +234,7 @@ export function MatricesConfig({
             </tr>
           </thead>
           <tbody>
+            {recaudo.length === 0 && <tr><td colSpan={esAdmin ? 4 : 3} className="p-4"><ModuleState type="empty" title="No hay costos de recaudo configurados" detail="Los tipos de recaudo aparecerán aquí cuando estén configurados." /></td></tr>}
             {recaudo.map((m) => {
               const key = `recaudo:${m.tipoRecaudo}`;
               const etiqueta = LABELS_RECAUDO[m.tipoRecaudo] ?? m.tipoRecaudo;
@@ -252,7 +248,6 @@ export function MatricesConfig({
                       {renderAcciones(
                         key,
                         () => void guardarCosto("recaudo", m.tipoRecaudo, etiqueta),
-                        () => abrir("recaudo", m.tipoRecaudo, m.costoFijo),
                       )}
                     </td>
                   ) : null}
@@ -263,7 +258,7 @@ export function MatricesConfig({
         </table>
       </div>
 
-      <div className="overflow-hidden border border-slate-200 bg-white">
+      <div className="overflow-x-auto border border-slate-200 bg-white">
         <div className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold uppercase text-slate-500">
           Canales de pago
         </div>
@@ -281,6 +276,7 @@ export function MatricesConfig({
             </tr>
           </thead>
           <tbody>
+            {pago.length === 0 && <tr><td colSpan={esAdmin ? 4 : 3} className="p-4"><ModuleState type="empty" title="No hay costos de pago configurados" detail="Los canales de pago aparecerán aquí cuando estén configurados." /></td></tr>}
             {pago.map((m) => {
               const key = `pago:${m.canalPago}`;
               const etiqueta = LABELS_PAGO[m.canalPago] ?? m.canalPago;
@@ -294,7 +290,6 @@ export function MatricesConfig({
                       {renderAcciones(
                         key,
                         () => void guardarCosto("pago", m.canalPago, etiqueta),
-                        () => abrir("pago", m.canalPago, m.costoFijo),
                       )}
                     </td>
                   ) : null}

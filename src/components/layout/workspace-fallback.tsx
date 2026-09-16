@@ -30,7 +30,7 @@ export function WorkspaceFallback({ titulo, subtitulo, filtros = 4, tarjetas = 0
         ))}
       </div>
       {tarjetas > 0 ? (
-        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${tarjetas}, minmax(0, 1fr))` }}>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: tarjetas }).map((_, i) => (
             <div key={i} className="border border-slate-200 bg-white p-4" style={{ height: 96 }}>
               <Skeleton className="h-3 w-1/2" />

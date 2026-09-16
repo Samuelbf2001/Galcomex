@@ -24,3 +24,30 @@ select,
 textarea {
   font: inherit;
 }
+
+/* Shared interaction language for every operational module. */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid #0e7490;
+  outline-offset: 3px;
+}
+
+button:enabled, select:enabled, summary { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+main { scrollbar-gutter: stable; }
+input, select, textarea { accent-color: #0e7490; }
+
+@media (max-width: 640px), (pointer: coarse) {
+  button, select, input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]) {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

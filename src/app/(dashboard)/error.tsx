@@ -26,7 +26,7 @@ export default function DashboardError({
         <div className="min-w-0">
           <h1 className="text-lg font-semibold text-rose-900">Algo salió mal al abrir esta sección</h1>
           <p className="mt-1 text-sm text-rose-800">
-            El servidor no pudo completar la carga. Tus datos no se han perdido. Puedes reintentar o
+            El servidor no pudo completar la carga. Puedes reintentar o
             volver al inicio; si el problema continúa, avisa a SixTeam.
           </p>
           {error.digest ? (
