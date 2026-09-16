@@ -137,7 +137,7 @@ export function SeccionDocumentos({ tramiteId, refreshToken = 0 }: SeccionDocume
         </button>
       </div>
 
-      {/* Subida: oculta a REVISOR (el registro fallaría con 403 tras subir a MinIO). */}
+      {/* Subida: oculta a REVISOR (el registro fallaría con 403 tras subir el archivo). */}
       {puedeSubir ? (
         <div className="border border-slate-200 bg-white p-4">
           <h3 className="mb-3 text-sm font-semibold text-slate-800">Subir documentos</h3>

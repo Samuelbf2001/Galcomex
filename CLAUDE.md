@@ -10,11 +10,11 @@ Desarrollado y mantenido por agentes IA (Claude Code) bajo supervisión de SixTe
 - **BD:** PostgreSQL 16 + Prisma ORM
 - **UI:** Tailwind CSS + shadcn/ui + TanStack Table
 - **Auth:** Better Auth (email + password, 4 roles)
-- **Storage:** MinIO (S3-compatible, mismo VPS)
+- **Storage:** bodega S3 — MinIO en local (docker-compose); Cloudflare R2 en producción (`docs/ALMACENAMIENTO-S3.md`)
 - **PDF:** react-pdf / Puppeteer (en endpoints de servidor)
 - **Excel export:** SheetJS (xlsx)
 - **Testing:** Vitest (unit) + Playwright (E2E)
-- **Deploy:** Docker Compose en EasyPanel/Hostinger VPS
+- **Deploy:** servicio App de EasyPanel con el `Dockerfile` (proyecto `postgres`, servicio `galcomex-app`, Hostinger VPS); `docker-compose.yml` es solo para local
 - **Automatización:** n8n (ya operado por SixTeam) vía webhooks
 
 ## Estructura de carpetas
@@ -41,7 +41,7 @@ galcomex-app/
 │   ├── lib/
 │   │   ├── db/                 # Cliente Prisma singleton
 │   │   ├── auth/               # Config Better Auth
-│   │   ├── storage/            # MinIO, URLs prefirmadas
+│   │   ├── storage/            # Cliente S3 (MinIO/R2), enlaces firmados, explorador
 │   │   ├── calculations/       # Motor de cálculo PURO (sin BD)
 │   │   │   └── motor-factura.ts  ← NÚCLEO CRÍTICO
 │   │   ├── pdf/                # react-pdf templates
@@ -217,10 +217,10 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
 - **APERTURA → EN_TRAMITE:** bloqueado si hay `ChecklistItem` requerido sin marcar
 - Toda transición queda en `EstadoLog` con usuario y timestamp
 
-## MinIO — Storage
+## Storage (bodega S3: MinIO local / Cloudflare R2)
 
 Ruta: `tramites/{consecutivo}/{categoria}/{uuid}.{ext}`
-- URLs prefirmadas con expiración ≤ 15 minutos
+- Enlaces firmados por la app (`/api/storage/objeto`, `lib/storage/proxy.ts`) con expiración ≤ 15 minutos; el navegador nunca habla con la bodega
 - Tipos: PDF, JPG, PNG, XLSX (máx 25 MB)
 - Soft-delete (`eliminado = true`), nunca borrado físico
 

@@ -445,7 +445,7 @@ export async function solicitarUploadUrlComprobante(input: {
   };
 }
 
-/** Sube un archivo directamente a MinIO con la URL prefirmada. */
+/** Sube un archivo con el enlace firmado (la app lo guarda en la bodega). */
 export function subirArchivoDirecto(
   uploadUrl: string,
   file: File,

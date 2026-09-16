@@ -24,6 +24,7 @@ export const RUTAS_DASHBOARD: readonly RutaDashboard[] = [
   { href: "/anticipos", label: "Anticipos", roles: ["ADMIN", "OPERATIVO"] },
   { href: "/ingresos", label: "Ingresos", roles: ["ADMIN", "REVISOR"] },
   { href: "/pagos", label: "Pagos a proveedores", roles: ["ADMIN", "REVISOR", "OPERATIVO"] },
+  { href: "/archivos", label: "Archivos", roles: ["ADMIN", "REVISOR", "OPERATIVO"] },
   { href: "/clientes", label: "Empresas", roles: ["ADMIN", "REVISOR", "OPERATIVO"] },
   { href: "/configuracion", label: "Configuración", roles: ["ADMIN"] },
   { href: "/configuracion/importar", label: "Importar Excel", roles: ["ADMIN"] },

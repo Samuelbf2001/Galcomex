@@ -21,7 +21,7 @@ Sistema web interno single-tenant desarrollado para **Galcomex**, agencia logís
 | Base de datos | PostgreSQL 16 + Prisma ORM |
 | Interfaz | Tailwind CSS + shadcn/ui + TanStack Table |
 | Autenticación | Better Auth (email + password, 4 roles) |
-| Storage de archivos | MinIO (S3-compatible, mismo VPS) |
+| Storage de archivos | Bodega S3: MinIO en local, Cloudflare R2 en producción (`docs/ALMACENAMIENTO-S3.md`) |
 | PDF | react-pdf / Puppeteer |
 | Export Excel | SheetJS (xlsx) |
 | Testing | Vitest (unitarios) + Playwright (E2E) |
@@ -145,8 +145,8 @@ Almacenamiento y visualización de archivos adjuntos a cada trámite.
 - Otro
 
 **Funcionamiento:**
-- Subida directa mediante URL prefirmada a MinIO (no pasa por el servidor)
-- Ruta en MinIO: `tramites/{consecutivo}/{categoria}/{uuid}.ext`
+- Subida y descarga con enlaces firmados por la app (≤ 15 min); el navegador nunca habla con la bodega
+- Ruta en el bucket: `tramites/{consecutivo}/{categoria}/{uuid}.ext`
 - URLs de descarga/visualización con expiración de 15 minutos
 - Soft-delete: los documentos se marcan `eliminado = true`, nunca se borran físicamente
 - Formatos soportados: PDF, JPG, PNG, XLSX (máximo 25 MB)
@@ -490,7 +490,7 @@ Flujo para solicitar al banco el código PSE de un trámite de manera segura.
 
 ---
 
-## 6. Storage (MinIO)
+## 6. Storage (S3: MinIO / Cloudflare R2)
 
 Almacenamiento de archivos compatible con S3, corriendo en el mismo VPS.
 

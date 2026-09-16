@@ -531,7 +531,7 @@ export type ComprobanteSubido = {
 /**
  * Sube un archivo de comprobante (bancario o de comercio) y registra el
  * Documento correspondiente en el trámite, reutilizando el endpoint genérico
- * /api/tramites/[id]/documentos (uploadUrl → PUT directo a MinIO → register).
+ * /api/tramites/[id]/documentos (uploadUrl → PUT con enlace firmado → register).
  *
  * NOTA: reimplementa el flujo de 2 pasos localmente en vez de importar
  * src/components/documentos/documentos-api.ts (fuera de este scope) porque
