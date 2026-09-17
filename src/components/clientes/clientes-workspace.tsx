@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Plus, RotateCcw } from "lucide-react";
+import { Loader2, Plus, RotateCcw, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useId, useState } from "react";
 
@@ -61,6 +61,16 @@ export function ClientesWorkspace() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [rol, setRol] = useState("todos");
+  const query = search.trim().toLocaleLowerCase("es-CO");
+  const visibles = clientes.filter((cliente) =>
+    [cliente.nombre, cliente.nit, cliente.contactoNombre, cliente.contactoEmail].some((valor) => valor?.toLocaleLowerCase("es-CO").includes(query)) &&
+    (rol === "todos" || (rol === "cliente" ? cliente.esCliente : cliente.esProveedor)),
+  );
+  const hasFilters = Boolean(query) || rol !== "todos";
+  function limpiarFiltros() { setSearch(""); setRol("todos"); }
+
 
   useEffect(() => {
     const controller = new AbortController();
@@ -89,23 +99,24 @@ export function ClientesWorkspace() {
 
   return (
     <section className="space-y-5">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Empresas</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Clientes, proveedores y las que son las dos cosas a la vez. Cada una con sus funciones encendidas.
+            Busca una empresa y abre su ficha para consultar trámites, saldos o actualizar sus datos.
           </p>
         </div>
         <div className="flex gap-2">
           <button
             type="button"
             onClick={recargar}
+            disabled={loadState === "loading"}
             className="inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
           >
             <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            Refrescar
+            {loadState === "loading" ? "Actualizando…" : "Actualizar"}
           </button>
-          {esAdmin ? (
+          {esAdmin && clientes.length > 0 ? (
             <button
               type="button"
               onClick={() => setModalOpen(true)}
@@ -118,9 +129,16 @@ export function ClientesWorkspace() {
         </div>
       </div>
 
-      {loadState === "loading" ? (
+      {clientes.length > 0 ? <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
+        <label className="min-w-0 flex-1 space-y-1.5"><span className="text-xs font-medium text-slate-600">Buscar empresa</span><div className="relative"><Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-slate-400" aria-hidden="true" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre, NIT o contacto" className="h-11 w-full rounded-lg border border-slate-300 pl-9 pr-3 text-sm" /></div></label>
+        <label className="space-y-1.5"><span className="block text-xs font-medium text-slate-600">Rol</span><select value={rol} onChange={(event) => setRol(event.target.value)} className="h-11 rounded-lg border border-slate-300 bg-white px-3 text-sm"><option value="todos">Todos los roles</option><option value="cliente">Clientes</option><option value="proveedor">Proveedores</option></select></label>
+        {hasFilters && visibles.length > 0 ? <button type="button" onClick={limpiarFiltros} className="h-11 px-3 text-sm text-cyan-700">Limpiar filtros</button> : null}
+        <p className="w-full text-xs text-slate-500" role="status">{loadState === "loading" ? "Actualizando empresas…" : `${visibles.length} de ${clientes.length} empresas`}</p>
+      </div> : null}
+      {loadState === "error" && clientes.length > 0 ? <ModuleState type="error" title="No pudimos actualizar las empresas" detail="Sigues viendo la última información disponible." action={{ label: "Reintentar", onClick: recargar }} /> : null}
+      {loadState === "loading" && clientes.length === 0 ? (
         <TableSkeleton rows={6} cols={6} />
-      ) : loadState === "error" ? (
+      ) : loadState === "error" && clientes.length === 0 ? (
         <ModuleState
           type="error"
           title="No se pudieron cargar los clientes"
@@ -130,7 +148,7 @@ export function ClientesWorkspace() {
       ) : clientes.length === 0 ? (
         <ModuleState
           type="empty"
-          title="Aún no hay clientes."
+          title="Aún no hay empresas"
           detail={
             esAdmin
               ? "Crea la primera con «Nueva empresa»."
@@ -142,9 +160,11 @@ export function ClientesWorkspace() {
               : undefined
           }
         />
+      ) : visibles.length === 0 ? (
+        <ModuleState type="empty" title="No hay empresas que coincidan" detail="Prueba otro nombre, NIT o rol." action={{ label: "Limpiar filtros", onClick: limpiarFiltros, icon: false }} />
       ) : (
-        <div className="overflow-hidden border border-slate-200 bg-white">
-          <table className="w-full border-collapse text-left text-sm">
+        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white" aria-busy={loadState === "loading"}>
+          <table className="min-w-[660px] w-full border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
                 <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
@@ -156,12 +176,12 @@ export function ClientesWorkspace() {
               </tr>
             </thead>
             <tbody>
-              {clientes.map((cliente) => (
-                <tr key={cliente.id} className="border-b border-slate-100">
+              {visibles.map((cliente) => (
+                <tr key={cliente.id} className="border-b border-slate-100 transition hover:bg-cyan-50/40">
                   <td className="px-4 py-3 font-medium">
                     <Link
                       href={`/clientes/${cliente.id}`}
-                      className="text-slate-900 underline-offset-2 hover:text-cyan-700 hover:underline"
+                      className="inline-flex min-h-11 items-center text-cyan-800 underline-offset-2 hover:underline"
                     >
                       {cliente.nombre}
                     </Link>

@@ -416,7 +416,9 @@ export function HojaTramite({
   // UMBRAL_ALERTA_SALDO_TRAMITE_PROPIO / _SOCIO — ver src/lib/alertas/umbrales.ts).
   const saldoDisponible = bigOrZero(saldoTrasPagos);
   const umbralBig = bigOrZero(hoja.umbralAlertaSaldo);
-  const alertaSaldoBajo = saldoDisponible < umbralBig;
+  // Un trámite histórico no tiene anticipos ni pagos en la plataforma: la
+  // alerta de saldo sería ruido en cada uno de los 162 DOs importados.
+  const alertaSaldoBajo = saldoDisponible < umbralBig && tramite.esHistorico !== true;
   const tipoClienteLabel =
     hoja.cliente.tipo === "SOCIO_LM" ? "del socio Lucho" : "propios de Galcomex";
 

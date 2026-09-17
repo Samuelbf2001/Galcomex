@@ -1,12 +1,12 @@
 /**
- * Enlaces firmados por la app para subir y bajar objetos de MinIO a través de
- * `/api/storage/objeto`, en vez de URLs prefirmadas de MinIO.
+ * Enlaces firmados por la app para subir y bajar objetos de la bodega (MinIO, R2…) a través de
+ * `/api/storage/objeto`, en vez de URLs prefirmadas del proveedor.
  *
- * Por qué: la URL prefirmada de MinIO lleva el host en la firma, así que el
- * navegador tiene que poder alcanzar a MinIO directamente (dominio público,
+ * Por qué: la URL prefirmada de S3 lleva el host en la firma, así que el
+ * navegador tiene que poder alcanzar la bodega directamente (dominio público,
  * HTTPS, CORS). En producción eso nunca se configuró y la subida de archivos
  * moría con "Error de red". Con el proxy, el navegador y el MCP hablan solo
- * con la app; MinIO sigue en la red interna de Docker.
+ * con la app; la bodega (MinIO interno o Cloudflare R2) nunca se expone al navegador.
  *
  * El enlace es la credencial (igual que una URL prefirmada): HMAC-SHA256 sobre
  * método, clave, tipo, tamaño y vencimiento, con el secreto de la app.

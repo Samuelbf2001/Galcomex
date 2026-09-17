@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle, Send } from "lucide-react";
+import { CheckCircle, Loader2, Send } from "lucide-react";
 import { FormEvent, useState } from "react";
 
 type Estado = "idle" | "enviando" | "exito" | "error";
@@ -26,6 +26,7 @@ export function SolicitudForm() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (estado === "enviando") return;
     setEstado("enviando");
     setErrorMsg(null);
 
@@ -80,7 +81,7 @@ export function SolicitudForm() {
 
   if (estado === "exito") {
     return (
-      <div className="space-y-4 text-center">
+      <div role="status" className="space-y-4 text-center">
         <div className="flex justify-center">
           <CheckCircle className="h-12 w-12 text-emerald-600" aria-hidden="true" />
         </div>
@@ -120,7 +121,9 @@ export function SolicitudForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} className="space-y-5" aria-busy={estado === "enviando"}>
+      <p className="text-sm text-slate-600">Completa los tres campos obligatorios y envía tu solicitud. Recibirás un número de radicado al terminar.</p>
+      <fieldset disabled={estado === "enviando"} className="space-y-5 disabled:opacity-70">
       {/* NIT */}
       <div className="space-y-1.5">
         <label htmlFor="nit" className="text-sm font-medium text-slate-700">
@@ -228,8 +231,8 @@ export function SolicitudForm() {
       </div>
 
       {estado === "error" && errorMsg ? (
-        <p className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {errorMsg}
+        <p role="alert" className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {errorMsg} Tus datos siguen en el formulario; revísalos y vuelve a enviar.
         </p>
       ) : null}
 
@@ -238,9 +241,10 @@ export function SolicitudForm() {
         disabled={estado === "enviando"}
         className="inline-flex h-10 w-full items-center justify-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
       >
-        <Send className="h-4 w-4" aria-hidden="true" />
+        {estado === "enviando" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}
         {estado === "enviando" ? "Enviando solicitud…" : "Enviar solicitud"}
       </button>
+      </fieldset>
     </form>
   );
 }

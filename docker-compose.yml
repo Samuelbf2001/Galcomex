@@ -9,11 +9,16 @@ services:
       - "3003:3000"
     environment:
       DATABASE_URL: postgresql://galcomex:${POSTGRES_PASSWORD}@postgres:5432/galcomex
+      # Solo desarrollo local: la app usa SIEMPRE el MinIO de este compose.
+      # Producción no usa este archivo (servicio App de EasyPanel con el
+      # Dockerfile) y guarda los documentos en Cloudflare R2. Nunca apuntes el
+      # entorno local al bucket de producción; para probar R2 usa
+      # `npx tsx --env-file=../r2-llaves.env scripts/verificar-storage.ts`.
       MINIO_ENDPOINT: minio
       MINIO_PORT: "9000"
-      # Endpoint PÚBLICO para las URLs prefirmadas: el navegador del usuario
-      # hace el PUT/GET directo contra este host, así que NO puede ser "minio"
-      # (hostname interno de Docker). Sobrescribir en producción con el dominio real.
+      # Endpoint PÚBLICO: solo se usa con STORAGE_DIRECT_PRESIGN=true (el
+      # navegador sube directo a MinIO). Por defecto la app firma sus propios
+      # enlaces (/api/storage/objeto) y el navegador nunca habla con MinIO.
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost}
       MINIO_PUBLIC_PORT: ${MINIO_PUBLIC_PORT:-9000}
       MINIO_PUBLIC_USE_SSL: ${MINIO_PUBLIC_USE_SSL:-false}

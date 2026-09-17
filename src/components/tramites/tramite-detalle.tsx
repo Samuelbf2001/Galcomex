@@ -3,7 +3,6 @@
 import {
   AlertTriangle,
   Banknote,
-  Calendar,
   CheckSquare,
   ChevronRight,
   Clock,
@@ -17,7 +16,7 @@ import {
   Wallet,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
@@ -48,6 +47,7 @@ import {
   patchChecklistItem,
   type ChecklistItem,
 } from "@/components/tramites/checklist-api";
+import { InlineTramiteField } from "@/components/tramites/inline-tramite-field";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import { SeccionEventosTramite } from "@/components/tramites/seccion-eventos-tramite";
 import {
@@ -118,6 +118,7 @@ type TramiteDetalleData = {
   consecutivo: string;
   ciudad: string;
   estado: string;
+  esHistorico?: boolean;
   eta: string | null;
   doAgencia: string | null;
   doCliente: string | null;
@@ -350,110 +351,13 @@ type InlineDateFieldProps = {
 };
 
 function InlineDateField({ label, fieldKey, value, tramiteId, editable, onSaved }: InlineDateFieldProps) {
-  const [editing, setEditing] = useState(false);
-  const [inputValue, setInputValue] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const { toast } = useToast();
-
-  function openEdit() {
-    setInputValue(isoToDateInput(value));
-    setError(null);
-    setEditing(true);
-  }
-
-  async function handleSave() {
-    if (saving) return;
-    setSaving(true);
-    setError(null);
-    const newIso = dateInputToIso(inputValue);
-    try {
-      const updated = await patchFechasClave(tramiteId, { [fieldKey]: newIso });
-      onSaved(fieldKey, newIso, updated);
-      setEditing(false);
-      toast({ title: `${label} guardada`, variant: "success" });
-    } catch (caught) {
-      setError(describirError(caught, "No se pudo guardar."));
-      setInputValue(isoToDateInput(value));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function handleCancel() {
-    setEditing(false);
-    setError(null);
-  }
-
-  if (!editable) {
-    return (
-      <div className="flex flex-col gap-1">
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-        <p className="text-sm text-slate-800">{formatDate(value)}</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      {editing ? (
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              aria-label={label}
-              className="h-8 border border-cyan-500 px-2 text-sm text-slate-950 outline-none focus:ring-2 focus:ring-cyan-100"
-              disabled={saving}
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void handleSave();
-                if (e.key === "Escape") handleCancel();
-              }}
-            />
-            <button
-              type="button"
-              onClick={() => void handleSave()}
-              disabled={saving}
-              className="inline-flex h-8 items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
-            >
-              {saving ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
-              Guardar
-            </button>
-            <button
-              type="button"
-              onClick={handleCancel}
-              disabled={saving}
-              className="inline-flex h-8 items-center border border-slate-300 bg-white px-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
-            >
-              Cancelar
-            </button>
-          </div>
-          {error ? (
-            <p className="flex items-center gap-1 text-xs text-rose-600">
-              <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-              {error}
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={openEdit}
-          className="group inline-flex items-center gap-1.5 text-sm text-slate-800 hover:text-cyan-700"
-          title={`Editar ${label}`}
-        >
-          <span className="group-hover:underline">{formatDate(value)}</span>
-          <Calendar className="h-3.5 w-3.5 text-slate-400 group-hover:text-cyan-600" aria-hidden="true" />
-        </button>
-      )}
-    </div>
-  );
+  if (!editable) return <div><p className="text-xs font-medium text-slate-500">{label}</p><p className="mt-1 text-sm">{formatDate(value)}</p></div>;
+  return <InlineTramiteField label={label} type="date" value={isoToDateInput(value)} onSave={async (next) => {
+    const iso = dateInputToIso(next);
+    const updated = await patchFechasClave(tramiteId, { [fieldKey]: iso });
+    onSaved(fieldKey, iso, updated);
+  }} />;
 }
-
-// ─── Campo de texto editable inline ─────────────────────────────────────────
 
 type InlineTextFieldProps = {
   label: string;
@@ -464,112 +368,17 @@ type InlineTextFieldProps = {
 };
 
 function InlineTextField({ label, fieldKey, value, tramiteId, onSaved }: InlineTextFieldProps) {
-  const [editing, setEditing] = useState(false);
-  const [inputValue, setInputValue] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const { toast } = useToast();
-
-  function openEdit() {
-    setInputValue(value ?? "");
-    setError(null);
-    setEditing(true);
-  }
-
-  async function handleSave() {
-    if (saving) return;
-    setSaving(true);
-    setError(null);
-    const newValue = inputValue.trim() || null;
-    try {
-      const res = await fetch(`/api/tramites/${tramiteId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ [fieldKey]: newValue }),
-      });
-      if (!res.ok) {
-        const payload: unknown = await res.json().catch(() => null);
-        const msg =
-          isRecord(payload) && typeof payload.error === "string"
-            ? payload.error
-            : `Error ${res.status}`;
-        throw new Error(msg);
-      }
-      const payload: unknown = await res.json();
-      if (isRecord(payload) && isRecord(payload.tramite)) {
-        onSaved(payload.tramite as TramiteDetalleData);
-      }
-      setEditing(false);
-      toast({ title: `${label} guardado`, variant: "success" });
-    } catch (caught) {
-      setError(describirError(caught, "No se pudo guardar."));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function handleCancel() {
-    setEditing(false);
-    setError(null);
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      {editing ? (
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              aria-label={label}
-              className="h-8 border border-cyan-500 px-2 text-sm text-slate-950 outline-none focus:ring-2 focus:ring-cyan-100"
-              disabled={saving}
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void handleSave();
-                if (e.key === "Escape") handleCancel();
-              }}
-            />
-            <button
-              type="button"
-              onClick={() => void handleSave()}
-              disabled={saving}
-              className="inline-flex h-8 items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
-            >
-              {saving ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
-              Guardar
-            </button>
-            <button
-              type="button"
-              onClick={handleCancel}
-              disabled={saving}
-              className="inline-flex h-8 items-center border border-slate-300 bg-white px-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
-            >
-              Cancelar
-            </button>
-          </div>
-          {error ? (
-            <p className="flex items-center gap-1 text-xs text-rose-600">
-              <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-              {error}
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={openEdit}
-          className="group inline-flex items-center gap-1.5 text-sm text-slate-800 hover:text-cyan-700"
-          title={`Editar ${label}`}
-        >
-          <span className="group-hover:underline">{value ?? "—"}</span>
-          <Calendar className="h-3.5 w-3.5 text-slate-400 group-hover:text-cyan-600" aria-hidden="true" />
-        </button>
-      )}
-    </div>
-  );
+  return <InlineTramiteField label={label} type={fieldKey === "comentarios" ? "textarea" : "text"} value={value ?? ""} onSave={async (next) => {
+    const res = await fetch(`/api/tramites/${tramiteId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ [fieldKey]: next.trim() || null }),
+    });
+    const payload: unknown = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(isRecord(payload) && typeof payload.error === "string" ? payload.error : `No se pudo guardar (${res.status}).`);
+    if (!isRecord(payload) || !isRecord(payload.tramite)) throw new Error("No se pudo confirmar el guardado. Reintenta.");
+    onSaved(payload.tramite as TramiteDetalleData);
+  }} />;
 }
 
 // ─── Botón cambio de estado ───────────────────────────────────────────────────
@@ -614,13 +423,13 @@ function CambioEstadoButton({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <select
           value={selected}
           onChange={(e) => { setSelected(e.target.value); setError(null); setFaltantes([]); }}
           disabled={saving}
           aria-label={`Mover ${tramite.consecutivo} a otro estado`}
-          className="h-6 border border-slate-300 bg-white px-1.5 text-xs text-slate-700 outline-none focus:border-cyan-500 disabled:opacity-60"
+          className="h-11 max-w-full rounded-lg border border-slate-300 bg-white px-2 text-sm text-slate-700 outline-none focus:border-cyan-500 disabled:opacity-60"
         >
           <option value="">Mover a...</option>
           {otrosEstados.map((s) => (
@@ -632,10 +441,10 @@ function CambioEstadoButton({
           onClick={() => void handleCambiar()}
           disabled={saving || !selected}
           aria-label="Confirmar cambio de estado"
-          className="inline-flex h-6 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
+          className="inline-flex h-11 items-center gap-1 rounded-lg border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
         >
           {saving ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
-          OK
+          {saving ? "Actualizando…" : "Cambiar estado"}
         </button>
       </div>
       {error ? (
@@ -850,7 +659,6 @@ function ChecklistItemRow({
 function TabResumen({
   tramite,
   onDateSaved,
-  onEstadoChanged,
   onFieldSaved,
   onChecklistItemChanged,
   puedeEditar,
@@ -858,7 +666,6 @@ function TabResumen({
 }: {
   tramite: TramiteDetalleData;
   onDateSaved: (key: DateFieldKey, newIso: string | null, updated: TramiteDetalleData) => void;
-  onEstadoChanged: (updated: TramiteDetalleData) => void;
   onFieldSaved: (updated: TramiteDetalleData) => void;
   onChecklistItemChanged: (updated: ChecklistItem) => void;
   puedeEditar: boolean;
@@ -881,6 +688,14 @@ function TabResumen({
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Consecutivo Galcomex</p>
           <p className="mt-0.5 text-lg font-bold text-slate-950">{tramite.consecutivo}</p>
+          {tramite.esHistorico ? (
+            <span
+              className="mt-1 mr-1 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
+              title="Cargado desde el archivo histórico (Drive 2026): tiene carpeta y documentos, sin detalle financiero"
+            >
+              Histórico
+            </span>
+          ) : null}
           {/* El tipo solo se anuncia cuando NO es el trámite de importación:
               para el flujo de siempre sería ruido. */}
           {tramite.tipoTramite && tramite.tipoTramite.codigo !== "IMPORTACION" ? (
@@ -916,7 +731,7 @@ function TabResumen({
             </>
           ) : null}
         </div>
-        {tramite.doCliente ? (
+        {puedeEditar ? <InlineTextField label="DO Cliente" fieldKey="doCliente" value={tramite.doCliente} tramiteId={tramite.id} onSaved={onFieldSaved} /> : tramite.doCliente ? (
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Cliente</p>
             <p className="mt-0.5 font-semibold text-slate-800">{tramite.doCliente}</p>
@@ -930,7 +745,6 @@ function TabResumen({
             >
               {tramite.estado.replace(/_/g, " ")}
             </span>
-            <CambioEstadoButton tramite={tramite} onChanged={onEstadoChanged} />
           </div>
         </div>
         <div>
@@ -959,7 +773,7 @@ function TabResumen({
           <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
           <h3 className="text-sm font-semibold text-slate-900">Fechas clave</h3>
           {puedeEditar ? (
-            <span className="text-xs text-slate-500">(clic para editar)</span>
+            <span className="text-xs text-slate-500">Escribe y guarda solo lo que cambies</span>
           ) : null}
         </div>
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -1065,7 +879,7 @@ function TabResumen({
       />
 
       {/* Comentarios */}
-      {tramite.comentarios ? (
+      {puedeEditar ? <div className="rounded-xl border border-slate-200 bg-white p-5"><InlineTextField label="Comentarios" fieldKey="comentarios" value={tramite.comentarios} tramiteId={tramite.id} onSaved={onFieldSaved} /></div> : tramite.comentarios ? (
         <div className="border border-slate-200 bg-white p-5">
           <div className="mb-2 flex items-center gap-2">
             <MessageSquare className="h-4 w-4 text-slate-400" aria-hidden="true" />
@@ -1355,11 +1169,11 @@ function TabFacturacion({
 // ─── Componente principal TramiteDetalle ──────────────────────────────────────
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: "hoja", label: "Hoja" },
-  { id: "resumen", label: "Resumen" },
+  { id: "hoja", label: "Hoja de trabajo" },
+  { id: "resumen", label: "Datos del trámite" },
   { id: "documentos", label: "Documentos" },
   { id: "pagos", label: "Pagos a proveedores" },
-  { id: "facturas-proveedor", label: "F. Proveedor" },
+  { id: "facturas-proveedor", label: "Facturas proveedor" },
   { id: "facturacion", label: "Facturas de venta" },
   { id: "historial", label: "Historial" },
 ];
@@ -1391,6 +1205,8 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   // Pestañas ya visitadas: se mantienen montadas (ocultas con `hidden`) para
   // no volver a cargar todo al regresar a ellas.
   const [visitedTabs, setVisitedTabs] = useState<TabId[]>(["hoja"]);
+  // Solo la primera carga de un histórico salta a Documentos (ref: no re-renderiza ni entra al efecto).
+  const tabInicialAplicada = useRef(false);
   const [solicitandoFacturacion, setSolicitandoFacturacion] = useState(false);
   const [errorSolicitud, setErrorSolicitud] = useState<string | null>(null);
   const [topAction, setTopAction] = useState<
@@ -1410,12 +1226,19 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       // En recargas (reloadKey > 0) se conserva el trámite visible para no
       // desmontar las pestañas; solo la primera carga muestra el skeleton.
       setLoadError(null);
-      setLoadState((prev) => (prev === "ready" ? prev : "loading"));
+      setLoadState("loading");
 
       try {
         const data = await fetchTramiteDetalle(tramiteId, controller.signal);
         setTramite(data.tramite);
         setUmbralAlertaSaldo(data.umbralAlertaSaldo);
+        // Un trámite histórico existe por sus documentos: se abre en esa
+        // pestaña (solo la primera vez; las recargas no mueven al usuario).
+        if (data.tramite.esHistorico && !tabInicialAplicada.current) {
+          tabInicialAplicada.current = true;
+          setActiveTab("documentos");
+          setVisitedTabs((prev) => (prev.includes("documentos") ? prev : [...prev, "documentos"]));
+        }
         setLoadState("ready");
       } catch (caught: unknown) {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
@@ -1508,7 +1331,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
     return <DetalleSkeleton />;
   }
 
-  if (loadState === "error" || !tramite) {
+  if (!tramite) {
     return (
       <ModuleState
         type="error"
@@ -1527,7 +1350,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   // POST /api/tramites/[id]/estado y PUT /api/tramites/[id] → ADMIN/REVISOR/OPERATIVO
   const puedeEstado =
     userRol === "ADMIN" || userRol === "REVISOR" || userRol === "OPERATIVO";
-  const puedeEditarTramite = puedeEstado;
+  const puedeEditarTramite = puedeEstado && tramite.estado !== "CERRADO";
   // POST /api/tramites/[id]/solicitar-facturacion → ADMIN/OPERATIVO/SOCIO
   const puedeFacturar =
     userRol === "ADMIN" || userRol === "OPERATIVO" || userRol === "SOCIO";
@@ -1549,6 +1372,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
 
   return (
     <div className="space-y-0">
+      {loadError ? <div className="mb-4"><ModuleState type="error" title="No se pudo actualizar el trámite" detail="Conservamos la información anterior y tus cambios sin guardar. Reintenta para ver los datos más recientes." action={{ label: "Reintentar", onClick: reload }} /></div> : null}
       {esCerrado ? (
         <Alert variant="warning" className="mb-4">
           <Lock aria-hidden="true" />
@@ -1558,6 +1382,22 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
             facturas o borradores). Solo un ADMIN puede reabrirlo desde el selector de estado.
           </AlertDescription>
         </Alert>
+      ) : null}
+
+      {tramite.esHistorico ? (
+        <div
+          className="mb-4 flex flex-wrap items-start gap-3 border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+          role="note"
+        >
+          <span className="inline-flex h-5 shrink-0 items-center border border-amber-300 bg-white px-1.5 text-[11px] font-semibold text-amber-800">
+            Histórico
+          </span>
+          <p className="min-w-0">
+            Trámite cargado desde el archivo histórico (Drive 2026): tiene su carpeta y sus documentos, pero no
+            anticipos, pagos ni factura en la plataforma. Los archivos que quedaron en <span className="font-semibold">Otro</span> se
+            pueden reordenar desde la pestaña Documentos o desde Archivos.
+          </p>
+        </div>
       ) : null}
 
       {/* Barra de acciones rápidas — visible en cualquier pestaña */}
@@ -1574,7 +1414,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
               >
                 {tramite.estado.replace(/_/g, " ")}
               </span>
-              {puedeEstado ? (
+              {puedeEstado && (!esCerrado || userRol === "ADMIN") ? (
                 <CambioEstadoButton tramite={tramite} onChanged={handleEstadoChanged} />
               ) : null}
               {isRefreshing ? (
@@ -1588,7 +1428,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
 
           {/* Acciones */}
           <div className="flex flex-wrap items-center gap-2">
-            {puedeAnticipo ? (
+            {puedeAnticipo && activeTab !== "resumen" ? (
               <button
                 type="button"
                 onClick={() => setTopAction("anticipo")}
@@ -1600,7 +1440,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
                 Registrar anticipo
               </button>
             ) : null}
-            {puedePago ? (
+            {puedePago && activeTab !== "pagos" ? (
               <button
                 type="button"
                 onClick={() => {
@@ -1615,7 +1455,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
                 Pago a proveedor
               </button>
             ) : null}
-            {puedeFacturaProveedor ? (
+            {puedeFacturaProveedor && activeTab !== "facturas-proveedor" ? (
               <button
                 type="button"
                 onClick={() => setTopAction("factura")}
@@ -1627,7 +1467,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
                 Factura proveedor
               </button>
             ) : null}
-            {puedeFacturar ? (
+            {puedeFacturar && !yaEnviadoAFacturar ? (
               <button
                 type="button"
                 onClick={() => void handleSolicitarFacturacion()}
@@ -1671,6 +1511,14 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
             aria-controls={`panel-${tab.id}`}
             tabIndex={activeTab === tab.id ? 0 : -1}
             onClick={() => selectTab(tab.id)}
+            onKeyDown={(event) => {
+              const index = TABS.findIndex((item) => item.id === tab.id);
+              const next = event.key === "ArrowRight" ? (index + 1) % TABS.length : event.key === "ArrowLeft" ? (index - 1 + TABS.length) % TABS.length : event.key === "Home" ? 0 : event.key === "End" ? TABS.length - 1 : -1;
+              if (next < 0) return;
+              event.preventDefault();
+              selectTab(TABS[next].id);
+              document.getElementById(`tab-${TABS[next].id}`)?.focus();
+            }}
             className={`inline-flex h-10 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-medium transition ${
               activeTab === tab.id
                 ? "border-slate-950 text-slate-950"
@@ -1700,7 +1548,6 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
             <TabResumen
               tramite={tramite}
               onDateSaved={handleDateSaved}
-              onEstadoChanged={handleEstadoChanged}
               onFieldSaved={handleFieldSaved}
               onChecklistItemChanged={handleChecklistItemChanged}
               puedeEditar={puedeEditarTramite}

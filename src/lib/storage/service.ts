@@ -15,9 +15,9 @@ import { urlFirmada } from "@/lib/storage/proxy";
 
 /**
  * Por defecto los enlaces de subida y descarga pasan por la app
- * (`/api/storage/objeto`, ver `proxy.ts`): funcionan aunque MinIO no sea
- * público. `STORAGE_DIRECT_PRESIGN=true` vuelve a las URLs prefirmadas de
- * MinIO para quien sí tenga `MINIO_PUBLIC_ENDPOINT` expuesto con HTTPS y CORS.
+ * (`/api/storage/objeto`, ver `proxy.ts`): funcionan aunque la bodega no sea
+ * pública. `STORAGE_DIRECT_PRESIGN=true` vuelve a las URLs prefirmadas de S3
+ * (navegador ↔ bodega directo): exige `MINIO_PUBLIC_ENDPOINT` por HTTPS y CORS en el bucket.
  */
 function usarPresignDirecto(): boolean {
   return process.env.STORAGE_DIRECT_PRESIGN === "true";
@@ -228,6 +228,27 @@ export async function softDeleteStorageObject(input: {
   };
 }
 
+/**
+ * Mueve un objeto dentro del bucket (copiar + borrar el origen). S3 no tiene
+ * "rename": es la única forma de cambiar de carpeta un archivo ya subido, p. ej.
+ * al recategorizar un documento (`OTRO/` → `BL/`). Si el destino ya existe se
+ * sobreescribe; si origen y destino son iguales no hace nada.
+ */
+export async function moveStorageObject(input: { from: string; to: string }): Promise<void> {
+  const from = validateStorageKey(input.from);
+  const to = validateStorageKey(input.to);
+  if (from === to) return;
+
+  const { bucket } = getStorageConfig();
+  const client = getStorageClient();
+
+  await client.copyObject(
+    new CopySourceOptions({ Bucket: bucket, Object: from }),
+    new CopyDestinationOptions({ Bucket: bucket, Object: to }),
+  );
+  await client.removeObject(bucket, from);
+}
+
 export async function hardDeleteStorageObject(storageKey: string): Promise<void> {
   const { bucket } = getStorageConfig();
 
@@ -252,14 +273,23 @@ function normalizeExpiry(expiresInSeconds?: number): number {
   return expiresInSeconds;
 }
 
+/**
+ * ¿Es una clave/prefijo seguro para pasarle al bucket? Sin `..`, sin barra
+ * inicial, sin backslash ni caracteres de control. No exige un prefijo raíz:
+ * además de `tramites/` (lo que sube la app) el bucket puede tener carpetas
+ * cargadas por fuera (p. ej. `historico/2026/…` con rclone) que el explorador
+ * de archivos debe poder listar y descargar.
+ */
+export function esClaveSegura(valor: string): boolean {
+  if (!valor) return false;
+  if (valor.startsWith("/") || valor.includes("\\")) return false;
+  if (valor.split("/").some((segmento) => segmento === "..")) return false;
+  if (/[ -]/.test(valor)) return false;
+  return true;
+}
+
 function validateStorageKey(storageKey: string): string {
-  if (
-    !storageKey ||
-    storageKey.includes("..") ||
-    storageKey.startsWith("/") ||
-    storageKey.endsWith("/") ||
-    (!storageKey.startsWith("tramites/") && !storageKey.startsWith(DELETED_PREFIX))
-  ) {
+  if (!esClaveSegura(storageKey) || storageKey.endsWith("/")) {
     throw new StorageValidationError("storageKey invalido");
   }
 

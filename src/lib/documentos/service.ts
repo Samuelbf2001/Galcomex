@@ -3,10 +3,10 @@
  * A2-T3: Repositorio documental por DO.
  *
  * Orquesta la capa de persistencia (modelo Documento en BD) con las
- * primitivas de storage (MinIO) ya existentes en src/lib/storage/.
+ * primitivas de storage (bodega S3: MinIO en local, R2 en producción) de src/lib/storage/.
  *
- * IMPORTANTE: Este servicio NO sube archivos. El cliente sube directamente
- * a MinIO usando la URL prefirmada obtenida con solicitarSubida().
+ * IMPORTANTE: Este servicio NO sube archivos. El cliente sube el archivo
+ * con el enlace firmado obtenido con solicitarSubida() (ver lib/storage/proxy.ts).
  */
 
 import { CategoriaDocumento, type Documento, Prisma, type Rol } from "@prisma/client";
@@ -15,6 +15,7 @@ import { prisma } from "@/lib/db/prisma";
 import {
   createPresignedDownloadUrl,
   generateStorageKey,
+  moveStorageObject,
   softDeleteStorageObject,
   validateStorageFile,
 } from "@/lib/storage/service";
@@ -150,7 +151,7 @@ function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
 
 /**
  * Importa dinámicamente la función createPresignedUploadUrl para no depender
- * del cliente MinIO en tests de integración de BD.
+ * del cliente S3 (minio-js) en tests de integración de BD.
  * En tests se puede interceptar con vi.mock().
  */
 async function getUploadUrl(input: {
@@ -170,12 +171,12 @@ async function getUploadUrl(input: {
 /**
  * Genera una URL prefirmada de subida para un archivo.
  * NO crea el registro Documento todavía — eso ocurre en registrarDocumento()
- * una vez que el cliente haya subido el archivo a MinIO.
+ * una vez que el cliente haya subido el archivo a la bodega.
  */
 export async function solicitarSubida(
   input: SolicitarSubidaInput,
 ): Promise<SolicitarSubidaResult> {
-  // Validar tipo y tamaño ANTES de llamar a MinIO
+  // Validar tipo y tamaño ANTES de tocar la bodega
   validateStorageFile({
     fileName: input.fileName,
     contentType: input.contentType,
@@ -213,7 +214,7 @@ export async function solicitarSubida(
 
 /**
  * Crea el registro Documento en BD después de que el cliente haya subido
- * el archivo directamente a MinIO.
+ * el archivo con el enlace firmado.
  * Genera AuditLog con snapshot del documento creado.
  */
 export async function registrarDocumento(
@@ -268,7 +269,7 @@ export async function registrarDocumento(
 /**
  * Lista los documentos no eliminados de un trámite, agrupados por categoría.
  * Cada documento incluye una URL prefirmada de descarga (expira ≤ 15 min).
- * Si MinIO no está disponible (ej. tests), la URL se omite con gracia.
+ * Si la bodega no está disponible (ej. tests), la URL se omite con gracia.
  */
 export async function listarDocumentos(
   tramiteId: string,
@@ -281,8 +282,8 @@ export async function listarDocumentos(
     orderBy: { createdAt: "asc" },
   });
 
-  // Las URLs prefirmadas se firman en paralelo: cada una es una llamada de red
-  // a MinIO independiente. `Promise.all` conserva el orden de `documentos`.
+  // Los enlaces se firman en paralelo (en modo presign directo cada uno puede
+  // tocar la bodega). `Promise.all` conserva el orden de `documentos`.
   const conUrl = await Promise.all(
     documentos.map(async (doc) => {
       let downloadUrl = "";
@@ -291,7 +292,7 @@ export async function listarDocumentos(
         const presigned = await createPresignedDownloadUrl({ storageKey: doc.storageKey });
         downloadUrl = presigned.url;
       } catch {
-        // MinIO no disponible: devolver URL vacía (el UI manejará el caso)
+        // Bodega no disponible: devolver URL vacía (el UI manejará el caso)
         downloadUrl = "";
       }
 
@@ -315,7 +316,7 @@ export async function listarDocumentos(
 
 /**
  * Elimina lógicamente un documento (eliminado=true) y mueve el objeto
- * en MinIO al prefijo deleted/.
+ * en la bodega al prefijo deleted/.
  * Genera AuditLog del soft-delete.
  *
  * Solo ADMIN o REVISOR pueden eliminar (ver puedeEliminarDocumento). El
@@ -366,17 +367,17 @@ export async function eliminarDocumento(
     });
   });
 
-  // Soft-delete en MinIO (fuera de la transacción de BD para no bloquearla)
+  // Soft-delete en la bodega (fuera de la transacción de BD para no bloquearla)
   try {
     await softDeleteStorageObject({ storageKey: doc.storageKey, deletedBy: usuarioId });
   } catch {
-    // No revertir el soft-delete de BD; el objeto MinIO puede limpiarse manualmente
+    // No revertir el soft-delete de BD; el objeto en la bodega puede limpiarse manualmente
   }
 }
 
 /**
  * Reemplaza el archivo de un documento EXISTENTE (mismo id) por uno nuevo ya
- * subido a MinIO (el cliente ya hizo el PUT prefirmado, igual que en el flujo
+ * subido a la bodega (el cliente ya hizo el PUT firmado, igual que en el flujo
  * de subida normal — ver solicitarSubida()).
  *
  * Decisión de diseño (no hay migraciones de schema disponibles en esta tarea):
@@ -388,7 +389,7 @@ export async function eliminarDocumento(
  * dejaría esas referencias apuntando al documento viejo ya marcado
  * eliminado=true. subidoPorId se conserva (representa la procedencia
  * original); quién reemplazó y cuándo queda registrado en el AuditLog
- * (antes/después). El archivo anterior en MinIO se mueve al prefijo
+ * (antes/después). El archivo anterior en la bodega se mueve al prefijo
  * deleted/ con el mismo mecanismo que eliminarDocumento (no se pierde el
  * histórico).
  */
@@ -443,7 +444,7 @@ export async function reemplazarDocumento(
     return updated;
   });
 
-  // Soft-delete del archivo anterior en MinIO (fuera de la transacción de BD
+  // Soft-delete del archivo anterior en la bodega (fuera de la transacción de BD
   // para no bloquearla; igual que eliminarDocumento).
   try {
     await softDeleteStorageObject({ storageKey: storageKeyAnterior, deletedBy: input.usuarioId });
@@ -452,6 +453,93 @@ export async function reemplazarDocumento(
   }
 
   return actualizado;
+}
+
+export type ActualizarDocumentoInput = {
+  documentoId: string;
+  usuarioId: string;
+  rol: Rol;
+  /** Nuevo nombre visible (no cambia el archivo). */
+  nombreArchivo?: string;
+  /** Nueva categoría: el objeto se mueve de carpeta en el bucket para que Archivos y Documentos coincidan. */
+  categoria?: CategoriaDocumento;
+};
+
+/**
+ * Edita los metadatos de un documento sin volver a subir el archivo: renombrar
+ * y/o recategorizar. Es lo que necesita un agente (o Camila) para ordenar lo
+ * que el importador dejó en `OTRO`. Al cambiar de categoría el objeto se mueve
+ * físicamente a la carpeta nueva (`tramites/<DO>/<CATEGORIA>/…`), así el
+ * explorador de Archivos sigue reflejando la realidad.
+ *
+ * Permisos: los mismos que reemplazar (ADMIN/REVISOR cualquiera; OPERATIVO
+ * solo los suyos; SOCIO no).
+ */
+export async function actualizarDocumento(input: ActualizarDocumentoInput): Promise<Documento> {
+  const doc = await prisma.documento.findUnique({ where: { id: input.documentoId } });
+
+  if (!doc) throw new DocumentoNoEncontradoError(input.documentoId);
+  if (doc.eliminado) throw new DocumentoYaEliminadoError(input.documentoId);
+  if (!puedeReemplazarDocumento(input.rol, doc, input.usuarioId)) {
+    throw new DocumentoPermisoError(
+      "No tienes permiso para editar este documento. Solo quien lo subió, ADMIN o REVISOR pueden editarlo.",
+    );
+  }
+
+  const nombreArchivo = input.nombreArchivo?.trim() || doc.nombreArchivo;
+  const categoria = input.categoria ?? doc.categoria;
+  const cambiaCategoria = categoria !== doc.categoria;
+
+  // La carpeta de categoría es el segmento anterior al nombre del objeto:
+  // tramites/<DO>/<CATEGORIA>/<archivo>. Si la clave no sigue ese patrón
+  // (histórico con otra forma) se deja donde está y solo cambia la BD.
+  let storageKey = doc.storageKey;
+  if (cambiaCategoria) {
+    const partes = doc.storageKey.split("/");
+    if (partes.length >= 4 && partes[0] === "tramites") {
+      partes[partes.length - 2] = categoria;
+      storageKey = partes.join("/");
+    }
+  }
+
+  if (storageKey !== doc.storageKey) {
+    await moveStorageObject({ from: doc.storageKey, to: storageKey });
+  }
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await assertTramiteModificable(tx, doc.tramiteId);
+
+      const actualizado = await tx.documento.update({
+        where: { id: input.documentoId },
+        data: { nombreArchivo, categoria, storageKey },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          entidad: "Documento",
+          entidadId: input.documentoId,
+          accion: "UPDATE",
+          usuarioId: input.usuarioId,
+          tramiteId: doc.tramiteId,
+          antes: normalizeSerializable(doc),
+          despues: normalizeSerializable(actualizado),
+        },
+      });
+
+      return actualizado;
+    });
+  } catch (error) {
+    // La BD no aceptó el cambio: devolver el objeto a su carpeta original.
+    if (storageKey !== doc.storageKey) {
+      try {
+        await moveStorageObject({ from: storageKey, to: doc.storageKey });
+      } catch {
+        // Queda movido en el bucket con la BD sin cambiar; el explorador lo muestra.
+      }
+    }
+    throw error;
+  }
 }
 
 /**
@@ -473,7 +561,7 @@ export async function refrescarUrlDescarga(documentoId: string): Promise<string>
 }
 
 /**
- * Genera un storageKey para uso en pruebas o pre-validación sin llamar a MinIO.
+ * Genera un storageKey para uso en pruebas o pre-validación sin tocar la bodega.
  * Envuelve generateStorageKey del storage service.
  */
 export function generarStorageKey(input: {

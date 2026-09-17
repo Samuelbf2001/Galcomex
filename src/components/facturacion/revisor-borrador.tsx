@@ -43,6 +43,8 @@ import {
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
+import { ModuleState } from "@/components/layout/module-state";
+import { fetchDocumentos } from "@/components/documentos/documentos-api";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
 
@@ -421,6 +423,14 @@ export function RevisorBorrador({
   const [guardandoFormaPago, setGuardandoFormaPago] = useState(false);
   const [sincronizandoSiigo, setSincronizandoSiigo] = useState(false);
   const [mensajeSincronizacion, setMensajeSincronizacion] = useState<string | null>(null);
+  const [recarga, setRecarga] = useState(0);
+  const [erroresConsulta, setErroresConsulta] = useState<Record<string, string>>({});
+  const [cargandoSoportes, setCargandoSoportes] = useState(true);
+  const [cargandoFormas, setCargandoFormas] = useState(puedeAprobar);
+
+  function errorConsulta(clave: string, mensaje: string) {
+    setErroresConsulta((prev) => ({ ...prev, [clave]: mensaje }));
+  }
 
   // Cruce pagos vs líneas de factura de venta por FacturaProveedor
   const [cruce, setCruce] = useState<CruceFacturaRow[]>([]);
@@ -451,14 +461,29 @@ export function RevisorBorrador({
   // Formas de pago SIIGO: el endpoint (GET /api/configuracion/siigo/formas-pago)
   // y el PATCH forma-pago admiten ADMIN y REVISOR.
   useEffect(() => {
-    if (puedeAprobar) {
-      fetchFormasPagoSiigo().then(setFormasPago).catch(() => {});
+    if (!puedeAprobar) return;
+    let cancelled = false;
+    async function cargar() {
+      setCargandoFormas(true);
+      errorConsulta("formas", "");
+      try {
+        const filas = await fetchFormasPagoSiigo();
+        if (!cancelled) setFormasPago(filas);
+      } catch {
+        if (!cancelled) errorConsulta("formas", "No se pudieron consultar las formas de pago Siigo.");
+      } finally {
+        if (!cancelled) setCargandoFormas(false);
+      }
     }
-  }, [puedeAprobar]);
+    void cargar();
+    return () => { cancelled = true; };
+  }, [puedeAprobar, recarga]);
 
   useEffect(() => {
     let cancelled = false;
     async function loadFacturasYDocs() {
+      setCargandoSoportes(true);
+      errorConsulta("soportes", "");
       try {
         const facturas = await fetchFacturasProveedor(tramite.id);
         if (cancelled) return;
@@ -479,61 +504,42 @@ export function RevisorBorrador({
 
         if (docIds.length > 0) {
           try {
-            const resp = await fetch(
-              `/api/tramites/${tramite.id}/documentos`,
-              { cache: "no-store", headers: { Accept: "application/json" } },
-            );
-            if (!resp.ok || cancelled) return;
-            const payload: unknown = await resp.json();
-            if (
-              cancelled ||
-              typeof payload !== "object" ||
-              payload === null ||
-              !Array.isArray((payload as Record<string, unknown>).documentos)
-            )
-              return;
-
-            const docs = (payload as { documentos: unknown[] }).documentos;
+            const categorias = await fetchDocumentos(tramite.id);
+            if (cancelled) return;
             const urlMap = new Map<string, string>();
-            for (const doc of docs) {
-              if (
-                typeof doc === "object" &&
-                doc !== null &&
-                "id" in doc &&
-                "downloadUrl" in doc &&
-                typeof (doc as Record<string, unknown>).downloadUrl === "string" &&
-                docIds.includes(String((doc as Record<string, unknown>).id))
-              ) {
-                urlMap.set(
-                  String((doc as Record<string, unknown>).id),
-                  String((doc as Record<string, unknown>).downloadUrl),
-                );
-              }
+            for (const doc of Object.values(categorias).flat()) {
+              if (docIds.includes(doc.id) && doc.downloadUrl) urlMap.set(doc.id, doc.downloadUrl);
             }
             if (!cancelled) setDownloadUrlByDocId(urlMap);
           } catch {
-            // Non-critical; document viewer degrades gracefully
+            if (!cancelled) errorConsulta("soportes", "No se pudieron consultar los documentos adjuntos. No se ha verificado si hay soporte.");
           }
         }
       } catch {
-        // Non-critical; visor degrades gracefully
+        if (!cancelled) errorConsulta("soportes", "No se pudieron consultar las facturas de proveedor y sus soportes.");
+      } finally {
+        if (!cancelled) setCargandoSoportes(false);
       }
     }
     void loadFacturasYDocs();
     return () => {
       cancelled = true;
     };
-  }, [tramite.id]);
+  }, [tramite.id, recarga]);
 
   useEffect(() => {
     let cancelled = false;
     async function cargarCruce() {
       setCargandoCruce(true);
+      errorConsulta("cruce", "");
       try {
         const rows = await fetchCruceFacturas(borradorActual.id);
         if (!cancelled) setCruce(rows);
       } catch {
-        // Non-critical; panel degrades gracefully
+        if (!cancelled) {
+          setCruce([]);
+          errorConsulta("cruce", "No se pudo consultar el cruce de pagos y facturas. El cruce no está verificado.");
+        }
       } finally {
         if (!cancelled) setCargandoCruce(false);
       }
@@ -542,17 +548,21 @@ export function RevisorBorrador({
     return () => {
       cancelled = true;
     };
-  }, [borradorActual.id]);
+  }, [borradorActual.id, recarga]);
 
   useEffect(() => {
     let cancelled = false;
     async function cargarValidaciones() {
       setCargandoValidaciones(true);
+      errorConsulta("validaciones", "");
       try {
         const result = await fetchValidacionesCruce(borradorActual.id);
         if (!cancelled) setValidaciones(result);
       } catch {
-        // Non-critical; panel degrades gracefully
+        if (!cancelled) {
+          setValidaciones({ proveedores: [], pagosSueltos: [] });
+          errorConsulta("validaciones", "No se pudieron consultar las validaciones por proveedor. La revisión está incompleta.");
+        }
       } finally {
         if (!cancelled) setCargandoValidaciones(false);
       }
@@ -561,7 +571,7 @@ export function RevisorBorrador({
     return () => {
       cancelled = true;
     };
-  }, [borradorActual.id]);
+  }, [borradorActual.id, recarga]);
 
   const estado = borradorActual.estado;
 
@@ -758,7 +768,7 @@ export function RevisorBorrador({
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-white">
       {/* Barra superior */}
-      <header className="flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-5 py-3 shrink-0">
+      <header className="flex max-h-[45dvh] flex-wrap items-center justify-between gap-3 overflow-y-auto border-b border-slate-200 bg-white px-4 py-3 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
@@ -792,7 +802,7 @@ export function RevisorBorrador({
         </div>
 
         {/* Acciones de transición */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {errorTransicion ? (
             <span className="max-w-xs text-xs text-rose-700 border border-rose-200 bg-rose-50 px-2 py-1">
               {errorTransicion}
@@ -1047,28 +1057,32 @@ export function RevisorBorrador({
       })() : null}
 
       {/* Cuerpo split-screen */}
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         {/* IZQUIERDA — visor de soporte */}
-        <div className="flex w-2/5 flex-col border-r border-slate-200 min-h-0">
+        <div className="flex w-full shrink-0 flex-col border-b border-slate-200 lg:min-h-0 lg:w-2/5 lg:shrink lg:border-r">
           <div className="border-b border-slate-200 bg-slate-50 px-4 py-2.5">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
               Soporte del concepto seleccionado
             </p>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto">
-            <VisorSoporte
+            {cargandoSoportes ? <ModuleState type="loading" title="Cargando soportes…" /> : erroresConsulta.soportes ? <ModuleState type="error" title="Soportes sin verificar" detail={erroresConsulta.soportes} action={{ label: "Reintentar consulta", onClick: () => setRecarga((n) => n + 1) }} /> : <VisorSoporte
               linea={lineaSeleccionada}
               facturasByNumFactura={facturasByNumFactura}
               facturasById={facturasById}
               downloadUrlByDocId={downloadUrlByDocId}
-            />
+            />}
           </div>
         </div>
 
         {/* DERECHA — líneas + desglose */}
-        <div className="flex w-3/5 flex-col min-h-0 overflow-y-auto">
+        <div className="flex w-full shrink-0 flex-col lg:min-h-0 lg:w-3/5 lg:shrink lg:overflow-y-auto">
+          {Object.entries(erroresConsulta).some(([clave, mensaje]) => clave !== "soportes" && mensaje) ? (
+            <ModuleState type="error" title="Falta información para completar la revisión" detail={Object.entries(erroresConsulta).filter(([clave]) => clave !== "soportes").map(([, mensaje]) => mensaje).filter(Boolean).join(" ")} action={{ label: "Reintentar consultas", onClick: () => setRecarga((n) => n + 1) }} />
+          ) : null}
+          {cargandoFormas ? <p role="status" className="px-4 py-2 text-sm text-slate-500">Cargando formas de pago…</p> : puedeAprobar && !erroresConsulta.formas && formasPago.length === 0 ? <p role="status" className="px-4 py-2 text-sm text-slate-500">No hay formas de pago disponibles en Siigo.</p> : null}
           {/* Líneas de revisión */}
-          <div className="border-b border-slate-200">
+          <div className="overflow-x-auto border-b border-slate-200">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-2.5">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                 Líneas del borrador ({lineas.length})

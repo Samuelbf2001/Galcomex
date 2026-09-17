@@ -5,7 +5,6 @@ import {
   ArrowRight,
   Clock,
   FileText,
-  Loader2,
   RotateCcw,
   TrendingUp,
   Wallet,
@@ -67,7 +66,7 @@ function MetricCard({ label, value, sub, href, icon, alert = false }: MetricCard
       {sub ? (
         <p className="mt-0.5 text-xs text-slate-500">{sub}</p>
       ) : null}
-      <p className="mt-2 flex items-center gap-1 text-xs text-cyan-700 opacity-0 transition-opacity group-hover:opacity-100">
+      <p className="mt-2 flex items-center gap-1 text-xs text-cyan-700">
         Ver módulo <ArrowRight className="h-3 w-3" aria-hidden="true" />
       </p>
     </Link>
@@ -108,7 +107,7 @@ function TablaPendientesFacturar({ rows }: { rows: PendienteFacturarRow[] }) {
               }`}
             >
               <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
-                {row.consecutivo}
+                <Link href={`/tramites/${row.id}`} className="text-cyan-700 underline-offset-4 hover:underline">{row.consecutivo}</Link>
               </td>
               <td className="px-4 py-3 text-xs text-slate-700 whitespace-nowrap">
                 {row.clienteNombre}
@@ -483,7 +482,7 @@ export function DashboardWorkspace() {
   }
 
   // ── Loading: mismas alturas que el contenido real para evitar el salto ───
-  if (loadState === "loading") {
+  if (loadState === "loading" && !data) {
     return (
       <section className="space-y-6" aria-busy="true">
         <DashboardHeader onRefresh={handleRefresh} refreshing />
@@ -499,10 +498,10 @@ export function DashboardWorkspace() {
   }
 
   // ── Error ────────────────────────────────────────────────────────────────
-  if (loadState === "error" || !data) {
+  if (!data) {
     return (
       <section className="space-y-5">
-        <DashboardHeader onRefresh={handleRefresh} refreshing={false} />
+        <DashboardHeader onRefresh={handleRefresh} refreshing={false} hideRefresh />
         <ModuleState
           type="error"
           title="No fue posible cargar el dashboard"
@@ -519,14 +518,16 @@ export function DashboardWorkspace() {
 
   return (
     <section className="space-y-6">
-      <DashboardHeader onRefresh={handleRefresh} refreshing={false} />
+      <DashboardHeader onRefresh={handleRefresh} refreshing={loadState === "loading"} hideRefresh={loadState === "error"} />
+      {loadState === "loading" && <p role="status" className="text-sm text-cyan-700">Actualizando el resumen. Puedes seguir consultando los datos visibles.</p>}
+      {loadState === "error" && <ModuleState type="error" title="No se pudo actualizar el resumen" detail={`${errorMsg ?? "Revisa tu conexión."} Los datos visibles corresponden a la última carga correcta.`} action={{ label: "Reintentar", onClick: handleRefresh }} />}
 
       {/* Tarjetas de métricas */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
           label="DOs activos"
           value={String(data.dosActivos)}
-          sub="En pipeline (excl. cerrados)"
+          sub="Trámites que aún no se han cerrado"
           href="/tramites"
           icon={<TrendingUp className="h-4 w-4" aria-hidden="true" />}
         />
@@ -657,11 +658,12 @@ export function DashboardWorkspace() {
       <div className="overflow-hidden border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-4 py-2.5">
           <h2 className="text-sm font-semibold text-slate-900">
-            Pipeline de trámites
+            Flujo de trámites
           </h2>
         </div>
         <div className="flex flex-wrap gap-0 divide-x divide-slate-100">
-          {data.dosPorEstado
+          {data.dosPorEstado.length === 0 && <div className="w-full p-4"><ModuleState type="empty" title="Todavía no hay trámites" detail="Los trámites aparecerán aquí agrupados por su etapa de trabajo." /></div>}
+          {[...data.dosPorEstado]
             .sort((a, b) => ORDEN_ESTADO.indexOf(a.estado) - ORDEN_ESTADO.indexOf(b.estado))
             .map((d) => (
               <div key={d.estado} className="min-w-24 px-4 py-3 text-center">
@@ -692,20 +694,21 @@ const ORDEN_ESTADO = [
 type DashboardHeaderProps = {
   onRefresh: () => void;
   refreshing: boolean;
+  hideRefresh?: boolean;
 };
 
-function DashboardHeader({ onRefresh, refreshing }: DashboardHeaderProps) {
+function DashboardHeader({ onRefresh, refreshing, hideRefresh }: DashboardHeaderProps) {
   return (
-    <div className="flex items-start justify-between gap-4">
+    <div className="flex flex-wrap items-start justify-between gap-4">
       <div>
         <h1 className="text-2xl font-semibold tracking-normal">
           Dashboard operativo
         </h1>
         <p className="mt-1 text-sm text-slate-600">
-          DOs por estado, pendientes de facturar, cartera y anticipos.
+          Revisa lo pendiente y abre el trámite o la cartera para continuar.
         </p>
       </div>
-      <button
+      {!hideRefresh && <button
         type="button"
         onClick={onRefresh}
         disabled={refreshing}
@@ -715,11 +718,8 @@ function DashboardHeader({ onRefresh, refreshing }: DashboardHeaderProps) {
           className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
           aria-hidden="true"
         />
-        {refreshing ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-        ) : null}
-        Actualizar
-      </button>
+        {refreshing ? "Actualizando…" : "Actualizar"}
+      </button>}
     </div>
   );
 }

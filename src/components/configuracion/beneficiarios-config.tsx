@@ -70,7 +70,7 @@ export function BeneficiariosConfig() {
   }
 
   function iniciarEdicion(id: string, field: "nit" | "nombre", valorActual: string | null) {
-    if (!puedeEditar) return;
+    if (!puedeEditar || edit || guardando) return;
     setEdit({ id, field, value: valorActual ?? "" });
     setErrorGuardado(null);
   }
@@ -81,7 +81,7 @@ export function BeneficiariosConfig() {
   }
 
   async function guardar() {
-    if (!edit) return;
+    if (!edit || guardando) return;
     setGuardando(edit.id);
     setErrorGuardado(null);
     try {
@@ -185,7 +185,7 @@ export function BeneficiariosConfig() {
           action={{ label: "Reintentar", onClick: recargar }}
         />
       ) : (
-        <div className="overflow-hidden border border-slate-200 bg-white">
+        <div className="overflow-x-auto border border-slate-200 bg-white">
           <table className="w-full border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
@@ -198,7 +198,7 @@ export function BeneficiariosConfig() {
               {beneficiarios.length === 0 && (
                 <tr>
                   <td colSpan={3} className="px-4 py-4 text-center text-slate-400">
-                    No hay beneficiarios registrados.
+                    <ModuleState type="empty" title="No hay beneficiarios registrados" detail="Los proveedores y beneficiarios que registres aparecerán aquí para completar sus datos." />
                   </td>
                 </tr>
               )}
@@ -210,6 +210,7 @@ export function BeneficiariosConfig() {
                       (puedeEditar ? (
                         <button
                           type="button"
+                          disabled={edit !== null}
                           onClick={() => iniciarEdicion(b.id, "nombre", b.nombre)}
                           className="text-left hover:underline"
                           title="Editar nombre"
@@ -228,6 +229,7 @@ export function BeneficiariosConfig() {
                       (puedeEditar ? (
                         <button
                           type="button"
+                          disabled={edit !== null}
                           onClick={() => iniciarEdicion(b.id, "nit", b.nit)}
                           className={`font-mono text-sm ${
                             b.nit

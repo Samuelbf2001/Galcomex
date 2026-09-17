@@ -10,6 +10,8 @@ export type TramiteRow = {
   ultimoMovimiento: string;
   responsable: string;
   documentosPendientes: number | null;
+  /** Cargado desde el archivo histórico (Drive): existe por sus documentos, sin detalle financiero. */
+  esHistorico: boolean;
 };
 
 export type ClienteOption = {
@@ -281,6 +283,7 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
         "checklistPendiente",
         "documentosFaltantes",
       ]),
+    esHistorico: row.esHistorico === true,
   };
 }
 

@@ -65,7 +65,7 @@ export type CreateAnticipoInput = {
   fecha: string; // ISO date string
   tipoRecaudo: TipoRecaudo;
   verificadoBanco: boolean;
-  /** Comprobante bancario en MinIO. Obligatorio para anticipos nuevos. */
+  /** Clave del comprobante bancario en la bodega de archivos. Obligatorio para anticipos nuevos. */
   soporteKey: string;
 };
 
@@ -328,10 +328,10 @@ export async function eliminarAplicacion(
 // ─── Soporte del anticipo (comprobante bancario) ────────────────────────────
 // Reutiliza el endpoint genérico de storage (/api/storage), el mismo mecanismo
 // que usa el repositorio documental del DO (ver src/lib/storage/service.ts):
-//   1. POST /api/storage { action: "uploadUrl", ... } → URL PUT prefirmada
-//   2. PUT directo del archivo contra esa URL (a MinIO)
+//   1. POST /api/storage { action: "uploadUrl", ... } → enlace PUT firmado por la app
+//   2. PUT del archivo contra ese enlace (la app lo guarda en la bodega: MinIO o R2)
 //   3. El storageKey resultante se guarda como Anticipo.soporteKey
-// Para descargar: POST /api/storage { action: "downloadUrl", storageKey } → URL GET prefirmada.
+// Para descargar: POST /api/storage { action: "downloadUrl", storageKey } → enlace GET firmado.
 
 export type UploadUrlSoporte = {
   storageKey: string;
@@ -405,7 +405,7 @@ export async function solicitarUploadUrlSoporte(input: {
   };
 }
 
-/** Paso 2: sube el archivo DIRECTO a MinIO con la URL prefirmada. */
+/** Paso 2: sube el archivo con el enlace firmado (la app lo guarda en la bodega). */
 export async function subirComprobante(uploadUrl: string, file: File): Promise<void> {
   let response: Response;
   try {

@@ -1,8 +1,8 @@
 /**
  * Helpers de API para el módulo de Documentos (repositorio documental del DO).
- * El cliente sube DIRECTAMENTE a MinIO usando la URL prefirmada:
- *   1. POST /api/tramites/[id]/documentos { action: "uploadUrl", ... } → presigned PUT URL
- *   2. fetch(presignedUrl, { method: "PUT", body: file })
+ * El cliente sube con el enlace firmado que entrega la API (la app lo guarda en la bodega, MinIO o R2):
+ *   1. POST /api/tramites/[id]/documentos { action: "uploadUrl", ... } → enlace PUT firmado
+ *   2. fetch(url, { method: "PUT", body: file })  → /api/storage/objeto
  *   3. POST /api/tramites/[id]/documentos { action: "register", ... } → crea Documento en BD
  */
 
@@ -158,7 +158,7 @@ export async function solicitarUploadUrl(
 }
 
 /**
- * Paso 2: subir el archivo DIRECTO a MinIO con la URL prefirmada.
+ * Paso 2: subir el archivo con el enlace firmado (PUT a /api/storage/objeto).
  * Retorna true si el PUT fue exitoso.
  */
 export async function subirArchivoDirecto(
@@ -291,7 +291,7 @@ export async function eliminarDocumento(
 /**
  * Reemplazar el archivo de un documento existente (mismo id). El caller debe
  * primero pedir una URL prefirmada (solicitarUploadUrl) y subir el archivo
- * directo a MinIO (subirArchivoDirecto), igual que en la subida normal, y
+ * con el enlace firmado (subirArchivoDirecto), igual que en la subida normal, y
  * luego llamar a esta función con el storageKey resultante para confirmar
  * el reemplazo.
  */

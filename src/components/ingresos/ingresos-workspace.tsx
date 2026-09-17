@@ -97,14 +97,14 @@ async function fetchClienteOptions(): Promise<ClienteOption[]> {
     cache: "no-store",
     headers: { Accept: "application/json" },
   });
-  if (!res.ok) return [];
+  if (!res.ok) throw new Error("No se pudo cargar la lista de clientes.");
   const payload: unknown = await res.json().catch(() => null);
   if (
     typeof payload !== "object" ||
     payload === null ||
     !Array.isArray((payload as Record<string, unknown>).clientes)
   )
-    return [];
+    throw new Error("La lista de clientes no tiene el formato esperado.");
   const clientes = (payload as Record<string, unknown>).clientes as unknown[];
   return clientes
     .filter(
@@ -132,12 +132,14 @@ export function IngresosWorkspace() {
   const initialHasta = hayFechasEnUrl ? (searchParams.get("hasta") ?? "") : mesActual.hasta;
 
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
+  const [clientesEstado, setClientesEstado] = useState<LoadState>("loading");
+  const [clientesRecarga, setClientesRecarga] = useState(0);
   const [clienteId, setClienteId] = useState(initialClienteId);
   const [desde, setDesde] = useState(initialDesde);
   const [hasta, setHasta] = useState(initialHasta);
 
   const [filas, setFilas] = useState<FilaIngreso[]>([]);
-  const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // ── Sincronizar URL ──────────────────────────────────────────────────────
@@ -164,12 +166,21 @@ export function IngresosWorkspace() {
   // ── Cargar clientes ──────────────────────────────────────────────────────
 
   useEffect(() => {
-    fetchClienteOptions()
-      .then(setClientes)
-      .catch(() => {
-        /* silencioso */
-      });
-  }, []);
+    let activo = true;
+    async function cargarClientes() {
+      setClientesEstado("loading");
+      try {
+        const opciones = await fetchClienteOptions();
+        if (!activo) return;
+        setClientes(opciones);
+        setClientesEstado("ready");
+      } catch {
+        if (activo) setClientesEstado("error");
+      }
+    }
+    void cargarClientes();
+    return () => { activo = false; };
+  }, [clientesRecarga]);
 
   // ── Cargar ingresos ──────────────────────────────────────────────────────
 
@@ -193,12 +204,13 @@ export function IngresosWorkspace() {
         },
         controller.signal,
       );
+      if (controller.signal.aborted) return;
       setFilas(data);
       setLoadState("ready");
     }
 
     load().catch((err: unknown) => {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (controller.signal.aborted) return;
       setLoadError(
         err instanceof IngresosApiError
           ? err.message
@@ -243,17 +255,21 @@ export function IngresosWorkspace() {
         </p>
       </div>
 
+      {clientesEstado === "error" ? (
+        <ModuleState type="error" title="No se pudo cargar el filtro de clientes" detail="Puedes consultar los movimientos mientras recuperamos las opciones del filtro." action={{ label: "Cargar clientes", onClick: () => setClientesRecarga((n) => n + 1) }} />
+      ) : null}
       {/* Filtros */}
       <div className="flex flex-wrap items-end gap-3 border border-slate-200 bg-white px-4 py-3">
         <Filter className="h-4 w-4 text-slate-400 self-end mb-2.5" aria-hidden="true" />
 
         {/* Cliente */}
-        <label className="flex flex-col gap-1 min-w-52">
+        <label className="flex w-full min-w-0 flex-col gap-1 sm:w-auto">
           <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
             Cliente
           </span>
           <select
             value={clienteId}
+            disabled={clientesEstado !== "ready"}
             onChange={(e) => {
               setClienteId(e.target.value);
               syncUrl(e.target.value, desde, hasta);
@@ -261,7 +277,8 @@ export function IngresosWorkspace() {
             aria-label="Filtrar por cliente"
             className="h-10 w-80 max-w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
           >
-            <option value="">Todos los clientes</option>
+            <option value="">{clientesEstado === "loading" ? "Cargando clientes…" : "Todos los clientes"}</option>
+            {clienteId && !clientes.some((c) => c.id === clienteId) ? <option value={clienteId}>Cliente seleccionado</option> : null}
             {clientes.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.nombre} — {c.nit}
@@ -337,10 +354,11 @@ export function IngresosWorkspace() {
         <button
           type="button"
           onClick={() => recargar()}
+          disabled={loadState === "loading"}
           className="ml-auto inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
         >
           <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-          Actualizar
+          {loadState === "loading" ? "Actualizando…" : "Actualizar"}
         </button>
       </div>
 
@@ -418,8 +436,8 @@ export function IngresosWorkspace() {
           title="Sin movimientos"
           detail={`No hay anticipos, abonos ni devoluciones en ${rangoActivo}.`}
           action={
-            desde || hasta
-              ? { label: "Ver todo el historial", onClick: () => aplicarRango("", ""), icon: false }
+            desde || hasta || clienteId
+              ? { label: "Quitar filtros", onClick: () => { setClienteId(""); setDesde(""); setHasta(""); syncUrl("", "", ""); }, icon: false }
               : undefined
           }
         />

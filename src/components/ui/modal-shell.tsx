@@ -72,10 +72,10 @@ export function ModalShell({
       onClick={(e) => {
         if (dismissible && e.target === ref.current) onClose();
       }}
-      className={`m-auto w-[calc(100vw-2rem)] ${SIZES[size]} border border-slate-200 bg-white p-0 text-slate-900 shadow-2xl backdrop:bg-slate-950/50`}
+      className={`m-auto w-[calc(100vw-2rem)] ${SIZES[size]} rounded-xl border border-slate-200 bg-white p-0 text-slate-900 shadow-2xl backdrop:bg-slate-950/50`}
     >
       {open ? (
-        <div className="flex max-h-[90vh] flex-col">
+        <div className="flex max-h-[90dvh] flex-col">
           <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
             <div className="min-w-0">
               <h2 id={titleId} className="text-lg font-semibold">
@@ -92,7 +92,7 @@ export function ModalShell({
               data-modal-close
               onClick={onClose}
               disabled={!dismissible}
-              className="-mr-2 -mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40"
+              className="-mr-2 -mt-1 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40"
               aria-label="Cerrar"
             >
               <X className="h-4 w-4" aria-hidden="true" />
@@ -100,7 +100,7 @@ export function ModalShell({
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
           {footer ? (
-            <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3">{footer}</div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3">{footer}</div>
           ) : null}
         </div>
       ) : null}

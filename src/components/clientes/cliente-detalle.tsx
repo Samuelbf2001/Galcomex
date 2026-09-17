@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, ExternalLink, Loader2, Pencil, Plus, RotateCcw } from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, Pencil, RotateCcw } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useId, useState } from "react";
 
@@ -9,16 +9,14 @@ import {
   erroresPorCampo,
   fetchClienteDetalle,
   updateCliente,
-  upsertTarifa,
   type AnticipoResumen,
   type ClienteDetalle,
-  type DetalleValidacion,
   type FacturaResumen,
-  type TarifaCliente,
   type TramiteResumen,
   type UpdateClienteInput,
 } from "@/components/clientes/clientes-api";
 import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
+import { ContactoEditor } from "@/components/clientes/contacto-editor";
 import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
 import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
 import { SeccionPagosProveedor } from "@/components/clientes/seccion-pagos-proveedor";
@@ -104,9 +102,6 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
       nombre: String(fd.get("nombre") ?? "").trim(),
       nit: String(fd.get("nit") ?? "").trim(),
       tipo: String(fd.get("tipo") ?? "PROPIO") as "PROPIO" | "SOCIO_LM",
-      contactoNombre: (String(fd.get("contactoNombre") ?? "").trim()) || null,
-      contactoEmail: (String(fd.get("contactoEmail") ?? "").trim()) || null,
-      contactoTel: (String(fd.get("contactoTel") ?? "").trim()) || null,
       manejaAnticipo: fd.get("manejaAnticipo") === "on",
       activo: fd.get("activo") === "on",
       esCliente: fd.get("esCliente") === "on",
@@ -142,7 +137,7 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
       open
       onClose={onClose}
       title="Editar cliente"
-      description={cliente.nombre}
+      description={`${cliente.nombre} · El contacto se edita directamente en la ficha.`}
       size="lg"
       dismissible={!isSubmitting}
       footer={
@@ -209,43 +204,8 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
             </select>
             <MensajeCampo id={campo("tipo").errorId} error={errores.tipo} />
           </label>
-          <label className="space-y-1.5 md:col-span-2">
-            <span className="text-sm font-medium text-slate-700">Nombre contacto</span>
-            <input
-              name="contactoNombre"
-              defaultValue={cliente.contactoNombre ?? ""}
-              aria-invalid={campo("contactoNombre").invalido || undefined}
-              className={claseCampo(campo("contactoNombre").invalido)}
-            />
-            <MensajeCampo id={campo("contactoNombre").errorId} error={errores.contactoNombre} />
-          </label>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Email contacto</span>
-            <input
-              name="contactoEmail"
-              type="email"
-              defaultValue={cliente.contactoEmail ?? ""}
-              aria-invalid={campo("contactoEmail").invalido || undefined}
-              aria-describedby={campo("contactoEmail").describedBy}
-              className={claseCampo(campo("contactoEmail").invalido)}
-            />
-            <MensajeCampo id={campo("contactoEmail").errorId} error={errores.contactoEmail} />
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Teléfono contacto</span>
-            <input
-              name="contactoTel"
-              defaultValue={cliente.contactoTel ?? ""}
-              aria-invalid={campo("contactoTel").invalido || undefined}
-              aria-describedby={campo("contactoTel").describedBy}
-              className={claseCampo(campo("contactoTel").invalido)}
-            />
-            <MensajeCampo id={campo("contactoTel").errorId} error={errores.contactoTel} />
-          </label>
-        </div>
 
         <div className="flex flex-wrap gap-6">
           <label className="flex items-center gap-2">
@@ -303,12 +263,12 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
 
 function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
   return (
-    <div className="overflow-hidden border border-slate-200 bg-white">
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
       <div className="border-b border-slate-200 px-4 py-3">
         <p className="text-sm font-semibold text-slate-900">Trámites ({tramites.length})</p>
       </div>
 
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="min-w-[580px] w-full border-collapse text-left text-sm">
         <thead className="bg-slate-50 text-xs uppercase text-slate-500">
           <tr>
             <th className="border-b border-slate-200 px-4 py-3">Consecutivo</th>
@@ -344,7 +304,7 @@ function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
                 <td className="px-4 py-3">
                   <Link
                     href={`/tramites/${tramite.id}`}
-                    className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-cyan-700"
+                    className="inline-flex h-11 w-11 items-center justify-center text-slate-400 transition hover:text-cyan-700"
                     aria-label={`Ver trámite ${tramite.consecutivo}`}
                     title="Ver trámite"
                   >
@@ -366,12 +326,12 @@ function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
 
 function SeccionAnticipos({ anticipos }: { anticipos: AnticipoResumen[] }) {
   return (
-    <div className="overflow-hidden border border-slate-200 bg-white">
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
       <div className="border-b border-slate-200 px-4 py-3">
         <p className="text-sm font-semibold text-slate-900">Anticipos ({anticipos.length})</p>
       </div>
 
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="min-w-[580px] w-full border-collapse text-left text-sm">
         <thead className="bg-slate-50 text-xs uppercase text-slate-500">
           <tr>
             <th className="border-b border-slate-200 px-4 py-3">Fecha</th>
@@ -451,12 +411,12 @@ function SeccionAnticipos({ anticipos }: { anticipos: AnticipoResumen[] }) {
 
 function SeccionFacturas({ facturas }: { facturas: FacturaResumen[] }) {
   return (
-    <div className="overflow-hidden border border-slate-200 bg-white">
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
       <div className="border-b border-slate-200 px-4 py-3">
         <p className="text-sm font-semibold text-slate-900">Facturas ({facturas.length})</p>
       </div>
 
-      <table className="w-full border-collapse text-left text-sm">
+      <table className="min-w-[580px] w-full border-collapse text-left text-sm">
         <thead className="bg-slate-50 text-xs uppercase text-slate-500">
           <tr>
             <th className="border-b border-slate-200 px-4 py-3">N° Siigo</th>
@@ -575,12 +535,12 @@ function ClienteCabecera({
             className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
           >
             <Pencil className="h-4 w-4" aria-hidden="true" />
-            Editar
+            Editar empresa
           </button>
         ) : null}
       </div>
 
-      {(cliente.contactoNombre || cliente.contactoEmail || cliente.contactoTel) ? (
+      {!puedeEditar && (cliente.contactoNombre || cliente.contactoEmail || cliente.contactoTel) ? (
         <div className="mt-3 border-t border-slate-100 pt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm text-slate-600">
           {cliente.contactoNombre ? (
             <span>
@@ -613,7 +573,7 @@ function ClienteCabecera({
 
 function SeccionSkeleton({ rows, cols, rowHeight }: { rows: number; cols: number; rowHeight?: number }) {
   return (
-    <div className="overflow-hidden border border-slate-200 bg-white">
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
         <Skeleton className="h-4 w-32" />
         <Skeleton className="h-9 w-32" />
@@ -652,7 +612,7 @@ function FichaSkeleton() {
       </div>
       {/* Funciones (filas altas), cuenta corriente (3 KPI + tabla) y las 4 tablas. */}
       <SeccionSkeleton rows={4} cols={3} rowHeight={72} />
-      <div className="overflow-hidden border border-slate-200 bg-white">
+      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-4 py-3">
           <Skeleton className="h-4 w-40" />
           <Skeleton className="mt-2 h-3 w-96 max-w-full" />
@@ -706,11 +666,11 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
 
   const recargar = () => setReloadKey((k) => k + 1);
 
-  if (loadState === "loading") {
+  if (loadState === "loading" && !cliente) {
     return <FichaSkeleton />;
   }
 
-  if (loadState === "error" || !cliente) {
+  if (!cliente) {
     return (
       <ModuleState
         type="error"
@@ -729,18 +689,25 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
         onEdit={() => setEditModalOpen(true)}
       />
 
-      <div className="flex justify-end">
+      {loadState === "error" ? <ModuleState type="error" title="No se pudo actualizar la ficha" detail="Conservamos la información anterior y tus cambios sin guardar." action={{ label: "Reintentar", onClick: recargar }} /> : null}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-slate-500" role="status">{loadState === "loading" ? "Actualizando ficha…" : "Datos, operación y cuenta de la empresa"}</p>
         <button
           type="button"
           onClick={recargar}
+          disabled={loadState === "loading"}
           className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
         >
           <RotateCcw className="h-4 w-4" aria-hidden="true" />
-          Refrescar
+          {loadState === "loading" ? "Actualizando…" : "Actualizar ficha"}
         </button>
       </div>
 
-      <SeccionCapacidades clienteId={cliente.id} />
+      {puedeEditar ? <ContactoEditor cliente={cliente} onSaved={setCliente} /> : null}
+      <details className="rounded-xl border border-slate-200 bg-white p-4">
+        <summary className="min-h-11 cursor-pointer text-sm font-semibold text-slate-800">Funciones y configuración de la empresa</summary>
+        <div className="mt-3"><SeccionCapacidades clienteId={cliente.id} /></div>
+      </details>
 
       <SeccionCuentaCorriente clienteId={cliente.id} />
 

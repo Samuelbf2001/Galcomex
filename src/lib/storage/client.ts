@@ -8,9 +8,9 @@ declare global {
 }
 
 /**
- * Cliente interno: usado para todas las operaciones servidor↔MinIO
+ * Cliente interno: usado para todas las operaciones servidor↔bodega (MinIO, R2…)
  * (bucketExists, copyObject, removeObject, listObjects…). Apunta al endpoint
- * de red interna (ej. "minio" dentro de Docker).
+ * de red interna (ej. "minio" dentro de Docker) o al del proveedor (R2).
  */
 export function getStorageClient(): Client {
   if (globalThis.galcomexMinioClient) {
@@ -25,6 +25,7 @@ export function getStorageClient(): Client {
     accessKey: config.accessKey,
     secretKey: config.secretKey,
     region: config.region,
+    pathStyle: config.pathStyle,
   });
 
   globalThis.galcomexMinioClient = client;
@@ -51,6 +52,7 @@ export function getStoragePublicClient(): Client {
     accessKey: config.accessKey,
     secretKey: config.secretKey,
     region: config.region,
+    pathStyle: config.pathStyle,
   });
 
   globalThis.galcomexMinioPublicClient = client;

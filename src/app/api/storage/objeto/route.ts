@@ -1,10 +1,10 @@
 /**
  * GET|PUT /api/storage/objeto?key=…&metodo=…&exp=…&sig=…
  *
- * Proxy firmado hacia MinIO (ver `lib/storage/proxy.ts`). El enlace es la
+ * Proxy firmado hacia la bodega S3 (ver `lib/storage/proxy.ts`). El enlace es la
  * credencial, igual que una URL prefirmada: no exige sesión, vence en minutos
  * y solo sirve para ese objeto y esa operación. Así el navegador y el MCP
- * nunca hablan con MinIO directamente y producción no necesita exponerlo.
+ * nunca hablan con la bodega (MinIO, R2…) y producción no necesita exponerla.
  *
  *   PUT  — sube el cuerpo tal cual (tipo y tamaño exactos a lo firmado).
  *   GET  — devuelve el objeto en streaming con su tipo y nombre.
@@ -19,10 +19,43 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { getStorageClient } from "@/lib/storage/client";
 import { getStorageConfig } from "@/lib/storage/config";
+import { nombreSeguroParaDescarga } from "@/lib/storage/explorador";
 import { verificarEnlace } from "@/lib/storage/proxy";
 
 function rechazo(motivo: string, status = 403) {
   return NextResponse.json({ error: motivo }, { status });
+}
+
+/**
+ * Los archivos cargados por fuera de la app (rclone, mc) pueden venir sin
+ * `Content-Type`; se deduce por extensión para que el navegador los abra.
+ */
+function tipoPorExtension(nombre: string): string {
+  const ext = nombre.toLowerCase().slice(nombre.lastIndexOf(".") + 1);
+  const tipos: Record<string, string> = {
+    pdf: "application/pdf",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    webp: "image/webp",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    xls: "application/vnd.ms-excel",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    csv: "text/csv",
+    txt: "text/plain",
+  };
+  return tipos[ext] ?? "application/octet-stream";
+}
+
+/**
+ * `Content-Disposition` con el nombre real (espacios, tildes): un `filename`
+ * ASCII de respaldo y el `filename*` UTF-8 (RFC 5987) que los navegadores
+ * modernos prefieren. Así "Factura BAQ-18453.pdf" no baja como "Factura%20…".
+ */
+function contentDisposition(tipo: "inline" | "attachment", nombre: string): string {
+  const ascii = nombre.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  return `${tipo}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(nombre)}`;
 }
 
 export async function PUT(request: NextRequest) {
@@ -64,8 +97,17 @@ export async function GET(request: NextRequest) {
   try {
     const stat = await cliente.statObject(bucket, storageKey);
     const objeto = await cliente.getObject(bucket, storageKey);
-    const nombre = storageKey.split("/").pop() ?? "archivo";
-    const tipo = stat.metaData?.["content-type"] ?? "application/octet-stream";
+    // `nombre` no va firmado: solo decide cómo se llama el archivo al guardarlo
+    // (el explorador manda el nombre real registrado en la BD, no el uuid).
+    const nombre = nombreSeguroParaDescarga(
+      request.nextUrl.searchParams.get("nombre"),
+      storageKey.split("/").pop() ?? "archivo",
+    );
+    const tipoGuardado = stat.metaData?.["content-type"];
+    // MinIO/S3 guardan `binary/octet-stream` o `application/octet-stream` cuando
+    // el archivo se subió sin tipo (rclone, mc): en ese caso vale más la extensión.
+    const tipo =
+      !tipoGuardado || /octet-stream$/i.test(tipoGuardado) ? tipoPorExtension(nombre) : tipoGuardado;
     const disposicion = request.nextUrl.searchParams.get("descargar") === "1" ? "attachment" : "inline";
 
     return new Response(Readable.toWeb(objeto) as unknown as globalThis.ReadableStream, {
@@ -73,7 +115,7 @@ export async function GET(request: NextRequest) {
       headers: {
         "content-type": tipo,
         "content-length": String(stat.size),
-        "content-disposition": `${disposicion}; filename="${encodeURIComponent(nombre)}"`,
+        "content-disposition": contentDisposition(disposicion, nombre),
         "cache-control": "private, no-store",
       },
     });
