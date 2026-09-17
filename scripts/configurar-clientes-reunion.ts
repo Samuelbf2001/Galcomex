@@ -55,6 +55,8 @@ type EmpresaReunion = {
   clave: string;
   /** Nombre con el que se crea si no existe (solo proveedores). */
   nombre: string;
+  /** NIT real tomado de Siigo; si falta y hay que crearla, queda PENDIENTE-NIT-<CLAVE>. */
+  nit?: string;
   /** Palabras que identifican a la empresa en los nombres ya cargados (minúsculas). */
   buscar: string[];
   /** Palabras que EXCLUYEN una coincidencia (p. ej. "zona franca" para Polyrec matriz). */
@@ -122,14 +124,15 @@ const EMPRESAS: EmpresaReunion[] = [
       "Servicio logístico = CIF × 0,37 % con mínimos por tipo de carga (jul 75:20). Despacho parcial 50k (81:07). 'Facturas esperando': las tarifas son las de la propuesta (10-sep, 01:37).",
   },
   {
-    clave: "CW_EXPRESS",
-    nombre: "CW EXPRESS",
-    buscar: ["cw express", "cwexpress", "c.w. express"],
+    clave: "EXPRESS_LOGISTICA",
+    nombre: "EXPRESS LOGISTICA S.A.S",
+    nit: "802011826-3",
+    buscar: ["express logistica", "cw express", "cwexpress", "c.w. express"],
     esCliente: false,
     esProveedor: true,
     crearSiFalta: true,
     capacidades: [{ codigo: "anticipos_cliente", habilitado: false }],
-    fuente: "Proveedor (transporte) de los trámites de CW (jul 83:37). El cliente es CW ASIA SAS.",
+    fuente: "Proveedor que solo le presta a Litoplas (jul 83:37; la transcripción dice 'CU Express'). En Siigo es EXPRESS LOGISTICA S.A.S: reempaque y embalaje en las facturas de Litoplas.",
   },
   {
     clave: "POLYREC",
@@ -215,7 +218,8 @@ const EMPRESAS: EmpresaReunion[] = [
   },
   {
     clave: "ALMACARGA",
-    nombre: "ALMACARGA",
+    nombre: "ALMACENADORA DE CARGA \"ALMACARGA\" S.A.S",
+    nit: "800154017-8",
     buscar: ["almacarga"],
     esCliente: false,
     esProveedor: true,
@@ -395,7 +399,7 @@ async function main() {
         },
       });
     } else if (empresa.crearSiFalta) {
-      const nit = `PENDIENTE-NIT-${empresa.clave}`;
+      const nit = empresa.nit ?? `PENDIENTE-NIT-${empresa.clave}`;
       const creada = await prisma.cliente.create({
         data: {
           nombre: empresa.nombre,
@@ -407,7 +411,9 @@ async function main() {
         },
       });
       id = creada.id;
-      origen = `CREADA · NIT ${nit} — Camila debe completar el NIT real desde la ficha`;
+      origen = empresa.nit
+        ? `CREADA · NIT ${nit} (Siigo)`
+        : `CREADA · NIT ${nit} — Camila debe completar el NIT real desde la ficha`;
     } else {
       aviso(`No existe ninguna empresa que coincida con "${empresa.buscar.join('" / "')}": Camila debe crearla con su NIT real.`);
       resumen.push([empresa.nombre, "NO EXISTE", "", ""]);
