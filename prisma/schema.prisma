@@ -839,6 +839,18 @@ model BorradorFactura {
   formaPagoSiigoId Int?
   formaPago        SiigoFormaPago? @relation(fields: [formaPagoSiigoId], references: [id], onDelete: SetNull)
 
+  /// Formato de la factura, fijado al generar el borrador desde la función
+  /// `factura_conceptos_iva` de la empresa:
+  ///   "COMISION"      → comisión + línea "IVA COMISION" + costos bancarios +
+  ///                     4x1000 sobre el anticipo (formato Lucho, histórico).
+  ///   "CONCEPTOS_IVA" → cada concepto del tarifario es una línea con su IVA,
+  ///                     terceros desde las facturas de proveedor, 4x1000 sobre
+  ///                     los terceros y ReteIVA automática (facturas Galcomex).
+  formatoFactura    String @default("COMISION")
+  /// % de ReteIVA sobre el IVA que practica el cliente (snapshot de la función).
+  /// Null = las retenciones se capturan a mano.
+  reteIvaPorcentaje Int?
+
   /// Tarifario con el que se calcularon los conceptos operacionales (M2).
   /// Null = comisión manual, como antes.
   tarifarioId String?
@@ -904,6 +916,10 @@ model LineaRevision {
   // `factura.beneficiario.nit` (ver `nitTerceroDe` en envio-factura-service).
   // Sin uso para líneas OPERACIONAL o fijas (que resuelven su tercero aparte).
   nitTercero String?
+
+  /// La línea lleva IVA como impuesto propio (formato CONCEPTOS_IVA). En Siigo
+  /// sale como `taxes` del ítem en vez de una línea de IVA aparte.
+  aplicaIva Boolean @default(false)
 
   facturas LineaRevisionFactura[]
 

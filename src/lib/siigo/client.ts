@@ -262,6 +262,11 @@ export interface SiigoFacturaPostDto {
   /** Forma de pago — para crédito basta con id + value */
   payments: Array<{ id: number; value: number; due_date?: string }>;
   /**
+   * Retenciones a nivel de factura (ReteIVA, ReteICA, autorretención) por id de
+   * impuesto Siigo. `payments[].value` = subtotal + IVA de ítems − retenciones.
+   */
+  retentions?: Array<{ id: number }>;
+  /**
    * Control del estampado/envío a DIAN. send=false deja la factura como
    * BORRADOR en Siigo para que un usuario superior la valide y la envíe
    * manualmente desde el portal Siigo.

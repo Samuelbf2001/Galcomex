@@ -147,6 +147,17 @@ export const CAPACIDADES = [
     orden: 100,
   },
   {
+    codigo: "factura_conceptos_iva",
+    nombre: "Factura con conceptos e IVA por ítem",
+    descripcion:
+      "La factura de venta lleva cada concepto del tarifario como ítem con su IVA, los pagos a terceros desde las facturas de proveedor, el 4x1000 sobre esos terceros y la ReteIVA del cliente. Es el formato de las facturas de Galcomex; sin activarla se usa el formato de comisión de Lucho.",
+    grupo: "Facturacion",
+    ambito: "EMPRESA",
+    porDefecto: false,
+    configPorDefecto: { reteIvaPorcentaje: 15, observacionNoRetenciones: true },
+    orden: 105,
+  },
+  {
     codigo: "factura_multi_do",
     nombre: "Una factura para varios DO",
     descripcion:

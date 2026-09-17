@@ -11,27 +11,36 @@
  * (snapshots de cartera, AuditLog, observaciones del PDF), pero NO entran en la
  * suma — sumarlos sería doble cuenta.
  *
+ * En el formato CONCEPTOS_IVA primero se recalculan las líneas derivadas (IVA
+ * por ítem, 4x1000 sobre terceros) y la ReteIVA; `comision` espeja la suma de
+ * los conceptos propios.
+ *
  * Debe ejecutarse dentro de una transacción; si compite con otra edición
  * sobre el mismo borrador, el caller debe tomar el advisory lock antes.
  */
 
-import { Prisma } from "@prisma/client";
+import { Prisma, SeccionLinea } from "@prisma/client";
 
 import { calcularSaldosPorLineas } from "@/lib/calculations/total-lineas";
+
+import { FORMATO_CONCEPTOS_IVA, sincronizarLineasDerivadas } from "./formato-conceptos";
 
 type Tx = Prisma.TransactionClient;
 
 export async function recalcularTotalBorrador(tx: Tx, borradorId: string): Promise<void> {
+  await sincronizarLineasDerivadas(tx, borradorId);
+
   // findUniqueOrThrow: el caller siempre acaba de cargar/crear el borrador en la
   // misma transacción, así que la ausencia es un invariante incumplido (no un
   // error de usuario).
   const borrador = await tx.borradorFactura.findUniqueOrThrow({
     where: { id: borradorId },
     select: {
+      formatoFactura: true,
       retenciones: true,
       totalAnticipo: true,
       saldoAFavorLM: true,
-      lineasRevision: { select: { valor: true, tipoFija: true } },
+      lineasRevision: { select: { valor: true, tipoFija: true, seccion: true } },
     },
   });
 
@@ -51,6 +60,13 @@ export async function recalcularTotalBorrador(tx: Tx, borradorId: string): Promi
   const valorDe = (tipo: string): bigint =>
     borrador.lineasRevision.find((l) => l.tipoFija === tipo)?.valor ?? 0n;
 
+  const comision =
+    borrador.formatoFactura === FORMATO_CONCEPTOS_IVA
+      ? borrador.lineasRevision
+          .filter((l) => l.seccion === SeccionLinea.OPERACIONAL && !l.tipoFija)
+          .reduce((suma, l) => suma + l.valor, 0n)
+      : valorDe("COMISION");
+
   await tx.borradorFactura.update({
     where: { id: borradorId },
     data: {
@@ -60,7 +76,7 @@ export async function recalcularTotalBorrador(tx: Tx, borradorId: string): Promi
       saldoACargoCliente: calc.saldoACargoCliente,
       saldoAFavorLM: calc.saldoAFavorLM,
       saldoACargoLM: calc.saldoACargoLM,
-      comision: valorDe("COMISION"),
+      comision,
       ivaComision: valorDe("IVA_COMISION"),
       costosBancarios: valorDe("COSTOS_BANCARIOS"),
       impuesto4x1000: valorDe("IMPUESTO_4X1000"),
