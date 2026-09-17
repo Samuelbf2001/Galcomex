@@ -12,7 +12,9 @@ const optionalDate = z
   .datetime()
   .optional()
   .nullable()
-  .transform((value) => (value ? new Date(value) : null));
+  // `undefined` se conserva: en un PATCH parcial (p. ej. la base de cálculo)
+  // un campo ausente no se toca; solo `null` o "" lo borran.
+  .transform((value) => (value === undefined ? undefined : value ? new Date(value) : null));
 
 export const tramiteCreateSchema = z.object({
   ciudad: z.nativeEnum(Ciudad),
