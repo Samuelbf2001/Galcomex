@@ -58,10 +58,27 @@ const fase = (opt("fase") ?? "todo") as "subir" | "registrar" | "todo";
 const dry = flag("dry");
 const soloArg = opt("solo");
 const solo = soloArg ? new Set(soloArg.split(",").map((s) => s.trim())) : null;
+/** DOs que NO se procesan (p. ej. los que chocan con un trámite real en producción). */
+const excluirArg = opt("excluir");
+const excluir = excluirArg ? new Set(excluirArg.split(",").map((s) => s.trim())) : null;
 const limite = opt("limite") ? Number(opt("limite")) : undefined;
 const clienteNombre = opt("cliente") ?? "LITOPLAS";
 const usuarioEmail = opt("usuario") ?? "importacion@galcomex.com";
 const sinVerificar = flag("sin-verificar");
+/** Subidas simultáneas dentro de cada DO (muchos archivos pequeños: la latencia manda, no el ancho de banda). */
+const paralelo = Math.max(1, Math.min(16, Number(opt("paralelo") ?? 4)));
+
+async function enParalelo<T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let i = 0;
+  const trabajadores = Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) {
+      const item = items[i];
+      i += 1;
+      await fn(item);
+    }
+  });
+  await Promise.all(trabajadores);
+}
 
 // ─── CSV ─────────────────────────────────────────────────────────────────────
 
@@ -271,6 +288,7 @@ async function main() {
   console.log(`  Bodega     : ${bodega.nombreProveedor} · ${bodega.endpoint} · bucket ${bodega.bucket}`);
   console.log(`  Fase       : ${fase}${dry ? " (DRY, no escribe nada)" : ""}`);
   if (solo) console.log(`  Solo       : ${[...solo].join(", ")}`);
+  if (excluir) console.log(`  Excluir    : ${[...excluir].join(", ")}`);
   if (limite) console.log(`  Límite     : ${limite} DOs`);
   console.log("");
 
@@ -279,6 +297,7 @@ async function main() {
   for (const f of filas) {
     if (!f.consecutivo) continue;
     if (solo && !solo.has(f.consecutivo)) continue;
+    if (excluir?.has(f.consecutivo)) continue;
     const l = porDo.get(f.consecutivo) ?? [];
     l.push(f);
     porDo.set(f.consecutivo, l);
@@ -289,20 +308,32 @@ async function main() {
 
   if (fase === "subir" || fase === "todo") {
     console.log("\n── Fase SUBIR ──");
-    let subidos = 0, yaEstaban = 0, faltan = 0, bytes = 0;
+    let subidos = 0, yaEstaban = 0, faltan = 0, errores = 0, bytes = 0;
     const inicio = Date.now();
+    console.log(`  (${paralelo} subidas simultáneas por DO)`);
     for (const [cons, lista] of dos) {
       const aSubir = lista.filter((f) => f.accion === "SUBIR" && f.destinoKey);
-      let s = 0, y = 0, fa = 0;
-      for (const f of aSubir) {
-        const r = await subirArchivo(config.bucket, f);
-        if (r === "subido") { s += 1; bytes += f.bytes; } else if (r === "ya-estaba") y += 1; else fa += 1;
-      }
-      subidos += s; yaEstaban += y; faltan += fa;
-      console.log(`  ${cons.padEnd(15)} ${String(aSubir.length).padStart(4)} archivos · subidos ${s} · ya estaban ${y}${fa ? ` · SIN ORIGEN ${fa}` : ""}`);
+      let s = 0, y = 0, fa = 0, e = 0, b = 0;
+      await enParalelo(aSubir, paralelo, async (f) => {
+        try {
+          const r = await subirArchivo(config.bucket, f);
+          if (r === "subido") { s += 1; b += f.bytes; } else if (r === "ya-estaba") y += 1; else fa += 1;
+        } catch (error) {
+          e += 1;
+          const msg = error instanceof Error ? error.message : String(error);
+          console.log(`    ERROR ${f.destinoKey}: ${msg}`);
+        }
+      });
+      subidos += s; yaEstaban += y; faltan += fa; errores += e; bytes += b;
+      const seg = Math.max(1, Math.round((Date.now() - inicio) / 1000));
+      console.log(
+        `  ${cons.padEnd(15)} ${String(aSubir.length).padStart(4)} archivos · subidos ${s} · ya estaban ${y}${fa ? ` · SIN ORIGEN ${fa}` : ""}${e ? ` · ERRORES ${e}` : ""}` +
+          ` · ${(b / 1048576).toFixed(0)} MB · acumulado ${(bytes / 1048576).toFixed(0)} MB a ${(bytes / 1048576 / seg).toFixed(2)} MB/s`,
+      );
     }
     const seg = Math.round((Date.now() - inicio) / 1000);
-    console.log(`Subidos ${subidos} (${(bytes / 1048576).toFixed(0)} MB) · ya estaban ${yaEstaban} · sin origen ${faltan} · ${seg} s`);
+    console.log(`Subidos ${subidos} (${(bytes / 1048576).toFixed(0)} MB) · ya estaban ${yaEstaban} · sin origen ${faltan} · errores ${errores} · ${seg} s`);
+    if (errores) console.log("Hubo errores: relanza la misma orden; los objetos ya subidos se saltan.");
   }
 
   if (fase === "registrar" || fase === "todo") {
