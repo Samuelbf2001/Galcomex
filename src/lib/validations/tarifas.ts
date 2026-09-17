@@ -59,7 +59,8 @@ export const ALCANCES_TARIFARIO = [
   "OTROS",
 ] as const;
 
-const tarifaItemBase = z.object({
+/** Campos de un ítem SIN valores por defecto (base de la edición parcial). */
+const tarifaItemCampos = {
   /** Código estable del concepto: GASTOS_TRAMITE, SISTEMATIZACION… */
   concepto: z
     .string()
@@ -70,19 +71,28 @@ const tarifaItemBase = z.object({
   nombrePublico: z.string().trim().min(1, "El nombre público es obligatorio").max(160),
   siigoCodigo: z.string().trim().min(1).max(20).optional().nullable(),
   tipoCalculo: z.nativeEnum(TipoCalculoTarifa),
-  disparador: z.nativeEnum(DisparadorTarifa).default(DisparadorTarifa.SIEMPRE),
+  disparador: z.nativeEnum(DisparadorTarifa),
   eventoCodigo: z.string().trim().min(1).max(60).optional().nullable(),
-  unidad: z.nativeEnum(UnidadTarifa).default(UnidadTarifa.TRAMITE),
-  valor: cop.default(0n),
+  unidad: z.nativeEnum(UnidadTarifa),
+  valor: cop,
   valorAdicional: cop.optional().nullable(),
   /** Puntos básicos: 37 = 0,37 %. */
   porcentajeBps: z.number().int().min(1).max(100_000).optional().nullable(),
   minimos: minimosTarifaSchema.optional().nullable(),
   conceptoCosto: z.string().trim().min(1).max(120).optional().nullable(),
   tramos: tramosTarifaSchema.optional().nullable(),
-  aplicaIva: z.boolean().default(true),
+  aplicaIva: z.boolean(),
   notas: z.string().trim().max(500).optional().nullable(),
-  orden: z.number().int().min(0).max(9_999).default(0),
+  orden: z.number().int().min(0).max(9_999),
+};
+
+const tarifaItemBase = z.object({
+  ...tarifaItemCampos,
+  disparador: tarifaItemCampos.disparador.default(DisparadorTarifa.SIEMPRE),
+  unidad: tarifaItemCampos.unidad.default(UnidadTarifa.TRAMITE),
+  valor: tarifaItemCampos.valor.default(0n),
+  aplicaIva: tarifaItemCampos.aplicaIva.default(true),
+  orden: tarifaItemCampos.orden.default(0),
 });
 
 export type TarifaItemInput = z.infer<typeof tarifaItemBase>;
@@ -140,7 +150,9 @@ export function validarCoherenciaItem(item: TarifaItemInput, ctx: z.RefinementCt
 }
 
 export const tarifaItemSchema = tarifaItemBase.superRefine(validarCoherenciaItem);
-export const tarifaItemUpdateSchema = tarifaItemBase.partial();
+// Sin defaults: en Zod 4 `.partial()` conserva los `.default()` y una edición
+// parcial reescribía disparador, unidad, valor, IVA y orden del ítem.
+export const tarifaItemUpdateSchema = z.object(tarifaItemCampos).partial();
 
 const fechaSchema = z.coerce.date();
 
