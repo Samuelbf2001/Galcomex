@@ -24,6 +24,9 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-RUN chmod +x docker-entrypoint.sh
-ENTRYPOINT ["docker-entrypoint.sh"]
+# El entrypoint va con ruta absoluta: sin ella el PATH resuelve el docker-entrypoint.sh
+# de la imagen base node y las migraciones nunca corren (visto en produccion 2026-09-18).
+# Se quitan retornos de carro por si el checkout vino con CRLF.
+RUN sed -i "s/$//" docker-entrypoint.sh && chmod +x docker-entrypoint.sh
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["npm", "start"]
