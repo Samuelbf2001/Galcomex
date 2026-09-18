@@ -341,7 +341,12 @@ function CreateTramiteDialog({
     { key: "SOPORTE_FACTURACION",label: "Soporte facturación" },
     { key: "FOTO_RECONOCIMIENTO",label: "Foto reconocimiento" },
     { key: "COMPROBANTE_BANCARIO",label: "Comprobante bancario" },
+    { key: "COMPROBANTE_COMERCIO",label: "Comprobante de comercio exterior" },
     { key: "FACTURA_PROVEEDOR",  label: "Factura proveedor" },
+    { key: "CONTROL_TRAMITE",    label: "Control del trámite" },
+    { key: "FICHA_TECNICA",      label: "Documentación técnica del producto" },
+    { key: "CORRESPONDENCIA",    label: "Correos y notificaciones" },
+    { key: "ORDEN_COMPRA",       label: "Orden de compra" },
     { key: "OTRO",               label: "Otro" },
   ];
 

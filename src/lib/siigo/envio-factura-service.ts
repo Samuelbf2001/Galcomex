@@ -44,6 +44,7 @@ import {
   type SiigoFacturaItemDto,
   type SiigoFacturaPostDto,
 } from "./client";
+import { ivaDelProducto } from "./impuestos-producto";
 import { construirItemsSiigo, identificacionSiigo, lineasQueVanComoItem } from "./items-factura";
 
 // ─── Resultado tipado ─────────────────────────────────────────────────────────
@@ -273,7 +274,9 @@ export async function enviarBorradorASiigo(
               codigo: true,
               clasificacionIva: true,
               impuestos: {
-                include: { impuesto: { select: { id: true, tipo: true } } },
+                include: {
+                  impuesto: { select: { id: true, tipo: true, porcentaje: true } },
+                },
               },
             },
           },
@@ -416,6 +419,8 @@ export async function enviarBorradorASiigo(
   // CONCEPTOS_IVA: IVA por ítem y ReteIVA a nivel de factura, por id de impuesto
   // Siigo (catálogo sincronizado en `siigo_impuesto`).
   let ivaTaxId: number | null = null;
+  /** Tasa con la que el motor liquidó el IVA; solo se acepta el impuesto del producto si coincide. */
+  let tasaIvaFactura: bigint | null = null;
   let retentions: Array<{ id: number }> | undefined;
   if (conceptosIva) {
     const [params, impuestos] = await Promise.all([
@@ -428,8 +433,19 @@ export async function enviarBorradorASiigo(
     const buscar = (tipo: string, porcentaje: number) =>
       impuestos.find((i) => i.tipo === tipo && Number(i.porcentaje) === porcentaje)?.id ?? null;
 
+    tasaIvaFactura = params.tasaIva;
     ivaTaxId = buscar("IVA", Number(params.tasaIva));
-    if (ivaTaxId === null && lineasFacturables.some((l) => l.aplicaIva)) {
+    if (
+      ivaTaxId === null &&
+      lineasFacturables.some(
+        (l) =>
+          l.aplicaIva &&
+          ivaDelProducto(
+            (l.siigoProducto?.impuestos ?? []).map((i) => i.impuesto),
+            params.tasaIva,
+          ) === null,
+      )
+    ) {
       return {
         ok: false,
         tipo: "config",
@@ -468,6 +484,14 @@ export async function enviarBorradorASiigo(
       aplicaIva: l.aplicaIva,
       productoCodigo: l.siigoProducto?.codigo ?? null,
       nitTercero: l.seccion === "TERCEROS" && !l.tipoFija ? nitTerceroDe(l) : null,
+      // El IVA configurado en el propio producto Siigo manda sobre el global.
+      ivaProductoId:
+        tasaIvaFactura === null
+          ? null
+          : ivaDelProducto(
+              (l.siigoProducto?.impuestos ?? []).map((i) => i.impuesto),
+              tasaIvaFactura,
+            ),
     })),
     { formato: borrador.formatoFactura, ivaTaxId, nit4x1000 },
   );

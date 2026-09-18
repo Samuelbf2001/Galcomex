@@ -83,6 +83,117 @@ export async function listarCatalogoEventos(): Promise<EventoCatalogoDto[]> {
   }));
 }
 
+// ─── Catálogos: edición del catálogo de eventos (Configuración → Catálogos) ───
+
+export class EventoCatalogoNoEncontradoError extends Error {
+  public readonly status = 404;
+  constructor(codigo: string) {
+    super(`El evento ${codigo} no existe en el catálogo`);
+    this.name = "EventoCatalogoNoEncontradoError";
+  }
+}
+
+export interface EventoCatalogoAdminDto extends EventoCatalogoDto {
+  activo: boolean;
+  /** Ítems de tarifario que dependen del evento (avisa antes de desactivarlo). */
+  itemsTarifario: number;
+  /** Veces que se ha marcado en un trámite. */
+  tramitesMarcados: number;
+}
+
+/** Catálogo COMPLETO (incluye inactivos) para la pantalla de Catálogos. */
+export async function listarCatalogoEventosAdmin(): Promise<EventoCatalogoAdminDto[]> {
+  const eventos = await prisma.catalogoEvento.findMany({
+    orderBy: [{ orden: "asc" }, { codigo: "asc" }],
+    include: { _count: { select: { tarifaItems: true, tramites: true } } },
+  });
+
+  return eventos.map((e) => ({
+    codigo: e.codigo,
+    nombre: e.nombre,
+    descripcion: e.descripcion,
+    documentosRequeridos: documentosDe(e.documentosRequeridos),
+    permiteCantidad: e.permiteCantidad,
+    orden: e.orden,
+    activo: e.activo,
+    itemsTarifario: e._count.tarifaItems,
+    tramitesMarcados: e._count.tramites,
+  }));
+}
+
+export interface ActualizarEventoCatalogoInput {
+  codigo: string;
+  nombre?: string;
+  descripcion?: string | null;
+  documentosRequeridos?: string[];
+  permiteCantidad?: boolean;
+  orden?: number;
+  activo?: boolean;
+  usuarioId: string;
+}
+
+/**
+ * Edita un evento del catálogo. El `codigo` identifica y es INMUTABLE: es la FK
+ * de `tarifa_item.eventoCodigo` y de `tramite_evento`, y cambiarlo dejaría
+ * tarifarios apuntando al vacío.
+ *
+ * Cambiar `documentosRequeridos` afecta solo a los trámites que marquen el
+ * evento DESPUÉS: los checklist ya creados no se tocan (nadie quiere que se le
+ * borre un documento ya recibido).
+ */
+export async function actualizarEventoCatalogo(
+  input: ActualizarEventoCatalogoInput,
+): Promise<EventoCatalogoAdminDto> {
+  const { codigo, usuarioId } = input;
+
+  const antes = await prisma.catalogoEvento.findUnique({ where: { codigo } });
+  if (!antes) throw new EventoCatalogoNoEncontradoError(codigo);
+
+  const data: Prisma.CatalogoEventoUpdateInput = {};
+  if (input.nombre !== undefined) data.nombre = input.nombre;
+  if (input.descripcion !== undefined) data.descripcion = input.descripcion ?? null;
+  if (input.documentosRequeridos !== undefined) {
+    data.documentosRequeridos = input.documentosRequeridos;
+  }
+  if (input.permiteCantidad !== undefined) data.permiteCantidad = input.permiteCantidad;
+  if (input.orden !== undefined) data.orden = input.orden;
+  if (input.activo !== undefined) data.activo = input.activo;
+
+  await prisma.$transaction(async (tx) => {
+    const despues = await tx.catalogoEvento.update({ where: { codigo }, data });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "CatalogoEvento",
+        entidadId: codigo,
+        accion: "UPDATE",
+        usuarioId,
+        antes: {
+          nombre: antes.nombre,
+          descripcion: antes.descripcion,
+          documentosRequeridos: documentosDe(antes.documentosRequeridos),
+          permiteCantidad: antes.permiteCantidad,
+          orden: antes.orden,
+          activo: antes.activo,
+        },
+        despues: {
+          nombre: despues.nombre,
+          descripcion: despues.descripcion,
+          documentosRequeridos: documentosDe(despues.documentosRequeridos),
+          permiteCantidad: despues.permiteCantidad,
+          orden: despues.orden,
+          activo: despues.activo,
+        },
+      },
+    });
+  });
+
+  const catalogo = await listarCatalogoEventosAdmin();
+  const actualizado = catalogo.find((e) => e.codigo === codigo);
+  if (!actualizado) throw new EventoCatalogoNoEncontradoError(codigo);
+  return actualizado;
+}
+
 export async function eventosDeTramite(tramiteId: string): Promise<EventoTramiteDto[]> {
   const marcados = await prisma.tramiteEvento.findMany({
     where: { tramiteId },

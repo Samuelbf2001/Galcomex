@@ -26,6 +26,14 @@ export interface LineaParaSiigo {
   productoCodigo: string | null;
   /** NIT ya resuelto (manual → beneficiario → proveedor); null si no hay. */
   nitTercero: string | null;
+  /**
+   * Id del IVA que el propio producto Siigo tiene configurado, cuando su
+   * porcentaje coincide con el que liquidó el motor (`ivaDelProducto`). Manda
+   * sobre el IVA global: Siigo rechaza impuestos que no estén asociados al
+   * producto. `null`/ausente → se usa `opciones.ivaTaxId` (comportamiento
+   * histórico, casos dorados intactos).
+   */
+  ivaProductoId?: number | null;
 }
 
 export interface OpcionesItemsSiigo {
@@ -64,7 +72,11 @@ export function construirItemsSiigo(
   opciones: OpcionesItemsSiigo,
 ): SiigoFacturaItemDto[] {
   const conIvaPorItem = opciones.formato === "CONCEPTOS_IVA";
-  if (conIvaPorItem && opciones.ivaTaxId === null && lineas.some((l) => l.aplicaIva)) {
+  if (
+    conIvaPorItem &&
+    opciones.ivaTaxId === null &&
+    lineas.some((l) => l.aplicaIva && !l.ivaProductoId)
+  ) {
     throw new Error("Falta el impuesto IVA de Siigo para los ítems gravados");
   }
 
@@ -84,13 +96,16 @@ export function construirItemsSiigo(
         customerNit = l.nitTercero;
       }
       const gravado = conIvaPorItem && l.aplicaIva && l.seccion === "OPERACIONAL" && !l.tipoFija;
+      // `aplicaIva` decide SI la línea lleva IVA (es lo que liquidó el motor y
+      // lo que sostiene `payments.value`); el producto decide CUÁL id se manda.
+      const ivaId = gravado ? (l.ivaProductoId ?? opciones.ivaTaxId) : null;
 
       return {
         code: l.productoCodigo,
         description: l.concepto,
         quantity: 1,
         price: bigintAPrecio(l.valor),
-        ...(gravado ? { taxes: [{ id: opciones.ivaTaxId! }] } : {}),
+        ...(ivaId !== null ? { taxes: [{ id: ivaId }] } : {}),
         ...(customerNit
           ? { customer: { identification: identificacionSiigo(customerNit), branch_office: 0 } }
           : {}),

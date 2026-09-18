@@ -83,6 +83,49 @@ describe("construirItemsSiigo — COMISION (formato histórico)", () => {
   });
 });
 
+describe("construirItemsSiigo — el IVA del producto Siigo manda sobre el global", () => {
+  const IVA_DEL_PRODUCTO = 1599;
+
+  it("usa el id del producto cuando lo trae y el global cuando no", () => {
+    const items = construirItemsSiigo(
+      [
+        linea({ concepto: "GASTOS OPERATIVOS", valor: 100_000n, orden: 100, aplicaIva: true, productoCodigo: "005", ivaProductoId: IVA_DEL_PRODUCTO }),
+        linea({ concepto: "PAPELERÍA", valor: 10_000n, orden: 101, aplicaIva: true, productoCodigo: "003" }),
+      ],
+      { formato: "CONCEPTOS_IVA", ivaTaxId: IVA_19, nit4x1000: OCCIDENTE },
+    );
+    expect(items.map((i) => [i.code, i.taxes?.[0]?.id])).toEqual([
+      ["005", IVA_DEL_PRODUCTO],
+      ["003", IVA_19],
+    ]);
+  });
+
+  it("una línea sin IVA no lo lleva aunque su producto tenga impuesto", () => {
+    const items = construirItemsSiigo(
+      [linea({ concepto: "SELLOS DE SEGURIDAD", valor: 41_900n, orden: 100, aplicaIva: false, productoCodigo: "12", ivaProductoId: IVA_DEL_PRODUCTO })],
+      { formato: "CONCEPTOS_IVA", ivaTaxId: IVA_19, nit4x1000: OCCIDENTE },
+    );
+    expect(items[0]!.taxes).toBeUndefined();
+  });
+
+  it("sin IVA global pero con el del producto no revienta", () => {
+    const items = construirItemsSiigo(
+      [linea({ concepto: "GASTOS OPERATIVOS", valor: 100_000n, orden: 100, aplicaIva: true, productoCodigo: "005", ivaProductoId: IVA_DEL_PRODUCTO })],
+      { formato: "CONCEPTOS_IVA", ivaTaxId: null, nit4x1000: OCCIDENTE },
+    );
+    expect(items[0]!.taxes).toEqual([{ id: IVA_DEL_PRODUCTO }]);
+  });
+
+  it("sin IVA global ni del producto sigue siendo error de configuración", () => {
+    expect(() =>
+      construirItemsSiigo(
+        [linea({ concepto: "GASTOS OPERATIVOS", valor: 100_000n, orden: 100, aplicaIva: true, productoCodigo: "005" })],
+        { formato: "CONCEPTOS_IVA", ivaTaxId: null, nit4x1000: OCCIDENTE },
+      ),
+    ).toThrow(/impuesto IVA/i);
+  });
+});
+
 describe("identificacionSiigo", () => {
   it("deja solo los dígitos antes del dígito de verificación", () => {
     expect(identificacionSiigo("800.154.017-8")).toBe("800154017");
