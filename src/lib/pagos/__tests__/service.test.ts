@@ -749,6 +749,37 @@ describe("pagos service con Postgres local", () => {
     expect(pagos).toHaveLength(0);
   });
 
+  it("un costo propio (factura no repercutible) se paga aunque el DO no tenga anticipo", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1250);
+    // La clasificadora: la paga Galcomex, no sale del anticipo del cliente.
+    const propia = await crearFacturaProveedorTest(db, tramiteId, `${runId}-CLAS`, 250_000n);
+    await prisma.facturaProveedor.update({ where: { id: propia }, data: { repercutible: false } });
+
+    const pago = await crearPago({
+      tramiteId,
+      concepto: "Clasificación arancelaria — informe 2140",
+      valor: 250_000n,
+      canalPago: CanalPago.PSE,
+      facturaProveedorIds: [propia],
+      usuarioId: db.userId,
+    });
+    expect(pago.valor).toBe(250_000n);
+
+    // Una factura que sí se le cobra al cliente sigue exigiendo anticipo.
+    const deTercero = await crearFacturaProveedorTest(db, tramiteId, `${runId}-TER`, 100_000n);
+    await expect(
+      crearPago({
+        tramiteId,
+        concepto: "Pago de tercero sin anticipo",
+        valor: 100_000n,
+        canalPago: CanalPago.PSE,
+        facturaProveedorIds: [deTercero],
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow(SinAnticipoAplicadoError);
+  });
+
   it("crearPago con anticipo no verificado (REALIZADO) se permite sin error", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1300);
