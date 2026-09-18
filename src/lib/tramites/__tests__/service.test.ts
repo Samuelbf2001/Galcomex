@@ -296,6 +296,69 @@ describe("tramites service con Postgres local", () => {
     expect(persisted?.estado).toBe(EstadoTramite.APERTURA);
   });
 
+  it("la agencia fija solo se exige a los tipos que llevan agencia", async (ctx) => {
+    const db = ensureDb(ctx);
+    // Empresa aparte con la regla de Litoplas: en el cliente del fixture
+    // rompería los demás tests (crean importaciones con COLDEX).
+    const empresa = await prisma.cliente.create({
+      data: {
+        nombre: "Cliente Vitest Regla Agencia",
+        nit: `${runId}-regla`,
+        tipo: TipoCliente.PROPIO,
+        capacidades: {
+          create: [
+            { codigo: "clasificacion_arancelaria", habilitado: true },
+            {
+              codigo: "regla_agencia_fija",
+              habilitado: true,
+              config: { agencia: "MOVIADUANAS", formatoDoAgencia: "^I\\d{8}$" },
+            },
+          ],
+        },
+      },
+    });
+
+    const clasificacion = await createTramite(
+      createInput({
+        clienteId: empresa.id,
+        creadoPorId: db.userId,
+        tipoTramiteCodigo: "CLASIFICACION",
+        agenciaAduanas: undefined,
+        referenciaExterna: "2140",
+      }),
+    );
+    await prisma.tramiteDO.update({
+      where: { id: clasificacion.id },
+      data: { estado: EstadoTramite.APERTURA },
+    });
+    const avanza = await transitionTramite(
+      clasificacion.id,
+      EstadoTramite.EN_TRAMITE,
+      db.userId,
+    );
+    expect(avanza.ok).toBe(true);
+
+    const importacion = await createTramite(
+      createInput({
+        clienteId: empresa.id,
+        creadoPorId: db.userId,
+        agenciaAduanas: AgenciaAduanas.MOVIADUANAS,
+        doAgencia: "I26030171",
+      }),
+    );
+    await prisma.tramiteDO.update({
+      where: { id: importacion.id },
+      data: { estado: EstadoTramite.APERTURA, doAgencia: "SIN-FORMATO" },
+    });
+    const bloqueada = await transitionTramite(
+      importacion.id,
+      EstadoTramite.EN_TRAMITE,
+      db.userId,
+      true,
+    );
+    expect(bloqueada).toMatchObject({ ok: false, status: 422 });
+  });
+
   it("crea 20 tramites concurrentes sin consecutivos duplicados ni saltos", async (ctx) => {
     const db = ensureDb(ctx);
     const ciudad = Ciudad.SMR;

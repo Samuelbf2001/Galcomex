@@ -343,6 +343,16 @@ async function validarDocumentoDelTramite(
  * - Vincula N facturas de proveedor vía tabla pivot (N↔N).
  * - Genera AuditLog.
  */
+/**
+ * Un pago que solo cubre costos propios (facturas que NO se le cobran al
+ * cliente, p. ej. la clasificadora) no sale del anticipo del cliente: lo
+ * asume Galcomex. Por eso no le aplica "sin anticipo no hay pagos" — una
+ * clasificación no tiene anticipo y la clasificadora igual se paga.
+ */
+function soloCostosPropios(facturas: { repercutible: boolean }[]): boolean {
+  return facturas.length > 0 && facturas.every((f) => !f.repercutible);
+}
+
 export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
   const {
     tramiteId,
@@ -367,7 +377,15 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
       select: { id: true },
     });
     if (!anticipo) {
-      throw new SinAnticipoAplicadoError(tramiteId);
+      const facturasDelPago = facturaProveedorIds.length
+        ? await tx.facturaProveedor.findMany({
+            where: { id: { in: facturaProveedorIds } },
+            select: { repercutible: true },
+          })
+        : [];
+      if (!soloCostosPropios(facturasDelPago)) {
+        throw new SinAnticipoAplicadoError(tramiteId);
+      }
     }
 
     // Comprobantes opcionales: si se envían, deben existir y ser del mismo
@@ -930,7 +948,8 @@ export async function listarFacturasElegiblesMultiDO(
     tramiteId: f.tramiteId,
     tramiteConsecutivo: f.tramite.consecutivo,
     clienteNombre: f.tramite.cliente.nombre,
-    tieneAnticipoAplicado: tramitesConAnticipo.has(f.tramiteId),
+    // Un costo propio se paga aunque el DO no tenga anticipo (`soloCostosPropios`).
+    tieneAnticipoAplicado: tramitesConAnticipo.has(f.tramiteId) || !f.repercutible,
   }));
 }
 
@@ -1034,6 +1053,7 @@ export async function crearPagoMultiDO(
       estado: EstadoTramite;
       facturas: { facturaId: string; monto: bigint }[];
       total: bigint;
+      soloCostosPropios: boolean;
     };
     const porTramite = new Map<string, GrupoTramite>();
     for (const { facturaProveedorId, monto } of facturas) {
@@ -1043,8 +1063,10 @@ export async function crearPagoMultiDO(
         estado: fp.tramite.estado,
         facturas: [],
         total: 0n,
+        soloCostosPropios: true,
       };
       entry.facturas.push({ facturaId: facturaProveedorId, monto });
+      entry.soloCostosPropios &&= !fp.repercutible;
       entry.total += monto;
       porTramite.set(fp.tramiteId, entry);
     }
@@ -1059,8 +1081,10 @@ export async function crearPagoMultiDO(
       });
     }
 
-    // Regla "sin anticipo no hay pagos" — aplica a CADA DO del grupo.
+    // Regla "sin anticipo no hay pagos" — aplica a CADA DO del grupo, salvo
+    // a los que solo tienen costos propios (ver `soloCostosPropios`).
     for (const [tramiteId, grupo] of porTramite) {
+      if (grupo.soloCostosPropios) continue;
       const anticipo = await tx.aplicacionAnticipo.findFirst({
         where: { tramiteId },
         select: { id: true },

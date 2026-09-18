@@ -456,6 +456,7 @@ export async function transitionTramite(
       include: {
         cliente: { select: { nombre: true } },
         checklistItems: true,
+        tipoTramite: { select: { requiereAgenciaAduanas: true } },
       },
     });
 
@@ -534,11 +535,17 @@ export async function transitionTramite(
         }
       }
 
+      // La agencia fija (Litoplas → Moviaduanas + DO I########) solo aplica a
+      // los tipos que llevan agencia, igual que en `createTramite`: una
+      // clasificación o un Plan Vallejo no tienen DO de agencia y quedaban
+      // atascados en APERTURA.
       const capacidades = await capacidadesDeEmpresa(actual.clienteId);
-      const reglaError = validateReglaAgenciaFija(
-        actual,
-        configDe<ConfigReglaAgencia>(capacidades, "regla_agencia_fija"),
-      );
+      const reglaError = actual.tipoTramite.requiereAgenciaAduanas
+        ? validateReglaAgenciaFija(
+            actual,
+            configDe<ConfigReglaAgencia>(capacidades, "regla_agencia_fija"),
+          )
+        : null;
 
       if (reglaError) {
         return {

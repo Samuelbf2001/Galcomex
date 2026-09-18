@@ -1,7 +1,11 @@
 import { CanalPago } from "@prisma/client";
 import { z } from "zod";
 
-export const crearFacturaProveedorSchema = z.object({
+export const MENSAJE_ARCHIVO_OBLIGATORIO =
+  "El archivo de la factura es obligatorio. Solo se puede omitir en un costo propio que no se le cobra al cliente (por ejemplo, la clasificadora).";
+
+export const crearFacturaProveedorSchema = z
+  .object({
   proveedorNombre: z.string().trim().min(1, "El nombre del proveedor es obligatorio"),
   proveedorNit: z.string().trim().min(1).optional().nullable(),
   /** ID del Beneficiario unificado (reemplaza proveedorNombre/NIT en el flujo nuevo) */
@@ -13,15 +17,25 @@ export const crearFacturaProveedorSchema = z.object({
     .bigint()
     .refine((v) => v > 0n, { message: "El valor debe ser mayor a 0" }),
   fecha: z.coerce.date(),
-  /** Archivo obligatorio para nuevas facturas (validado también en UI) */
-  documentoId: z.string().min(1, "El archivo de la factura es obligatorio"),
+  /**
+   * Archivo de la factura. Obligatorio si se le cobra al cliente: es el soporte
+   * del ítem de terceros en la factura de venta. En un costo propio (no
+   * repercutible) es opcional: la clasificadora no emite factura, solo cobra,
+   * y el soporte es el comprobante del pago.
+   */
+  documentoId: z.string().min(1).optional().nullable(),
   /**
    * ¿Se traslada al cliente en la factura de venta? (M6). Default `true`:
    * el caso normal es que el gasto se pague por cuenta del cliente. En `false`
    * la factura queda en el trámite para pagarla, pero el cliente no la ve.
    */
   repercutible: z.boolean().default(true),
-});
+})
+  .superRefine((data, ctx) => {
+    if (data.repercutible && !data.documentoId) {
+      ctx.addIssue({ code: "custom", path: ["documentoId"], message: MENSAJE_ARCHIVO_OBLIGATORIO });
+    }
+  });
 
 export const actualizarFacturaProveedorSchema = z.object({
   proveedorNombre: z.string().trim().min(1).optional(),

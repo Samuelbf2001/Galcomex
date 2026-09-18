@@ -452,8 +452,9 @@ export function ModalFacturaProveedor({
       setError("La fecha es obligatoria.");
       return;
     }
-    if (!isEdit && !documentoId) {
-      setError("El archivo de la factura es obligatorio.");
+    // Un costo propio (la clasificadora) no trae factura: el soporte es el pago.
+    if (!isEdit && !documentoId && repercutible) {
+      setError("El archivo de la factura es obligatorio. Si es un costo propio que no se le cobra al cliente, desmarca \"Se le cobra al cliente\".");
       return;
     }
 
@@ -623,7 +624,9 @@ export function ModalFacturaProveedor({
               <span className="mt-0.5 block text-xs text-slate-500">
                 Desmárcalo cuando la factura va a nombre de Galcomex y el cliente no debe
                 verla (por ejemplo una asesoría). Se registra y se paga igual, pero no pasa a
-                la factura de venta ni cuenta como desfase en la revisión.
+                la factura de venta ni cuenta como desfase en la revisión. En ese caso el
+                archivo es opcional (la clasificadora no manda factura) y se paga aunque el
+                trámite no tenga anticipo.
               </span>
             </span>
           </label>
@@ -631,7 +634,7 @@ export function ModalFacturaProveedor({
           {/* Adjuntar PDF */}
           <div>
             <p className="mb-1.5 text-sm font-medium text-slate-700">
-              Archivo PDF (opcional)
+              Archivo de la factura {repercutible ? "(obligatorio)" : "(opcional)"}
             </p>
             {documentoId && !documentoNombre ? (
               <p className="text-xs text-slate-500">
