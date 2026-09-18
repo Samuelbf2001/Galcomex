@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { CopyDestinationOptions, CopySourceOptions, type BucketItem } from "minio";
 
 import {
+  ALLOWED_FILE_TYPES_LABEL,
   ALLOWED_STORAGE_FILE_TYPES,
   DEFAULT_PRESIGNED_URL_EXPIRY_SECONDS,
   MAX_PRESIGNED_URL_EXPIRY_SECONDS,
@@ -78,7 +79,7 @@ export function validateStorageFile(input: StorageFileInput): AllowedStorageCont
 
   if (!isAllowedStorageContentType(input.contentType)) {
     throw new StorageValidationError(
-      "Tipo de archivo no permitido. Use PDF, JPG, PNG o XLSX",
+      `Tipo de archivo no permitido. Use ${ALLOWED_FILE_TYPES_LABEL}`,
     );
   }
 

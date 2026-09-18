@@ -22,6 +22,7 @@ import { EnlaceDocumentoModal } from "@/components/documentos/enlace-documento-m
 import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { describirError, useToast } from "@/components/ui/toast";
+import { ACCEPTED_FILE_EXTENSIONS_ATTR } from "@/lib/storage/config";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -197,7 +198,7 @@ function TarjetaDocumento({
     <input
       ref={inputReemplazoRef}
       type="file"
-      accept=".pdf,.jpg,.jpeg,.png,.xlsx"
+      accept={ACCEPTED_FILE_EXTENSIONS_ATTR}
       onChange={(e) => void handleArchivoReemplazo(e)}
       className="sr-only"
       aria-hidden="true"

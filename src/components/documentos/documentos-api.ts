@@ -1,3 +1,5 @@
+import { ALLOWED_FILE_TYPES_LABEL, ALLOWED_STORAGE_FILE_TYPES } from "@/lib/storage/config";
+
 /**
  * Helpers de API para el módulo de Documentos (repositorio documental del DO).
  * El cliente sube con el enlace firmado que entrega la API (la app lo guarda en la bodega, MinIO o R2):
@@ -437,19 +439,14 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Tipos MIME permitidos por la config de storage */
-export const MIME_TIPOS_PERMITIDOS = [
-  "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-];
+/** Tipos MIME permitidos por la config de storage (misma lista que el servidor) */
+export const MIME_TIPOS_PERMITIDOS: readonly string[] = Object.keys(ALLOWED_STORAGE_FILE_TYPES);
 
 export const MAX_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
 
 export function validarArchivo(file: File): string | null {
   if (!MIME_TIPOS_PERMITIDOS.includes(file.type)) {
-    return `Tipo no permitido (${file.type}). Use PDF, JPG, PNG o XLSX.`;
+    return `Tipo no permitido (${file.type || "desconocido"}). Use ${ALLOWED_FILE_TYPES_LABEL}.`;
   }
   if (file.size > MAX_SIZE_BYTES) {
     return `El archivo supera el máximo de 25 MB (${formatBytes(file.size)}).`;

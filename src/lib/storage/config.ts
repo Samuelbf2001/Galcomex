@@ -5,12 +5,35 @@ export const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 export const MAX_PRESIGNED_URL_EXPIRY_SECONDS = 15 * 60;
 export const DEFAULT_PRESIGNED_URL_EXPIRY_SECONDS = 10 * 60;
 
+/**
+ * Tipos aceptados en la bodega. La lista sale de lo que de verdad manda
+ * Litoplas (histórico 2026, 11.500 archivos): además de PDF/imágenes/XLSX
+ * llegan Excel viejos (.xls, 397), Word (.docx 129 / .doc 9), fotos
+ * comprimidas (.zip 59 / .rar 16), correos (.eml 13) y videos (.mp4 5).
+ * Windows reporta .zip como `application/x-zip-compressed` y .rar como
+ * `application/x-rar-compressed`, por eso van las dos variantes.
+ */
 export const ALLOWED_STORAGE_FILE_TYPES = {
   "application/pdf": "pdf",
   "image/jpeg": "jpg",
   "image/png": "png",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/msword": "doc",
+  "application/zip": "zip",
+  "application/x-zip-compressed": "zip",
+  "application/vnd.rar": "rar",
+  "application/x-rar-compressed": "rar",
+  "message/rfc822": "eml",
+  "video/mp4": "mp4",
 } as const;
+
+/** Extensiones para el `accept` de los inputs de archivo (misma lista de arriba). */
+export const ACCEPTED_FILE_EXTENSIONS_ATTR =
+  ".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.docx,.doc,.zip,.rar,.eml,.mp4";
+
+export const ALLOWED_FILE_TYPES_LABEL = "PDF, JPG, PNG, XLSX/XLS, DOCX/DOC, ZIP, RAR, EML o MP4";
 
 export type AllowedStorageContentType = keyof typeof ALLOWED_STORAGE_FILE_TYPES;
 

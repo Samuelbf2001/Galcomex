@@ -231,7 +231,7 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
 
 Ruta: `tramites/{consecutivo}/{categoria}/{uuid}.{ext}`
 - Enlaces firmados por la app (`/api/storage/objeto`, `lib/storage/proxy.ts`) con expiración ≤ 15 minutos; el navegador nunca habla con la bodega
-- Tipos: PDF, JPG, PNG, XLSX (máx 25 MB)
+- Tipos (`ALLOWED_STORAGE_FILE_TYPES` en `lib/storage/config.ts`): PDF, JPG, PNG, XLSX/XLS, DOCX/DOC, ZIP, RAR, EML, MP4 (máx 25 MB). La lista sale de lo que manda Litoplas de verdad (histórico 2026); los inputs usan `ACCEPTED_FILE_EXTENSIONS_ATTR`
 - Soft-delete (`eliminado = true`), nunca borrado físico
 
 ## Tests — Casos dorados (BLOQUEANTES en CI)
