@@ -134,6 +134,10 @@ const CATEGORIA_KEYWORDS: Record<CategoriaDocumento, string[]> = {
   COMPROBANTE_BANCARIO: ["comprobante", "bancario"],
   COMPROBANTE_COMERCIO: ["comercio", "pse"],
   FACTURA_PROVEEDOR: ["factura proveedor"],
+  CONTROL_TRAMITE: ["control", "relacion", "radicado", "check list"],
+  FICHA_TECNICA: ["ficha", "tecnica", "seguridad"],
+  CORRESPONDENCIA: ["correo", "correspondencia"],
+  ORDEN_COMPRA: ["orden de compra"],
   OTRO: [],
 };
 

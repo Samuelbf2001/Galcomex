@@ -82,6 +82,26 @@ function BadgeActivo({ activo }: { activo: boolean }) {
   );
 }
 
+/** Origen de una asignación producto↔impuesto: quién la dejó ahí. */
+function BadgeOrigenImpuesto({ origen }: { origen: "SIIGO" | "MANUAL" }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+        origen === "SIIGO"
+          ? "bg-slate-100 text-slate-600"
+          : "bg-amber-100 text-amber-700"
+      }`}
+      title={
+        origen === "SIIGO"
+          ? "Lo trajo el sincronizador de Siigo."
+          : "Se guardó a mano: el sincronizador ya no lo toca."
+      }
+    >
+      {origen === "SIIGO" ? "Siigo" : "Manual"}
+    </span>
+  );
+}
+
 // ─── Carga perezosa de un catálogo (desde el caché compartido) ───────────────
 
 type Carga<T> = {
@@ -309,6 +329,12 @@ function ProductosModal({
         </div>
 
         <div className="min-h-[50vh]">
+          {loadState === "ready" ? (
+            <p className="border-b border-amber-200 bg-amber-50 px-5 py-2 text-xs text-amber-800">
+              Guardar impuestos a mano congela ese producto frente a la sincronización: el
+              siguiente sync de Siigo ya no le toca los impuestos.
+            </p>
+          ) : null}
           {loadState === "loading" || loadState === "idle" ? (
             <TableSkeleton rows={8} cols={6} />
           ) : loadState === "error" ? (
@@ -353,10 +379,11 @@ function ProductosModal({
                               {p.impuestos.map((i) => (
                                 <span
                                   key={i.id}
-                                  className="inline-flex items-center rounded bg-cyan-50 px-2 py-0.5 text-[10px] font-medium text-cyan-700"
+                                  className="inline-flex items-center gap-1 rounded bg-cyan-50 px-2 py-0.5 text-[10px] font-medium text-cyan-700"
                                   title={`${i.tipo} · ${i.porcentaje}%`}
                                 >
                                   {i.nombre}
+                                  <BadgeOrigenImpuesto origen={i.origen} />
                                 </span>
                               ))}
                             </div>

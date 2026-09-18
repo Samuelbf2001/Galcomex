@@ -508,6 +508,18 @@ enum CategoriaDocumento {
   COMPROBANTE_BANCARIO
   COMPROBANTE_COMERCIO
   FACTURA_PROVEEDOR
+  // Agregadas 2026-09-18 tras el análisis de los 2.662 archivos "Otro" del
+  // histórico de Litoplas (ver docs/CATALOGOS.md §4).
+  /// Relaciones y radicados de documentos a la agencia, "Documentos para
+  /// aceptación", check list, Excel de trabajo, TRM.
+  CONTROL_TRAMITE
+  /// Certificados de análisis/composición/tratamiento, hojas de seguridad,
+  /// fichas técnicas, descripciones mínimas, partida arancelaria.
+  FICHA_TECNICA
+  /// Correos (Outlook/.eml), rastreos de courier, avisos de arribo.
+  CORRESPONDENCIA
+  /// Orden de compra del cliente al proveedor y confirmaciones de pedido.
+  ORDEN_COMPRA
   OTRO
 }
 
@@ -1050,6 +1062,7 @@ model SiigoProducto {
   lineasRevision    LineaRevision[]
   impuestos         SiigoProductoImpuesto[]
   facturasProveedor FacturaProveedor[]      @relation("FacturaProveedorProducto")
+  conceptos         ConceptoVenta[]
 
   @@map("siigo_producto")
 }
@@ -1068,13 +1081,24 @@ model SiigoImpuesto {
   @@map("siigo_impuesto")
 }
 
+/// De dónde salió la asociación producto↔impuesto. El sync de productos solo
+/// crea y borra filas SIIGO; las MANUAL (puestas desde la UI) nunca se pisan.
+enum OrigenImpuestoProducto {
+  SIIGO
+  MANUAL
+}
+
 // Pivot N↔N: cada producto Siigo lleva uno o varios impuestos en Galcomex.
-// Asociación manual desde la UI (Siigo no la expone en /v1/products).
+// `taxes` de GET /v1/products los trae solos (origen SIIGO); la UI de
+// Configuración → Siigo permite además asociarlos a mano (origen MANUAL).
 model SiigoProductoImpuesto {
   productoId String
   producto   SiigoProducto @relation(fields: [productoId], references: [id], onDelete: Cascade)
   impuestoId Int
   impuesto   SiigoImpuesto @relation(fields: [impuestoId], references: [id], onDelete: Cascade)
+
+  origen         OrigenImpuestoProducto @default(MANUAL)
+  sincronizadoEn DateTime               @default(now()) @updatedAt
 
   @@id([productoId, impuestoId])
   @@map("siigo_producto_impuesto")
@@ -1227,6 +1251,11 @@ model TarifaItem {
   tarifario   Tarifario @relation(fields: [tarifarioId], references: [id], onDelete: Cascade)
 
   orden         Int     @default(0)
+  /// Concepto del maestro (`concepto_venta`). Nullable: los ítems viejos siguen
+  /// funcionando solo con `concepto` + `siigoCodigo`. Aporta el producto Siigo
+  /// y el nombre por defecto cuando el ítem no los trae.
+  conceptoId    String?
+  conceptoVenta ConceptoVenta? @relation(fields: [conceptoId], references: [id], onDelete: SetNull)
   /// Código estable del concepto (GASTOS_TRAMITE, SISTEMATIZACION…). Se conserva
   /// entre versiones y permite comparar tarifarios.
   concepto      String
@@ -1262,7 +1291,48 @@ model TarifaItem {
   notas     String?
 
   @@unique([tarifarioId, concepto])
+  @@index([conceptoId])
   @@map("tarifa_item")
+}
+
+// ─── Catálogos: maestro de conceptos de venta ─────────────────────────────────
+// Decisión de la reunión del 10-sep-2026 (Camila, min 03:46): el nombre del
+// concepto en la plataforma y en la factura Siigo debe ser el MISMO. Antes cada
+// `tarifa_item` guardaba su propio `nombrePublico` + `siigoCodigo` por empresa,
+// y las facturas reales rotaban 4 variantes del mismo producto 005/007.
+// Este maestro es la única lista de "lo que Galcomex vende".
+model ConceptoVenta {
+  id     String @id @default(cuid())
+  /// Llave estable en MAYÚSCULAS: GASTOS_TRAMITE, SISTEMATIZACION… Coincide con
+  /// `tarifa_item.concepto`.
+  codigo String @unique
+  /// Nombre para el cliente cuando el concepto no tiene producto Siigo.
+  nombre String
+
+  descripcion String?
+
+  /// Producto Siigo por defecto. Si está, su `nombre` manda en la factura.
+  siigoProductoId String?
+  siigoProducto   SiigoProducto? @relation(fields: [siigoProductoId], references: [id], onDelete: SetNull)
+
+  /// IVA por defecto del ítem del tarifario y de la línea del borrador.
+  aplicaIva Boolean @default(true)
+
+  /// Pistas para la UI al crear un ítem de tarifario. No calculan nada.
+  tipoCalculoSugerido TipoCalculoTarifa?
+  unidadSugerida      UnidadTarifa?
+
+  orden  Int     @default(0)
+  activo Boolean @default(true)
+  notas  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items TarifaItem[]
+
+  @@index([activo, orden])
+  @@map("concepto_venta")
 }
 
 // ─── M3: Eventos del trámite ──────────────────────────────────────────────────

@@ -15,5 +15,9 @@ export async function POST(_request: NextRequest) {
     return NextResponse.json({ error: result.error, tipo: result.tipo }, { status });
   }
 
-  return jsonResponse({ total: result.total });
+  return jsonResponse({
+    total: result.total,
+    impuestosVinculados: result.impuestosVinculados,
+    impuestosRetirados: result.impuestosRetirados,
+  });
 }

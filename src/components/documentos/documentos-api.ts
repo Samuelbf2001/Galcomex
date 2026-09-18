@@ -16,7 +16,12 @@ export type CategoriaDocumento =
   | "SOPORTE_FACTURACION"
   | "FOTO_RECONOCIMIENTO"
   | "COMPROBANTE_BANCARIO"
+  | "COMPROBANTE_COMERCIO"
   | "FACTURA_PROVEEDOR"
+  | "CONTROL_TRAMITE"
+  | "FICHA_TECNICA"
+  | "CORRESPONDENCIA"
+  | "ORDEN_COMPRA"
   | "OTRO";
 
 export const CATEGORIAS_DOCUMENTO: { value: CategoriaDocumento; label: string }[] = [
@@ -27,7 +32,14 @@ export const CATEGORIAS_DOCUMENTO: { value: CategoriaDocumento; label: string }[
   { value: "SOPORTE_FACTURACION", label: "Soporte de Facturación" },
   { value: "FOTO_RECONOCIMIENTO", label: "Foto de Reconocimiento" },
   { value: "COMPROBANTE_BANCARIO", label: "Comprobante Bancario" },
+  { value: "COMPROBANTE_COMERCIO", label: "Comprobante de Comercio Exterior" },
   { value: "FACTURA_PROVEEDOR", label: "Factura Proveedor" },
+  // Aprobadas el 2026-09-18 (docs/CATALOGOS.md §4). Esta lista es también la
+  // que usa `etiquetaCategoria` en el explorador de la bodega.
+  { value: "CONTROL_TRAMITE", label: "Control del trámite" },
+  { value: "FICHA_TECNICA", label: "Documentación técnica del producto" },
+  { value: "CORRESPONDENCIA", label: "Correos y notificaciones" },
+  { value: "ORDEN_COMPRA", label: "Orden de compra" },
   { value: "OTRO", label: "Otro" },
 ];
 

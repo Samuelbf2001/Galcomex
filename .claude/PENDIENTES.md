@@ -236,3 +236,22 @@ Pendientes que dejó la reconciliación:
 - **[LIMITACIÓN Windows] Fixture no materializable:** `src/lib/import/__tests__/grupo-e-papis.test.ts` lee `documentos referencia /GRUPO E PAPIS 2026.xlsm` (directorio con espacio final). El archivo SÍ está en git (y en el VPS), pero Windows no puede hacer checkout de esa ruta → ese test solo corre en Linux/Docker. Considerar renombrar el directorio sin espacio final.
 - **[DECISIÓN de merge a validar] Filtro de fechas de cartera:** ambos lados implementaron el filtro por separado; se adoptó la versión VPS (params `desde`/`hasta`, filtrado en servidor) y se conservó el pase client-side de ola 2 como respaldo. La URL con `fechaDesde`/`fechaHasta` (marcadores viejos de ola 2) ya no filtra.
 - **[DECISIÓN de merge a validar] `cliente.tipo` en hoja-tramite:** se conservó el tipado de ola 2 (`string | null`) en vez del default `"PROPIO"` del VPS; los usos son solo comparaciones `=== "SOCIO_LM"`, equivalentes.
+
+## Configuración → Catálogos (2026-09-18, fase 1 backend lista)
+
+Diseño y backend en `docs/CATALOGOS.md`. Migraciones `20260918130000_categorias_documento`
+y `20260918130100_catalogos_conceptos` aplicadas en local (:5433); **faltan en el VPS**.
+
+- **[DESARROLLO/fase 2 UI]** Sección `Configuración → Catálogos` con las tres pestañas
+  (Conceptos, Eventos, Productos↔impuestos) contra `GET/POST/PATCH
+  /api/configuracion/catalogos/conceptos` y `GET/PATCH /api/configuracion/catalogos/eventos`;
+  registrar la ruta en `RUTAS_DASHBOARD` + `exigirAccesoPagina`. Detalle al final de `docs/CATALOGOS.md`.
+- **[DESARROLLO/MCP]** 5 endpoints nuevos sin tool; declarados como `pendiente(...)` en
+  `src/lib/mcp/paridad-excepciones.ts`. Crear las tools en `galcomex-mcp/server.mjs` y borrar las líneas.
+- **[DEPLOY]** Tras migrar: `npx tsx scripts/seed-conceptos-venta.ts` (idempotente) y volver a
+  correr `POST /api/configuracion/siigo/sync` para que `siigo_producto_impuesto` se llene solo.
+- **[USUARIO/Camila]** Confirmar el producto Siigo de los 5 conceptos marcados `confirmar` en
+  `src/lib/tarifas/plantillas.ts` (DOCUMENTOS_DESPACHO, ENTREGA_DIRECTA, MODIFICACION_REGISTRO,
+  DESPACHO_PARCIAL, INGRESO_ZF, TRASLADO_ZF): su nombre pasa a ser el que ve el cliente en la factura.
+- **[DESARROLLO/datos]** Correr `npx tsx scripts/reclasificar-otros.ts` (primero sin `--aplicar`)
+  sobre el histórico importado de Litoplas; quedan ~11 % sin regla para el clasificador con IA.

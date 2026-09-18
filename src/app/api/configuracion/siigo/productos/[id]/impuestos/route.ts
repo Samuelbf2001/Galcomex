@@ -1,3 +1,4 @@
+import { OrigenImpuestoProducto } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 import { ZodError, z } from "zod";
 
@@ -49,13 +50,21 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
   const antes = await prisma.siigoProductoImpuesto.findMany({
     where: { productoId },
-    select: { impuestoId: true },
+    select: { impuestoId: true, origen: true },
   });
 
+  // Editar a mano el producto = tomar el control de sus impuestos: TODAS las
+  // filas quedan `MANUAL` y el sync de productos deja de tocarlas (si no, el
+  // siguiente sync volvería a poner el impuesto que se acaba de quitar).
+  // Ver docs/CATALOGOS.md §2.
   await prisma.$transaction([
     prisma.siigoProductoImpuesto.deleteMany({ where: { productoId } }),
     prisma.siigoProductoImpuesto.createMany({
-      data: payload.impuestoIds.map((impuestoId) => ({ productoId, impuestoId })),
+      data: payload.impuestoIds.map((impuestoId) => ({
+        productoId,
+        impuestoId,
+        origen: OrigenImpuestoProducto.MANUAL,
+      })),
     }),
     prisma.auditLog.create({
       data: {
@@ -63,8 +72,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         entidadId: productoId,
         accion: "UPDATE",
         usuarioId: session.user.id,
-        antes: { impuestoIds: antes.map((a) => a.impuestoId) },
-        despues: { impuestoIds: payload.impuestoIds },
+        antes: {
+          impuestoIds: antes.map((a) => a.impuestoId),
+          origenes: antes.map((a) => `${a.impuestoId}:${a.origen}`),
+        },
+        despues: { impuestoIds: payload.impuestoIds, origen: "MANUAL" },
       },
     }),
   ]);

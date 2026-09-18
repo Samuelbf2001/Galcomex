@@ -2,6 +2,7 @@ import "dotenv/config";
 import { CanalPago, Prisma, SecuenciaTramite, TipoRecaudo, Rol } from "@prisma/client";
 import { hashPassword } from "better-auth/crypto";
 import { CAPACIDADES } from "../src/lib/capacidades/catalogo";
+import { sembrarConceptosVenta } from "../src/lib/catalogos/seed-conceptos";
 import { prisma } from "../src/lib/db/prisma";
 
 async function main() {
@@ -17,7 +18,9 @@ async function main() {
   for (const item of matrizRecaudo) {
     await prisma.matrizRecaudo.upsert({
       where: { tipoRecaudo: item.tipoRecaudo },
-      update: { descripcion: item.descripcion, costoFijo: item.costoFijo, grupo: item.grupo },
+      // El seed corre en cada arranque del contenedor: no pisar el costo si un
+      // ADMIN lo cambió desde Configuración; solo refresca textos.
+      update: { descripcion: item.descripcion, grupo: item.grupo },
       create: item,
     });
   }
@@ -32,7 +35,7 @@ async function main() {
   for (const item of matrizPago) {
     await prisma.matrizPago.upsert({
       where: { canalPago: item.canalPago },
-      update: { descripcion: item.descripcion, costoFijo: item.costoFijo },
+      update: { descripcion: item.descripcion },
       create: item,
     });
   }
@@ -68,7 +71,8 @@ async function main() {
   for (const p of params) {
     await prisma.parametro.upsert({
       where: { clave: p.clave },
-      update: { valor: p.valor, descripcion: p.descripcion },
+      // Solo se crea con el valor inicial; después manda lo que edite el ADMIN.
+      update: { descripcion: p.descripcion },
       create: { clave: p.clave, valor: p.valor, descripcion: p.descripcion },
     });
   }
@@ -245,7 +249,16 @@ async function main() {
     }
   }
 
-  console.log(`✓ Seed completado: matriz de pagos, parámetros, checklist y ${usuarios.length} usuarios`);
+  // Catálogos → Conceptos de venta. Idempotente y sin pisar ediciones del
+  // ADMIN. Los que tengan producto Siigo solo quedan enlazados si el catálogo
+  // de productos ya está sincronizado (ver docs/CATALOGOS.md).
+  const conceptos = await sembrarConceptosVenta();
+
+  console.log(
+    `✓ Seed completado: matriz de pagos, parámetros, checklist, ${usuarios.length} usuarios ` +
+      `y ${conceptos.conceptos.length} conceptos de venta (${conceptos.creados} nuevos, ` +
+      `${conceptos.itemsEnlazados} ítems de tarifario enlazados)`,
+  );
 }
 
 main()

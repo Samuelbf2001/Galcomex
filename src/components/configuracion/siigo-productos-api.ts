@@ -8,6 +8,14 @@ export type SiigoImpuestoRow = {
   activo: boolean;
 };
 
+/** `siigo_producto_impuesto.origen`: quién dejó esa fila (sync o edición manual). */
+export type OrigenImpuestoProducto = "SIIGO" | "MANUAL";
+
+/** Impuesto asignado a un producto, con el origen de esa asignación puntual. */
+export type SiigoProductoImpuestoRow = SiigoImpuestoRow & {
+  origen: OrigenImpuestoProducto;
+};
+
 export type SiigoProductoRow = {
   id: string;
   codigo: string;
@@ -18,7 +26,7 @@ export type SiigoProductoRow = {
   grupoContableNombre: string;
   clasificacionIva: string;
   sincronizadoEn: string;
-  impuestos: SiigoImpuestoRow[];
+  impuestos: SiigoProductoImpuestoRow[];
 };
 
 export type SiigoProductosPayload = {
@@ -103,14 +111,17 @@ function normalizeProducto(row: unknown): SiigoProductoRow | null {
   const codigo = typeof row.codigo === "string" ? row.codigo : "";
   if (!id || !codigo) return null;
 
-  // El backend devuelve impuestos como pivot: { impuesto: {...} }
-  const impuestos: SiigoImpuestoRow[] = Array.isArray(row.impuestos)
+  // El backend devuelve impuestos como pivot: { impuesto: {...}, origen: "SIIGO"|"MANUAL" }
+  const impuestos: SiigoProductoImpuestoRow[] = Array.isArray(row.impuestos)
     ? row.impuestos
         .map((p) => {
           if (!isRecord(p)) return null;
-          return normalizeImpuesto(p.impuesto);
+          const impuesto = normalizeImpuesto(p.impuesto);
+          if (!impuesto) return null;
+          const origen: OrigenImpuestoProducto = p.origen === "SIIGO" ? "SIIGO" : "MANUAL";
+          return { ...impuesto, origen };
         })
-        .filter((i): i is SiigoImpuestoRow => i !== null)
+        .filter((i): i is SiigoProductoImpuestoRow => i !== null)
     : [];
 
   return {

@@ -26,6 +26,18 @@ const siigoTokenResponseSchema = z.object({
   expires_in: z.number(),
 });
 
+/**
+ * Impuestos que Siigo devuelve dentro de cada producto de `/v1/products`.
+ * Mismo shape que `/v1/taxes`. Se usan para llenar `siigo_producto_impuesto`
+ * sin que nadie tenga que asociarlos a mano (ver docs/CATALOGOS.md §2).
+ */
+const siigoProductoTaxSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  type: z.string(),
+  percentage: z.number(),
+});
+
 const siigoProductoSchema = z.object({
   id: z.string().uuid(),
   code: z.string(),
@@ -37,7 +49,11 @@ const siigoProductoSchema = z.object({
   type: z.string(),
   active: z.boolean(),
   tax_classification: z.string(),
+  // Algunas cuentas/productos no lo traen: se tolera ausente o null.
+  taxes: z.array(siigoProductoTaxSchema).optional().nullable(),
 });
+
+export type SiigoProductoTaxRaw = z.infer<typeof siigoProductoTaxSchema>;
 
 const siigoProductosResponseSchema = z.object({
   pagination: z.object({

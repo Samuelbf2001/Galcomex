@@ -18,6 +18,8 @@ import { prisma } from "@/lib/db/prisma";
 import { propuestaParaTramite } from "@/lib/tarifas/service";
 import { getParametrosSistema } from "@/lib/parametros/service";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
+import { conceptosParaLineas as conceptosVentaPorCodigo } from "@/lib/catalogos/conceptos-service";
+import { resolverLineaConcepto } from "@/lib/catalogos/nombre-linea";
 
 import {
   FORMATO_CONCEPTOS_IVA,
@@ -43,6 +45,13 @@ export type ConceptoOperacional = {
   siigoCodigo?: string | null;
   /** Lleva IVA como ítem (formato CONCEPTOS_IVA). Default: true. */
   aplicaIva?: boolean;
+  /**
+   * Código del maestro de conceptos (`concepto_venta`). Solo lo traen las
+   * líneas que salieron del tarifario; es lo que habilita la regla de nombre
+   * "el de la factura Siigo manda" (docs/CATALOGOS.md §1). Lo que el revisor
+   * escribe a mano no lo trae y conserva su texto tal cual.
+   */
+  conceptoCodigo?: string | null;
 };
 
 type GenerarBorradorInput = {
@@ -310,6 +319,9 @@ export async function generarBorrador(input: GenerarBorradorInput) {
           valor: l.valor,
           siigoCodigo: l.siigoCodigo,
           aplicaIva: l.aplicaIva,
+          // Código del maestro de conceptos: marca la línea como "viene del
+          // tarifario" y habilita la regla de nombre (docs/CATALOGOS.md §1).
+          conceptoCodigo: l.concepto,
         }));
       }
     }
@@ -409,25 +421,42 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       ? (
           await prisma.siigoProducto.findMany({
             where: { codigo: { in: codigosSiigo } },
-            select: { id: true, codigo: true },
+            select: { id: true, codigo: true, nombre: true },
           })
-        ).map((p) => [p.codigo, p.id])
+        ).map((p) => [p.codigo, p] as const)
       : [],
+  );
+  // Maestro de conceptos: aporta el producto Siigo por defecto, el IVA por
+  // defecto y el nombre que ve el cliente (docs/CATALOGOS.md §1).
+  const conceptosMaestro = await conceptosVentaPorCodigo(
+    conceptosParaLineas.map((c) => c.conceptoCodigo ?? ""),
   );
   const lineasConceptosCreate = conceptosParaLineas
     .filter((c) => c.valor > 0n)
     .map((c, index) => {
-      const productoId = c.siigoCodigo
-        ? (productosPorCodigo.get(c.siigoCodigo) ?? null)
-        : productosFijos.productoComisionId;
+      const concepto = c.conceptoCodigo ? (conceptosMaestro.get(c.conceptoCodigo) ?? null) : null;
+      const resuelta = resolverLineaConcepto({
+        nombrePublico: c.concepto,
+        productoDelItem: c.siigoCodigo ? (productosPorCodigo.get(c.siigoCodigo) ?? null) : null,
+        concepto,
+        aplicaIvaItem: c.aplicaIva ?? null,
+      });
+      // Igual que antes: el producto de comisión solo cubre a las líneas que no
+      // declaran producto. Si el ítem pide un código que no está sincronizado,
+      // la línea queda sin producto y el envío a Siigo lo dice en voz alta.
+      const declaraProducto = Boolean(c.siigoCodigo) || Boolean(concepto?.siigoProducto);
       return {
-        concepto: c.concepto,
+        // Solo las líneas del tarifario adoptan el nombre del catálogo; el
+        // texto que escribió un revisor a mano se respeta.
+        concepto: c.conceptoCodigo ? resuelta.nombre : c.concepto,
         valor: c.valor,
         orden: 100 + index,
         origen: "AUTO" as const,
         seccion: "OPERACIONAL" as const,
-        aplicaIva: c.aplicaIva ?? true,
-        siigoProductoId: productoId,
+        aplicaIva: resuelta.aplicaIva,
+        siigoProductoId: declaraProducto
+          ? resuelta.siigoProductoId
+          : productosFijos.productoComisionId,
       };
     });
 

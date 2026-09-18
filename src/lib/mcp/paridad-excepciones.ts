@@ -64,7 +64,14 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
   intencional("GET", "/api/facturacion/borradores", "Lote de GET /api/tramites/[param]/borrador para la pantalla de facturación (elimina el N+1 del cliente); el MCP usa borrador_ver por trámite"),
 
   // ── Pendientes (deuda visible) ──────────────────────────────────────────────
-  // Vacía desde 2026-09-10: los 23 endpoints que vivían aquí ya tienen tool
-  // dedicada en galcomex-mcp/server.mjs. Para declarar deuda nueva:
+  // Para declarar deuda nueva:
   //   pendiente("GET", "/api/ruta/[param]", "por qué debería tener tool y aún no"),
+  //
+  // Configuración → Catálogos (2026-09-18, fase 1 backend). Las tools del MCP
+  // viven en otro repo (galcomex-mcp/server.mjs) y se agregan junto con la UI.
+  pendiente("GET", "/api/configuracion/catalogos/conceptos", "Catálogos fase 1: falta tool conceptos_listar"),
+  pendiente("POST", "/api/configuracion/catalogos/conceptos", "Catálogos fase 1: falta tool concepto_crear"),
+  pendiente("PATCH", "/api/configuracion/catalogos/conceptos", "Catálogos fase 1: falta tool concepto_actualizar"),
+  pendiente("GET", "/api/configuracion/catalogos/eventos", "Catálogos fase 1: eventos_catalogo solo lee los activos del flujo del DO"),
+  pendiente("PATCH", "/api/configuracion/catalogos/eventos", "Catálogos fase 1: falta tool evento_catalogo_actualizar"),
 ];

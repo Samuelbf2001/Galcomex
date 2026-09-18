@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Gauge,
   Handshake,
+  Layers,
   Receipt,
   Settings,
   Ship,
@@ -36,6 +37,7 @@ const ICONOS: Record<string, LucideIcon> = {
   "/archivos": FolderOpen,
   "/clientes": Users,
   "/configuracion": Settings,
+  "/configuracion/catalogos": Layers,
   "/configuracion/importar": UploadCloud,
 };
 
@@ -85,7 +87,7 @@ export function Sidebar({ rol, abierto = false, onCerrar }: SidebarProps) {
     { title: "Vista general", paths: ["/dashboard"] },
     { title: "Operación", paths: ["/tramites", "/anticipos", "/pagos", "/archivos"] },
     { title: "Facturación y cobros", paths: ["/facturacion", "/cartera", "/ingresos", "/liquidacion-lm"] },
-    { title: "Administración", paths: ["/clientes", "/configuracion", "/configuracion/importar"] },
+    { title: "Administración", paths: ["/clientes", "/configuracion", "/configuracion/catalogos", "/configuracion/importar"] },
   ];
 
   function content(mobile: boolean) {

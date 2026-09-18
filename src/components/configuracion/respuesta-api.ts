@@ -38,3 +38,17 @@ export async function patchJson(url: string, body: unknown, fallback: string): P
   }
   return payload;
 }
+
+/** `fetch` POST + lectura del cuerpo; lanza `Error` con el mensaje real del servidor. */
+export async function postJson(url: string, body: unknown, fallback: string): Promise<unknown> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(leerErrorRespuesta(payload, fallback));
+  }
+  return payload;
+}

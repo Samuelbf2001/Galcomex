@@ -179,10 +179,30 @@ export function itemCalculableDe(item: TarifaItem): ItemTarifaCalculable {
   };
 }
 
-function itemCreateData(item: TarifaItemPayload): Prisma.TarifaItemCreateWithoutTarifarioInput {
+/**
+ * Ids del maestro de conceptos (`concepto_venta`) por código. El enlace es
+ * automático: si existe un concepto con el mismo `codigo` que el `concepto` del
+ * ítem, el ítem queda apuntando a él. Si no existe, `conceptoId` queda null y
+ * todo sigue funcionando por `concepto` + `siigoCodigo` (ver docs/CATALOGOS.md).
+ */
+async function idsConceptoPorCodigo(codigos: readonly string[]): Promise<Map<string, string>> {
+  const unicos = [...new Set(codigos.filter((c) => c.length > 0))];
+  if (unicos.length === 0) return new Map();
+  const filas = await prisma.conceptoVenta.findMany({
+    where: { codigo: { in: unicos } },
+    select: { id: true, codigo: true },
+  });
+  return new Map(filas.map((f) => [f.codigo, f.id]));
+}
+
+function itemCreateData(
+  item: TarifaItemPayload,
+  conceptoId?: string | null,
+): Prisma.TarifaItemCreateWithoutTarifarioInput {
   return {
     orden: item.orden,
     concepto: item.concepto,
+    ...(conceptoId ? { conceptoVenta: { connect: { id: conceptoId } } } : {}),
     nombrePublico: item.nombrePublico,
     siigoCodigo: item.siigoCodigo ?? null,
     tipoCalculo: item.tipoCalculo,
@@ -285,6 +305,8 @@ export async function crearTarifario(input: CrearTarifarioInput): Promise<Tarifa
   const notas =
     input.notas ?? (plantilla ? `Cargado desde la plantilla "${plantilla.nombre}" (${plantilla.fuente})` : null);
 
+  const conceptos = await idsConceptoPorCodigo(items.map((i) => i.concepto));
+
   return prisma.$transaction(async (tx) => {
     const version = await siguienteVersion(tx, input.empresaId, alcance);
     const creado = await tx.tarifario.create({
@@ -297,7 +319,7 @@ export async function crearTarifario(input: CrearTarifarioInput): Promise<Tarifa
         notas,
         version,
         creadoPorId: input.usuarioId,
-        items: { create: items.map(itemCreateData) },
+        items: { create: items.map((it) => itemCreateData(it, conceptos.get(it.concepto))) },
       },
       include: tarifarioInclude,
     });
@@ -545,9 +567,14 @@ export async function agregarItemTarifario(
     throw new TarifaItemDuplicadoError(payload.concepto);
   }
 
+  const conceptos = await idsConceptoPorCodigo([payload.concepto]);
+
   await prisma.$transaction(async (tx) => {
     const item = await tx.tarifaItem.create({
-      data: { ...itemCreateData(payload), tarifario: { connect: { id: tarifarioId } } },
+      data: {
+        ...itemCreateData(payload, conceptos.get(payload.concepto)),
+        tarifario: { connect: { id: tarifarioId } },
+      },
     });
     await tx.auditLog.create({
       data: {
@@ -586,13 +613,17 @@ export async function actualizarItemTarifario(
     throw new TarifaItemDuplicadoError(fusionado.concepto);
   }
 
+  const conceptos = await idsConceptoPorCodigo([fusionado.concepto]);
+  const conceptoId = conceptos.get(fusionado.concepto);
+
   await prisma.$transaction(async (tx) => {
     const despues = await tx.tarifaItem.update({
       where: { id: itemId },
       data: {
-        ...itemCreateData(fusionado),
+        ...itemCreateData(fusionado, conceptoId),
         // `connect` no desconecta: si el evento se quitó, hay que hacerlo explícito.
         ...(fusionado.eventoCodigo ? {} : { evento: { disconnect: true } }),
+        ...(conceptoId ? {} : { conceptoVenta: { disconnect: true } }),
         ...(fusionado.minimos ? {} : { minimos: Prisma.DbNull }),
         ...(fusionado.tramos ? {} : { tramos: Prisma.DbNull }),
       },
