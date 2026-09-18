@@ -59,6 +59,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       facturaIds: payload.facturaIds,
       siigoProductoId: payload.siigoProductoId,
       nitTercero: payload.nitTercero,
+      aplicaIva: payload.aplicaIva,
       usuarioId: session.user.id,
     });
 

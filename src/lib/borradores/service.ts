@@ -20,6 +20,12 @@ import { getParametrosSistema } from "@/lib/parametros/service";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 
 import {
+  FORMATO_CONCEPTOS_IVA,
+  OBSERVACION_NO_RETENCIONES,
+  formatoFacturaDeEmpresa,
+  lineasTercerosDesdeFacturas,
+} from "./formato-conceptos";
+import {
   actualizarLineasComision,
   definirLineasFijasParaCreate,
   ensureLineasFijas,
@@ -35,6 +41,8 @@ export type ConceptoOperacional = {
   valor: bigint;
   /** Producto Siigo al que se lleva el concepto cuando viene del tarifario (M2). */
   siigoCodigo?: string | null;
+  /** Lleva IVA como ítem (formato CONCEPTOS_IVA). Default: true. */
+  aplicaIva?: boolean;
 };
 
 type GenerarBorradorInput = {
@@ -216,6 +224,9 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       id: true,
       consecutivo: true,
       estado: true,
+      clienteId: true,
+      doCliente: true,
+      proveedorCliente: true,
       ordenCompraNumero: true,
       cliente: { select: { tipo: true } },
     },
@@ -230,6 +241,8 @@ export async function generarBorrador(input: GenerarBorradorInput) {
     throw new TramiteNoFacturableError(tramiteEstado.estado);
   }
   const tipoCliente = tramiteEstado.cliente.tipo;
+  const formato = await formatoFacturaDeEmpresa(tramiteEstado.clienteId);
+  const esConceptosIva = formato.formato === FORMATO_CONCEPTOS_IVA;
 
   // ── Leer datos del trámite en paralelo ────────────────────────────────────
   const [aplicaciones, pagos, params, formaPagoDefault, productosFijos] =
@@ -296,6 +309,7 @@ export async function generarBorrador(input: GenerarBorradorInput) {
           concepto: l.nombrePublico,
           valor: l.valor,
           siigoCodigo: l.siigoCodigo,
+          aplicaIva: l.aplicaIva,
         }));
       }
     }
@@ -361,9 +375,61 @@ export async function generarBorrador(input: GenerarBorradorInput) {
 
   // Para SOCIO_LM: observación de cabecera obligatoria que indica al receptor de
   // la factura Siigo que NO se deben practicar retenciones en la fuente ni de ICA.
-  const OBSERVACION_NO_RETENCIONES = "NO PRACTICAR RETEFUENTE NI RETEICA";
+  // En CONCEPTOS_IVA la pone la función (va en el 100 % de las facturas propias
+  // 2026) junto con la línea "DO.BAQ26-0069 IM054-26 SRF".
   const comentariosCabeceraInicial: string[] =
-    tipoCliente === TipoCliente.SOCIO_LM ? [OBSERVACION_NO_RETENCIONES] : [];
+    tipoCliente === TipoCliente.SOCIO_LM ||
+    (formato.formato === FORMATO_CONCEPTOS_IVA && formato.observacionNoRetenciones)
+      ? [OBSERVACION_NO_RETENCIONES]
+      : [];
+  if (esConceptosIva) {
+    const lineaDo = [
+      tramiteEstado.consecutivo,
+      tramiteEstado.doCliente,
+      tramiteEstado.proveedorCliente,
+    ]
+      .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+      .join(" ");
+    if (lineaDo) comentariosCabeceraInicial.push(lineaDo);
+  }
+
+  // Formato CONCEPTOS_IVA: un ítem por concepto (con su producto Siigo e IVA) en
+  // lugar de la línea única de comisión. Sin desglose (sin tarifario ni conceptos
+  // a mano) la comisión entra como un solo concepto con el producto de comisión.
+  const conceptosParaLineas: ConceptoOperacional[] = esConceptosIva
+    ? conceptosOperacionales && conceptosOperacionales.length > 0
+      ? conceptosOperacionales
+      : [{ concepto: "SERVICIO LOGÍSTICO", valor: comision, aplicaIva: true }]
+    : [];
+  const codigosSiigo = conceptosParaLineas
+    .map((c) => c.siigoCodigo)
+    .filter((c): c is string => typeof c === "string" && c.length > 0);
+  const productosPorCodigo = new Map(
+    codigosSiigo.length > 0
+      ? (
+          await prisma.siigoProducto.findMany({
+            where: { codigo: { in: codigosSiigo } },
+            select: { id: true, codigo: true },
+          })
+        ).map((p) => [p.codigo, p.id])
+      : [],
+  );
+  const lineasConceptosCreate = conceptosParaLineas
+    .filter((c) => c.valor > 0n)
+    .map((c, index) => {
+      const productoId = c.siigoCodigo
+        ? (productosPorCodigo.get(c.siigoCodigo) ?? null)
+        : productosFijos.productoComisionId;
+      return {
+        concepto: c.concepto,
+        valor: c.valor,
+        orden: 100 + index,
+        origen: "AUTO" as const,
+        seccion: "OPERACIONAL" as const,
+        aplicaIva: c.aplicaIva ?? true,
+        siigoProductoId: productoId,
+      };
+    });
 
   // Orden de compra del cliente (Polyrec): "el número de la OC debe ir en la
   // descripción de la factura" (reunión 10-sep-2026, min 84:30). Se siembra en
@@ -374,6 +440,10 @@ export async function generarBorrador(input: GenerarBorradorInput) {
 
   // ── Persistir en transacción ──────────────────────────────────────────────
   return prisma.$transaction(async (tx) => {
+    const lineasTerceros = esConceptosIva
+      ? await lineasTercerosDesdeFacturas(tx, tramiteId)
+      : [];
+
     const borrador = await tx.borradorFactura.create({
       data: {
         tramiteId,
@@ -405,9 +475,21 @@ export async function generarBorrador(input: GenerarBorradorInput) {
             ? normalizeSerializable(comentariosCabeceraInicial)
             : undefined,
         estado: EstadoBorrador.BORRADOR,
-        lineasRevision: {
-          create: lineasFijasCreate,
-        },
+        formatoFactura: formato.formato,
+        reteIvaPorcentaje: esConceptosIva ? formato.reteIvaPorcentaje : null,
+        lineasRevision: esConceptosIva
+          ? {
+              create: [
+                ...lineasTerceros,
+                ...lineasConceptosCreate.map(({ siigoProductoId, ...linea }) => ({
+                  ...linea,
+                  ...(siigoProductoId ? { siigoProducto: { connect: { id: siigoProductoId } } } : {}),
+                })),
+              ],
+            }
+          : {
+              create: lineasFijasCreate,
+            },
       },
       include: { lineasRevision: { orderBy: { orden: "asc" } } },
     });
@@ -702,6 +784,7 @@ export async function actualizarComisionBorrador(
         tramiteId: true,
         comision: true,
         ivaComision: true,
+        formatoFactura: true,
       },
     });
     if (!actual) {
@@ -709,6 +792,15 @@ export async function actualizarComisionBorrador(
         ok: false as const,
         status: 404,
         message: `Borrador ${borradorId} no encontrado`,
+      };
+    }
+
+    if (actual.formatoFactura === FORMATO_CONCEPTOS_IVA) {
+      return {
+        ok: false as const,
+        status: 422,
+        message:
+          "Esta factura lleva un ítem por concepto: edita el valor de cada línea de ingresos propios en lugar de la comisión.",
       };
     }
 

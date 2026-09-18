@@ -41,6 +41,7 @@ import {
   type TramiteFilters,
   type TramiteRow,
 } from "@/components/tramites/tramites-api";
+import { ACCEPTED_FILE_EXTENSIONS_ATTR, ALLOWED_FILE_TYPES_LABEL } from "@/lib/storage/config";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -803,7 +804,7 @@ function CreateTramiteDialog({
                       <input
                         id={inputId}
                         type="file"
-                        accept=".pdf,.jpg,.jpeg,.png,.xlsx"
+                        accept={ACCEPTED_FILE_EXTENSIONS_ATTR}
                         className="sr-only"
                         onChange={(e) => {
                           const picked = e.target.files?.[0] ?? null;
@@ -856,13 +857,13 @@ function CreateTramiteDialog({
                           <Upload className="h-3.5 w-3.5" aria-hidden="true" />
                           Seleccionar
                         </button>
-                        <span className="text-xs text-slate-400">PDF, JPG, PNG, XLSX</span>
+                        <span className="text-xs text-slate-400">{ALLOWED_FILE_TYPES_LABEL}</span>
                       </>
                     )}
                     <input
                       id={inputId}
                       type="file"
-                      accept=".pdf,.jpg,.jpeg,.png,.xlsx"
+                      accept={ACCEPTED_FILE_EXTENSIONS_ATTR}
                       className="sr-only"
                       onChange={(e) => {
                         const picked = e.target.files?.[0] ?? null;

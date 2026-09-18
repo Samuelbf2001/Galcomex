@@ -108,6 +108,16 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 - BL/Guía + Factura Comercial son obligatorios al crear el DO para clientes SOCIO_LM.
 - Detalle implementado en `src/lib/borradores/lineas-fijas.ts`, `src/lib/calculations/total-lineas.ts` y `src/lib/siigo/envio-factura-service.ts`.
 
+### Formato de factura CONCEPTOS_IVA (Galcomex propio) — función `factura_conceptos_iva`
+Verificado contra 331 facturas reales 2026 leídas de Siigo (Litoplas, Polyrec, Polyrec ZF, CW ASIA, Sesderma, Coldex). Se fija por borrador en `BorradorFactura.formatoFactura` al generarlo; los borradores viejos quedan en `"COMISION"`.
+- **Conceptos:** cada ítem del tarifario (o concepto manual) es una línea OPERACIONAL con su producto Siigo y `LineaRevision.aplicaIva`. No hay línea COMISION ni COSTOS_BANCARIOS.
+- **Terceros:** nacen de las facturas de proveedor repercutibles del trámite ("ALMACENAJE ALMACARGA FACT. FE-11298"), sin IVA, con el NIT del proveedor.
+- **Líneas calculadas:** IVA_COMISION ("IVA 19%") = Σ IVA por ítem redondeado al peso; IMPUESTO_4X1000 = 0,4 % de Σ terceros (redondeo al peso; sin terceros no hay 4x1000). Las recalcula `sincronizarLineasDerivadas` dentro de `recalcularTotalBorrador` cada vez que cambian las líneas.
+- **ReteIVA:** `% de la función × IVA` (15 % por defecto, snapshot en `BorradorFactura.reteIvaPorcentaje`); con null las retenciones son manuales.
+- **Siigo:** la línea de IVA no se envía; los ítems gravados llevan `taxes: [{id: IVA 19%}]`, la ReteIVA va en `retentions`, `payments.value` = total. Armador puro en `src/lib/siigo/items-factura.ts`.
+- **Observaciones:** "NO PRACTICAR RETEFUENTE NI RETEICA" + "DO… IM… PROVEEDOR" + totales con "SALDO A FAVOR/A CARGO" (sin "SU").
+- **Casos dorados:** BAQ-18385 (terceros + 4x1000 + ReteIVA, total 1.487.623, a cargo 69.623) y BAQ-18357 (sin terceros, a favor 11.400) en `src/lib/calculations/__tests__/factura-conceptos.test.ts`.
+
 ## Capacidades por empresa (M1) — cómo se configura el comportamiento
 
 Toda diferencia de comportamiento **entre empresas** es dato, no código. Vive en
@@ -221,7 +231,7 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
 
 Ruta: `tramites/{consecutivo}/{categoria}/{uuid}.{ext}`
 - Enlaces firmados por la app (`/api/storage/objeto`, `lib/storage/proxy.ts`) con expiración ≤ 15 minutos; el navegador nunca habla con la bodega
-- Tipos: PDF, JPG, PNG, XLSX (máx 25 MB)
+- Tipos (`ALLOWED_STORAGE_FILE_TYPES` en `lib/storage/config.ts`): PDF, JPG, PNG, XLSX/XLS, DOCX/DOC, ZIP, RAR, EML, MP4 (máx 25 MB). La lista sale de lo que manda Litoplas de verdad (histórico 2026); los inputs usan `ACCEPTED_FILE_EXTENSIONS_ATTR`
 - Soft-delete (`eliminado = true`), nunca borrado físico
 
 ## Tests — Casos dorados (BLOQUEANTES en CI)

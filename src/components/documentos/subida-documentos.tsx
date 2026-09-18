@@ -13,6 +13,7 @@ import {
   validarArchivo,
 } from "@/components/documentos/documentos-api";
 import { describirError, useToast } from "@/components/ui/toast";
+import { ACCEPTED_FILE_EXTENSIONS_ATTR, ALLOWED_FILE_TYPES_LABEL } from "@/lib/storage/config";
 
 // ─── Tipos internos ───────────────────────────────────────────────────────────
 
@@ -236,13 +237,13 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
           para seleccionar
         </p>
         <p className="text-xs text-slate-500">
-          PDF, JPG, PNG, XLSX — máx 25 MB por archivo. La subida comienza al seleccionar.
+          {ALLOWED_FILE_TYPES_LABEL} — máx 25 MB por archivo. La subida comienza al seleccionar.
         </p>
         <input
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.jpg,.jpeg,.png,.xlsx"
+          accept={ACCEPTED_FILE_EXTENSIONS_ATTR}
           onChange={handleFileInput}
           className="sr-only"
           aria-hidden="true"

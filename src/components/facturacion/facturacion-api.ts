@@ -35,6 +35,8 @@ export type LineaRevisionRow = {
   siigoProductoCodigo: string | null;
   siigoProductoNombre: string | null;
   siigoClasificacionIva: string | null;
+  /** Lleva IVA por ítem (formato CONCEPTOS_IVA). */
+  aplicaIva: boolean;
 };
 
 export type SiigoFormaPagoRow = {
@@ -52,6 +54,10 @@ export type ConceptoOperacionalRow = {
 export type BorradorRow = {
   id: string;
   tramiteId: string;
+  /** "COMISION" (formato Lucho) | "CONCEPTOS_IVA" (conceptos con IVA por ítem). */
+  formatoFactura: string;
+  /** % de ReteIVA automática del formato CONCEPTOS_IVA; null = retenciones a mano. */
+  reteIvaPorcentaje: number | null;
   comision: string; // BigInt
   ivaComision: string; // BigInt
   impuesto4x1000: string; // BigInt
@@ -208,6 +214,7 @@ function normalizeLinea(raw: Record<string, unknown>): LineaRevisionRow {
     siigoProductoCodigo: siigoProd && typeof siigoProd.codigo === "string" ? siigoProd.codigo : null,
     siigoProductoNombre: siigoProd && typeof siigoProd.nombre === "string" ? siigoProd.nombre : null,
     siigoClasificacionIva: siigoProd && typeof siigoProd.clasificacionIva === "string" ? siigoProd.clasificacionIva : null,
+    aplicaIva: raw.aplicaIva === true,
   };
 }
 
@@ -242,6 +249,8 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
   return {
     id: String(raw.id ?? ""),
     tramiteId: String(raw.tramiteId ?? ""),
+    formatoFactura: typeof raw.formatoFactura === "string" ? raw.formatoFactura : "COMISION",
+    reteIvaPorcentaje: typeof raw.reteIvaPorcentaje === "number" ? raw.reteIvaPorcentaje : null,
     comision: String(raw.comision ?? "0"),
     ivaComision: String(raw.ivaComision ?? "0"),
     impuesto4x1000: String(raw.impuesto4x1000 ?? "0"),
@@ -543,6 +552,8 @@ export type CrearLineaInput = {
   siigoProductoId?: string;
   /** NIT del tercero a usar cuando la línea TERCEROS no vincula factura. */
   nitTercero?: string;
+  /** Lleva IVA por ítem (formato CONCEPTOS_IVA). */
+  aplicaIva?: boolean;
 };
 
 export type ActualizarLineaInput = {
@@ -555,6 +566,8 @@ export type ActualizarLineaInput = {
   siigoProductoId?: string | null;
   /** NIT del tercero (null limpia). */
   nitTercero?: string | null;
+  /** Lleva IVA por ítem (formato CONCEPTOS_IVA). */
+  aplicaIva?: boolean;
 };
 
 async function parseBorradorResponse(response: Response): Promise<BorradorRow> {

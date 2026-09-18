@@ -31,7 +31,9 @@
 import { EstadoBorrador, Prisma } from "@prisma/client";
 
 import { ensureLineasFijas } from "@/lib/borradores/lineas-fijas";
+import { FORMATO_CONCEPTOS_IVA } from "@/lib/borradores/formato-conceptos";
 import { recalcularTotalBorrador } from "@/lib/borradores/recalculo";
+import { getParametrosSistema } from "@/lib/parametros/service";
 import { prisma } from "@/lib/db/prisma";
 
 import {
@@ -42,6 +44,7 @@ import {
   type SiigoFacturaItemDto,
   type SiigoFacturaPostDto,
 } from "./client";
+import { construirItemsSiigo, identificacionSiigo, lineasQueVanComoItem } from "./items-factura";
 
 // ─── Resultado tipado ─────────────────────────────────────────────────────────
 
@@ -93,6 +96,8 @@ function observacionesDesdeBorrador(
   comentariosCabecera: unknown,
   consecutivoDO: string | undefined,
   totales: TotalesBorrador,
+  /** Las facturas de Galcomex propio dicen "SALDO A FAVOR/A CARGO"; las de Lucho "A SU FAVOR/A SU CARGO". */
+  conSu = true,
 ): string {
   const comentarios = Array.isArray(comentariosCabecera)
     ? (comentariosCabecera as unknown[]).filter(
@@ -114,9 +119,9 @@ function observacionesDesdeBorrador(
   const lineaAnticipo = `VALOR ANTICIPO \t\t\t ${formatCOP(totales.totalAnticipo)}`;
   const lineaSaldo =
     totales.saldoAFavorCliente > 0n
-      ? `SALDO A SU FAVOR\t\t\t ${formatCOP(totales.saldoAFavorCliente)}`
+      ? `SALDO A ${conSu ? "SU " : ""}FAVOR\t\t\t ${formatCOP(totales.saldoAFavorCliente)}`
       : totales.saldoACargoCliente > 0n
-        ? `SALDO A SU CARGO\t\t\t ${formatCOP(totales.saldoACargoCliente)}`
+        ? `SALDO A ${conSu ? "SU " : ""}CARGO\t\t\t ${formatCOP(totales.saldoACargoCliente)}`
         : null;
 
   const bloqueTotales = [lineaTotal, lineaAnticipo, lineaSaldo]
@@ -333,7 +338,12 @@ export async function enviarBorradorASiigo(
   // Por eso TODAS las líneas con valor > 0 deben tener `siigoProducto.codigo`
   // y los items se mandan SIN `taxes` auto (el IVA va como su propia línea
   // IVA_COMISION para que Siigo no recalcule por encima).
-  const lineasFacturables = borrador.lineasRevision.filter((l) => l.valor > 0n);
+  const conceptosIva = borrador.formatoFactura === FORMATO_CONCEPTOS_IVA;
+  // En CONCEPTOS_IVA la línea IVA_COMISION no viaja: Siigo liquida el IVA por ítem.
+  const lineasFacturables = lineasQueVanComoItem(
+    borrador.lineasRevision,
+    borrador.formatoFactura,
+  );
 
   const lineasSinProducto = lineasFacturables
     .filter((l) => !l.siigoProducto?.codigo)
@@ -380,16 +390,7 @@ export async function enviarBorradorASiigo(
 
   // ── 5. Construir items para SIIGO ───────────────────────────────────────────
   // Orden: TERCEROS primero, OPERACIONAL después; dentro de cada sección por
-  // `orden`. Las fijas TERCEROS (COSTOS_BANCARIOS=990, IMPUESTO_4X1000=995) van
-  // al final del bloque de terceros y las fijas OPERACIONAL (COMISION=991,
-  // IVA_COMISION=992) al final del bloque operacional.
-  const PESO_SECCION = { TERCEROS: 0, OPERACIONAL: 1 } as const;
-  const lineasOrdenadas = [...lineasFacturables].sort((a, b) => {
-    const peso =
-      PESO_SECCION[a.seccion as keyof typeof PESO_SECCION] -
-      PESO_SECCION[b.seccion as keyof typeof PESO_SECCION];
-    return peso !== 0 ? peso : a.orden - b.orden;
-  });
+  // `orden` (ver `construirItemsSiigo`, con casos de prueba contra BAQ-18385).
 
   // NIT del banco GMF: lo calculamos una sola vez y se aplica solo a la línea
   // IMPUESTO_4X1000.
@@ -412,33 +413,64 @@ export async function enviarBorradorASiigo(
     );
   }
 
-  const items: SiigoFacturaItemDto[] = [];
+  // CONCEPTOS_IVA: IVA por ítem y ReteIVA a nivel de factura, por id de impuesto
+  // Siigo (catálogo sincronizado en `siigo_impuesto`).
+  let ivaTaxId: number | null = null;
+  let retentions: Array<{ id: number }> | undefined;
+  if (conceptosIva) {
+    const [params, impuestos] = await Promise.all([
+      getParametrosSistema(),
+      prisma.siigoImpuesto.findMany({
+        where: { activo: true, tipo: { in: ["IVA", "ReteIVA"] } },
+        select: { id: true, tipo: true, porcentaje: true },
+      }),
+    ]);
+    const buscar = (tipo: string, porcentaje: number) =>
+      impuestos.find((i) => i.tipo === tipo && Number(i.porcentaje) === porcentaje)?.id ?? null;
 
-  for (const l of lineasOrdenadas) {
-    // Determinar el customer (tercero) según el tipo de línea:
-    //   - IMPUESTO_4X1000 → banco que retuvo el GMF (resolverNit4x1000).
-    //   - TERCEROS manual → NIT del proveedor de la factura vinculada.
-    //   - Resto (COMISION / IVA_COMISION / COSTOS_BANCARIOS / OPERACIONAL) →
-    //     sin customer; son ingresos / costos propios del prestador.
-    let customerNit: string | null = null;
-    if (l.tipoFija === "IMPUESTO_4X1000") {
-      customerNit = nit4x1000;
-    } else if (l.seccion === "TERCEROS" && !l.tipoFija) {
-      customerNit = nitTerceroDe(l);
+    ivaTaxId = buscar("IVA", Number(params.tasaIva));
+    if (ivaTaxId === null && lineasFacturables.some((l) => l.aplicaIva)) {
+      return {
+        ok: false,
+        tipo: "config",
+        error: `No está el impuesto "IVA ${params.tasaIva}%" en el catálogo Siigo. Sincroniza los impuestos en Configuración → Siigo.`,
+      };
     }
 
-    items.push({
-      code: l.siigoProducto!.codigo,
-      description: l.concepto,
-      quantity: 1,
-      price: bigintToPrice(l.valor),
-      // Crítico: NO enviamos `taxes` para que Siigo no aplique IVA por encima
-      // del price. El IVA va como su propia línea IVA_COMISION.
-      ...(customerNit
-        ? { customer: { identification: customerNit, branch_office: 0 } }
-        : {}),
-    });
+    if (borrador.retenciones > 0n) {
+      if (borrador.reteIvaPorcentaje === null) {
+        return {
+          ok: false,
+          tipo: "validacion",
+          error:
+            "Las retenciones se capturaron a mano y Siigo necesita saber cuál es. Configura el % de ReteIVA en la función de la empresa y vuelve a generar el borrador.",
+        };
+      }
+      const reteIvaId = buscar("ReteIVA", borrador.reteIvaPorcentaje);
+      if (reteIvaId === null) {
+        return {
+          ok: false,
+          tipo: "config",
+          error: `No está el impuesto "ReteIVA ${borrador.reteIvaPorcentaje}%" en el catálogo Siigo. Sincroniza los impuestos en Configuración → Siigo.`,
+        };
+      }
+      retentions = [{ id: reteIvaId }];
+    }
   }
+
+  const items: SiigoFacturaItemDto[] = construirItemsSiigo(
+    lineasFacturables.map((l) => ({
+      concepto: l.concepto,
+      valor: l.valor,
+      orden: l.orden,
+      seccion: l.seccion,
+      tipoFija: l.tipoFija,
+      aplicaIva: l.aplicaIva,
+      productoCodigo: l.siigoProducto?.codigo ?? null,
+      nitTercero: l.seccion === "TERCEROS" && !l.tipoFija ? nitTerceroDe(l) : null,
+    })),
+    { formato: borrador.formatoFactura, ivaTaxId, nit4x1000 },
+  );
 
   const fechaEnvio = fechaHoy();
   const observaciones = observacionesDesdeBorrador(
@@ -450,12 +482,13 @@ export async function enviarBorradorASiigo(
       saldoAFavorCliente: borrador.saldoAFavorCliente,
       saldoACargoCliente: borrador.saldoACargoCliente,
     },
+    !conceptosIva,
   );
 
   const dto: SiigoFacturaPostDto = {
     document: { id: config.tipoComprobanteId },
     date: fechaEnvio,
-    customer: { identification: nitCliente, branch_office: 0 },
+    customer: { identification: identificacionSiigo(nitCliente), branch_office: 0 },
     seller: config.idVendedor,
     observations: observaciones || undefined,
     items,
@@ -466,6 +499,7 @@ export async function enviarBorradorASiigo(
         due_date: fechaEnvio,
       },
     ],
+    ...(retentions ? { retentions } : {}),
     // Crítico: queda como BORRADOR en Siigo. Un superior valida y estampa.
     stamp: { send: false },
   };

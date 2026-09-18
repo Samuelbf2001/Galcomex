@@ -1230,13 +1230,17 @@ export function RevisorBorrador({
               <div className="my-2 border-t border-slate-200" />
 
               <div className="flex justify-between gap-4">
-                <dt className="text-slate-600">Comisión Galcomex/LM</dt>
+                <dt className="text-slate-600">
+                  {borradorActual.formatoFactura === "CONCEPTOS_IVA" ? "Conceptos propios" : "Comisión Galcomex/LM"}
+                </dt>
                 <dd className="font-semibold text-slate-900">
                   {formatCOP(borradorActual.comision)}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="text-slate-600">IVA comisión (19%)</dt>
+                <dt className="text-slate-600">
+                  {borradorActual.formatoFactura === "CONCEPTOS_IVA" ? "IVA por ítem (19%)" : "IVA comisión (19%)"}
+                </dt>
                 <dd className="font-semibold text-slate-900">
                   {formatCOP(borradorActual.ivaComision)}
                 </dd>
@@ -1255,7 +1259,11 @@ export function RevisorBorrador({
               </div>
               {BigInt(borradorActual.retenciones) > 0n ? (
                 <div className="flex justify-between gap-4">
-                  <dt className="text-slate-600">Retenciones (RETE IVA/FTE/ICA)</dt>
+                  <dt className="text-slate-600">
+                    {borradorActual.reteIvaPorcentaje !== null
+                      ? `ReteIVA ${borradorActual.reteIvaPorcentaje}%`
+                      : "Retenciones (RETE IVA/FTE/ICA)"}
+                  </dt>
                   <dd className="font-semibold text-slate-900">
                     {formatCOP(borradorActual.retenciones)}
                   </dd>

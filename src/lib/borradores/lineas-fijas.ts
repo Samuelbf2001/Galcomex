@@ -218,6 +218,7 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
   const borrador = await tx.borradorFactura.findUniqueOrThrow({
     where: { id: borradorId },
     select: {
+      formatoFactura: true,
       comision: true,
       ivaComision: true,
       costosBancarios: true,
@@ -229,6 +230,11 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
       },
     },
   });
+
+  // En CONCEPTOS_IVA las líneas derivadas las mantiene `sincronizarLineasDerivadas`;
+  // crear aquí una COMISION a partir de `borrador.comision` (Σ conceptos) duplicaría
+  // los ingresos propios.
+  if (borrador.formatoFactura === "CONCEPTOS_IVA") return;
 
   const tipoCliente = borrador.tramite.cliente.tipo;
   const esSocioLM = tipoCliente === TipoCliente.SOCIO_LM;

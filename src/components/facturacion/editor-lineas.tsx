@@ -696,6 +696,8 @@ function CampoLinea({ valor, etiqueta, numerico = false, guardando, guardar }: {
 }
 
 type SubseccionProps = {
+  /** "CONCEPTOS_IVA": cada ingreso propio lleva su IVA como ítem en Siigo. */
+  formato: string;
   titulo: string;
   seccion: SeccionLinea;
   lineas: LineaRevisionRow[];
@@ -710,6 +712,7 @@ type SubseccionProps = {
 };
 
 function SubseccionLineas({
+  formato,
   titulo,
   seccion,
   lineas,
@@ -724,6 +727,10 @@ function SubseccionLineas({
 }: SubseccionProps) {
   // OPERACIONAL muestra solo Concepto + Valor (sin soporte ni vinculación).
   const compacto = seccion === "OPERACIONAL";
+  // Formato CONCEPTOS_IVA: el IVA ya es una línea calculada de la tabla y cada
+  // ingreso propio decide si lo lleva.
+  const ivaPorItem = formato === "CONCEPTOS_IVA" && compacto;
+  const [nuevoAplicaIva, setNuevoAplicaIva] = useState(true);
 
   const [nuevoConcepto, setNuevoConcepto] = useState("");
   const [nuevoValor, setNuevoValor] = useState("");
@@ -765,6 +772,7 @@ function SubseccionLineas({
           seccion,
           facturaIds,
           siigoProductoId: nuevoSiigoProductoId || undefined,
+          ...(ivaPorItem ? { aplicaIva: nuevoAplicaIva } : {}),
           // El NIT manual solo aplica a TERCEROS sin factura — en otros casos el
           // NIT real lo provee la factura del proveedor.
           nitTercero:
@@ -780,6 +788,7 @@ function SubseccionLineas({
     setNuevasFacturas([]);
     setNuevoSiigoProductoId("");
     setNuevoNitTercero("");
+    setNuevoAplicaIva(true);
   }
 
   async function commitNitTerceroLinea(linea: LineaRevisionRow, valor: string) {
@@ -846,8 +855,27 @@ function SubseccionLineas({
                 ) : <span className="font-medium text-slate-800">{linea.concepto}</span>}
                 {linea.tipoFija ? (
                   <span className="ml-1.5 inline-block rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                    Fija
+                    {formato === "CONCEPTOS_IVA" ? "Calculada" : "Fija"}
                   </span>
+                ) : null}
+                {ivaPorItem && !linea.tipoFija ? (
+                  puedeEditar ? (
+                    <label className="ml-2 inline-flex items-center gap-1 text-[11px] text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={linea.aplicaIva}
+                        disabled={guardando}
+                        onChange={(e) => {
+                          const aplicaIva = e.currentTarget.checked;
+                          void ejecutar(() => apiActualizarLinea(borradorId, linea.id, { aplicaIva }));
+                        }}
+                        aria-label={`La línea ${linea.orden} lleva IVA`}
+                      />
+                      IVA 19 %
+                    </label>
+                  ) : (
+                    <span className="ml-2 text-[11px] text-slate-500">{linea.aplicaIva ? "IVA 19 %" : "Sin IVA"}</span>
+                  )
                 ) : null}
                 {linea.siigoProductoId ? (
                   <span className="ml-1 text-[10px] text-slate-400">
@@ -969,7 +997,7 @@ function SubseccionLineas({
             </td>
             {colsDespues > 0 ? <td colSpan={colsDespues} /> : null}
           </tr>
-          {compacto ? (
+          {compacto && !ivaPorItem ? (
             <>
               <tr className="bg-slate-50">
                 <td
@@ -1042,6 +1070,16 @@ function SubseccionLineas({
                 </span>
               );
             })() : null}
+            {ivaPorItem ? (
+              <label className="mb-3 flex items-center gap-1.5 self-end text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={nuevoAplicaIva}
+                  onChange={(e) => setNuevoAplicaIva(e.currentTarget.checked)}
+                />
+                Lleva IVA 19 %
+              </label>
+            ) : null}
             <label className="flex flex-col text-xs text-slate-600">
               Valor (COP)
               <input
@@ -1235,6 +1273,7 @@ export function EditorLineas({
       />
 
       <SubseccionLineas
+        formato={borrador.formatoFactura}
         titulo={ETIQUETA_SECCION.TERCEROS}
         seccion="TERCEROS"
         lineas={lineasTerceros}
@@ -1249,6 +1288,7 @@ export function EditorLineas({
       />
 
       <SubseccionLineas
+        formato={borrador.formatoFactura}
         titulo={ETIQUETA_SECCION.OPERACIONAL}
         seccion="OPERACIONAL"
         lineas={lineasOperacional}
@@ -1278,19 +1318,35 @@ export function EditorLineas({
         {/* Comisión Galcomex e IVA comisión ya viven como líneas fijas dentro
             de OPERACIONAL — los mostramos como atajo editable, pero ya están
             sumados en `subtotalOperacional`. */}
-        <ComisionEditable
-          // Fuerza remount cuando cambia la comisión guardada en el server —
-          // evita un efecto de resincronización (ver comentario en el componente).
-          key={borrador.comision}
-          borrador={borrador}
-          puedeEditar={puedeEditar}
-          guardando={guardando}
-          ejecutar={ejecutar}
-        />
-        <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
-          <span>↳ IVA comisión (incluido en operacional)</span>
-          <span>{formatCOP(borrador.ivaComision)}</span>
-        </div>
+        {borrador.formatoFactura === "CONCEPTOS_IVA" ? (
+          // Cada concepto es su propia línea editable: no hay comisión global.
+          <>
+            <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
+              <span>↳ Conceptos propios (base del IVA)</span>
+              <span>{formatCOP(borrador.comision)}</span>
+            </div>
+            <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
+              <span>↳ IVA por ítem (incluido en operacional)</span>
+              <span>{formatCOP(borrador.ivaComision)}</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <ComisionEditable
+              // Fuerza remount cuando cambia la comisión guardada en el server —
+              // evita un efecto de resincronización (ver comentario en el componente).
+              key={borrador.comision}
+              borrador={borrador}
+              puedeEditar={puedeEditar}
+              guardando={guardando}
+              ejecutar={ejecutar}
+            />
+            <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
+              <span>↳ IVA comisión (incluido en operacional)</span>
+              <span>{formatCOP(borrador.ivaComision)}</span>
+            </div>
+          </>
+        )}
         {(() => {
           try {
             return BigInt(borrador.retenciones) > 0n;
@@ -1299,7 +1355,9 @@ export function EditorLineas({
           }
         })() ? (
           <div className="flex w-full max-w-md justify-between">
-            <span className="text-slate-500">− Retenciones</span>
+            <span className="text-slate-500">
+              − {borrador.reteIvaPorcentaje !== null ? `ReteIVA ${borrador.reteIvaPorcentaje} %` : "Retenciones"}
+            </span>
             <span className="text-slate-800">
               {formatCOP(borrador.retenciones)}
             </span>

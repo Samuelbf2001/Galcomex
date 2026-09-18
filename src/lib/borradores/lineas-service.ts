@@ -13,6 +13,7 @@ import { EstadoBorrador, Prisma, SeccionLinea } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 
+import { FORMATO_CONCEPTOS_IVA } from "./formato-conceptos";
 import { recalcularTotalBorrador } from "./recalculo";
 import { getBorrador } from "./service";
 
@@ -102,7 +103,7 @@ type Tx = Prisma.TransactionClient;
 async function cargarBorradorEditable(tx: Tx, borradorId: string) {
   const borrador = await tx.borradorFactura.findUnique({
     where: { id: borradorId },
-    select: { id: true, estado: true, tramiteId: true },
+    select: { id: true, estado: true, tramiteId: true, formatoFactura: true },
   });
   if (!borrador) {
     throw new BorradorNoEncontradoError(borradorId);
@@ -218,6 +219,8 @@ type CrearLineaInput = {
   siigoProductoId?: string | null;
   /** NIT del tercero a usar cuando la línea no vincula factura. */
   nitTercero?: string | null;
+  /** Lleva IVA como ítem (formato CONCEPTOS_IVA). */
+  aplicaIva?: boolean;
   usuarioId: string;
 };
 
@@ -260,6 +263,10 @@ export async function crearLineaManual(input: CrearLineaInput) {
         seccion,
         siigoProductoId: siigoProductoId ?? undefined,
         nitTercero: nitTercero ?? undefined,
+        // En CONCEPTOS_IVA un ingreso propio lleva IVA salvo que se diga lo contrario.
+        aplicaIva:
+          seccion === SeccionLinea.OPERACIONAL &&
+          (input.aplicaIva ?? borrador.formatoFactura === FORMATO_CONCEPTOS_IVA),
         facturas: { create: facturaIds.map((facturaId) => ({ facturaId })) },
       },
     });
@@ -292,6 +299,8 @@ type ActualizarLineaInput = {
   siigoProductoId?: string | null;
   /** NIT del tercero (null limpia el campo). */
   nitTercero?: string | null;
+  /** Lleva IVA como ítem (formato CONCEPTOS_IVA). */
+  aplicaIva?: boolean;
   usuarioId: string;
 };
 
@@ -340,6 +349,9 @@ export async function actualizarLinea(input: ActualizarLineaInput) {
           : { connect: { id: input.siigoProductoId } };
     }
     if (input.nitTercero !== undefined) data.nitTercero = input.nitTercero;
+    if (input.aplicaIva !== undefined) data.aplicaIva = input.aplicaIva;
+    // Los terceros nunca llevan IVA.
+    if ((input.seccion ?? antes?.seccion) === SeccionLinea.TERCEROS) data.aplicaIva = false;
 
     // En TERCEROS el soporte se mantiene sincronizado con las facturas vinculadas,
     // recalculándolo cuando cambian las facturas o la sección de la línea.
