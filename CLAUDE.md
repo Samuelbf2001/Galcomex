@@ -250,6 +250,18 @@ Los tests del archivo real están en `src/lib/calculations/__tests__/`.
 
 CI falla si estos tests no pasan. Tolerancia = 0 pesos.
 
+## WhatsApp (Kapso) — código del token PSE
+
+El operario pide el código del token desde el pago PSE; los aprobadores de
+`WHATSAPP_APROBADORES_PSE` (Parametro, ADMIN) reciben la plantilla
+`galcomex_codigo_pse` por la línea compartida **Sixteam.pro** y contestan en el
+chat. Galcomex no habla con Kapso: habla con la pasarela `sixteam-whatsapp-gateway`
+(`wa.sixteam.pro`, imita al proxy de Kapso) que rutea la línea entre plataformas. Catálogo cerrado de mensajes en `src/lib/whatsapp/catalogo.ts`, reglas
+de aislamiento (solo aprobadores, solo nuestra línea, botones `gx_`, nunca
+adivinar) en `decidir.ts` (puro), webhook firmado en `/api/whatsapp/kapso`.
+No usar el número de 2brain (guarda todo texto entrante). Guía y puesta en
+marcha: `docs/WHATSAPP-APROBACIONES.md`; script: `scripts/whatsapp-kapso.ts`.
+
 ## Webhooks n8n
 
 Eventos (firmados HMAC-SHA256): `do.creado`, `do.enviado_a_facturar`, `factura.aprobada`, `factura.facturada`, `cartera.vencida`
