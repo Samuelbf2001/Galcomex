@@ -52,6 +52,16 @@ export class CargosManualesNoHabilitadosError extends Error {
   }
 }
 
+export class CuentaCorrienteNoHabilitadaError extends Error {
+  public readonly status = 422;
+  constructor(nombreEmpresa: string) {
+    super(
+      `${nombreEmpresa} no tiene habilitada la cuenta corriente. Actívala en la ficha, pestaña Funciones.`,
+    );
+    this.name = "CuentaCorrienteNoHabilitadaError";
+  }
+}
+
 export class CompensacionInvalidaError extends Error {
   public readonly status = 422;
   constructor(message: string) {
@@ -333,6 +343,12 @@ export interface CuentaCorrienteEmpresa extends ResumenCuenta {
     esCliente: boolean;
     esProveedor: boolean;
   };
+  /**
+   * `true` si la empresa tiene la función `cuenta_corriente`. Apagada, la ficha
+   * no muestra la sección y no se registran movimientos ni cruces; el saldo se
+   * sigue calculando para quien lo consulte (MCP, reportes).
+   */
+  habilitada: boolean;
   /** `true` si la ficha puede registrar cargos manuales (capacidad M1). */
   permiteCargosManuales: boolean;
   /** Cuánto se puede cruzar hoy (la punta menor). */
@@ -369,6 +385,7 @@ export async function getCuentaCorriente(
   return {
     ...resumen,
     empresa,
+    habilitada: tiene(capacidades, "cuenta_corriente"),
     permiteCargosManuales: tiene(capacidades, "cargos_manuales_contraparte"),
     maximoCompensable: maximoCompensable(resumen),
     compensables,
@@ -404,9 +421,13 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
     throw new EmpresaCuentaNoEncontradaError(input.empresaId);
   }
 
-  if (input.origen === OrigenMovimientoCuenta.CARGO_MANUAL) {
-    const capacidades = await capacidadesDeEmpresa(input.empresaId);
+  const capacidades = await capacidadesDeEmpresa(input.empresaId);
 
+  if (!tiene(capacidades, "cuenta_corriente")) {
+    throw new CuentaCorrienteNoHabilitadaError(empresa.nombre);
+  }
+
+  if (input.origen === OrigenMovimientoCuenta.CARGO_MANUAL) {
     if (!tiene(capacidades, "cargos_manuales_contraparte")) {
       throw new CargosManualesNoHabilitadosError(empresa.nombre);
     }
@@ -508,6 +529,7 @@ export async function registrarCompensacion(input: RegistrarCompensacionInput) {
   if (!empresa) throw new EmpresaCuentaNoEncontradaError(input.empresaId);
 
   const cuenta = await getCuentaCorriente(input.empresaId);
+  if (!cuenta.habilitada) throw new CuentaCorrienteNoHabilitadaError(empresa.nombre);
 
   // Punta proveedor: la factura fija el valor.
   let facturaProveedor: { id: string; numFactura: string; valor: bigint } | null = null;

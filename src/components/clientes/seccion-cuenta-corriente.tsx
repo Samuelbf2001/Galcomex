@@ -16,7 +16,6 @@ import { claseCampo } from "@/components/clientes/form-campos";
 import { ModuleState } from "@/components/layout/module-state";
 import { EnlaceTramite, type TabTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
-import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
@@ -359,6 +358,12 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
     setReloadKey((k) => k + 1);
   }
 
+  // Función `cuenta_corriente` apagada (empresa que solo es cliente): la sección
+  // no se muestra, porque repetiría la cartera. Mientras carga tampoco, para no
+  // mostrar y quitar un esqueleto en cada ficha que no la usa.
+  if (loadState === "sin-permiso" || loadState === "loading") return null;
+  if (loadState === "ready" && cuenta && !cuenta.habilitada) return null;
+
   const neto = cuenta ? BigInt(cuenta.neto) : 0n;
   const visibles =
     cuenta && !verTodo ? cuenta.movimientos.slice(0, 12) : (cuenta?.movimientos ?? []);
@@ -401,26 +406,14 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
         ) : null}
       </div>
 
-      {loadState === "sin-permiso" ? (
-        <ModuleState
-          type="empty"
-          title="Sin permiso para ver la cuenta corriente"
-          detail="Solo ADMIN y REVISOR pueden consultarla."
-        />
-      ) : loadState === "error" ? (
+      {loadState === "error" ? (
         <ModuleState
           type="error"
           title="No se pudo cargar la cuenta corriente"
           detail={loadError ?? undefined}
           action={{ label: "Reintentar", onClick: recargar }}
         />
-      ) : loadState === "loading" || !cuenta ? (
-        <div role="status" aria-live="polite" aria-label="Cargando cuenta corriente">
-          <CardsSkeleton count={3} height={72} />
-          <TableSkeleton rows={5} cols={4} />
-          <span className="sr-only">Cargando…</span>
-        </div>
-      ) : (
+      ) : !cuenta ? null : (
         <>
           <div className="grid gap-px border-b border-slate-200 bg-slate-200 sm:grid-cols-3">
             <div className="bg-white px-4 py-3">

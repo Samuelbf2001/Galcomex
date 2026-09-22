@@ -114,6 +114,17 @@ export const CAPACIDADES = [
     orden: 70,
   },
   {
+    codigo: "cuenta_corriente",
+    nombre: "Cuenta corriente cruzada",
+    descripcion:
+      "Muestra en la ficha un solo saldo con lo que la empresa nos debe como cliente y lo que le debemos como proveedor, y permite cruzarlos sin mover plata (caso Coldex, Ascinter, Eltrans). Para una empresa que solo es cliente repite la cartera: déjala apagada.",
+    grupo: "Cartera",
+    ambito: "EMPRESA",
+    porDefecto: false,
+    configPorDefecto: null,
+    orden: 75,
+  },
+  {
     codigo: "comision_por_evento",
     nombre: "Comisión a cobrar por contenedor",
     descripcion:

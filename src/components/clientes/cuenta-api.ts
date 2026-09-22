@@ -40,6 +40,8 @@ export type CuentaCorriente = {
   porLinea: SaldoLineaRow[];
   movimientos: MovimientoCuentaRow[];
   cantidad: number;
+  /** Función `cuenta_corriente` encendida para la empresa; apagada, la ficha no muestra la sección. */
+  habilitada: boolean;
   permiteCargosManuales: boolean;
   /** Cuánto se puede cruzar hoy (la punta menor). */
   maximoCompensable: string;
@@ -136,6 +138,7 @@ function normalizar(payload: unknown): CuentaCorriente | null {
         }))
       : [],
     cantidad: typeof cuenta.cantidad === "number" ? cuenta.cantidad : 0,
+    habilitada: cuenta.habilitada === true,
     permiteCargosManuales: cuenta.permiteCargosManuales === true,
     maximoCompensable: String(cuenta.maximoCompensable ?? "0"),
     compensables: normalizarCompensables(cuenta.compensables),
