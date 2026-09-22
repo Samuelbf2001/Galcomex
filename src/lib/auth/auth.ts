@@ -20,6 +20,9 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
+    // Sin registro público: `/api/auth/sign-up/email` dejaba a cualquiera crear
+    // una cuenta OPERATIVO. Los usuarios se crean por script o por el ADMIN.
+    disableSignUp: true,
   },
   session: {
     // La sesión se valida desde una cookie firmada durante 5 min; la BD solo

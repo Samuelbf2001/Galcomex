@@ -13,7 +13,7 @@ const OUT = path.resolve(__dirname, "..", "..", "capturas");
 async function login(page: Page) {
   await page.goto(`${BASE}/auth/login`, { waitUntil: "networkidle" });
   await page.fill("#email", "camila@galcomex.com");
-  await page.fill("#password", "Galcomex2026!");
+  await page.fill("#password", (process.env.CAPTURAS_PASSWORD ?? ""));
   await page.click('button[type="submit"]');
   await page.waitForURL("**/dashboard", { timeout: 15000 }).catch(() => {});
   await page.waitForLoadState("networkidle");

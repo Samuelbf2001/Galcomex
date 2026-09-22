@@ -40,7 +40,7 @@
 - [x] **Replicación completa:** `scripts/replicar-grupo-e-papis.ts` ahora avanza el borrador hasta **FACTURADO (BAQ-18288)** → el DO real es visible en Trámites, Facturación y Cartera, cuadrando al peso.
 
 ### Fix de bugs reportados por el usuario
-- [x] **Clientes — alta:** no tenía formulario (era solo lectura) → añadido `src/components/clientes/` con modal "Nuevo cliente" (POST `/api/clientes`, rol ADMIN). Login admin: camila@galcomex.com / `Galcomex2026!`.
+- [x] **Clientes — alta:** no tenía formulario (era solo lectura) → añadido `src/components/clientes/` con modal "Nuevo cliente" (POST `/api/clientes`, rol ADMIN). Login admin: camila@galcomex.com / `<contraseña asignada>`.
 - [x] **Clientes — ficha de detalle:** `clientes/[id]` con datos + tarifas (editar/agregar) + trámites/anticipos/facturas relacionados + editar cliente. Endpoint `GET/PATCH /api/clientes/[id]` ampliado.
 - [x] **Facturación** ya NO es placeholder: `src/components/facturacion/` con generador de borrador + **revisor split-screen** (soporte a la izquierda, líneas+desglose a la derecha) + flujo de estados BORRADOR→EN_REVISION→APROBADO→FACTURADO con número SIIGO. (visor de soporte = placeholder, MinIO en A2-T3).
 

@@ -1,7 +1,7 @@
 /**
  * Crea (o actualiza) el usuario del socio Lucho/Luis Martínez con rol SOCIO.
- * Login: lucho@galcomex.com / Galcomex2026!
- * Uso: npx tsx scripts/crear-usuario-socio.ts
+ * Login: lucho@galcomex.com / la contraseña de SOCIO_PASSWORD
+ * Uso: SOCIO_PASSWORD=... npx tsx scripts/crear-usuario-socio.ts
  */
 import "dotenv/config";
 import { Rol } from "@prisma/client";
@@ -10,7 +10,9 @@ import { hashPassword } from "better-auth/crypto";
 import { prisma } from "../src/lib/db/prisma";
 
 async function main() {
-  const passwordHash = await hashPassword("Galcomex2026!");
+  const password = process.env.SOCIO_PASSWORD;
+  if (!password) throw new Error("Define SOCIO_PASSWORD con la contraseña del socio");
+  const passwordHash = await hashPassword(password);
 
   const user = await prisma.user.upsert({
     where: { email: "lucho@galcomex.com" },

@@ -50,11 +50,11 @@ El sistema tiene 4 roles con permisos diferenciados:
 | Configuración SIIGO | ✅ | ✅ | | |
 
 **Usuarios del sistema (seed inicial):**
-- `camila@galcomex.com` / `Galcomex2026!` — ADMIN
-- `papa@galcomex.com` / `Galcomex2026!` — REVISOR
-- `karina@galcomex.com` / `Galcomex2026!` — OPERATIVO
-- `lucho@galcomex.com` / `Galcomex2026!` — OPERATIVO
-- `luismartinez@galcomex.com` / `Galcomex2026!` — SOCIO
+- `camila@galcomex.com` / `<contraseña asignada>` — ADMIN
+- `papa@galcomex.com` / `<contraseña asignada>` — REVISOR
+- `karina@galcomex.com` / `<contraseña asignada>` — OPERATIVO
+- `lucho@galcomex.com` / `<contraseña asignada>` — OPERATIVO
+- `luismartinez@galcomex.com` / `<contraseña asignada>` — SOCIO
 
 ---
 

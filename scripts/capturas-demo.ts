@@ -10,7 +10,7 @@ import path from "node:path";
 const BASE = "http://localhost:3003";
 const OUT = path.resolve(__dirname, "..", "..", "capturas");
 const EMAIL = "camila@galcomex.com";
-const PASSWORD = "Galcomex2026!";
+const PASSWORD = (process.env.CAPTURAS_PASSWORD ?? "");
 
 async function main() {
   mkdirSync(OUT, { recursive: true });

@@ -32,7 +32,7 @@ async function main() {
 
   // ── Sesión Camila (ADMIN) ────────────────────────────────────────────────
   const camila = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-  await login(camila, "camila@galcomex.com", "Galcomex2026!");
+  await login(camila, "camila@galcomex.com", (process.env.CAPTURAS_PASSWORD ?? ""));
 
   // DO importado del Excel de Lucho 1 (CTG26-0118): pestaña F. Proveedor
   await camila.goto(`${BASE}/tramites`, { waitUntil: "networkidle" });
@@ -58,7 +58,7 @@ async function main() {
 
   // ── Sesión Lucho (SOCIO) ─────────────────────────────────────────────────
   const lucho = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-  await login(lucho, "lucho@galcomex.com", "Galcomex2026!");
+  await login(lucho, "lucho@galcomex.com", (process.env.CAPTURAS_PASSWORD ?? ""));
 
   await lucho.goto(`${BASE}/tramites`, { waitUntil: "networkidle" });
   await shot(lucho, "13-portal-socio-tramites");

@@ -201,16 +201,25 @@ async function main() {
     },
   });
 
-  // Usuarios iniciales (5 fijos para single-tenant). Contraseña común a cambiar al primer login.
-  const passwordHash = await hashPassword("Galcomex2026!");
+  // Usuarios iniciales (5 fijos para single-tenant). Solo se siembran si
+  // SEED_USUARIOS_PASSWORD está definida (desarrollo). En producción el seed
+  // corre en cada arranque: no debe recrear cuentas borradas ni imponer una
+  // contraseña conocida. La contraseña ya no vive en el repo.
+  const passwordSemilla = process.env.SEED_USUARIOS_PASSWORD;
+  if (!passwordSemilla) {
+    console.log("• Usuarios iniciales omitidos (SEED_USUARIOS_PASSWORD no definida)");
+  }
+  const passwordHash = passwordSemilla ? await hashPassword(passwordSemilla) : "";
 
-  const usuarios: { email: string; name: string; rol: Rol }[] = [
-    { email: "camila@galcomex.com",       name: "Camila",         rol: Rol.ADMIN },
-    { email: "papa@galcomex.com",         name: "Papá",           rol: Rol.REVISOR },
-    { email: "karina@galcomex.com",       name: "Karina",         rol: Rol.OPERATIVO },
-    { email: "lucho@galcomex.com",        name: "Sr. Lucho",      rol: Rol.OPERATIVO },
-    { email: "luismartinez@galcomex.com", name: "Luis Martínez",  rol: Rol.SOCIO },
-  ];
+  const usuarios: { email: string; name: string; rol: Rol }[] = passwordSemilla
+    ? [
+        { email: "camila@galcomex.com",       name: "Camila",         rol: Rol.ADMIN },
+        { email: "papa@galcomex.com",         name: "Papá",           rol: Rol.REVISOR },
+        { email: "karina@galcomex.com",       name: "Karina",         rol: Rol.OPERATIVO },
+        { email: "lucho@galcomex.com",        name: "Sr. Lucho",      rol: Rol.OPERATIVO },
+        { email: "luismartinez@galcomex.com", name: "Luis Martínez",  rol: Rol.SOCIO },
+      ]
+    : [];
 
   for (const u of usuarios) {
     // Idempotente: el upsert solo refresca name/rol. La cuenta credencial

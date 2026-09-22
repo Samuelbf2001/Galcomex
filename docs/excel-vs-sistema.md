@@ -128,7 +128,7 @@ La relación de facturas por cliente con saldos, cruce y fechas de pago, que fil
 
 ## 10. Para validarlo tú mismo
 
-1. Entra a la plataforma con **camila@galcomex.com / `Galcomex2026!`**.
+1. Entra a la plataforma con **camila@galcomex.com / `<contraseña asignada>`**.
 2. Ve a **Trámites → DO.BUN26-0026** (cliente GRUPO E PAPIS). Verás sus pagos, documentos y la factura `BAQ-18288`.
 3. Compara cualquier valor con la hoja `BUN26-0026` del Excel: **debe coincidir al peso**.
 4. En **Cartera**, elige GRUPO E PAPIS: verás la factura con sus saldos cliente/LM.

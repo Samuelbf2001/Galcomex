@@ -63,7 +63,7 @@ El proyecto está en `C:\Users\samue\Galcomex\galcomex-app\`. El documento de re
   - `AuditLog` con antes/después en toda mutación crítica
   - `MatrizRecaudoPago` con los 8 canales de pago
   - `Parametro` para valores editables (comisión, IVA, 4x1000)
-- **`prisma/seed.ts`** listo: matriz de 8 canales, parámetros del sistema, usuario admin inicial (camila@galcomex.com / `Galcomex2026!`)
+- **`prisma/seed.ts`** listo: matriz de 8 canales, parámetros del sistema, usuario admin inicial (camila@galcomex.com / `<contraseña asignada>`)
 - **✅ Migración aplicada y al día** (`prisma migrate status` → up to date). Seed cargado (8 canales, 4 params, admin).
 
 ### Motor de cálculo (NÚCLEO CRÍTICO)

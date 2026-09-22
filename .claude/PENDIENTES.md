@@ -95,7 +95,7 @@ Integración post-agentes: `tsc` limpio · **403/403 tests TODOS en verde** (C2 
 ## A. Cierre de Sprint 11 — pasos manuales (no-código)
 
 ### A1. Usuarios en BD de producción — automático vía seed
-**Estado (2026-06-25):** ya NO requiere script manual. `docker-entrypoint.sh` corre `prisma migrate deploy` + `prisma/seed.ts` en cada arranque, y el seed provisiona los 5 usuarios fijos con contraseña `Galcomex2026!`:
+**Estado (2026-06-25):** ya NO requiere script manual. `docker-entrypoint.sh` corre `prisma migrate deploy` + `prisma/seed.ts` en cada arranque, y el seed provisiona los 5 usuarios fijos con contraseña `<contraseña asignada>`:
 `camila` (ADMIN), `papa` (REVISOR), `karina` (OPERATIVO), `lucho` (OPERATIVO), `luismartinez` (SOCIO).
 **Idempotencia:** el seed solo crea la cuenta credencial si el usuario NO tiene una; nunca pisa contraseñas ya cambiadas. Reiniciar el contenedor es seguro.
 **Ojo (naming):** el único socio es `luismartinez@galcomex.com` (rol SOCIO). Existe además `lucho@galcomex.com` como OPERATIVO — confirmar con Camila si "Lucho" y "Luis Martínez" son la misma persona o dos cuentas distintas a propósito. `scripts/crear-usuario-socio.ts` queda como respaldo, ya no es necesario en el flujo normal.
