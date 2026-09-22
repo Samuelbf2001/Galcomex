@@ -9,6 +9,8 @@ import { randomUUID } from "node:crypto";
 import { type Beneficiario, CanalPago, EstadoBorrador, type EstadoTramite, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite, type PagoTramiteBeneficiario } from "@prisma/client";
 
 import { calcularSaldosIntermedios } from "@/lib/calculations/motor-factura";
+import { tiene } from "@/lib/capacidades/resolver";
+import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
 import {
   FacturaProveedorNoEncontradaError,
@@ -353,6 +355,20 @@ function soloCostosPropios(facturas: { repercutible: boolean }[]): boolean {
   return facturas.length > 0 && facturas.every((f) => !f.repercutible);
 }
 
+/**
+ * "Sin anticipo no hay pagos" solo tiene sentido para las empresas que trabajan
+ * con fondo previo (capacidad `anticipos_cliente`). Las que van a crédito
+ * (Polyrec ZF, CW ASIA, Sesderma, Coldex, Pierco…: 0 anticipos en 2026 según
+ * Siigo) pagan el puerto/VUCE con plata de Galcomex y se les cobra en la
+ * factura; exigirles anticipo bloqueaba el libro de pagos (simulación del
+ * 2026-09-21).
+ */
+async function exigeAnticipo(tx: Prisma.TransactionClient, tramiteId: string): Promise<boolean> {
+  const tramite = await tx.tramiteDO.findUnique({ where: { id: tramiteId }, select: { clienteId: true } });
+  if (!tramite) return true;
+  return tiene(await capacidadesDeEmpresa(tramite.clienteId), "anticipos_cliente");
+}
+
 export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
   const {
     tramiteId,
@@ -376,7 +392,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
       where: { tramiteId },
       select: { id: true },
     });
-    if (!anticipo) {
+    if (!anticipo && (await exigeAnticipo(tx, tramiteId))) {
       const facturasDelPago = facturaProveedorIds.length
         ? await tx.facturaProveedor.findMany({
             where: { id: { in: facturaProveedorIds } },
@@ -1082,14 +1098,15 @@ export async function crearPagoMultiDO(
     }
 
     // Regla "sin anticipo no hay pagos" — aplica a CADA DO del grupo, salvo
-    // a los que solo tienen costos propios (ver `soloCostosPropios`).
+    // a los que solo tienen costos propios (ver `soloCostosPropios`) y a las
+    // empresas que van a crédito (ver `exigeAnticipo`).
     for (const [tramiteId, grupo] of porTramite) {
       if (grupo.soloCostosPropios) continue;
       const anticipo = await tx.aplicacionAnticipo.findFirst({
         where: { tramiteId },
         select: { id: true },
       });
-      if (!anticipo) {
+      if (!anticipo && (await exigeAnticipo(tx, tramiteId))) {
         throw new SinAnticipoAplicadoMultiDOError(tramiteId, grupo.consecutivo);
       }
     }

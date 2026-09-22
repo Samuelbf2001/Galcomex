@@ -780,6 +780,31 @@ describe("pagos service con Postgres local", () => {
     ).rejects.toThrow(SinAnticipoAplicadoError);
   });
 
+  it("una empresa a crédito (sin la capacidad anticipos_cliente) paga terceros sin anticipo", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1260);
+    // Polyrec ZF, CW ASIA, Sesderma, Coldex…: Galcomex adelanta el puerto y lo cobra en la factura.
+    await prisma.empresaCapacidad.upsert({
+      where: { empresaId_codigo: { empresaId: db.clienteId, codigo: "anticipos_cliente" } },
+      create: { empresaId: db.clienteId, codigo: "anticipos_cliente", habilitado: false },
+      update: { habilitado: false },
+    });
+    try {
+      const deTercero = await crearFacturaProveedorTest(db, tramiteId, `${runId}-CRED`, 262_750n);
+      const pago = await crearPago({
+        tramiteId,
+        concepto: "VACIO SPRB FACT. 1003997130",
+        valor: 262_750n,
+        canalPago: CanalPago.PSE,
+        facturaProveedorIds: [deTercero],
+        usuarioId: db.userId,
+      });
+      expect(pago.valor).toBe(262_750n);
+    } finally {
+      await prisma.empresaCapacidad.deleteMany({ where: { empresaId: db.clienteId, codigo: "anticipos_cliente" } });
+    }
+  });
+
   it("crearPago con anticipo no verificado (REALIZADO) se permite sin error", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1300);

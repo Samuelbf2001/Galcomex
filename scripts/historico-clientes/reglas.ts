@@ -91,7 +91,7 @@ export const CLIENTES: Record<string, ClienteCarpeta> = {
   ORTHOFRACT: { buscar: "ORTHOFRACT", nombre: "ORTHOFRACT SAS", agencia: "COLDEX" },
   "INVERSIONES TRIPLEX": { buscar: "TRIPLEX", nombre: "INVERSIONES TRIPLEX Y DECORACIONES S.A.S.", agencia: "COLDEX" },
   "INVERSIONES KASANA": { buscar: "INVERSIONES KASANA", nombre: "INVERSIONES KASANA SAS", agencia: "COLDEX" },
-  "DISTRIBUIDORA EL TAPICERO": { buscar: "TAPICERO", nombre: "DISTRIBUIDORA EL TAPICERO", agencia: "COLDEX" },
+  "DISTRIBUIDORA EL TAPICERO": { buscar: "TAPICERO", nombre: "DISTRIBUIDORA EL TAPICERO S.A.S.", agencia: "COLDEX" },
 };
 
 // ─── Carpeta del DO ──────────────────────────────────────────────────────────
