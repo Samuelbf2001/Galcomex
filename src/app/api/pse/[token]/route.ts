@@ -17,6 +17,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       id: true,
       expiresAt: true,
       respondidaAt: true,
+      anuladaAt: true,
       tramite: { select: { consecutivo: true } },
     },
   });
@@ -25,12 +26,13 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: "Link inválido o expirado." }, { status: 404 });
   }
 
-  if (solicitud.expiresAt < new Date()) {
-    return NextResponse.json({ error: "Este link ha expirado." }, { status: 410 });
-  }
-
   if (solicitud.respondidaAt) {
     return NextResponse.json({ error: "Este link ya fue usado." }, { status: 409 });
+  }
+
+  // Reemplazada por una solicitud más nueva del mismo trámite = vencida para quien la abre.
+  if (solicitud.expiresAt < new Date() || solicitud.anuladaAt) {
+    return NextResponse.json({ error: "Este link ha expirado." }, { status: 410 });
   }
 
   return jsonResponse({ consecutivo: solicitud.tramite.consecutivo });
@@ -52,27 +54,31 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
   const solicitud = await db.pseSolicitud.findUnique({
     where: { token },
-    select: { id: true, expiresAt: true, respondidaAt: true },
+    select: { id: true, expiresAt: true, respondidaAt: true, anuladaAt: true },
   });
 
   if (!solicitud) {
     return NextResponse.json({ error: "Link inválido o expirado." }, { status: 404 });
   }
 
-  if (solicitud.expiresAt < new Date()) {
-    return NextResponse.json({ error: "Este link ha expirado." }, { status: 410 });
-  }
-
   if (solicitud.respondidaAt) {
     return NextResponse.json({ error: "Este link ya fue usado." }, { status: 409 });
   }
 
+  if (solicitud.expiresAt < new Date() || solicitud.anuladaAt) {
+    return NextResponse.json({ error: "Este link ha expirado." }, { status: 410 });
+  }
+
   const codigoPseEnc = encryptPseCode(parsed.data.codigo);
 
-  await db.pseSolicitud.update({
-    where: { id: solicitud.id },
-    data: { codigoPseEnc, respondidaAt: new Date() },
+  // Condicionado: si por WhatsApp ya llegó otro código, el del enlace no lo pisa.
+  const { count } = await db.pseSolicitud.updateMany({
+    where: { id: solicitud.id, respondidaAt: null, anuladaAt: null },
+    data: { codigoPseEnc, respondidaAt: new Date(), canal: "ENLACE" },
   });
+  if (count === 0) {
+    return NextResponse.json({ error: "Este link ya fue usado." }, { status: 409 });
+  }
 
   return jsonResponse({ ok: true });
 }

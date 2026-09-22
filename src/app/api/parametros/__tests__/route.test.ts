@@ -42,6 +42,13 @@ vi.mock("@/lib/parametros/service", () => ({
       this.name = "ParametroSiigoProtegidoError";
     }
   },
+  ParametroValorInvalidoError: class ParametroValorInvalidoError extends Error {
+    status = 422;
+    constructor(mensaje: string) {
+      super(mensaje);
+      this.name = "ParametroValorInvalidoError";
+    }
+  },
 }));
 
 import { auth } from "@/lib/auth/auth";

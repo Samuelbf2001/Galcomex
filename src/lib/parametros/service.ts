@@ -11,6 +11,7 @@
  */
 
 import { prisma } from "@/lib/db/prisma";
+import { CLAVE_APROBADORES_PSE, parsearAprobadores } from "@/lib/whatsapp/aprobadores";
 
 export type ParametrosSistema = {
   tasaIva: bigint;        // 19n para 19%
@@ -77,6 +78,23 @@ export class ParametroNoEncontradoError extends Error {
   }
 }
 
+/** El valor no cumple el formato de su clave (hoy: WHATSAPP_APROBADORES_PSE). */
+export class ParametroValorInvalidoError extends Error {
+  public readonly status = 422;
+  constructor(mensaje: string) {
+    super(mensaje);
+    this.name = "ParametroValorInvalidoError";
+  }
+}
+
+/** Validadores por clave. Un parámetro sin validador acepta cualquier texto no vacío. */
+function validarValorParametro(clave: string, valor: string): void {
+  if (clave === CLAVE_APROBADORES_PSE) {
+    const resultado = parsearAprobadores(valor);
+    if (!resultado.ok) throw new ParametroValorInvalidoError(resultado.error);
+  }
+}
+
 export class ParametroSiigoProtegidoError extends Error {
   public readonly status = 400;
   constructor(clave: string) {
@@ -100,6 +118,7 @@ export async function actualizarParametro(
   if (esClaveProtegida(clave)) {
     throw new ParametroSiigoProtegidoError(clave);
   }
+  validarValorParametro(clave, valor);
 
   return prisma.$transaction(async (tx) => {
     const actual = await tx.parametro.findUnique({ where: { clave } });

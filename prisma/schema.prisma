@@ -1033,7 +1033,57 @@ model PseSolicitud {
   respondidaAt  DateTime?
   createdAt     DateTime  @default(now())
 
+  // Canal WhatsApp (Kapso): contexto que viaja en la plantilla y quién respondió.
+  valor         BigInt? // COP entero del pago en curso (solo informativo para el aprobador)
+  beneficiario  String?
+  concepto      String?
+  respondidaPor String? // Nombre del aprobador que mandó el código
+  canal         String? // "WHATSAPP" | "ENLACE" — por dónde llegó el código
+  noPuedeAt     DateTime? // Un aprobador tocó "No puedo ahora"
+  noPuedePor    String?
+  anuladaAt     DateTime? // Reemplazada por una solicitud más nueva del mismo trámite
+
+  mensajes WhatsappMensaje[]
+
   @@map("pse_solicitud")
+}
+
+// ─── WhatsApp (Kapso) ────────────────────────────────────────────────────────
+// Bitácora de cada mensaje que la plataforma manda por WhatsApp y de lo que el
+// destinatario contestó. El catálogo de mensajes vive en src/lib/whatsapp/catalogo.ts.
+model WhatsappMensaje {
+  id             String        @id @default(cuid())
+  tipo           String // Clave del catálogo: PSE_CODIGO, PSE_RECIBIDO, ...
+  pseSolicitudId String?
+  pseSolicitud   PseSolicitud? @relation(fields: [pseSolicitudId], references: [id], onDelete: Cascade)
+  destinatario   String // Teléfono normalizado 57XXXXXXXXXX
+  nombreDestino  String?
+  wamid          String?       @unique // Id de Meta del envío: correlaciona acuses y respuestas citadas
+  estado         String        @default("PENDIENTE") // PENDIENTE | ENVIADO | ENTREGADO | LEIDO | FALLIDO
+  error          String? // Código del fallo; nunca el teléfono ni el contenido
+  respuesta      String? // CODIGO | NO_PUEDO — qué contestó el destinatario a este mensaje
+  respondidoAt   DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([destinatario, createdAt])
+  @@index([pseSolicitudId])
+  @@map("whatsapp_mensaje")
+}
+
+// Mensajes que entran por el webhook de Kapso. Solo metadatos: el cuerpo NUNCA se
+// guarda (puede traer el código del token). Sirve para deduplicar (Kapso entrega
+// at-least-once) y para auditar qué se hizo con cada uno.
+model WhatsappEntrante {
+  id        String   @id @default(cuid())
+  wamid     String   @unique
+  remitente String // Teléfono normalizado
+  tipo      String // text | button | interactive | otro
+  resultado String // procesado:<accion> | ignorado:<motivo>
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("whatsapp_entrante")
 }
 
 // ─── Parámetros del sistema ───────────────────────────────────────────────────

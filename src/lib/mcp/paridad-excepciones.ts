@@ -43,6 +43,7 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
   intencional("POST", "/api/login", "Login legacy; el MCP usa Better Auth"),
   intencional("GET", "/api/pse/[param]", "Landing pública del código PSE (María Camila aprueba desde WhatsApp)"),
   intencional("POST", "/api/pse/[param]", "Landing pública del código PSE"),
+  intencional("POST", "/api/whatsapp/kapso", "Webhook de Kapso (firmado HMAC): lo llama WhatsApp, no un usuario"),
   intencional("GET", "/api/tramites/[param]/pse-codigo", "Flujo PSE con token de 30s, no apto para agentes"),
   intencional("POST", "/api/tramites/[param]/pse-token", "Flujo PSE con token de 30s, no apto para agentes"),
   intencional("GET", "/api/compartir/[param]", "Enlace público de documento, sin sesión"),

@@ -14,6 +14,7 @@ import { jsonResponse } from "@/lib/http/json";
 import {
   ParametroNoEncontradoError,
   ParametroSiigoProtegidoError,
+  ParametroValorInvalidoError,
   actualizarParametro,
 } from "@/lib/parametros/service";
 
@@ -55,6 +56,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     return jsonResponse({ parametro });
   } catch (error) {
     if (error instanceof ParametroNoEncontradoError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof ParametroValorInvalidoError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
     if (error instanceof ParametroSiigoProtegidoError) {

@@ -4,7 +4,9 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
+  Copy,
   Loader2,
+  MessageCircle,
   Lock,
   Plus,
   Search,
@@ -19,7 +21,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
-import { describirError, useToast } from "@/components/ui/toast";
+import { describirError, useToast, type ToastVariant } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
 
 import {
@@ -620,6 +622,92 @@ function FacturasProveedorCombobox({
 // ---------------------------------------------------------------------------
 
 type PseStep = "form" | "soporte";
+
+// ─── WhatsApp del código PSE (Kapso) ─────────────────────────────────────────
+type EstadoEnvioWhatsapp = "PENDIENTE" | "ENVIADO" | "ENTREGADO" | "LEIDO" | "FALLIDO";
+type EnvioWhatsapp = { nombre: string; estado: EstadoEnvioWhatsapp; error: string | null; respuesta: string | null };
+type EstadoCanalWhatsapp = "ENVIADO" | "PARCIAL" | "FALLIDO" | "NO_CONFIGURADO" | "SIN_APROBADORES";
+type EstadoPse = {
+  envios: EnvioWhatsapp[];
+  noPuede: { por: string | null } | null;
+  respondidaPor: string | null;
+  canal: string | null;
+};
+
+const ETIQUETA_ENVIO: Record<EstadoEnvioWhatsapp, string> = {
+  PENDIENTE: "Enviando…",
+  ENVIADO: "Enviado",
+  ENTREGADO: "Entregado",
+  LEIDO: "Leído",
+  FALLIDO: "No llegó",
+};
+
+function avisoSolicitudPse(
+  estado: EstadoCanalWhatsapp,
+  envios: EnvioWhatsapp[],
+): { title: string; description: string; variant: ToastVariant } {
+  const nombres = (lista: EnvioWhatsapp[]) => lista.map((e) => e.nombre).join(", ");
+  switch (estado) {
+    case "ENVIADO":
+      return {
+        title: "Solicitud enviada por WhatsApp",
+        description: `Le llegó a ${nombres(envios)}. El código aparece aquí apenas respondan.`,
+        variant: "info",
+      };
+    case "PARCIAL":
+      return {
+        title: "WhatsApp enviado solo a algunos",
+        description: `No le llegó a ${nombres(envios.filter((e) => e.estado === "FALLIDO"))}. Si nadie responde, copia el enlace.`,
+        variant: "info",
+      };
+    case "FALLIDO":
+      return {
+        title: "No salió el WhatsApp",
+        description: "Copia el enlace y mándalo a mano mientras se revisa el canal.",
+        variant: "error",
+      };
+    case "SIN_APROBADORES":
+      return {
+        title: "No hay aprobadores de WhatsApp",
+        description: "Configúralos en Configuración → Parámetros (WHATSAPP_APROBADORES_PSE). Mientras tanto copia el enlace.",
+        variant: "info",
+      };
+    case "NO_CONFIGURADO":
+      return {
+        title: "WhatsApp sin configurar",
+        description: "Copia el enlace y mándalo a mano a quien tenga el token.",
+        variant: "info",
+      };
+  }
+}
+
+function EstadoEnviosPse({ estado }: { estado: EstadoPse | null }) {
+  if (!estado || estado.envios.length === 0) return null;
+  return (
+    <ul className="space-y-1" aria-label="Estado del WhatsApp por aprobador">
+      {estado.envios.map((envio, i) => (
+        <li key={`${envio.nombre}-${i}`} className="flex items-center justify-between gap-3 text-xs">
+          <span className="flex items-center gap-1.5 text-slate-700">
+            <MessageCircle className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+            {envio.nombre}
+          </span>
+          <span
+            className={
+              envio.estado === "FALLIDO" || envio.respuesta === "NO_PUEDO"
+                ? "font-medium text-rose-700"
+                : envio.estado === "LEIDO" || envio.estado === "ENTREGADO"
+                  ? "font-medium text-emerald-700"
+                  : "text-slate-500"
+            }
+            title={envio.error ?? undefined}
+          >
+            {envio.respuesta === "NO_PUEDO" ? "No puede ahora" : ETIQUETA_ENVIO[envio.estado]}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 type PendingSubmit = {
   concepto: string;
   numSoporte: string | null;
@@ -678,6 +766,8 @@ export function NuevoPagoModal({
   const [isRequestingToken, setIsRequestingToken] = useState(false);
   const [pseCodigoRecibido, setPseCodigoRecibido] = useState<string | null>(null);
   const [pseRetryRemaining, setPseRetryRemaining] = useState(0);
+  const [pseEstado, setPseEstado] = useState<EstadoPse | null>(null);
+  const [pseEnlace, setPseEnlace] = useState<string | null>(null);
   const [soporteFile, setSoporteFile] = useState<File | null>(null);
   const [isUploadingDoc, setIsUploadingDoc] = useState(false);
 
@@ -688,14 +778,21 @@ export function NuevoPagoModal({
   const [comprobanteComercioFile, setComprobanteComercioFile] = useState<File | null>(null);
   const [isUploadingComprobantes, setIsUploadingComprobantes] = useState(false);
 
-  // Polling: espera el código PSE que María Camila ingresa en su landing
+  // Polling: espera el código PSE (llega por WhatsApp o por el enlace) y el
+  // estado de cada WhatsApp enviado a los aprobadores.
   useEffect(() => {
     if (pseStep !== "soporte" || pseCodigoRecibido) return;
     const interval = setInterval(() => {
       fetch(`/api/tramites/${tramiteId}/pse-codigo`, { method: "GET" })
         .then(async (r) => {
           if (!r.ok) return;
-          const data = (await r.json()) as { ready: boolean; codigo?: string };
+          const data = (await r.json()) as { ready: boolean; codigo?: string } & Partial<EstadoPse>;
+          setPseEstado({
+            envios: data.envios ?? [],
+            noPuede: data.noPuede ?? null,
+            respondidaPor: data.respondidaPor ?? null,
+            canal: data.canal ?? null,
+          });
           if (data.ready && data.codigo) {
             setPseCodigoRecibido(data.codigo);
           }
@@ -804,24 +901,43 @@ export function NuevoPagoModal({
     setIsRequestingToken(true);
     setError(null);
     try {
+      // Contexto del pago para que el aprobador sepa qué está autorizando.
+      const beneficiario = beneficiariosSel.map((b) => b.nombre).join(", ").slice(0, 120);
       const resp = await fetch(`/api/tramites/${tramiteId}/pse-token`, {
         method: "POST",
-        headers: { accept: "application/json" },
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({
+          valor: payload.valor,
+          concepto: payload.concepto.slice(0, 200) || undefined,
+          beneficiario: beneficiario || undefined,
+        }),
       });
-      if (!resp.ok) throw new Error("No fue posible notificar a María Camila.");
+      if (!resp.ok) throw new Error("No fue posible crear la solicitud del código.");
+      const data = (await resp.json()) as {
+        enlace: string;
+        whatsapp: { estado: EstadoCanalWhatsapp; envios: EnvioWhatsapp[] };
+      };
       setPseCodigoRecibido(null);
+      setPseEnlace(data.enlace);
+      setPseEstado({ envios: data.whatsapp.envios, noPuede: null, respondidaPor: null, canal: null });
       setPsePendingPayload(payload);
       setPseStep("soporte");
       setPseRetryRemaining(30);
-      toast({
-        title: "Solicitud PSE enviada",
-        description: "María Camila recibió el enlace para ingresar el código.",
-        variant: "info",
-      });
+      toast(avisoSolicitudPse(data.whatsapp.estado, data.whatsapp.envios));
     } catch (caught) {
       setError(describirError(caught, "Error al solicitar el pago PSE."));
     } finally {
       setIsRequestingToken(false);
+    }
+  }
+
+  async function copiarEnlacePse() {
+    if (!pseEnlace) return;
+    try {
+      await navigator.clipboard.writeText(pseEnlace);
+      toast({ title: "Enlace copiado", description: "Pégalo en el chat de quien tenga el token.", variant: "success" });
+    } catch {
+      toast({ title: "No se pudo copiar", description: pseEnlace, variant: "error" });
     }
   }
 
@@ -863,7 +979,7 @@ export function NuevoPagoModal({
 
     let payload: PendingSubmit = { concepto, numSoporte: null, canalPago, valor: valorBig };
 
-    // Flujo PSE: notifica a María Camila y pasa directo a adjuntar soporte
+    // Flujo PSE: pide el código a los aprobadores (WhatsApp) y pasa a adjuntar soporte
     // (esa captura de PSE se registra como comprobante de comercio — ver
     // finalizarPsePago).
     if (canalPago === "PSE") {
@@ -1138,7 +1254,7 @@ export function NuevoPagoModal({
             </form>
           ) : null}
 
-          {/* Paso 2: esperar código PSE de María Camila + adjuntar soporte */}
+          {/* Paso 2: esperar el código PSE (WhatsApp o enlace) + adjuntar soporte */}
           {pseStep === "soporte" ? (
             <div className="space-y-4">
 
@@ -1148,9 +1264,37 @@ export function NuevoPagoModal({
                   <div className="flex items-center gap-3">
                     <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-600" aria-hidden="true" />
                     <div>
-                      <p className="text-sm font-medium text-amber-800">Esperando a María Camila…</p>
-                      <p className="text-xs text-amber-600">Se le envió el link para que ingrese el código PSE. Esta pantalla se actualiza automáticamente.</p>
+                      <p className="text-sm font-medium text-amber-800">Esperando el código del token…</p>
+                      <p className="text-xs text-amber-600">Pueden responder por WhatsApp o desde el enlace. Esta pantalla se actualiza sola.</p>
                     </div>
+                  </div>
+                  <EstadoEnviosPse estado={pseEstado} />
+                  {pseEstado?.noPuede ? (
+                    <p className="flex items-center gap-2 text-xs font-medium text-rose-700">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      {pseEstado.noPuede.por ?? "El aprobador"} no puede en este momento.
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {pseEnlace ? (
+                      <button
+                        type="button"
+                        onClick={() => void copiarEnlacePse()}
+                        className="inline-flex h-8 items-center gap-2 border border-amber-300 bg-white px-3 text-xs font-semibold text-amber-800 transition hover:bg-amber-100"
+                      >
+                        <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                        Copiar enlace
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => void (psePendingPayload ? notificarCamilaPse(psePendingPayload) : Promise.resolve())}
+                      disabled={isRequestingToken || pseRetryRemaining > 0 || !psePendingPayload}
+                      className="inline-flex h-8 items-center gap-2 border border-amber-300 bg-white px-3 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isRequestingToken ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+                      {pseRetryRemaining > 0 ? `Reenviar en ${pseRetryRemaining}s` : "Reenviar solicitud"}
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -1158,7 +1302,11 @@ export function NuevoPagoModal({
                   <div className="flex items-center gap-3">
                     <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
                     <div>
-                      <p className="text-xs text-emerald-600">Código PSE recibido</p>
+                      <p className="text-xs text-emerald-600">
+                        Código PSE recibido
+                        {pseEstado?.respondidaPor ? ` de ${pseEstado.respondidaPor}` : ""}
+                        {pseEstado?.canal === "WHATSAPP" ? " por WhatsApp" : pseEstado?.canal === "ENLACE" ? " por el enlace" : ""}
+                      </p>
                       <p className="text-lg font-bold tracking-widest text-emerald-800">{pseCodigoRecibido}</p>
                     </div>
                   </div>
