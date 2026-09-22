@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Clock,
   FileText,
+  Receipt,
   RotateCcw,
   TrendingUp,
   Wallet,
@@ -576,6 +577,18 @@ export function DashboardWorkspace() {
           }
           href="/anticipos?con_saldo=true"
           icon={<FileText className="h-4 w-4" aria-hidden="true" />}
+        />
+        <MetricCard
+          label="Pagos sin comprobante"
+          value={String(data.cantidadPagosSinComprobante)}
+          sub={
+            data.cantidadPagosSinComprobante > 0
+              ? "Falta el comprobante bancario"
+              : "Todos con comprobante"
+          }
+          href="/pagos"
+          icon={<Receipt className="h-4 w-4" aria-hidden="true" />}
+          alert={data.cantidadPagosSinComprobante > 0}
         />
       </div>
 

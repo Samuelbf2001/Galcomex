@@ -24,7 +24,7 @@ type CrearPagoInput = {
   /** IDs de beneficiarios a vincular (N↔N). */
   beneficiarioIds?: string[];
   numSoporte?: string | null;
-  /** Comprobante bancario (Bancolombia) — el que vale ante reclamos. Opcional (no bloquea el pago). */
+  /** Comprobante bancario — el que vale ante reclamos. Opcional (no bloquea el pago). */
   documentoId?: string | null;
   /** Comprobante de la página del comercio (puerto/PSE) — opcional, complementa el bancario. */
   comprobanteComercioId?: string | null;
@@ -72,6 +72,12 @@ type PagoConRelaciones = PagoTramite & {
   bancoBeneficiario: BeneficiarioMinimo | null;
   /** Otros DOs del mismo grupoPagoId (vacío si el pago no pertenece a un grupo multi-DO). */
   grupoOtrosDOs: GrupoPagoDOInfo[];
+  /**
+   * true cuando el pago NO tiene comprobante bancario (`documentoId` null).
+   * Derivado por el backend para que la UI no tenga que deducirlo — dispara el
+   * distintivo ámbar "Falta comprobante" (decisión: alertar, no bloquear).
+   */
+  faltaComprobante: boolean;
 };
 
 /**
@@ -120,6 +126,8 @@ export type PagoGlobalRow = PagoTramite & {
   beneficiarios: (PagoTramiteBeneficiario & { beneficiario: BeneficiarioMinimo })[];
   /** Otros DOs del mismo grupoPagoId (vacío si el pago no pertenece a un grupo multi-DO). */
   grupoOtrosDOs: GrupoPagoDOInfo[];
+  /** true cuando el pago NO tiene comprobante bancario (`documentoId` null). */
+  faltaComprobante: boolean;
 };
 
 type ListarPagosResult = {
@@ -128,6 +136,16 @@ type ListarPagosResult = {
   costosBancarios: bigint;
   totalPendiente: bigint;
 };
+
+/**
+ * Deriva si a un pago le falta el comprobante bancario (el que vale ante
+ * reclamos). No bloquea el pago (caso Karina) — solo dispara el distintivo
+ * ámbar en la UI. Centralizado aquí para que getLibroPagos, listarPagosGlobal
+ * y getPagoConBeneficiario calculen el mismo criterio.
+ */
+function calcularFaltaComprobante(documentoId: string | null): boolean {
+  return documentoId === null;
+}
 
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(
@@ -529,7 +547,7 @@ export async function actualizarPago(
     fechaRealPago?: Date | null;
     /** Banco (Beneficiario) para el 4x1000. null = limpiar. */
     bancoBeneficiarioId?: string | null;
-    /** Comprobante bancario (Bancolombia). null = limpiar. */
+    /** Comprobante bancario. null = limpiar. */
     documentoId?: string | null;
     /** Comprobante de la página del comercio (puerto/PSE), opcional. null = limpiar. */
     comprobanteComercioId?: string | null;
@@ -719,7 +737,7 @@ export async function verificarPago(
 }
 
 export async function getPagoConBeneficiario(pagoId: string) {
-  return prisma.pagoTramite.findUnique({
+  const pago = await prisma.pagoTramite.findUnique({
     where: { id: pagoId },
     include: {
       beneficiarios: {
@@ -733,6 +751,10 @@ export async function getPagoConBeneficiario(pagoId: string) {
       bancoBeneficiario: { select: { id: true, nombre: true, nit: true } },
     },
   });
+
+  if (!pago) return null;
+
+  return { ...pago, faltaComprobante: calcularFaltaComprobante(pago.documentoId) };
 }
 
 /**
@@ -832,6 +854,7 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
   const pagosConGrupo = pagos.map((p) => ({
     ...p,
     grupoOtrosDOs: grupoInfo.get(p.id) ?? [],
+    faltaComprobante: calcularFaltaComprobante(p.documentoId),
   }));
 
   return {
@@ -894,6 +917,7 @@ export async function listarPagosGlobal(
   const pagosConGrupo = pagos.map((p) => ({
     ...p,
     grupoOtrosDOs: grupoInfo.get(p.id) ?? [],
+    faltaComprobante: calcularFaltaComprobante(p.documentoId),
   }));
 
   return {
@@ -978,7 +1002,7 @@ export type CrearPagoMultiDOInput = {
   canalPago: CanalPago;
   fechaRealPago?: Date | null;
   concepto?: string;
-  /** Comprobante bancario (Bancolombia) — compartido por todos los pagos del grupo. */
+  /** Comprobante bancario — compartido por todos los pagos del grupo. */
   documentoId?: string | null;
   /** Comprobante de comercio (opcional) — compartido por todos los pagos del grupo. */
   comprobanteComercioId?: string | null;

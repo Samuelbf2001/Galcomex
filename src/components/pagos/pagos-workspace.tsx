@@ -8,6 +8,7 @@ import {
   Plus,
   RotateCcw,
   Trash2,
+  Upload,
   Users,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -27,6 +28,7 @@ import {
   fetchTramiteOptions,
   formatCOP,
   formatDate,
+  subirComprobante,
   updatePago,
 } from "@/components/pagos/pagos-global-api";
 import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
@@ -305,9 +307,19 @@ type FilaPagoProps = {
   ) => void;
   onBlur: (id: string) => void;
   onDelete: (fila: FilaPago) => void;
+  /** Sube y adjunta el comprobante bancario a un pago ya guardado. */
+  onAdjuntarComprobante: (fila: FilaPago, file: File) => void;
 };
 
-function FilaPagoRow({ fila, readOnly, isDeleting, onChange, onBlur, onDelete }: FilaPagoProps) {
+function FilaPagoRow({
+  fila,
+  readOnly,
+  isDeleting,
+  onChange,
+  onBlur,
+  onDelete,
+  onAdjuntarComprobante,
+}: FilaPagoProps) {
   const etiqueta = `pago "${fila.concepto}" del DO ${fila.consecutivo}`;
 
   return (
@@ -342,16 +354,39 @@ function FilaPagoRow({ fila, readOnly, isDeleting, onChange, onBlur, onDelete }:
               className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
             />
           )}
-          {!fila.documentoId || fila.grupoPagoId ? (
+          {fila.faltaComprobante || fila.grupoPagoId ? (
             <div className="flex flex-wrap gap-1 px-1 pb-0.5">
-              {!fila.documentoId ? (
+              {fila.faltaComprobante ? (
                 <span
                   className="inline-flex items-center gap-1 border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
                   title="Pago sin comprobante bancario"
                 >
                   <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-                  Sin comprobante
+                  Falta comprobante
                 </span>
+              ) : null}
+              {fila.faltaComprobante && !readOnly ? (
+                <label
+                  className={`inline-flex w-fit items-center gap-1 border border-amber-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-50 ${
+                    fila.saving ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                  }`}
+                  title="Adjuntar el comprobante bancario a este pago"
+                >
+                  <Upload className="h-3 w-3" aria-hidden="true" />
+                  Adjuntar comprobante
+                  <input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    disabled={fila.saving}
+                    className="hidden"
+                    aria-label={`Adjuntar comprobante bancario del ${etiqueta}`}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) onAdjuntarComprobante(fila, file);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
               ) : null}
               {fila.grupoPagoId ? (
                 <span
@@ -660,6 +695,43 @@ export function PagosWorkspace() {
     }
   }
 
+  /**
+   * Adjunta el comprobante bancario a un pago YA guardado (decisión de
+   * negocio: se puede registrar el pago sin comprobante y adjuntarlo después).
+   * Mismo componente de subida que usa NuevoPagoModal (subirComprobante).
+   */
+  async function handleAdjuntarComprobante(fila: FilaPago, file: File) {
+    setFilas((prev) => prev.map((f) => (f.id === fila.id ? { ...f, saving: true, errorFila: null } : f)));
+
+    try {
+      const documento = await subirComprobante(fila.tramiteId, "COMPROBANTE_BANCARIO", file);
+      const updated = await updatePago(fila.tramiteId, fila.id, { documentoId: documento.id });
+
+      setFilas((prev) =>
+        prev.map((f) =>
+          f.id === fila.id
+            ? {
+                ...f,
+                documentoId: updated.documentoId,
+                faltaComprobante: updated.faltaComprobante,
+                saving: false,
+                errorFila: null,
+              }
+            : f,
+        ),
+      );
+      toast({
+        title: "Comprobante adjuntado",
+        description: `${updated.concepto} · ${fila.consecutivo}`,
+        variant: "success",
+      });
+    } catch (caught) {
+      const msg = describirError(caught, "Error al adjuntar el comprobante.");
+      setFilas((prev) => prev.map((f) => (f.id === fila.id ? { ...f, saving: false, errorFila: msg } : f)));
+      toast({ title: "No se pudo adjuntar el comprobante", description: msg, variant: "error" });
+    }
+  }
+
   // Recalcula los totales de las tarjetas a partir de las filas actuales
   function setReloadTotales() {
     setFilas((prev) => {
@@ -900,6 +972,7 @@ export function PagosWorkspace() {
                   onChange={handleFieldChange}
                   onBlur={handleBlurField}
                   onDelete={(f) => void handleDelete(f)}
+                  onAdjuntarComprobante={(f, file) => void handleAdjuntarComprobante(f, file)}
                 />
               ))}
             </tbody>

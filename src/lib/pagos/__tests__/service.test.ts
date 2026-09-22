@@ -898,6 +898,60 @@ describe("pagos service con Postgres local", () => {
     ).rejects.toThrow(DocumentoNoEncontradoParaPagoError);
   });
 
+  // ─── Adjuntar comprobante bancario después de guardar el pago ────────────
+  // Decisión del dueño: se puede guardar un pago SIN comprobante y adjuntarlo
+  // después; mientras falte, `faltaComprobante` debe quedar true (alerta, no
+  // bloqueo — caso Karina).
+
+  it("faltaComprobante = true al crear sin documentoId y false tras actualizarPago con el comprobante", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1480);
+    await aplicarAnticipoTest(db, tramiteId, 3_000_000n);
+
+    const pago = await crearPago({
+      tramiteId,
+      concepto: "Pago sin comprobante bancario",
+      valor: 1_000_000n,
+      canalPago: CanalPago.PSE,
+      usuarioId: db.userId,
+    });
+    expect(pago.documentoId).toBeNull();
+
+    const libroAntes = await getLibroPagos(tramiteId);
+    const filaAntes = libroAntes.pagos.find((p) => p.id === pago.id);
+    expect(filaAntes?.faltaComprobante).toBe(true);
+
+    // El PATCH acepta agregar el comprobante bancario a un pago ya guardado.
+    const docId = await crearDocumentoTest(db, tramiteId, CategoriaDocumento.COMPROBANTE_BANCARIO);
+    const actualizado = await actualizarPago(pago.id, { documentoId: docId }, db.userId);
+    expect(actualizado.documentoId).toBe(docId);
+
+    const libroDespues = await getLibroPagos(tramiteId);
+    const filaDespues = libroDespues.pagos.find((p) => p.id === pago.id);
+    expect(filaDespues?.documentoId).toBe(docId);
+    expect(filaDespues?.faltaComprobante).toBe(false);
+  });
+
+  it("crearPago con documentoId ya arranca con faltaComprobante = false", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1490);
+    await aplicarAnticipoTest(db, tramiteId, 3_000_000n);
+    const docId = await crearDocumentoTest(db, tramiteId, CategoriaDocumento.COMPROBANTE_BANCARIO);
+
+    const pago = await crearPago({
+      tramiteId,
+      concepto: "Pago con comprobante desde el inicio",
+      valor: 1_000_000n,
+      canalPago: CanalPago.PSE,
+      usuarioId: db.userId,
+      documentoId: docId,
+    });
+
+    const libro = await getLibroPagos(tramiteId);
+    const fila = libro.pagos.find((p) => p.id === pago.id);
+    expect(fila?.faltaComprobante).toBe(false);
+  });
+
   // ─── Pago multi-DO (caso Karina/Occidente) ────────────────────────────────
 
   it("listarFacturasElegiblesMultiDO agrupa por DO y marca tieneAnticipoAplicado", async (ctx) => {

@@ -66,6 +66,8 @@ export type DashboardApiData = {
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
   alertasCartera: ClienteAlertaCarteraRow[];
+  /** Pagos (de todos los DOs) sin comprobante bancario. Solo el número, sin lista. */
+  cantidadPagosSinComprobante: number;
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -221,6 +223,10 @@ export async function fetchDashboard(
     alertasCartera: Array.isArray(payload.alertasCartera)
       ? payload.alertasCartera.filter(isRecord).map(mapAlertaCarteraRow)
       : [],
+    cantidadPagosSinComprobante:
+      typeof payload.cantidadPagosSinComprobante === "number"
+        ? payload.cantidadPagosSinComprobante
+        : 0,
   };
 }
 

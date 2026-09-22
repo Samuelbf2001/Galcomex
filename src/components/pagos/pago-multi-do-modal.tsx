@@ -386,7 +386,7 @@ export function PagoMultiDOModal({ onClose, onCreated, beneficiarioInicial = nul
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">
-                Comprobante bancario (Bancolombia)
+                Comprobante bancario
                 <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
               </span>
               <input

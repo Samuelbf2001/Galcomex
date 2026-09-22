@@ -6,7 +6,7 @@ export const crearPagoSchema = z.object({
   /** IDs de beneficiarios (N↔N). Vacío = sin beneficiario. */
   beneficiarioIds: z.array(z.string().min(1)).optional().default([]),
   numSoporte: z.string().trim().min(1).optional().nullable(),
-  /** Comprobante bancario (Bancolombia) — opcional, no bloquea el pago. */
+  /** Comprobante bancario — opcional, no bloquea el pago. */
   documentoId: z.string().min(1).optional().nullable(),
   /** Comprobante de la página del comercio (puerto/PSE) — opcional. */
   comprobanteComercioId: z.string().min(1).optional().nullable(),
@@ -48,7 +48,7 @@ export const actualizarPagoSchema = z.object({
   fechaRealPago: z.coerce.date().optional().nullable(),
   /** Banco (Beneficiario) usado como tercero del 4x1000. Null = limpia. */
   bancoBeneficiarioId: z.string().min(1).optional().nullable(),
-  /** Comprobante bancario (Bancolombia). Null = limpia. */
+  /** Comprobante bancario. Null = limpia. */
   documentoId: z.string().min(1).optional().nullable(),
   /** Comprobante de la página del comercio (puerto/PSE). Null = limpia. */
   comprobanteComercioId: z.string().min(1).optional().nullable(),

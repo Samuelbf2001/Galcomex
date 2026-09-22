@@ -217,6 +217,12 @@ export type DashboardData = {
   actividadReciente: ActividadRecienteRow[];
   /** Clientes con saldo neto de cartera por debajo de UMBRAL_ALERTA_CARTERA_CLIENTE. */
   alertasCartera: ClienteAlertaCarteraRow[];
+  /**
+   * Pagos del libro (de TODOS los DOs) sin comprobante bancario (`documentoId`
+   * null). Solo el número — sin lista — mismo criterio que `faltaComprobante`
+   * en `lib/pagos/service.ts` (decisión: alertar, no bloquear — caso Karina).
+   */
+  cantidadPagosSinComprobante: number;
 };
 
 // ─── Estados que cuentan como "activos" ──────────────────────────────────────
@@ -451,35 +457,44 @@ export async function getAnticiposConSaldo(): Promise<AnticiposConSaldoResumen> 
 export async function getDashboardData(): Promise<DashboardData> {
   const hoy = new Date();
 
-  const [gruposPorEstado, pendientes, cartera, anticiposConSaldo, auditLogs, alertasCartera] =
-    await Promise.all([
-      // 1. Conteo de DOs agrupado por estado
-      prisma.tramiteDO.groupBy({
-        by: ["estado"],
-        _count: { id: true },
-      }),
-      // 2. Pendientes de facturar (página + contadores)
-      getPendientesFacturar(hoy),
-      // 3. Cartera vencida (página + total + contador)
-      getCarteraVencida(hoy),
-      // 4. Anticipos con saldo restante > 0
-      getAnticiposConSaldo(),
-      // 5. Actividad reciente — últimos 10 AuditLog
-      prisma.auditLog.findMany({
-        take: 10,
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          accion: true,
-          entidad: true,
-          entidadId: true,
-          createdAt: true,
-          usuario: { select: { name: true } },
-        },
-      }),
-      // 6. Alertas de cartera — clientes con saldo neto por debajo del umbral
-      getClientesConAlertaCartera(),
-    ]);
+  const [
+    gruposPorEstado,
+    pendientes,
+    cartera,
+    anticiposConSaldo,
+    auditLogs,
+    alertasCartera,
+    cantidadPagosSinComprobante,
+  ] = await Promise.all([
+    // 1. Conteo de DOs agrupado por estado
+    prisma.tramiteDO.groupBy({
+      by: ["estado"],
+      _count: { id: true },
+    }),
+    // 2. Pendientes de facturar (página + contadores)
+    getPendientesFacturar(hoy),
+    // 3. Cartera vencida (página + total + contador)
+    getCarteraVencida(hoy),
+    // 4. Anticipos con saldo restante > 0
+    getAnticiposConSaldo(),
+    // 5. Actividad reciente — últimos 10 AuditLog
+    prisma.auditLog.findMany({
+      take: 10,
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        accion: true,
+        entidad: true,
+        entidadId: true,
+        createdAt: true,
+        usuario: { select: { name: true } },
+      },
+    }),
+    // 6. Alertas de cartera — clientes con saldo neto por debajo del umbral
+    getClientesConAlertaCartera(),
+    // 7. Pagos de todos los DOs sin comprobante bancario (documentoId null)
+    prisma.pagoTramite.count({ where: { documentoId: null } }),
+  ]);
 
   const dosPorEstado: DosPorEstado[] = gruposPorEstado.map((g) => ({
     estado: g.estado,
@@ -512,5 +527,6 @@ export async function getDashboardData(): Promise<DashboardData> {
     anticiposConSaldo,
     actividadReciente,
     alertasCartera,
+    cantidadPagosSinComprobante,
   };
 }
