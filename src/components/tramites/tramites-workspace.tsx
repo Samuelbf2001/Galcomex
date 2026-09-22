@@ -75,7 +75,7 @@ const allFilter = "todos";
 // Valores fijos de los enums Ciudad y EstadoTramite (prisma/schema.prisma).
 // No se derivan de las filas cargadas porque el filtrado ahora es server-side:
 // las filas ya vienen filtradas, asi que las opciones se verian recortadas.
-const CIUDADES_TRAMITE = ["BAQ", "CTG", "BUN", "SMR"] as const;
+const CIUDADES_TRAMITE = ["BAQ", "CTG", "BUN", "SMR", "BGT"] as const;
 const ESTADOS_TRAMITE = [
   "SOLICITUD",
   "APERTURA",
@@ -559,6 +559,7 @@ function CreateTramiteDialog({
                 <option value="BAQ">BAQ</option>
                 <option value="BUN">BUN</option>
                 <option value="SMR">SMR</option>
+                <option value="BGT">BGT</option>
               </select>
             </label>
             <label className="space-y-1.5">

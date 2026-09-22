@@ -494,14 +494,16 @@ export async function actualizarDocumento(input: ActualizarDocumentoInput): Prom
   const categoria = input.categoria ?? doc.categoria;
   const cambiaCategoria = categoria !== doc.categoria;
 
-  // La carpeta de categoría es el segmento anterior al nombre del objeto:
-  // tramites/<DO>/<CATEGORIA>/<archivo>. Si la clave no sigue ese patrón
-  // (histórico con otra forma) se deja donde está y solo cambia la BD.
+  // La carpeta de categoría es SIEMPRE el tercer segmento:
+  // tramites/<DO>/<CATEGORIA>/<subcarpetas del cliente…>/<archivo>. El
+  // histórico de los clientes (2026-09-21) conserva sus subcarpetas debajo de
+  // la categoría, así que no se puede tomar "el segmento anterior al nombre".
+  // Si la clave no sigue el patrón se deja donde está y solo cambia la BD.
   let storageKey = doc.storageKey;
   if (cambiaCategoria) {
     const partes = doc.storageKey.split("/");
     if (partes.length >= 4 && partes[0] === "tramites") {
-      partes[partes.length - 2] = categoria;
+      partes[2] = categoria;
       storageKey = partes.join("/");
     }
   }
