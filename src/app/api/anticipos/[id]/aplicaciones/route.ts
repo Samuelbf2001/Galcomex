@@ -11,7 +11,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const session = await requireRole(["ADMIN"]);
+  // Karina (OPERATIVO) puede aplicar anticipos a un DO — decisión del dueño 2026-09-22.
+  const session = await requireRole(["ADMIN", "OPERATIVO"]);
 
   if (session instanceof NextResponse) {
     return session;

@@ -1354,8 +1354,9 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   }
 
   // ─── Permisos por acción (alineados con los roles que exige cada endpoint) ──
-  // POST /api/anticipos → ADMIN
-  const puedeAnticipo = userRol === "ADMIN";
+  // POST /api/anticipos → ADMIN/OPERATIVO (Karina puede registrar anticipos —
+  // decisión del dueño 2026-09-22)
+  const puedeAnticipo = userRol === "ADMIN" || userRol === "OPERATIVO";
   // POST /api/tramites/[id]/pagos → ADMIN/OPERATIVO
   const puedePago = userRol === "ADMIN" || userRol === "OPERATIVO";
   // POST /api/tramites/[id]/estado y PUT /api/tramites/[id] → ADMIN/REVISOR/OPERATIVO

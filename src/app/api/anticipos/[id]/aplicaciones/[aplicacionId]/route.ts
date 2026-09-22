@@ -10,7 +10,8 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string; aplicacionId: string }> },
 ) {
-  const session = await requireRole(["ADMIN"]);
+  // Karina (OPERATIVO) puede quitar la aplicación de un anticipo — decisión del dueño 2026-09-22.
+  const session = await requireRole(["ADMIN", "OPERATIVO"]);
 
   if (session instanceof NextResponse) {
     return session;

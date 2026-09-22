@@ -31,7 +31,7 @@ import { ModuleState } from "@/components/layout/module-state";
 import { EnlaceCliente } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
-import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
+import { usePermiso } from "@/lib/auth/rol-context";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -54,6 +54,13 @@ type Cliente = { id: string; nombre: string; nit: string };
 
 /** PATCH /api/anticipos/[id]/verificar exige ADMIN/OPERATIVO. */
 const ROLES_VERIFICAR_ANTICIPO = ["ADMIN", "OPERATIVO"] as const;
+
+/**
+ * POST /api/anticipos y POST /api/anticipos/[id]/aplicaciones exigen
+ * ADMIN/OPERATIVO — Karina (OPERATIVO) puede registrar anticipos y
+ * aplicarlos a un DO (decisión del dueño 2026-09-22).
+ */
+const ROLES_GESTIONAR_ANTICIPO = ["ADMIN", "OPERATIVO"] as const;
 
 function isRecordUnknown(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -737,7 +744,7 @@ type SeccionAnticiposTramiteProps = {
   aplicaciones: AplicacionAnticipoEntry[];
   /**
    * Gate adicional del padre (p. ej. trámite cerrado). Registrar/aplicar
-   * anticipos exige además ADMIN (`POST /api/anticipos`,
+   * anticipos exige además ADMIN/OPERATIVO (`POST /api/anticipos`,
    * `POST /api/anticipos/[id]/aplicaciones`).
    */
   puedeEditar: boolean;
@@ -751,9 +758,9 @@ export function SeccionAnticiposTramite({
   puedeEditar,
   onRefresh,
 }: SeccionAnticiposTramiteProps) {
-  const esAdmin = useEsAdmin();
+  const puedeGestionarAnticipo = usePermiso(ROLES_GESTIONAR_ANTICIPO);
   const puedeVerificar = usePermiso(ROLES_VERIFICAR_ANTICIPO);
-  const puedeRegistrar = puedeEditar && esAdmin;
+  const puedeRegistrar = puedeEditar && puedeGestionarAnticipo;
   const [modal, setModal] = useState<null | "crear" | "aplicar">(null);
 
   function handleDone() {
@@ -797,7 +804,7 @@ export function SeccionAnticiposTramite({
             Sin anticipos aplicados a este DO.
             {puedeRegistrar
               ? ' Usa "Registrar anticipo" para agregar uno desde aquí.'
-              : " Solo un ADMIN puede registrar o aplicar anticipos."}
+              : " Solo un ADMIN u OPERATIVO puede registrar o aplicar anticipos."}
           </p>
         ) : (
           <table className="w-full border-collapse text-left text-sm">

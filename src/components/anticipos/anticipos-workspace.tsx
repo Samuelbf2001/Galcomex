@@ -22,7 +22,7 @@ import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
-import { useRol } from "@/lib/auth/rol-context";
+import { usePermiso } from "@/lib/auth/rol-context";
 import {
   TIPOS_RECAUDO,
   type AnticipoRow,
@@ -468,9 +468,9 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
 
 type AnticipoFilaProps = {
   anticipo: AnticipoRow;
-  /** POST /api/anticipos/[id]/aplicaciones → solo ADMIN. */
+  /** POST /api/anticipos/[id]/aplicaciones → ADMIN, OPERATIVO. */
   puedeAplicar: boolean;
-  /** DELETE /api/anticipos/[id]/aplicaciones/[aplicacionId] → solo ADMIN. */
+  /** DELETE /api/anticipos/[id]/aplicaciones/[aplicacionId] → ADMIN, OPERATIVO. */
   puedeEliminarAplicacion: boolean;
   /** PATCH /api/anticipos/[id]/verificar → ADMIN u OPERATIVO. */
   puedeVerificar: boolean;
@@ -709,17 +709,22 @@ function AnticipoFila({
   );
 }
 
+// Permisos = requireRole de cada endpoint. Karina (OPERATIVO) puede registrar
+// anticipos, aplicarlos a un DO y quitar una aplicación — decisión del dueño
+// 2026-09-22 (antes era ADMIN-only y el botón quedaba en la UI pero el
+// servidor respondía 403).
+//   POST /api/anticipos, POST/DELETE …/aplicaciones → ADMIN, OPERATIVO
+//   PATCH /api/anticipos/[id]/verificar → ADMIN, OPERATIVO (OPERATIVO no en clientes SOCIO_LM, lo valida el servidor)
+const ROLES_GESTIONAR_ANTICIPO = ["ADMIN", "OPERATIVO"] as const;
+const ROLES_VERIFICAR_ANTICIPO = ["ADMIN", "OPERATIVO"] as const;
+
 // ---------------------------------------------------------------------------
 // Componente principal: AnticiposWorkspace
 // ---------------------------------------------------------------------------
 
 export function AnticiposWorkspace() {
-  // Permisos = requireRole de cada endpoint (la página admite ADMIN/OPERATIVO):
-  //   POST /api/anticipos, POST/DELETE …/aplicaciones → ADMIN
-  //   PATCH /api/anticipos/[id]/verificar → ADMIN u OPERATIVO
-  const rol = useRol();
-  const esAdmin = rol === "ADMIN";
-  const puedeVerificar = rol === "ADMIN" || rol === "OPERATIVO";
+  const puedeGestionar = usePermiso(ROLES_GESTIONAR_ANTICIPO);
+  const puedeVerificar = usePermiso(ROLES_VERIFICAR_ANTICIPO);
   const { toast } = useToast();
   const confirmar = useConfirm();
   const [anticipos, setAnticipos] = useState<AnticipoRow[]>([]);
@@ -924,8 +929,8 @@ export function AnticiposWorkspace() {
             Registro, verificación bancaria y aplicación multi-DO.
           </p>
         </div>
-        {/* POST /api/anticipos → solo ADMIN */}
-        {esAdmin ? (
+        {/* POST /api/anticipos → ADMIN, OPERATIVO */}
+        {puedeGestionar ? (
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
@@ -1052,8 +1057,8 @@ export function AnticiposWorkspace() {
                   <AnticipoFila
                     key={anticipo.id}
                     anticipo={anticipo}
-                    puedeAplicar={esAdmin}
-                    puedeEliminarAplicacion={esAdmin}
+                    puedeAplicar={puedeGestionar}
+                    puedeEliminarAplicacion={puedeGestionar}
                     puedeVerificar={puedeVerificar}
                     verificandoId={verificandoId}
                     onAplicar={(a) => setAplicarTarget(a)}
@@ -1071,8 +1076,8 @@ export function AnticiposWorkspace() {
       </div>
       )}
 
-      {/* Modal crear (solo ADMIN) */}
-      {createOpen && esAdmin ? (
+      {/* Modal crear (ADMIN, OPERATIVO) */}
+      {createOpen && puedeGestionar ? (
         <CreateAnticipoModal
           clientes={clientes}
           onClose={() => setCreateOpen(false)}
@@ -1080,8 +1085,8 @@ export function AnticiposWorkspace() {
         />
       ) : null}
 
-      {/* Modal aplicar (solo ADMIN) */}
-      {aplicarTarget && esAdmin ? (
+      {/* Modal aplicar (ADMIN, OPERATIVO) */}
+      {aplicarTarget && puedeGestionar ? (
         <AplicarAnticipoModal
           anticipo={aplicarTarget}
           tramites={tramites}

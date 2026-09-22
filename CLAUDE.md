@@ -206,7 +206,9 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
 | CRUD clientes/tarifas | ✓ | | | |
 | Crear/editar DOs | ✓ | ✓ | ✓ | |
 | Checklist/documentos | ✓ | ✓ | ✓ | |
-| Registrar anticipos/pagos | ✓ | | ✓ | |
+| Registrar anticipos | ✓ | | ✓ | |
+| Registrar pagos | ✓ | | ✓ | |
+| Verificar anticipos/pagos | ✓ | | ✓ (solo clientes propios) | |
 | Aprobar borrador factura | ✓ | ✓ | | |
 | Marcar facturado (+ num SIIGO) | ✓ | | | |
 | Ver cartera | ✓ | ✓ | | |
