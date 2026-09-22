@@ -175,6 +175,24 @@ const TRANSITIONS: Record<EstadoBorrador, EstadoBorrador[]> = {
 };
 
 /**
+ * Camino INVERSO del mapa de arriba: a qué estado vuelve un borrador que el
+ * revisor devuelve con una observación (`lib/borradores/devolver.ts`).
+ *
+ * `null` = no se puede devolver desde ese estado:
+ *   - BORRADOR  → ya está ahí, no hay nada que devolver.
+ *   - FACTURADO → ya existe la factura en SIIGO; hay que anularla allá.
+ *
+ * Vive aquí, al lado de `TRANSITIONS`, para que el ciclo de vida del borrador
+ * (ida y vuelta) se lea en un solo sitio.
+ */
+export const TRANSICIONES_DEVOLUCION: Record<EstadoBorrador, EstadoBorrador | null> = {
+  [EstadoBorrador.BORRADOR]: null,
+  [EstadoBorrador.EN_REVISION]: EstadoBorrador.BORRADOR,
+  [EstadoBorrador.APROBADO]: EstadoBorrador.BORRADOR,
+  [EstadoBorrador.FACTURADO]: null,
+};
+
+/**
  * Lee el parámetro SIIGO_FORMA_PAGO_DEFAULT_ID y verifica que la forma de pago
  * exista localmente. Devuelve null si no está configurado o si el FK no existe
  * (evita romper el create por FK inválido — el admin lo asigna manualmente luego).
@@ -194,7 +212,7 @@ async function resolveFormaPagoDefault(): Promise<number | null> {
   return existe ? id : null;
 }
 
-async function getBorradorCompleto(borradorId: string) {
+export async function getBorradorCompleto(borradorId: string) {
   return prisma.borradorFactura.findUnique({
     where: { id: borradorId },
     include: {

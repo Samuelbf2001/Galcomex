@@ -30,6 +30,7 @@
 
 import { EstadoBorrador, Prisma } from "@prisma/client";
 
+import { esObservacionDevolucion } from "@/lib/borradores/devolver";
 import { ensureLineasFijas } from "@/lib/borradores/lineas-fijas";
 import { FORMATO_CONCEPTOS_IVA } from "@/lib/borradores/formato-conceptos";
 import { recalcularTotalBorrador } from "@/lib/borradores/recalculo";
@@ -100,9 +101,13 @@ function observacionesDesdeBorrador(
   /** Las facturas de Galcomex propio dicen "SALDO A FAVOR/A CARGO"; las de Lucho "A SU FAVOR/A SU CARGO". */
   conSu = true,
 ): string {
+  // Las notas "DEVUELTO POR …" son de revisión interna (lib/borradores/devolver.ts):
+  // viven en comentariosCabecera para que se vean en la ficha, pero NO pueden
+  // salir impresas en la factura del cliente.
   const comentarios = Array.isArray(comentariosCabecera)
     ? (comentariosCabecera as unknown[]).filter(
-        (c): c is string => typeof c === "string" && c.trim().length > 0,
+        (c): c is string =>
+          typeof c === "string" && c.trim().length > 0 && !esObservacionDevolucion(c),
       )
     : [];
 

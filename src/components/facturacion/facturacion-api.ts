@@ -573,6 +573,45 @@ export async function transicionarBorrador(
   return normalizeBorrador(payload.borrador);
 }
 
+// ─── Devolver con observación ─────────────────────────────────────────────────
+
+/** Mínimo de caracteres de la observación (mismo gate que el endpoint). */
+export const OBSERVACION_DEVOLUCION_MIN = 5;
+/** Máximo de caracteres de la observación (mismo gate que el endpoint). */
+export const OBSERVACION_DEVOLUCION_MAX = 1000;
+
+/**
+ * POST /api/borradores/[id]/devolver — devuelve el borrador a BORRADOR con una
+ * observación del revisor. Dispara el aviso de WhatsApp a Camila del lado del
+ * servidor.
+ */
+export async function devolverBorrador(
+  borradorId: string,
+  observacion: string,
+): Promise<BorradorRow> {
+  const response = await fetch(`/api/borradores/${borradorId}/devolver`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ observacion }),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error al devolver el borrador (${response.status}).`;
+    throw new FacturacionApiError(message, response.status);
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.borrador)) {
+    throw new FacturacionApiError("Respuesta de devolución no válida.");
+  }
+
+  return normalizeBorrador(payload.borrador);
+}
+
 // ─── Líneas manuales ──────────────────────────────────────────────────────────
 
 export type CrearLineaInput = {
