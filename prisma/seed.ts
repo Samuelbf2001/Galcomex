@@ -66,6 +66,14 @@ async function main() {
       valor: "-20000000",
       descripcion: "Umbral de alerta de cartera: saldo neto del cliente por debajo de este valor dispara alerta (COP)",
     },
+    {
+      // Formato validado en src/lib/whatsapp/aprobadores.ts. SIN_CONFIGURAR = nadie
+      // recibe el WhatsApp (el operario sigue pudiendo copiar el enlace a mano).
+      clave: "WHATSAPP_APROBADORES_PSE",
+      valor: "SIN_CONFIGURAR",
+      descripcion:
+        "Quién recibe por WhatsApp la solicitud del código del token PSE. Formato: Nombre:celular separados por ; (ej. María Camila:3001234567; Guillermo:3009876543)",
+    },
   ];
 
   for (const p of params) {

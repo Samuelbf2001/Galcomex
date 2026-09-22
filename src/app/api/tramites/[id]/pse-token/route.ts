@@ -1,54 +1,57 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { z } from "zod";
 
 import { prisma as db } from "@/lib/db/prisma";
 import { requireRole } from "@/lib/auth/session";
 import { jsonResponse } from "@/lib/http/json";
-import { generatePseToken } from "@/lib/crypto/pse";
+import { solicitarCodigoPse } from "@/lib/whatsapp/pse-service";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-const WEBHOOK_PSE_URL =
-  process.env.WEBHOOK_PSE_URL ??
-  "https://n8n.sixteam.pro/webhook/b53a9bb0-5904-4a9a-9828-5eeb2243e4df";
+/** Contexto del pago que viaja en el WhatsApp. Todo opcional: sin él, el aviso sale igual. */
+const bodySchema = z
+  .object({
+    valor: z.string().regex(/^\d{1,15}$/, "Valor en COP enteros").optional(),
+    beneficiario: z.string().trim().max(120).optional(),
+    concepto: z.string().trim().max(200).optional(),
+  })
+  .strict();
 
-
-// El link expira en 30 minutos (tiempo estándar de vigencia PSE)
-const EXPIRY_MS = 30 * 60 * 1000;
-
-export async function POST(_request: NextRequest, context: RouteContext) {
+/**
+ * POST /api/tramites/[id]/pse-token
+ * Crea la solicitud del código del token PSE y avisa por WhatsApp (Kapso) a los
+ * aprobadores de WHATSAPP_APROBADORES_PSE. Si el WhatsApp no sale, la solicitud
+ * igual queda creada y se devuelve el enlace para mandarlo a mano.
+ */
+export async function POST(request: NextRequest, context: RouteContext) {
   const session = await requireRole(["ADMIN", "OPERATIVO"]);
   if (session instanceof NextResponse) return session;
 
   const { id } = await context.params;
 
+  const raw: unknown = await request.json().catch(() => ({}));
+  const parsed = bodySchema.safeParse(raw ?? {});
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Datos del pago inválidos." }, { status: 400 });
+  }
+
   const tramite = await db.tramiteDO.findUnique({
     where: { id },
-    select: { id: true },
+    select: { id: true, consecutivo: true },
   });
-
   if (!tramite) {
     return NextResponse.json({ error: "Trámite no encontrado." }, { status: 404 });
   }
 
-  const token = generatePseToken();
-  const expiresAt = new Date(Date.now() + EXPIRY_MS);
-
-  await db.pseSolicitud.create({
-    data: { tramiteId: id, token, solicitadoPor: session.user.id, expiresAt },
+  const resultado = await solicitarCodigoPse({
+    tramiteId: tramite.id,
+    consecutivo: tramite.consecutivo,
+    usuarioId: session.user.id,
+    operador: session.user.name,
+    valor: parsed.data.valor ? BigInt(parsed.data.valor) : null,
+    beneficiario: parsed.data.beneficiario || null,
+    concepto: parsed.data.concepto || null,
   });
 
-  const linkPse = `pse/${token}`;
-
-  // Notifica a María Camila vía n8n con el link seguro (fire-and-forget)
-  fetch(WEBHOOK_PSE_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      url: linkPse,
-    }),
-  }).catch(() => {
-    console.error("[PSE] No se pudo notificar a n8n para tramite", id);
-  });
-
-  return jsonResponse({ ok: true, solicitudId: token });
+  return jsonResponse({ ok: true, ...resultado });
 }
