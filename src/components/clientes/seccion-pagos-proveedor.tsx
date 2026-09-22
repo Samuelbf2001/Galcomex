@@ -12,6 +12,7 @@ import {
   formatDate,
   type FacturaElegibleMultiDORow,
 } from "@/components/pagos/pagos-global-api";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
@@ -74,9 +75,19 @@ export function SeccionPagosProveedor({ empresaId, nombreEmpresa }: { empresaId:
   }, [empresaId, reloadKey]);
 
   const grupos = useMemo(() => {
-    const map = new Map<string, { consecutivo: string; clienteNombre: string; tieneAnticipoAplicado: boolean; facturas: FacturaConBeneficiario[] }>();
+    const map = new Map<
+      string,
+      { tramiteId: string; consecutivo: string; clienteId: string; clienteNombre: string; tieneAnticipoAplicado: boolean; facturas: FacturaConBeneficiario[] }
+    >();
     for (const f of facturas) {
-      const g = map.get(f.tramiteId) ?? { consecutivo: f.tramiteConsecutivo, clienteNombre: f.clienteNombre, tieneAnticipoAplicado: f.tieneAnticipoAplicado, facturas: [] };
+      const g = map.get(f.tramiteId) ?? {
+        tramiteId: f.tramiteId,
+        consecutivo: f.tramiteConsecutivo,
+        clienteId: f.clienteId,
+        clienteNombre: f.clienteNombre,
+        tieneAnticipoAplicado: f.tieneAnticipoAplicado,
+        facturas: [],
+      };
       g.facturas.push(f);
       map.set(f.tramiteId, g);
     }
@@ -153,8 +164,12 @@ export function SeccionPagosProveedor({ empresaId, nombreEmpresa }: { empresaId:
               <div key={g.consecutivo} className="border border-slate-200">
                 <div className={`flex items-center justify-between px-3 py-2 text-sm ${g.tieneAnticipoAplicado ? "bg-slate-50" : "bg-amber-50"}`}>
                   <div>
-                    <span className="font-semibold text-slate-900">{g.consecutivo}</span>
-                    <span className="ml-2 text-slate-500">{g.clienteNombre}</span>
+                    <span className="font-semibold text-slate-900">
+                      <EnlaceTramite id={g.tramiteId} tab="facturas-proveedor">{g.consecutivo}</EnlaceTramite>
+                    </span>
+                    <span className="ml-2 text-slate-500">
+                      <EnlaceCliente id={g.clienteId}>{g.clienteNombre}</EnlaceCliente>
+                    </span>
                   </div>
                   {!g.tieneAnticipoAplicado ? (
                     <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700" title="Sin anticipo aplicado no se puede pagar desde este DO.">

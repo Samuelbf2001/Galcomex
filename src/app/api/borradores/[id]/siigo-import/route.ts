@@ -11,6 +11,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { requireRole } from "@/lib/auth/session";
+import { esObservacionDevolucion } from "@/lib/borradores/devolver";
 import { prisma } from "@/lib/db/prisma";
 import {
   construirFacturaSiigoImportXlsx,
@@ -77,9 +78,12 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
   // Observaciones SIIGO (col AE): comentarios de cabecera unidos con saltos de
   // línea. Si el borrador no tiene comentarios, fallback al DO consecutivo.
+  // Se excluyen las notas internas "DEVUELTO POR …" (lib/borradores/devolver.ts):
+  // son de revisión, no texto para la factura del cliente.
   const comentarios = Array.isArray(borrador.comentariosCabecera)
     ? (borrador.comentariosCabecera as unknown[]).filter(
-        (c): c is string => typeof c === "string" && c.trim().length > 0,
+        (c): c is string =>
+          typeof c === "string" && c.trim().length > 0 && !esObservacionDevolucion(c),
       )
     : [];
 

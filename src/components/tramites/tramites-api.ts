@@ -2,6 +2,8 @@ export type TramiteRow = {
   id: string;
   doNumber: string;
   cliente: string;
+  /** Id de la empresa (Cliente) — enlace a /clientes/[id] (ver enlace-entidad.tsx). */
+  clienteId: string | null;
   estado: string;
   ciudad: string;
   modalidad: string;
@@ -167,6 +169,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Id del cliente anidado (p.ej. `row.cliente.id`), si el backend lo incluyó. */
+function readNestedClienteId(record: Record<string, unknown>): string | null {
+  const cliente = record.cliente;
+  if (isRecord(cliente) && typeof cliente.id === "string" && cliente.id) {
+    return cliente.id;
+  }
+  return null;
+}
+
 function readText(record: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = record[key];
@@ -268,6 +279,7 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
     id,
     doNumber,
     cliente: readText(row, textKeys.cliente) || "Sin cliente",
+    clienteId: readNestedClienteId(row),
     estado: readText(row, textKeys.estado) || "Sin estado",
     ciudad: readText(row, textKeys.ciudad) || "Sin ciudad",
     modalidad: readText(row, textKeys.modalidad) || "Sin modalidad",

@@ -164,6 +164,7 @@ export type DosPorEstado = {
 export type PendienteFacturarRow = {
   id: string;
   consecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   estado: EstadoTramite;
   fechaRef: string | null;    // ISO date string
@@ -174,7 +175,10 @@ export type PendienteFacturarRow = {
 export type CarteraVencidaRow = {
   id: string;
   numSiigo: string;
+  clienteId: string;
   clienteNombre: string;
+  tramiteId: string;
+  borradorId: string;
   saldoACargoCliente: string; // BigInt as string
   fechaFactura: string;       // ISO date string
   diasAntiguedad: number;
@@ -213,6 +217,12 @@ export type DashboardData = {
   actividadReciente: ActividadRecienteRow[];
   /** Clientes con saldo neto de cartera por debajo de UMBRAL_ALERTA_CARTERA_CLIENTE. */
   alertasCartera: ClienteAlertaCarteraRow[];
+  /**
+   * Pagos del libro (de TODOS los DOs) sin comprobante bancario (`documentoId`
+   * null). Solo el número — sin lista — mismo criterio que `faltaComprobante`
+   * en `lib/pagos/service.ts` (decisión: alertar, no bloquear — caso Karina).
+   */
+  cantidadPagosSinComprobante: number;
 };
 
 // ─── Estados que cuentan como "activos" ──────────────────────────────────────
@@ -249,6 +259,7 @@ type PendienteFacturarDbRow = {
   estado: EstadoTramite;
   fechaSalidaCarga: Date | null;
   fechaEnviadoAFacturar: Date | null;
+  clienteId: string;
   clienteNombre: string;
 };
 
@@ -295,6 +306,7 @@ async function getPendientesFacturar(hoy: Date): Promise<{
         t.estado,
         t."fechaSalidaCarga",
         t."fechaEnviadoAFacturar",
+        c.id AS "clienteId",
         c.nombre AS "clienteNombre"
       FROM tramite_do t
       JOIN cliente c ON c.id = t."clienteId"
@@ -324,6 +336,7 @@ async function getPendientesFacturar(hoy: Date): Promise<{
       return {
         id: do_.id,
         consecutivo: do_.consecutivo,
+        clienteId: do_.clienteId,
         clienteNombre: do_.clienteNombre,
         estado: do_.estado,
         fechaRef: fechaRef ? fechaRef.toISOString() : null,
@@ -366,7 +379,10 @@ async function getCarteraVencida(hoy: Date): Promise<{
         numSiigo: true,
         saldoACargoCliente: true,
         fecha: true,
+        clienteId: true,
         cliente: { select: { nombre: true } },
+        borradorId: true,
+        borrador: { select: { tramiteId: true } },
       },
       orderBy: [{ fecha: "asc" }, { id: "asc" }],
       take: LIMITE_LISTAS_DASHBOARD,
@@ -387,7 +403,10 @@ async function getCarteraVencida(hoy: Date): Promise<{
     return {
       id: f.id,
       numSiigo: f.numSiigo,
+      clienteId: f.clienteId,
       clienteNombre: f.cliente.nombre,
+      tramiteId: f.borrador.tramiteId,
+      borradorId: f.borradorId,
       saldoACargoCliente: f.saldoACargoCliente.toString(),
       fechaFactura: f.fecha.toISOString(),
       diasAntiguedad,
@@ -438,35 +457,44 @@ export async function getAnticiposConSaldo(): Promise<AnticiposConSaldoResumen> 
 export async function getDashboardData(): Promise<DashboardData> {
   const hoy = new Date();
 
-  const [gruposPorEstado, pendientes, cartera, anticiposConSaldo, auditLogs, alertasCartera] =
-    await Promise.all([
-      // 1. Conteo de DOs agrupado por estado
-      prisma.tramiteDO.groupBy({
-        by: ["estado"],
-        _count: { id: true },
-      }),
-      // 2. Pendientes de facturar (página + contadores)
-      getPendientesFacturar(hoy),
-      // 3. Cartera vencida (página + total + contador)
-      getCarteraVencida(hoy),
-      // 4. Anticipos con saldo restante > 0
-      getAnticiposConSaldo(),
-      // 5. Actividad reciente — últimos 10 AuditLog
-      prisma.auditLog.findMany({
-        take: 10,
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          accion: true,
-          entidad: true,
-          entidadId: true,
-          createdAt: true,
-          usuario: { select: { name: true } },
-        },
-      }),
-      // 6. Alertas de cartera — clientes con saldo neto por debajo del umbral
-      getClientesConAlertaCartera(),
-    ]);
+  const [
+    gruposPorEstado,
+    pendientes,
+    cartera,
+    anticiposConSaldo,
+    auditLogs,
+    alertasCartera,
+    cantidadPagosSinComprobante,
+  ] = await Promise.all([
+    // 1. Conteo de DOs agrupado por estado
+    prisma.tramiteDO.groupBy({
+      by: ["estado"],
+      _count: { id: true },
+    }),
+    // 2. Pendientes de facturar (página + contadores)
+    getPendientesFacturar(hoy),
+    // 3. Cartera vencida (página + total + contador)
+    getCarteraVencida(hoy),
+    // 4. Anticipos con saldo restante > 0
+    getAnticiposConSaldo(),
+    // 5. Actividad reciente — últimos 10 AuditLog
+    prisma.auditLog.findMany({
+      take: 10,
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        accion: true,
+        entidad: true,
+        entidadId: true,
+        createdAt: true,
+        usuario: { select: { name: true } },
+      },
+    }),
+    // 6. Alertas de cartera — clientes con saldo neto por debajo del umbral
+    getClientesConAlertaCartera(),
+    // 7. Pagos de todos los DOs sin comprobante bancario (documentoId null)
+    prisma.pagoTramite.count({ where: { documentoId: null } }),
+  ]);
 
   const dosPorEstado: DosPorEstado[] = gruposPorEstado.map((g) => ({
     estado: g.estado,
@@ -499,5 +527,6 @@ export async function getDashboardData(): Promise<DashboardData> {
     anticiposConSaldo,
     actividadReciente,
     alertasCartera,
+    cantidadPagosSinComprobante,
   };
 }

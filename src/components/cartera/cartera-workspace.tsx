@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConciliarLoteModal } from "@/components/cartera/conciliar-lote-modal";
 import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -791,12 +792,23 @@ function FilaFactura({
 
         {/* DO */}
         <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
-          {factura.borrador?.tramite.consecutivo ?? "—"}
+          {factura.borrador ? (
+            <EnlaceTramite id={factura.borrador.tramiteId}>
+              {factura.borrador.tramite.consecutivo}
+            </EnlaceTramite>
+          ) : (
+            "—"
+          )}
         </td>
 
         {/* Factura SIIGO */}
         <td className="px-4 py-3 font-mono text-xs text-slate-700 whitespace-nowrap">
-          {factura.numSiigo}
+          <EnlaceFacturaVenta
+            tramiteId={factura.borrador?.tramiteId}
+            borradorId={factura.borradorId}
+          >
+            {factura.numSiigo}
+          </EnlaceFacturaVenta>
         </td>
 
         {/* Fecha */}
@@ -1587,7 +1599,12 @@ export function CarteraWorkspace() {
               <div className="overflow-hidden border border-slate-200 bg-white">
                 <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2.5 text-xs">
                   <p className="font-semibold text-slate-900">
-                    {nombreCliente ? `${nombreCliente} — ` : ""}
+                    {nombreCliente ? (
+                      <>
+                        <EnlaceCliente id={clienteId}>{nombreCliente}</EnlaceCliente>
+                        {" — "}
+                      </>
+                    ) : null}
                     {vista === "cliente" ? "Cartera cliente" : "Cartera LM"}
                     {soloPendientes ? " (pendientes)" : ""}
                     {hayFiltroFecha ? " (rango de fechas)" : ""}

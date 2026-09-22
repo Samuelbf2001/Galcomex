@@ -11,6 +11,7 @@ import {
   formatCOP,
 } from "@/components/pagos/pagos-api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -79,7 +80,7 @@ type HojaData = {
   estado: string;
   doCliente: string | null;
   doAgencia: string | null;
-  cliente: { nombre: string; nit: string; tipo: string | null };
+  cliente: { id: string; nombre: string; nit: string; tipo: string | null };
   aplicacionesAnticipo: AnticipoAplicado[];
   borrador: BorradorHoja | null;
   /** Umbral de alerta de saldo (COP, BigInt as string) aplicable a este DO
@@ -239,6 +240,7 @@ function parseHojaData(t: Record<string, unknown>, umbralAlertaSaldo: string): H
     doCliente: typeof t.doCliente === "string" ? t.doCliente : null,
     doAgencia: typeof t.doAgencia === "string" ? t.doAgencia : null,
     cliente: {
+      id: str(cliente.id, ""),
       nombre: str(cliente.nombre, ""),
       nit: str(cliente.nit, ""),
       tipo: typeof cliente.tipo === "string" ? cliente.tipo : null,
@@ -442,7 +444,8 @@ export function HojaTramite({
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Cliente / DO</p>
           <p className="mt-0.5 text-lg font-bold text-slate-950">{hoja.consecutivo}</p>
           <p className="text-sm text-slate-700">
-            {hoja.cliente.nombre} <span className="text-slate-400">· {hoja.cliente.nit}</span>
+            <EnlaceCliente id={hoja.cliente.id}>{hoja.cliente.nombre}</EnlaceCliente>{" "}
+            <span className="text-slate-400">· {hoja.cliente.nit}</span>
           </p>
           {hoja.doCliente ? (
             <p className="text-xs text-slate-500">DO cliente: {hoja.doCliente}</p>
@@ -451,7 +454,15 @@ export function HojaTramite({
         <div className="bg-white px-4 py-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Factura</p>
           {numFactura ? (
-            <p className="mt-0.5 text-lg font-bold text-rose-600">{numFactura}</p>
+            <p className="mt-0.5 text-lg font-bold text-rose-600">
+              <EnlaceFacturaVenta
+                tramiteId={tramiteId}
+                borradorId={hoja.borrador?.id}
+                className="text-rose-600"
+              >
+                {numFactura}
+              </EnlaceFacturaVenta>
+            </p>
           ) : (
             <p className="mt-0.5 text-sm text-slate-400">Sin factura generada</p>
           )}

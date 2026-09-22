@@ -12,6 +12,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
+import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import {
   type FilaIngreso,
@@ -59,6 +60,17 @@ function montoCell(fila: FilaIngreso): React.ReactNode {
     return <span className="text-emerald-700 font-semibold">+{label}</span>;
   }
   return <span className="text-violet-700 font-semibold">-{label}</span>;
+}
+
+function referenciaCell(fila: FilaIngreso): React.ReactNode {
+  if (fila.tipo === "ANTICIPO") {
+    return <EnlaceTramite id={fila.tramiteId}>{fila.referencia}</EnlaceTramite>;
+  }
+  return (
+    <EnlaceFacturaVenta tramiteId={fila.tramiteId} borradorId={fila.borradorId}>
+      {fila.referencia}
+    </EnlaceFacturaVenta>
+  );
 }
 
 function saldoCorridoCell(valor: string): React.ReactNode {
@@ -412,9 +424,13 @@ export function IngresosWorkspace() {
               {formatCOP(saldoFinal.toString())}
             </p>
             <p className="mt-0.5 text-xs text-slate-500">
-              {clienteId
-                ? clientes.find((c) => c.id === clienteId)?.nombre ?? "Cliente"
-                : "Acumulado por cliente"}
+              {clienteId ? (
+                <EnlaceCliente id={clienteId}>
+                  {clientes.find((c) => c.id === clienteId)?.nombre ?? "Cliente"}
+                </EnlaceCliente>
+              ) : (
+                "Acumulado por cliente"
+              )}
             </p>
           </div>
         </div>
@@ -482,10 +498,10 @@ export function IngresosWorkspace() {
                       {tipoBadge(f.tipo)}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-700 whitespace-nowrap max-w-[160px] truncate">
-                      {f.clienteNombre}
+                      <EnlaceCliente id={f.clienteId}>{f.clienteNombre}</EnlaceCliente>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-slate-800 whitespace-nowrap">
-                      {f.referencia}
+                      {referenciaCell(f)}
                     </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       {montoCell(f)}

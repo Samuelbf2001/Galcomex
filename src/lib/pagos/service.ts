@@ -9,6 +9,8 @@ import { randomUUID } from "node:crypto";
 import { type Beneficiario, CanalPago, EstadoBorrador, type EstadoTramite, EstadoFacturaProveedor, EstadoMovimiento, Prisma, Rol, type PagoTramite, type PagoTramiteBeneficiario } from "@prisma/client";
 
 import { calcularSaldosIntermedios } from "@/lib/calculations/motor-factura";
+import { tiene } from "@/lib/capacidades/resolver";
+import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
 import {
   FacturaProveedorNoEncontradaError,
@@ -22,7 +24,7 @@ type CrearPagoInput = {
   /** IDs de beneficiarios a vincular (N↔N). */
   beneficiarioIds?: string[];
   numSoporte?: string | null;
-  /** Comprobante bancario (Bancolombia) — el que vale ante reclamos. Opcional (no bloquea el pago). */
+  /** Comprobante bancario — el que vale ante reclamos. Opcional (no bloquea el pago). */
   documentoId?: string | null;
   /** Comprobante de la página del comercio (puerto/PSE) — opcional, complementa el bancario. */
   comprobanteComercioId?: string | null;
@@ -70,6 +72,12 @@ type PagoConRelaciones = PagoTramite & {
   bancoBeneficiario: BeneficiarioMinimo | null;
   /** Otros DOs del mismo grupoPagoId (vacío si el pago no pertenece a un grupo multi-DO). */
   grupoOtrosDOs: GrupoPagoDOInfo[];
+  /**
+   * true cuando el pago NO tiene comprobante bancario (`documentoId` null).
+   * Derivado por el backend para que la UI no tenga que deducirlo — dispara el
+   * distintivo ámbar "Falta comprobante" (decisión: alertar, no bloquear).
+   */
+  faltaComprobante: boolean;
 };
 
 /**
@@ -118,6 +126,8 @@ export type PagoGlobalRow = PagoTramite & {
   beneficiarios: (PagoTramiteBeneficiario & { beneficiario: BeneficiarioMinimo })[];
   /** Otros DOs del mismo grupoPagoId (vacío si el pago no pertenece a un grupo multi-DO). */
   grupoOtrosDOs: GrupoPagoDOInfo[];
+  /** true cuando el pago NO tiene comprobante bancario (`documentoId` null). */
+  faltaComprobante: boolean;
 };
 
 type ListarPagosResult = {
@@ -126,6 +136,16 @@ type ListarPagosResult = {
   costosBancarios: bigint;
   totalPendiente: bigint;
 };
+
+/**
+ * Deriva si a un pago le falta el comprobante bancario (el que vale ante
+ * reclamos). No bloquea el pago (caso Karina) — solo dispara el distintivo
+ * ámbar en la UI. Centralizado aquí para que getLibroPagos, listarPagosGlobal
+ * y getPagoConBeneficiario calculen el mismo criterio.
+ */
+function calcularFaltaComprobante(documentoId: string | null): boolean {
+  return documentoId === null;
+}
 
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(
@@ -353,6 +373,20 @@ function soloCostosPropios(facturas: { repercutible: boolean }[]): boolean {
   return facturas.length > 0 && facturas.every((f) => !f.repercutible);
 }
 
+/**
+ * "Sin anticipo no hay pagos" solo tiene sentido para las empresas que trabajan
+ * con fondo previo (capacidad `anticipos_cliente`). Las que van a crédito
+ * (Polyrec ZF, CW ASIA, Sesderma, Coldex, Pierco…: 0 anticipos en 2026 según
+ * Siigo) pagan el puerto/VUCE con plata de Galcomex y se les cobra en la
+ * factura; exigirles anticipo bloqueaba el libro de pagos (simulación del
+ * 2026-09-21).
+ */
+async function exigeAnticipo(tx: Prisma.TransactionClient, tramiteId: string): Promise<boolean> {
+  const tramite = await tx.tramiteDO.findUnique({ where: { id: tramiteId }, select: { clienteId: true } });
+  if (!tramite) return true;
+  return tiene(await capacidadesDeEmpresa(tramite.clienteId), "anticipos_cliente");
+}
+
 export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
   const {
     tramiteId,
@@ -376,7 +410,7 @@ export async function crearPago(input: CrearPagoInput): Promise<PagoTramite> {
       where: { tramiteId },
       select: { id: true },
     });
-    if (!anticipo) {
+    if (!anticipo && (await exigeAnticipo(tx, tramiteId))) {
       const facturasDelPago = facturaProveedorIds.length
         ? await tx.facturaProveedor.findMany({
             where: { id: { in: facturaProveedorIds } },
@@ -513,7 +547,7 @@ export async function actualizarPago(
     fechaRealPago?: Date | null;
     /** Banco (Beneficiario) para el 4x1000. null = limpiar. */
     bancoBeneficiarioId?: string | null;
-    /** Comprobante bancario (Bancolombia). null = limpiar. */
+    /** Comprobante bancario. null = limpiar. */
     documentoId?: string | null;
     /** Comprobante de la página del comercio (puerto/PSE), opcional. null = limpiar. */
     comprobanteComercioId?: string | null;
@@ -703,7 +737,7 @@ export async function verificarPago(
 }
 
 export async function getPagoConBeneficiario(pagoId: string) {
-  return prisma.pagoTramite.findUnique({
+  const pago = await prisma.pagoTramite.findUnique({
     where: { id: pagoId },
     include: {
       beneficiarios: {
@@ -717,6 +751,10 @@ export async function getPagoConBeneficiario(pagoId: string) {
       bancoBeneficiario: { select: { id: true, nombre: true, nit: true } },
     },
   });
+
+  if (!pago) return null;
+
+  return { ...pago, faltaComprobante: calcularFaltaComprobante(pago.documentoId) };
 }
 
 /**
@@ -816,6 +854,7 @@ export async function getLibroPagos(tramiteId: string): Promise<LibroPagosResult
   const pagosConGrupo = pagos.map((p) => ({
     ...p,
     grupoOtrosDOs: grupoInfo.get(p.id) ?? [],
+    faltaComprobante: calcularFaltaComprobante(p.documentoId),
   }));
 
   return {
@@ -878,6 +917,7 @@ export async function listarPagosGlobal(
   const pagosConGrupo = pagos.map((p) => ({
     ...p,
     grupoOtrosDOs: grupoInfo.get(p.id) ?? [],
+    faltaComprobante: calcularFaltaComprobante(p.documentoId),
   }));
 
   return {
@@ -909,6 +949,7 @@ export type FacturaElegibleMultiDO = {
   fecha: Date;
   tramiteId: string;
   tramiteConsecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   /** true si el DO ya tiene al menos una AplicacionAnticipo (regla "sin anticipo no hay pagos"). */
   tieneAnticipoAplicado: boolean;
@@ -925,7 +966,7 @@ export async function listarFacturasElegiblesMultiDO(
     where: { beneficiarioId, estado: EstadoFacturaProveedor.REGISTRADA },
     include: {
       tramite: {
-        select: { id: true, consecutivo: true, cliente: { select: { nombre: true } } },
+        select: { id: true, consecutivo: true, cliente: { select: { id: true, nombre: true } } },
       },
     },
     orderBy: [{ tramite: { consecutivo: "asc" } }, { fecha: "asc" }],
@@ -947,6 +988,7 @@ export async function listarFacturasElegiblesMultiDO(
     fecha: f.fecha,
     tramiteId: f.tramiteId,
     tramiteConsecutivo: f.tramite.consecutivo,
+    clienteId: f.tramite.cliente.id,
     clienteNombre: f.tramite.cliente.nombre,
     // Un costo propio se paga aunque el DO no tenga anticipo (`soloCostosPropios`).
     tieneAnticipoAplicado: tramitesConAnticipo.has(f.tramiteId) || !f.repercutible,
@@ -960,7 +1002,7 @@ export type CrearPagoMultiDOInput = {
   canalPago: CanalPago;
   fechaRealPago?: Date | null;
   concepto?: string;
-  /** Comprobante bancario (Bancolombia) — compartido por todos los pagos del grupo. */
+  /** Comprobante bancario — compartido por todos los pagos del grupo. */
   documentoId?: string | null;
   /** Comprobante de comercio (opcional) — compartido por todos los pagos del grupo. */
   comprobanteComercioId?: string | null;
@@ -1082,14 +1124,15 @@ export async function crearPagoMultiDO(
     }
 
     // Regla "sin anticipo no hay pagos" — aplica a CADA DO del grupo, salvo
-    // a los que solo tienen costos propios (ver `soloCostosPropios`).
+    // a los que solo tienen costos propios (ver `soloCostosPropios`) y a las
+    // empresas que van a crédito (ver `exigeAnticipo`).
     for (const [tramiteId, grupo] of porTramite) {
       if (grupo.soloCostosPropios) continue;
       const anticipo = await tx.aplicacionAnticipo.findFirst({
         where: { tramiteId },
         select: { id: true },
       });
-      if (!anticipo) {
+      if (!anticipo && (await exigeAnticipo(tx, tramiteId))) {
         throw new SinAnticipoAplicadoMultiDOError(tramiteId, grupo.consecutivo);
       }
     }

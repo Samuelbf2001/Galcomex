@@ -13,6 +13,7 @@ export type DosPorEstado = {
 export type PendienteFacturarRow = {
   id: string;
   consecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   estado: string;
   fechaRef: string | null;
@@ -23,7 +24,10 @@ export type PendienteFacturarRow = {
 export type CarteraVencidaRow = {
   id: string;
   numSiigo: string;
+  clienteId: string;
   clienteNombre: string;
+  tramiteId: string;
+  borradorId: string;
   saldoACargoCliente: string;
   fechaFactura: string;
   diasAntiguedad: number;
@@ -62,6 +66,8 @@ export type DashboardApiData = {
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
   alertasCartera: ClienteAlertaCarteraRow[];
+  /** Pagos (de todos los DOs) sin comprobante bancario. Solo el número, sin lista. */
+  cantidadPagosSinComprobante: number;
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -104,6 +110,7 @@ function mapPendienteRow(r: Record<string, unknown>): PendienteFacturarRow {
   return {
     id: String(r.id ?? ""),
     consecutivo: String(r.consecutivo ?? ""),
+    clienteId: String(r.clienteId ?? ""),
     clienteNombre: String(r.clienteNombre ?? ""),
     estado: String(r.estado ?? ""),
     fechaRef: typeof r.fechaRef === "string" ? r.fechaRef : null,
@@ -116,7 +123,10 @@ function mapCarteraVencidaRow(r: Record<string, unknown>): CarteraVencidaRow {
   return {
     id: String(r.id ?? ""),
     numSiigo: String(r.numSiigo ?? ""),
+    clienteId: String(r.clienteId ?? ""),
     clienteNombre: String(r.clienteNombre ?? ""),
+    tramiteId: String(r.tramiteId ?? ""),
+    borradorId: String(r.borradorId ?? ""),
     saldoACargoCliente: String(r.saldoACargoCliente ?? "0"),
     fechaFactura: String(r.fechaFactura ?? ""),
     diasAntiguedad: typeof r.diasAntiguedad === "number" ? r.diasAntiguedad : 0,
@@ -213,6 +223,10 @@ export async function fetchDashboard(
     alertasCartera: Array.isArray(payload.alertasCartera)
       ? payload.alertasCartera.filter(isRecord).map(mapAlertaCarteraRow)
       : [],
+    cantidadPagosSinComprobante:
+      typeof payload.cantidadPagosSinComprobante === "number"
+        ? payload.cantidadPagosSinComprobante
+        : 0,
   };
 }
 

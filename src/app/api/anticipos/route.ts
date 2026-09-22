@@ -43,7 +43,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await requireRole(["ADMIN"]);
+  // Karina (OPERATIVO) puede registrar anticipos — decisión del dueño 2026-09-22.
+  // Sin restricción por tipo de cliente: a diferencia de verificar, crear no
+  // distingue SOCIO_LM (mismo patrón que crearPago en lib/pagos/service.ts).
+  const session = await requireRole(["ADMIN", "OPERATIVO"]);
 
   if (session instanceof NextResponse) {
     return session;

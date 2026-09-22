@@ -16,12 +16,12 @@ import {
   Upload,
   Users,
 } from "lucide-react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
 import { KanbanTramites } from "@/components/tramites/kanban-tramites";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -75,7 +75,7 @@ const allFilter = "todos";
 // Valores fijos de los enums Ciudad y EstadoTramite (prisma/schema.prisma).
 // No se derivan de las filas cargadas porque el filtrado ahora es server-side:
 // las filas ya vienen filtradas, asi que las opciones se verian recortadas.
-const CIUDADES_TRAMITE = ["BAQ", "CTG", "BUN", "SMR"] as const;
+const CIUDADES_TRAMITE = ["BAQ", "CTG", "BUN", "SMR", "BGT"] as const;
 const ESTADOS_TRAMITE = [
   "SOLICITUD",
   "APERTURA",
@@ -559,6 +559,7 @@ function CreateTramiteDialog({
                 <option value="BAQ">BAQ</option>
                 <option value="BUN">BUN</option>
                 <option value="SMR">SMR</option>
+                <option value="BGT">BGT</option>
               </select>
             </label>
             <label className="space-y-1.5">
@@ -1239,12 +1240,7 @@ export function TramitesWorkspace() {
                         className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
                       >
                         <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-950">
-                          <Link
-                            href={`/tramites/${tramite.id}`}
-                            className="text-cyan-700 hover:underline"
-                          >
-                            {tramite.doNumber}
-                          </Link>
+                          <EnlaceTramite id={tramite.id}>{tramite.doNumber}</EnlaceTramite>
                           {tramite.esHistorico ? (
                             <span
                               className="ml-2 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
@@ -1254,7 +1250,9 @@ export function TramitesWorkspace() {
                             </span>
                           ) : null}
                         </td>
-                        <td className="px-4 py-3 text-slate-700">{tramite.cliente}</td>
+                        <td className="px-4 py-3 text-slate-700">
+                          <EnlaceCliente id={tramite.clienteId}>{tramite.cliente}</EnlaceCliente>
+                        </td>
                         <td className="whitespace-nowrap px-4 py-3">
                           <span
                             className={`inline-flex h-7 items-center border px-2 text-xs font-semibold ${statusClassName(

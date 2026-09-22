@@ -44,6 +44,8 @@ export type FacturaResumen = {
   saldoAFavorCliente: string;
   saldoACargoCliente: string;
   fechaPagoCliente: string | null;
+  borradorId: string | null;
+  tramiteId: string | null;
 };
 
 export type ClienteDetalle = ClienteRow & {
@@ -218,6 +220,11 @@ function normalizeFactura(row: unknown): FacturaResumen | null {
     saldoAFavorCliente: row.saldoAFavorCliente === undefined || row.saldoAFavorCliente === null ? "0" : String(row.saldoAFavorCliente),
     saldoACargoCliente: row.saldoACargoCliente === undefined || row.saldoACargoCliente === null ? "0" : String(row.saldoACargoCliente),
     fechaPagoCliente: typeof row.fechaPagoCliente === "string" ? row.fechaPagoCliente : null,
+    borradorId: typeof row.borradorId === "string" ? row.borradorId : null,
+    tramiteId:
+      isRecord(row.borrador) && typeof row.borrador.tramiteId === "string"
+        ? row.borrador.tramiteId
+        : null,
   };
 }
 

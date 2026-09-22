@@ -780,6 +780,31 @@ describe("pagos service con Postgres local", () => {
     ).rejects.toThrow(SinAnticipoAplicadoError);
   });
 
+  it("una empresa a crédito (sin la capacidad anticipos_cliente) paga terceros sin anticipo", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1260);
+    // Polyrec ZF, CW ASIA, Sesderma, Coldex…: Galcomex adelanta el puerto y lo cobra en la factura.
+    await prisma.empresaCapacidad.upsert({
+      where: { empresaId_codigo: { empresaId: db.clienteId, codigo: "anticipos_cliente" } },
+      create: { empresaId: db.clienteId, codigo: "anticipos_cliente", habilitado: false },
+      update: { habilitado: false },
+    });
+    try {
+      const deTercero = await crearFacturaProveedorTest(db, tramiteId, `${runId}-CRED`, 262_750n);
+      const pago = await crearPago({
+        tramiteId,
+        concepto: "VACIO SPRB FACT. 1003997130",
+        valor: 262_750n,
+        canalPago: CanalPago.PSE,
+        facturaProveedorIds: [deTercero],
+        usuarioId: db.userId,
+      });
+      expect(pago.valor).toBe(262_750n);
+    } finally {
+      await prisma.empresaCapacidad.deleteMany({ where: { empresaId: db.clienteId, codigo: "anticipos_cliente" } });
+    }
+  });
+
   it("crearPago con anticipo no verificado (REALIZADO) se permite sin error", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1300);
@@ -871,6 +896,60 @@ describe("pagos service con Postgres local", () => {
         comprobanteComercioId: "id-inexistente",
       }),
     ).rejects.toThrow(DocumentoNoEncontradoParaPagoError);
+  });
+
+  // ─── Adjuntar comprobante bancario después de guardar el pago ────────────
+  // Decisión del dueño: se puede guardar un pago SIN comprobante y adjuntarlo
+  // después; mientras falte, `faltaComprobante` debe quedar true (alerta, no
+  // bloqueo — caso Karina).
+
+  it("faltaComprobante = true al crear sin documentoId y false tras actualizarPago con el comprobante", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1480);
+    await aplicarAnticipoTest(db, tramiteId, 3_000_000n);
+
+    const pago = await crearPago({
+      tramiteId,
+      concepto: "Pago sin comprobante bancario",
+      valor: 1_000_000n,
+      canalPago: CanalPago.PSE,
+      usuarioId: db.userId,
+    });
+    expect(pago.documentoId).toBeNull();
+
+    const libroAntes = await getLibroPagos(tramiteId);
+    const filaAntes = libroAntes.pagos.find((p) => p.id === pago.id);
+    expect(filaAntes?.faltaComprobante).toBe(true);
+
+    // El PATCH acepta agregar el comprobante bancario a un pago ya guardado.
+    const docId = await crearDocumentoTest(db, tramiteId, CategoriaDocumento.COMPROBANTE_BANCARIO);
+    const actualizado = await actualizarPago(pago.id, { documentoId: docId }, db.userId);
+    expect(actualizado.documentoId).toBe(docId);
+
+    const libroDespues = await getLibroPagos(tramiteId);
+    const filaDespues = libroDespues.pagos.find((p) => p.id === pago.id);
+    expect(filaDespues?.documentoId).toBe(docId);
+    expect(filaDespues?.faltaComprobante).toBe(false);
+  });
+
+  it("crearPago con documentoId ya arranca con faltaComprobante = false", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 1490);
+    await aplicarAnticipoTest(db, tramiteId, 3_000_000n);
+    const docId = await crearDocumentoTest(db, tramiteId, CategoriaDocumento.COMPROBANTE_BANCARIO);
+
+    const pago = await crearPago({
+      tramiteId,
+      concepto: "Pago con comprobante desde el inicio",
+      valor: 1_000_000n,
+      canalPago: CanalPago.PSE,
+      usuarioId: db.userId,
+      documentoId: docId,
+    });
+
+    const libro = await getLibroPagos(tramiteId);
+    const fila = libro.pagos.find((p) => p.id === pago.id);
+    expect(fila?.faltaComprobante).toBe(false);
   });
 
   // ─── Pago multi-DO (caso Karina/Occidente) ────────────────────────────────

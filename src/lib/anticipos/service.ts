@@ -89,6 +89,15 @@ type AnticipoConSaldo = {
   aplicaciones: DesgloseDO[];
 };
 
+/**
+ * Crea un anticipo. Regla de permiso: ADMIN y OPERATIVO pueden registrar
+ * anticipos de cualquier cliente (decisión del dueño 2026-09-22) — a
+ * diferencia de `verificarAnticipo`, aquí NO se restringe OPERATIVO en
+ * clientes SOCIO_LM: mismo patrón que `crearPago` en `lib/pagos/service.ts`,
+ * donde la restricción SOCIO_LM solo aplica al paso de verificación, no a la
+ * creación/registro. El control de rol vive en el route handler
+ * (`requireRole(["ADMIN", "OPERATIVO"])`), no en este servicio.
+ */
 export async function crearAnticipo(
   input: CrearAnticipoInput,
   usuarioId: string,

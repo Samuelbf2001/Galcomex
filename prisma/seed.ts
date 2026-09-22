@@ -66,6 +66,12 @@ async function main() {
       valor: "-20000000",
       descripcion: "Umbral de alerta de cartera: saldo neto del cliente por debajo de este valor dispara alerta (COP)",
     },
+    {
+      clave: "WHATSAPP_CAMILA",
+      valor: "",
+      descripcion:
+        "Celular de Camila para avisos de devolución de borradores, formato +57...",
+    },
   ];
 
   for (const p of params) {

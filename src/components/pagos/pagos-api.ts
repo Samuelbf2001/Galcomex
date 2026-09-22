@@ -39,8 +39,10 @@ export type PagoRow = {
   /** Lista de beneficiarios vinculados (N↔N). */
   beneficiarios: BeneficiarioMinimo[];
   numSoporte: string | null;
-  /** Comprobante bancario (Bancolombia) — el que vale ante reclamos. null = sin comprobante (no bloquea). */
+  /** Comprobante bancario — el que vale ante reclamos. null = sin comprobante (no bloquea). */
   documentoId: string | null;
+  /** true cuando falta el comprobante bancario — dispara el distintivo "Falta comprobante". Derivado por el backend. */
+  faltaComprobante: boolean;
   /** Comprobante de la página del comercio (puerto/PSE) — opcional. */
   comprobanteComercioId: string | null;
   /** Id del grupo de pago multi-DO (null = pago normal de un solo DO). */
@@ -120,7 +122,7 @@ export type CreatePagoInput = {
   /** IDs de beneficiarios (N↔N). */
   beneficiarioIds?: string[];
   numSoporte?: string | null;
-  /** Comprobante bancario (Bancolombia) — opcional, no bloquea el pago. */
+  /** Comprobante bancario — opcional, no bloquea el pago. */
   documentoId?: string | null;
   /** Comprobante de la página del comercio (puerto/PSE) — opcional. */
   comprobanteComercioId?: string | null;
@@ -204,7 +206,7 @@ export type UpdatePagoInput = {
   fechaRealPago?: string | null;
   /** Banco para 4x1000. null limpia, undefined deja como está. */
   bancoBeneficiarioId?: string | null;
-  /** Comprobante bancario (Bancolombia). null limpia, undefined deja como está. */
+  /** Comprobante bancario. null limpia, undefined deja como está. */
   documentoId?: string | null;
   /** Comprobante de comercio (puerto/PSE), opcional. null limpia, undefined deja como está. */
   comprobanteComercioId?: string | null;
@@ -297,6 +299,12 @@ function parsePagoRow(p: Record<string, unknown>): PagoRow {
     })(),
     numSoporte: typeof p.numSoporte === "string" ? p.numSoporte : null,
     documentoId: typeof p.documentoId === "string" ? p.documentoId : null,
+    // Preferir el booleano derivado del backend; si no viaja (respuesta vieja
+    // en caché), deducirlo de documentoId como respaldo.
+    faltaComprobante:
+      typeof p.faltaComprobante === "boolean"
+        ? p.faltaComprobante
+        : !(typeof p.documentoId === "string"),
     comprobanteComercioId:
       typeof p.comprobanteComercioId === "string" ? p.comprobanteComercioId : null,
     grupoPagoId: typeof p.grupoPagoId === "string" ? p.grupoPagoId : null,

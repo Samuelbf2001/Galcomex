@@ -74,4 +74,12 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
   pendiente("PATCH", "/api/configuracion/catalogos/conceptos", "Catálogos fase 1: falta tool concepto_actualizar"),
   pendiente("GET", "/api/configuracion/catalogos/eventos", "Catálogos fase 1: eventos_catalogo solo lee los activos del flujo del DO"),
   pendiente("PATCH", "/api/configuracion/catalogos/eventos", "Catálogos fase 1: falta tool evento_catalogo_actualizar"),
+
+  // Devolver borrador con observación (2026-09-22). La tool vive en el otro
+  // repo (galcomex-mcp/server.mjs) y se agrega junto con el resto del módulo.
+  pendiente(
+    "POST",
+    "/api/borradores/[param]/devolver",
+    "Devolución del revisor: falta tool borrador_devolver",
+  ),
 ];

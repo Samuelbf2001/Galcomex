@@ -44,6 +44,16 @@ vi.mock("@/lib/borradores/service", () => ({
   transicionarBorrador: vi.fn(),
 }));
 
+vi.mock("@/lib/anticipos/service", () => ({
+  crearAnticipo: vi.fn(),
+  listarAnticipos: vi.fn().mockResolvedValue([]),
+  aplicarAnticipo: vi.fn(),
+  eliminarAplicacion: vi.fn(),
+  SoporteAnticipoRequeridoError: class SoporteAnticipoRequeridoError extends Error {
+    status = 400;
+  },
+}));
+
 vi.mock("@/lib/auth/auth", () => {
   const getSession = vi.fn();
   return {
@@ -57,9 +67,13 @@ vi.mock("@/lib/auth/auth", () => {
 import { auth } from "@/lib/auth/auth";
 import { prisma } from "@/lib/db/prisma";
 import { transicionarBorrador } from "@/lib/borradores/service";
+import { crearAnticipo, aplicarAnticipo, eliminarAplicacion } from "@/lib/anticipos/service";
 import { GET as clienteByIdGET, PATCH as clienteByIdPATCH } from "@/app/api/clientes/[id]/route";
 import { GET as clientesGET } from "@/app/api/clientes/route";
 import { PATCH as borradorPATCH } from "@/app/api/borradores/[id]/route";
+import { POST as anticiposPOST } from "@/app/api/anticipos/route";
+import { POST as aplicacionesPOST } from "@/app/api/anticipos/[id]/aplicaciones/route";
+import { DELETE as aplicacionDELETE } from "@/app/api/anticipos/[id]/aplicaciones/[aplicacionId]/route";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -302,7 +316,117 @@ describe("A1-T9 — Permisos por rol", () => {
     });
   });
 
-  // ── 6. Rate limiting — hallazgo documental ───────────────────────────────────
+  // ── 6. OPERATIVO — anticipos: crear/aplicar/quitar aplicación ───────────────
+  //
+  // Decisión del dueño 2026-09-22: Karina (OPERATIVO) SÍ puede registrar
+  // anticipos. Antes POST /api/anticipos era requireRole(["ADMIN"]) y el
+  // botón de la UI quedaba en 403 (gap documentado desde el 26-ago). Se abrió
+  // crear, aplicar y quitar aplicación a ADMIN/OPERATIVO; verificar mantiene
+  // su regla propia (no se toca aquí).
+
+  describe("OPERATIVO — anticipos: crear/aplicar/quitar aplicación ya no dan 403", () => {
+    it("POST /api/anticipos con OPERATIVO → ya NO es 403 (antes bloqueado)", async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(makeSession("OPERATIVO" as Rol));
+      vi.mocked(crearAnticipo).mockResolvedValueOnce({
+        id: "ant-1",
+        clienteId: "cliente-1",
+        monto: 1_000_000n,
+        fecha: new Date("2026-01-01"),
+        tipoRecaudo: "BANCOLOMBIA",
+        costoRecaudo: 0n,
+        soporteKey: "soporte.pdf",
+        verificadoBanco: false,
+        estado: "BORRADOR",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as never);
+
+      const res = await anticiposPOST(
+        makeRequest("/api/anticipos", {
+          method: "POST",
+          body: JSON.stringify({
+            clienteId: "cliente-1",
+            monto: "1000000",
+            fecha: "2026-01-01",
+            tipoRecaudo: "BANCOLOMBIA",
+            soporteKey: "soporte.pdf",
+          }),
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      expect(crearAnticipo).toHaveBeenCalledTimes(1);
+    });
+
+    it("POST /api/anticipos con REVISOR → sigue en 403 (no se amplió a REVISOR)", async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(makeSession("REVISOR" as Rol));
+
+      const res = await anticiposPOST(
+        makeRequest("/api/anticipos", {
+          method: "POST",
+          body: JSON.stringify({
+            clienteId: "cliente-1",
+            monto: "1000000",
+            fecha: "2026-01-01",
+            tipoRecaudo: "BANCOLOMBIA",
+            soporteKey: "soporte.pdf",
+          }),
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      expect(res.status).toBe(403);
+      expect(crearAnticipo).not.toHaveBeenCalled();
+    });
+
+    it("POST /api/anticipos/[id]/aplicaciones con OPERATIVO → ya NO es 403", async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(makeSession("OPERATIVO" as Rol));
+      vi.mocked(aplicarAnticipo).mockResolvedValueOnce({
+        ok: true,
+        aplicacion: {
+          id: "apl-1",
+          anticipoId: "ant-1",
+          tramiteId: "tram-1",
+          montoAplicado: 500_000n,
+          createdAt: new Date(),
+        },
+      });
+
+      const res = await aplicacionesPOST(
+        makeRequest("/api/anticipos/ant-1/aplicaciones", {
+          method: "POST",
+          body: JSON.stringify({ tramiteId: "tram-1", montoAplicado: "500000" }),
+          headers: { "content-type": "application/json" },
+        }),
+        routeCtx("ant-1"),
+      );
+
+      expect(res.status).toBe(201);
+      expect(aplicarAnticipo).toHaveBeenCalledTimes(1);
+    });
+
+    it("DELETE /api/anticipos/[id]/aplicaciones/[aplicacionId] con OPERATIVO → ya NO es 403", async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(makeSession("OPERATIVO" as Rol));
+      vi.mocked(eliminarAplicacion).mockResolvedValueOnce({
+        id: "apl-1",
+        anticipoId: "ant-1",
+        tramiteId: "tram-1",
+        montoAplicado: 500_000n,
+        createdAt: new Date(),
+      } as never);
+
+      const res = await aplicacionDELETE(
+        makeRequest("/api/anticipos/ant-1/aplicaciones/apl-1", { method: "DELETE" }),
+        { params: Promise.resolve({ id: "ant-1", aplicacionId: "apl-1" }) },
+      );
+
+      expect(res.status).toBe(200);
+      expect(eliminarAplicacion).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── 7. Rate limiting — hallazgo documental ───────────────────────────────────
 
   describe("Rate limiting de login — hallazgo de configuración", () => {
     /**

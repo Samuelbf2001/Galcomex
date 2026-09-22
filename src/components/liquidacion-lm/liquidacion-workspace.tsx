@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ConciliarLoteModal } from "@/components/cartera/conciliar-lote-modal";
@@ -9,6 +8,7 @@ import type {
   FacturaRow,
 } from "@/components/cartera/cartera-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { useRol } from "@/lib/auth/rol-context";
 
@@ -67,7 +67,7 @@ function toLoteFacturaRow(t: LiquidacionTramiteRow): FacturaRow {
   return {
     id: t.facturaId,
     borradorId: t.borradorId,
-    clienteId: "",
+    clienteId: t.clienteId,
     numSiigo: t.numFacturaSiigo ?? "—",
     fecha: t.fechaFactura ?? "",
     totalFactura: "0",
@@ -477,18 +477,23 @@ export function LiquidacionWorkspace() {
                             </td>
                           ) : null}
                           <td className="px-4 py-3 font-medium text-slate-900">
-                            <Link
-                              href={`/tramites/${t.tramiteId}`}
-                              className="text-cyan-700 hover:underline"
-                            >
-                              {t.consecutivo}
-                            </Link>
+                            <EnlaceTramite id={t.tramiteId}>{t.consecutivo}</EnlaceTramite>
                           </td>
                           <td className="px-4 py-3 text-slate-700">
-                            {t.clienteNombre || "—"}
+                            {t.clienteNombre ? (
+                              <EnlaceCliente id={t.clienteId}>{t.clienteNombre}</EnlaceCliente>
+                            ) : (
+                              "—"
+                            )}
                           </td>
                           <td className="px-4 py-3 text-slate-700">
-                            {t.numFacturaSiigo ?? "—"}
+                            {t.numFacturaSiigo ? (
+                              <EnlaceFacturaVenta tramiteId={t.tramiteId} borradorId={t.borradorId}>
+                                {t.numFacturaSiigo}
+                              </EnlaceFacturaVenta>
+                            ) : (
+                              "—"
+                            )}
                           </td>
                           <td className="px-4 py-3 text-slate-700">
                             {formatDate(t.fechaFactura)}

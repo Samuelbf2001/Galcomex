@@ -4,6 +4,7 @@ import { Loader2, Paperclip } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 
@@ -34,7 +35,9 @@ export type ConciliarLoteModalProps = {
 type FilaDerivada = {
   facturaId: string;
   consecutivo: string;
+  tramiteId: string | null;
   numSiigo: string;
+  borradorId: string;
   saldoNeto: bigint;         // signed
   monto: bigint;             // |saldoNeto|
   tipo: "ABONO" | "DEVOLUCION" | null; // null si saldoNeto = 0
@@ -63,7 +66,9 @@ function filaDesdeFactura(
   return {
     facturaId: f.id,
     consecutivo: f.borrador?.tramite.consecutivo ?? "—",
+    tramiteId: f.borrador?.tramiteId ?? null,
     numSiigo: f.numSiigo,
+    borradorId: f.borradorId,
     saldoNeto,
     monto,
     tipo,
@@ -585,10 +590,13 @@ export function ConciliarLoteModal({
                   >
                     <td className="px-3 py-2">
                       <div className="font-mono text-xs font-semibold text-slate-800">
-                        {fila.consecutivo}
+                        <EnlaceTramite id={fila.tramiteId}>{fila.consecutivo}</EnlaceTramite>
                       </div>
                       <div className="font-mono text-[11px] text-slate-500">
-                        SIIGO {fila.numSiigo}
+                        SIIGO{" "}
+                        <EnlaceFacturaVenta tramiteId={fila.tramiteId} borradorId={fila.borradorId}>
+                          {fila.numSiigo}
+                        </EnlaceFacturaVenta>
                       </div>
                     </td>
 

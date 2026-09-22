@@ -29,6 +29,7 @@ export type LiquidacionTramiteRow = {
   borradorId: string | null;
   tramiteId: string | null;
   consecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   numFacturaSiigo: string | null;
   fechaFactura: string | null;
@@ -57,7 +58,7 @@ export async function getLiquidacionLM(input: GetLiquidacionLMInput) {
       saldoAFavorCliente: true,
       saldoAFavorLM: true,
       saldoACargoLM: true,
-      cliente: { select: { nombre: true } },
+      cliente: { select: { id: true, nombre: true } },
       borrador: {
         select: {
           id: true,
@@ -92,6 +93,7 @@ export async function getLiquidacionLM(input: GetLiquidacionLMInput) {
       borradorId: f.borrador?.id ?? null,
       tramiteId: f.borrador?.tramiteId ?? null,
       consecutivo: f.borrador?.tramite.consecutivo ?? "—",
+      clienteId: f.cliente.id,
       clienteNombre: f.cliente.nombre,
       numFacturaSiigo: f.borrador?.numFacturaSiigo ?? f.numSiigo,
       fechaFactura: f.fecha ? f.fecha.toISOString() : null,

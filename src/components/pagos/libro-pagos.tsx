@@ -9,12 +9,14 @@ import {
   Plus,
   Search,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -172,7 +174,7 @@ function DoHeader({ tramite }: { tramite: TramiteDetail }) {
       <div>
         <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Cliente</p>
         <p className="mt-0.5 text-sm font-semibold text-slate-800">
-          {tramite.cliente.nombre}
+          <EnlaceCliente id={tramite.cliente.id}>{tramite.cliente.nombre}</EnlaceCliente>
           <span className="ml-1.5 font-normal text-slate-500">{tramite.cliente.nit}</span>
         </p>
       </div>
@@ -297,7 +299,14 @@ function SeccionAnticipos({
 // Sub-componente: resumen del libro
 // ---------------------------------------------------------------------------
 
-function ResumenLibro({ libro }: { libro: LibroPagosData; filas: FilaLibro[] }) {
+function ResumenLibro({
+  libro,
+  tramiteId,
+}: {
+  libro: LibroPagosData;
+  filas: FilaLibro[];
+  tramiteId: string;
+}) {
   const cruce = libro.cruceFactura;
   // Cruce con cliente: usa SIEMPRE el saldo del borrador (derivado de Σ líneas
   // + comisión + IVA − retenciones). NO se rederiva contra Σ pagos.
@@ -359,7 +368,9 @@ function ResumenLibro({ libro }: { libro: LibroPagosData; filas: FilaLibro[] }) 
           </span>
           <span className="text-slate-700">
             {cruce.numSiigo ? (
-              <span className="font-mono">{cruce.numSiigo}</span>
+              <EnlaceFacturaVenta tramiteId={tramiteId} className="font-mono">
+                {cruce.numSiigo}
+              </EnlaceFacturaVenta>
             ) : (
               <span className="italic text-slate-500">
                 Borrador APROBADO (pendiente de estampar)
@@ -614,7 +625,7 @@ type PendingSubmit = {
   numSoporte: string | null;
   canalPago: CanalPago;
   valor: string;
-  /** Comprobante bancario (Bancolombia) ya subido — opcional, no bloquea el pago. */
+  /** Comprobante bancario ya subido — opcional, no bloquea el pago. */
   documentoId?: string | null;
   /** Comprobante de comercio (puerto/PSE) ya subido — opcional. */
   comprobanteComercioId?: string | null;
@@ -1062,7 +1073,7 @@ export function NuevoPagoModal({
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block space-y-1.5">
                     <span className="text-sm font-medium text-slate-700">
-                      Comprobante bancario (Bancolombia)
+                      Comprobante bancario
                       <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
                     </span>
                     <input
@@ -1424,6 +1435,48 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
     }
   }
 
+  /**
+   * Adjunta el comprobante bancario a un pago YA guardado (decisión de
+   * negocio: se puede registrar el pago sin comprobante y adjuntarlo después).
+   * Sube el archivo y lo asocia con un PATCH — mismo componente de subida que
+   * usa NuevoPagoModal (subirComprobante).
+   */
+  async function handleAdjuntarComprobante(id: string, file: File) {
+    setFilas((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, saving: true, errorFila: null } : f)),
+    );
+
+    try {
+      const documento = await subirComprobante(tramiteId, "COMPROBANTE_BANCARIO", file);
+      const updated = await updatePago(tramiteId, id, { documentoId: documento.id });
+
+      setFilas((prev) =>
+        prev.map((f) =>
+          f.id === id
+            ? {
+                ...f,
+                documentoId: updated.documentoId,
+                faltaComprobante: updated.faltaComprobante,
+                saving: false,
+                errorFila: null,
+              }
+            : f,
+        ),
+      );
+      toast({
+        title: "Comprobante adjuntado",
+        description: updated.concepto,
+        variant: "success",
+      });
+    } catch (caught) {
+      const msg = describirError(caught, "Error al adjuntar el comprobante.");
+      setFilas((prev) =>
+        prev.map((f) => (f.id === id ? { ...f, saving: false, errorFila: msg } : f)),
+      );
+      toast({ title: "No se pudo adjuntar el comprobante", description: msg, variant: "error" });
+    }
+  }
+
   async function handleDelete(id: string) {
     const fila = filas.find((f) => f.id === id);
     const ok = await confirmar({
@@ -1552,7 +1605,7 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
         costosBancariosAnticipo={libro.costosBancariosAnticipo}
       />
 
-      <ResumenLibro libro={libro} filas={filas} />
+      <ResumenLibro libro={libro} filas={filas} tramiteId={tramiteId} />
 
       <div className="overflow-hidden border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
@@ -1617,6 +1670,7 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
                   onBlur={handleBlurField}
                   onDelete={(id) => void handleDelete(id)}
                   onVerify={(id) => void handleVerificar(id)}
+                  onAdjuntarComprobante={(id, file) => void handleAdjuntarComprobante(id, file)}
                   isVerifying={verifyingId === fila.id}
                 />
               ))}
@@ -1677,6 +1731,8 @@ type FilaPagoProps = {
   onBlur: (id: string) => void;
   onDelete: (id: string) => void;
   onVerify: (id: string) => void;
+  /** Sube y adjunta el comprobante bancario a un pago ya guardado. */
+  onAdjuntarComprobante: (id: string, file: File) => void;
   isVerifying: boolean;
 };
 
@@ -1694,6 +1750,7 @@ function FilaPago({
   onBlur,
   onDelete,
   onVerify,
+  onAdjuntarComprobante,
   isVerifying,
 }: FilaPagoProps) {
   const etiqueta = `pago ${index}`;
@@ -1769,14 +1826,37 @@ function FilaPago({
                 vía Lucho
               </span>
             ) : null}
-            {!fila.documentoId ? (
+            {fila.faltaComprobante ? (
               <span
                 className="inline-flex items-center gap-1 border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
                 title="Pago sin comprobante bancario"
               >
                 <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-                Sin comprobante
+                Falta comprobante
               </span>
+            ) : null}
+            {fila.faltaComprobante && !readOnly ? (
+              <label
+                className={`inline-flex w-fit items-center gap-1 border border-amber-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-50 ${
+                  fila.saving ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                }`}
+                title="Adjuntar el comprobante bancario a este pago"
+              >
+                <Upload className="h-3 w-3" aria-hidden="true" />
+                Adjuntar comprobante
+                <input
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  disabled={fila.saving}
+                  className="hidden"
+                  aria-label={`Adjuntar comprobante bancario del ${etiqueta}`}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) onAdjuntarComprobante(fila.id, file);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
             ) : null}
             {fila.grupoPagoId ? (
               <span

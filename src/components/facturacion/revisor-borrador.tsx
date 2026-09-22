@@ -7,8 +7,10 @@ import {
   Download,
   FileText,
   Loader2,
+  MessageSquareWarning,
   RefreshCw,
   Send,
+  Undo2,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -22,10 +24,13 @@ import {
   type ValidacionesCruceResult,
   FacturacionApiError,
   ESTADO_BORRADOR_LABEL,
+  OBSERVACION_DEVOLUCION_MAX,
+  OBSERVACION_DEVOLUCION_MIN,
   actualizarFormaPago,
   descargarBorradorExport,
   descargarBorradorPdf,
   descargarSiigoImport,
+  devolverBorrador,
   enviarBorradorASiigo,
   estadoBorradorColorClass,
   fetchCruceFacturas,
@@ -40,7 +45,9 @@ import {
   type FacturaProveedorRow,
   fetchFacturasProveedor,
 } from "@/components/facturas-proveedor/facturas-proveedor-api";
+import { usePermiso } from "@/lib/auth/rol-context";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { ModuleState } from "@/components/layout/module-state";
@@ -187,10 +194,129 @@ function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps)
   );
 }
 
+// ─── Modal: Devolver con observación ──────────────────────────────────────────
+
+type DevolverModalProps = {
+  borradorId: string;
+  tramiteConsecutivo: string;
+  onClose: () => void;
+  onDevuelto: (borrador: BorradorRow) => void;
+};
+
+function DevolverModal({
+  borradorId,
+  tramiteConsecutivo,
+  onClose,
+  onDevuelto,
+}: DevolverModalProps) {
+  const { toast } = useToast();
+  const [observacion, setObservacion] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const texto = observacion.trim();
+  const suficiente = texto.length >= OBSERVACION_DEVOLUCION_MIN;
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+
+    if (!suficiente) {
+      setError(
+        `Escribe la observación con al menos ${OBSERVACION_DEVOLUCION_MIN} caracteres.`,
+      );
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const updated = await devolverBorrador(borradorId, texto);
+      toast({
+        title: "Borrador devuelto; Camila recibirá un aviso",
+        description: tramiteConsecutivo,
+        variant: "success",
+      });
+      onDevuelto(updated);
+    } catch (caught) {
+      setError(
+        caught instanceof FacturacionApiError
+          ? caught.message
+          : describirError(caught, "Error al devolver el borrador."),
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Devolver con observación"
+      description={`El borrador de ${tramiteConsecutivo} volverá a BORRADOR para que lo corrijan. La observación queda en la ficha y se le avisa a Camila por WhatsApp.`}
+      size="sm"
+      dismissible={!submitting}
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-slate-700">
+            ¿Qué hay que corregir? *
+          </span>
+          <textarea
+            value={observacion}
+            onChange={(e) => setObservacion(e.target.value)}
+            rows={4}
+            maxLength={OBSERVACION_DEVOLUCION_MAX}
+            required
+            placeholder="Ej. La línea de almacenaje no coincide con la factura del proveedor."
+            className="w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan-600"
+          />
+          <span className="block text-xs text-slate-500">
+            {texto.length}/{OBSERVACION_DEVOLUCION_MAX} caracteres · mínimo{" "}
+            {OBSERVACION_DEVOLUCION_MIN}
+          </span>
+        </label>
+
+        {error ? (
+          <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            {error}
+          </div>
+        ) : null}
+
+        <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            disabled={submitting || !suficiente}
+            className="inline-flex h-10 items-center gap-2 bg-amber-600 px-4 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:opacity-60"
+          >
+            {submitting ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Undo2 className="h-4 w-4" aria-hidden="true" />
+            )}
+            Devolver borrador
+          </button>
+        </div>
+      </form>
+    </ModalShell>
+  );
+}
+
 // ─── Modal: Confirmar envío a SIIGO ───────────────────────────────────────────
 
 type ConfirmarEnvioSiigoModalProps = {
+  tramiteId: string;
   tramiteConsecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   esReenvio: boolean;
   enviadoASiigoEn: string | null;
@@ -200,7 +326,9 @@ type ConfirmarEnvioSiigoModalProps = {
 };
 
 function ConfirmarEnvioSiigoModal({
+  tramiteId,
   tramiteConsecutivo,
+  clienteId,
   clienteNombre,
   esReenvio,
   enviadoASiigoEn,
@@ -247,9 +375,11 @@ function ConfirmarEnvioSiigoModal({
               Trámite
             </p>
             <p className="mt-0.5 text-sm font-semibold text-slate-900">
-              {tramiteConsecutivo}
+              <EnlaceTramite id={tramiteId}>{tramiteConsecutivo}</EnlaceTramite>
             </p>
-            <p className="text-xs text-slate-600">{clienteNombre}</p>
+            <p className="text-xs text-slate-600">
+              <EnlaceCliente id={clienteId}>{clienteNombre}</EnlaceCliente>
+            </p>
           </div>
 
           <p className="text-sm text-slate-700">
@@ -405,6 +535,9 @@ export function RevisorBorrador({
 }: RevisorBorradorProps) {
   const { toast } = useToast();
   const confirmar = useConfirm();
+  // El endpoint POST /api/borradores/[id]/devolver admite ADMIN y REVISOR:
+  // el botón se muestra exactamente con ese mismo gate.
+  const puedeDevolver = usePermiso(["ADMIN", "REVISOR"]);
   const [borradorActual, setBorradorActual] = useState<BorradorRow>(borrador);
   const [lineas, setLineas] = useState<LineaLocal[]>(
     borrador.lineasRevision.map((l) => ({ ...l, estadoLocal: "pendiente" })),
@@ -417,6 +550,7 @@ export function RevisorBorrador({
   const [transicionando, setTransicionando] = useState(false);
   const [errorTransicion, setErrorTransicion] = useState<string | null>(null);
   const [modalFacturar, setModalFacturar] = useState(false);
+  const [modalDevolver, setModalDevolver] = useState(false);
   const [enviandoSiigo, setEnviandoSiigo] = useState(false);
   const [mostrarConfirmEnvioSiigo, setMostrarConfirmEnvioSiigo] = useState(false);
   const [formasPago, setFormasPago] = useState<SiigoFormaPagoRow[]>([]);
@@ -651,6 +785,14 @@ export function RevisorBorrador({
     onBorradorActualizado(updated);
   }
 
+  function handleDevuelto(updated: BorradorRow) {
+    setModalDevolver(false);
+    setErrorTransicion(null);
+    setBorradorActual(updated);
+    setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
+    onBorradorActualizado(updated);
+  }
+
   async function handleSincronizarSiigo() {
     if (sincronizandoSiigo) return;
     setSincronizandoSiigo(true);
@@ -781,7 +923,7 @@ export function RevisorBorrador({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-bold text-slate-950 truncate">
-                Revisión: {tramite.consecutivo}
+                Revisión: <EnlaceTramite id={tramite.id}>{tramite.consecutivo}</EnlaceTramite>
               </h2>
               <span
                 className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${estadoColor}`}
@@ -795,7 +937,7 @@ export function RevisorBorrador({
               ) : null}
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              {tramite.cliente.nombre}
+              <EnlaceCliente id={tramite.cliente.id}>{tramite.cliente.nombre}</EnlaceCliente>
               <span className="ml-1.5 text-slate-400">{tramite.cliente.nit}</span>
             </p>
           </div>
@@ -839,6 +981,22 @@ export function RevisorBorrador({
                 <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
               )}
               Aprobar borrador
+            </button>
+          ) : null}
+
+          {/* EN_REVISION | APROBADO → BORRADOR (devolución del revisor).
+              Contraparte de "Aprobar borrador": mismo gate de rol
+              (ADMIN/REVISOR) que POST /api/borradores/[id]/devolver. */}
+          {(estado === "EN_REVISION" || estado === "APROBADO") && puedeDevolver ? (
+            <button
+              type="button"
+              onClick={() => setModalDevolver(true)}
+              disabled={transicionando}
+              title="Devolver el borrador a quien lo armó con una observación. Se le avisa a Camila por WhatsApp."
+              className="inline-flex h-9 items-center gap-2 border border-amber-400 bg-white px-3 text-sm font-semibold text-amber-700 transition hover:bg-amber-50 disabled:opacity-60"
+            >
+              <Undo2 className="h-4 w-4" aria-hidden="true" />
+              Devolver con observación
             </button>
           ) : null}
 
@@ -1055,6 +1213,35 @@ export function RevisorBorrador({
           </div>
         );
       })() : null}
+
+      {/* Observaciones de cabecera del borrador. Incluyen las notas
+          "DEVUELTO POR …" que deja el revisor al devolverlo; esas NO salen en
+          la factura de SIIGO (se filtran al armar las observaciones). */}
+      {borradorActual.comentariosCabecera.length > 0 ? (
+        <div className="border-b border-slate-200 bg-slate-50 px-4 py-2">
+          <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+            <MessageSquareWarning className="h-3.5 w-3.5" aria-hidden="true" />
+            Observaciones del borrador
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {borradorActual.comentariosCabecera.map((comentario, idx) => {
+              const esDevolucion = comentario.trimStart().startsWith("DEVUELTO POR ");
+              return (
+                <li
+                  key={`${idx}-${comentario}`}
+                  className={`text-sm ${
+                    esDevolucion
+                      ? "border-l-2 border-amber-400 pl-2 font-medium text-amber-800"
+                      : "text-slate-700"
+                  }`}
+                >
+                  {comentario}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
 
       {/* Cuerpo split-screen */}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
@@ -1558,9 +1745,20 @@ export function RevisorBorrador({
         />
       ) : null}
 
+      {modalDevolver ? (
+        <DevolverModal
+          borradorId={borradorActual.id}
+          tramiteConsecutivo={tramite.consecutivo}
+          onClose={() => setModalDevolver(false)}
+          onDevuelto={handleDevuelto}
+        />
+      ) : null}
+
       {mostrarConfirmEnvioSiigo ? (
         <ConfirmarEnvioSiigoModal
+          tramiteId={tramite.id}
           tramiteConsecutivo={tramite.consecutivo}
+          clienteId={tramite.cliente.id}
           clienteNombre={tramite.cliente.nombre}
           esReenvio={Boolean(borradorActual.siigoDraftId)}
           enviadoASiigoEn={borradorActual.enviadoASiigoEn}

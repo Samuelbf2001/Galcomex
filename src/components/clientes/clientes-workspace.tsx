@@ -1,7 +1,6 @@
 "use client";
 
 import { Loader2, Plus, RotateCcw, Search } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useId, useState } from "react";
 
 import {
@@ -14,6 +13,7 @@ import {
 } from "@/components/clientes/clientes-api";
 import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
 import { ModuleState } from "@/components/layout/module-state";
+import { EnlaceCliente } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -179,12 +179,9 @@ export function ClientesWorkspace() {
               {visibles.map((cliente) => (
                 <tr key={cliente.id} className="border-b border-slate-100 transition hover:bg-cyan-50/40">
                   <td className="px-4 py-3 font-medium">
-                    <Link
-                      href={`/clientes/${cliente.id}`}
-                      className="inline-flex min-h-11 items-center text-cyan-800 underline-offset-2 hover:underline"
-                    >
+                    <EnlaceCliente id={cliente.id} className="inline-flex min-h-11 items-center">
                       {cliente.nombre}
-                    </Link>
+                    </EnlaceCliente>
                   </td>
                   <td className="px-4 py-3">{cliente.nit}</td>
                   <td className="px-4 py-3">

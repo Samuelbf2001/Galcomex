@@ -15,6 +15,7 @@ import {
 } from "@/lib/documentos/enlaces";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
+import { origenPublico } from "@/lib/http/origen-publico";
 
 type RouteContext = {
   params: Promise<{ id: string; documentoId: string }>;
@@ -93,7 +94,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const enlace = await crearEnlaceDocumento(documentoId, acceso.user.id, acceso.user.rol);
     const status = activoAntes ? 200 : 201;
 
-    return jsonResponse({ enlace: buildEnlaceDTO(enlace, request.nextUrl.origin) }, { status });
+    return jsonResponse({ enlace: buildEnlaceDTO(enlace, origenPublico(request)) }, { status });
   } catch (error) {
     if (error instanceof DocumentoNoEncontradoParaEnlaceError) {
       return NextResponse.json({ error: error.message }, { status: error.status });

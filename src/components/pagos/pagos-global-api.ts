@@ -38,8 +38,10 @@ export type PagoGlobalRow = {
   /** Nombres de beneficiarios vinculados (display). */
   beneficiarios: string;
   numSoporte: string | null;
-  /** Comprobante bancario (Bancolombia). null = sin comprobante (badge de advertencia, no bloquea). */
+  /** Comprobante bancario. null = sin comprobante (badge de advertencia, no bloquea). */
   documentoId: string | null;
+  /** true cuando falta el comprobante bancario — dispara el distintivo "Falta comprobante". Derivado por el backend. */
+  faltaComprobante: boolean;
   /** Id del grupo de pago multi-DO (null = pago normal de un solo DO). */
   grupoPagoId: string | null;
   /** Otros DOs del mismo grupoPagoId (vacío si no es un pago multi-DO). */
@@ -113,6 +115,10 @@ function normalizePago(raw: unknown): PagoGlobalRow | null {
     })(),
     numSoporte: typeof raw.numSoporte === "string" ? raw.numSoporte : null,
     documentoId: typeof raw.documentoId === "string" ? raw.documentoId : null,
+    faltaComprobante:
+      typeof raw.faltaComprobante === "boolean"
+        ? raw.faltaComprobante
+        : !(typeof raw.documentoId === "string"),
     grupoPagoId: typeof raw.grupoPagoId === "string" ? raw.grupoPagoId : null,
     grupoOtrosDOs: (() => {
       const arr = Array.isArray(raw.grupoOtrosDOs) ? raw.grupoOtrosDOs : [];
@@ -268,6 +274,7 @@ export type FacturaElegibleMultiDORow = {
   fecha: string; // ISO
   tramiteId: string;
   tramiteConsecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   /** false = el DO no tiene anticipo aplicado; la UI debe marcarlo (regla "sin anticipo no hay pagos"). */
   tieneAnticipoAplicado: boolean;
@@ -304,6 +311,7 @@ export async function fetchFacturasElegiblesMultiDO(
     fecha: typeof f.fecha === "string" ? f.fecha : "",
     tramiteId: String(f.tramiteId ?? ""),
     tramiteConsecutivo: String(f.tramiteConsecutivo ?? ""),
+    clienteId: String(f.clienteId ?? ""),
     clienteNombre: String(f.clienteNombre ?? ""),
     tieneAnticipoAplicado: f.tieneAnticipoAplicado === true,
   }));
