@@ -11,6 +11,8 @@ export type MovimientoCuentaRow = {
   fecha: string;
   valor: string; // BigInt serializado, con signo
   referencia: string | null;
+  /** Id del DO al que pertenece el asiento (si aplica), para enlazarlo. */
+  tramiteId: string | null;
   /** Cruce de saldos al que pertenece (las dos puntas comparten id). */
   compensacionId: string | null;
 };
@@ -127,6 +129,8 @@ function normalizar(payload: unknown): CuentaCorriente | null {
           valor: String(movimiento.valor ?? "0"),
           referencia:
             typeof movimiento.referencia === "string" ? movimiento.referencia : null,
+          tramiteId:
+            typeof movimiento.tramiteId === "string" ? movimiento.tramiteId : null,
           compensacionId:
             typeof movimiento.compensacionId === "string" ? movimiento.compensacionId : null,
         }))

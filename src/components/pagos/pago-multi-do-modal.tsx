@@ -15,6 +15,7 @@ import {
   formatDate,
   subirComprobante,
 } from "@/components/pagos/pagos-global-api";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -93,12 +94,20 @@ export function PagoMultiDOModal({ onClose, onCreated, beneficiarioInicial = nul
   const grupos = useMemo(() => {
     const map = new Map<
       string,
-      { tramiteId: string; consecutivo: string; clienteNombre: string; tieneAnticipoAplicado: boolean; facturas: FacturaElegibleMultiDORow[] }
+      {
+        tramiteId: string;
+        consecutivo: string;
+        clienteId: string;
+        clienteNombre: string;
+        tieneAnticipoAplicado: boolean;
+        facturas: FacturaElegibleMultiDORow[];
+      }
     >();
     for (const f of facturas) {
       const g = map.get(f.tramiteId) ?? {
         tramiteId: f.tramiteId,
         consecutivo: f.tramiteConsecutivo,
+        clienteId: f.clienteId,
         clienteNombre: f.clienteNombre,
         tieneAnticipoAplicado: f.tieneAnticipoAplicado,
         facturas: [],
@@ -266,8 +275,16 @@ export function PagoMultiDOModal({ onClose, onCreated, beneficiarioInicial = nul
                     }`}
                   >
                     <div>
-                      <span className="font-semibold text-slate-900">{g.consecutivo}</span>
-                      <span className="ml-2 text-slate-500">{g.clienteNombre}</span>
+                      <EnlaceTramite
+                        id={g.tramiteId}
+                        tab="facturas-proveedor"
+                        className="font-semibold"
+                      >
+                        {g.consecutivo}
+                      </EnlaceTramite>
+                      <span className="ml-2 text-slate-500">
+                        <EnlaceCliente id={g.clienteId}>{g.clienteNombre}</EnlaceCliente>
+                      </span>
                     </div>
                     {!g.tieneAnticipoAplicado ? (
                       <span

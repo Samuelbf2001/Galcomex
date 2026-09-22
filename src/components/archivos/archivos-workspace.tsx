@@ -32,6 +32,7 @@ import {
   prefijoPadre,
 } from "@/components/archivos/archivos-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { TableSkeleton } from "@/components/ui/skeleton";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -87,11 +88,13 @@ function FilaCarpeta({ carpeta }: { carpeta: CarpetaRow }) {
       <td className="px-4 py-2.5 text-slate-600">
         {carpeta.tramite ? (
           <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
-            <Link href={`/tramites/${carpeta.tramite.id}`} className="inline-flex items-center gap-1 text-cyan-700 hover:underline">
+            <span className="inline-flex items-center gap-1 text-cyan-700">
               <Ship className="h-3.5 w-3.5" aria-hidden="true" />
-              {carpeta.tramite.consecutivo}
-            </Link>
-            <span className="truncate">{carpeta.tramite.cliente}</span>
+              <EnlaceTramite id={carpeta.tramite.id}>{carpeta.tramite.consecutivo}</EnlaceTramite>
+            </span>
+            <span className="truncate">
+              <EnlaceCliente id={carpeta.tramite.clienteId}>{carpeta.tramite.cliente}</EnlaceCliente>
+            </span>
           </span>
         ) : detalleCategoria ? (
           <span className="inline-flex items-center border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-xs font-medium text-slate-700">{detalleCategoria}</span>
@@ -132,7 +135,7 @@ function FilaArchivo({ archivo }: { archivo: ArchivoRow }) {
             <span className="inline-flex items-center border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-xs font-medium text-slate-700">{categoria}</span>
           ) : null}
           {archivo.tramite ? (
-            <Link href={`/tramites/${archivo.tramite.id}`} className="text-cyan-700 hover:underline">{archivo.tramite.consecutivo}</Link>
+            <EnlaceTramite id={archivo.tramite.id}>{archivo.tramite.consecutivo}</EnlaceTramite>
           ) : null}
           {archivo.subidoPor ? <span className="text-xs text-slate-500">subido por {archivo.subidoPor}</span> : null}
           {!categoria && !archivo.tramite ? <span className="text-xs text-slate-400">Cargado por fuera de la app</span> : null}

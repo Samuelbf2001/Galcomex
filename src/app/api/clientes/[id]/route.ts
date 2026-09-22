@@ -47,6 +47,9 @@ export async function GET(_request: NextRequest, context: RouteContext) {
           saldoAFavorCliente: true,
           saldoACargoCliente: true,
           fechaPagoCliente: true,
+          // Enlace de la factura a su revisor/trámite (EnlaceFacturaVenta).
+          borradorId: true,
+          borrador: { select: { tramiteId: true } },
         },
       },
     },

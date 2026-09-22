@@ -925,6 +925,7 @@ export type FacturaElegibleMultiDO = {
   fecha: Date;
   tramiteId: string;
   tramiteConsecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   /** true si el DO ya tiene al menos una AplicacionAnticipo (regla "sin anticipo no hay pagos"). */
   tieneAnticipoAplicado: boolean;
@@ -941,7 +942,7 @@ export async function listarFacturasElegiblesMultiDO(
     where: { beneficiarioId, estado: EstadoFacturaProveedor.REGISTRADA },
     include: {
       tramite: {
-        select: { id: true, consecutivo: true, cliente: { select: { nombre: true } } },
+        select: { id: true, consecutivo: true, cliente: { select: { id: true, nombre: true } } },
       },
     },
     orderBy: [{ tramite: { consecutivo: "asc" } }, { fecha: "asc" }],
@@ -963,6 +964,7 @@ export async function listarFacturasElegiblesMultiDO(
     fecha: f.fecha,
     tramiteId: f.tramiteId,
     tramiteConsecutivo: f.tramite.consecutivo,
+    clienteId: f.tramite.cliente.id,
     clienteNombre: f.tramite.cliente.nombre,
     // Un costo propio se paga aunque el DO no tenga anticipo (`soloCostosPropios`).
     tieneAnticipoAplicado: tramitesConAnticipo.has(f.tramiteId) || !f.repercutible,

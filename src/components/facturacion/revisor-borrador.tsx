@@ -41,6 +41,7 @@ import {
   fetchFacturasProveedor,
 } from "@/components/facturas-proveedor/facturas-proveedor-api";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { ModuleState } from "@/components/layout/module-state";
@@ -190,7 +191,9 @@ function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps)
 // ─── Modal: Confirmar envío a SIIGO ───────────────────────────────────────────
 
 type ConfirmarEnvioSiigoModalProps = {
+  tramiteId: string;
   tramiteConsecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   esReenvio: boolean;
   enviadoASiigoEn: string | null;
@@ -200,7 +203,9 @@ type ConfirmarEnvioSiigoModalProps = {
 };
 
 function ConfirmarEnvioSiigoModal({
+  tramiteId,
   tramiteConsecutivo,
+  clienteId,
   clienteNombre,
   esReenvio,
   enviadoASiigoEn,
@@ -247,9 +252,11 @@ function ConfirmarEnvioSiigoModal({
               Trámite
             </p>
             <p className="mt-0.5 text-sm font-semibold text-slate-900">
-              {tramiteConsecutivo}
+              <EnlaceTramite id={tramiteId}>{tramiteConsecutivo}</EnlaceTramite>
             </p>
-            <p className="text-xs text-slate-600">{clienteNombre}</p>
+            <p className="text-xs text-slate-600">
+              <EnlaceCliente id={clienteId}>{clienteNombre}</EnlaceCliente>
+            </p>
           </div>
 
           <p className="text-sm text-slate-700">
@@ -781,7 +788,7 @@ export function RevisorBorrador({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-bold text-slate-950 truncate">
-                Revisión: {tramite.consecutivo}
+                Revisión: <EnlaceTramite id={tramite.id}>{tramite.consecutivo}</EnlaceTramite>
               </h2>
               <span
                 className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${estadoColor}`}
@@ -795,7 +802,7 @@ export function RevisorBorrador({
               ) : null}
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              {tramite.cliente.nombre}
+              <EnlaceCliente id={tramite.cliente.id}>{tramite.cliente.nombre}</EnlaceCliente>
               <span className="ml-1.5 text-slate-400">{tramite.cliente.nit}</span>
             </p>
           </div>
@@ -1560,7 +1567,9 @@ export function RevisorBorrador({
 
       {mostrarConfirmEnvioSiigo ? (
         <ConfirmarEnvioSiigoModal
+          tramiteId={tramite.id}
           tramiteConsecutivo={tramite.consecutivo}
+          clienteId={tramite.cliente.id}
           clienteNombre={tramite.cliente.nombre}
           esReenvio={Boolean(borradorActual.siigoDraftId)}
           enviadoASiigoEn={borradorActual.enviadoASiigoEn}

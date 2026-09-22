@@ -19,6 +19,10 @@ type FilaIngreso = {
   tipo: "ANTICIPO" | "ABONO" | "DEVOLUCION";
   /** DO consecutivo o numSiigo de la factura */
   referencia: string;
+  /** DO vinculado (aplicación de anticipo o trámite de la factura). Null si no aplica. */
+  tramiteId: string | null;
+  /** Borrador de la factura de venta vinculada (solo ABONO/DEVOLUCION). */
+  borradorId: string | null;
   /** Monto con signo: positivo = entrada, negativo = salida */
   montoConSigno: bigint;
   monto: bigint;
@@ -77,6 +81,8 @@ export async function getIngresos(input: GetIngresosInput = {}): Promise<FilaIng
         select: {
           numSiigo: true,
           clienteId: true,
+          borradorId: true,
+          borrador: { select: { tramiteId: true } },
           cliente: { select: { id: true, nombre: true } },
         },
       },
@@ -90,11 +96,14 @@ export async function getIngresos(input: GetIngresosInput = {}): Promise<FilaIng
   const filas: FilaSinSaldo[] = [];
 
   for (const a of anticipos) {
-    const referencia = a.aplicaciones[0]?.tramite.consecutivo ?? `anticipo:${a.id}`;
+    const primeraAplicacion = a.aplicaciones[0];
+    const referencia = primeraAplicacion?.tramite.consecutivo ?? `anticipo:${a.id}`;
     filas.push({
       id: a.id,
       tipo: "ANTICIPO",
       referencia,
+      tramiteId: primeraAplicacion?.tramiteId ?? null,
+      borradorId: null,
       montoConSigno: a.monto,
       monto: a.monto,
       canalPago: a.tipoRecaudo,
@@ -111,6 +120,8 @@ export async function getIngresos(input: GetIngresosInput = {}): Promise<FilaIng
       id: p.id,
       tipo: p.tipo === TipoPagoFactura.ABONO ? "ABONO" : "DEVOLUCION",
       referencia: p.factura.numSiigo,
+      tramiteId: p.factura.borrador?.tramiteId ?? null,
+      borradorId: p.factura.borradorId,
       montoConSigno: esEntrada ? p.monto : -p.monto,
       monto: p.monto,
       // canalPago ahora es nullable; tipoRecaudo es la alternativa para recaudos

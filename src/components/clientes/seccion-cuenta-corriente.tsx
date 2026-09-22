@@ -14,6 +14,7 @@ import {
 } from "@/components/clientes/cuenta-api";
 import { claseCampo } from "@/components/clientes/form-campos";
 import { ModuleState } from "@/components/layout/module-state";
+import { EnlaceTramite, type TabTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -59,6 +60,11 @@ const ETIQUETA_FUENTE: Record<string, string> = {
 };
 
 const LINEAS_SERVICIO = ["TRAMITE", "CLASIFICACION", "PLAN_VALLEJO", "OTROS", "COMISION", "ASESORIA"];
+
+/** Pestaña del DO más relevante para cada fuente de asiento, al enlazar la referencia. */
+function tabParaFuente(fuente: string): TabTramite | undefined {
+  return fuente === "FACTURA_PROVEEDOR" ? "facturas-proveedor" : undefined;
+}
 
 function MovimientoModal({
   clienteId,
@@ -258,7 +264,14 @@ function FilaMovimiento({
         ) : null}
         <span className="mt-0.5 block text-xs text-slate-500">
           {ETIQUETA_FUENTE[movimiento.fuente] ?? movimiento.fuente}
-          {movimiento.referencia ? ` · ${movimiento.referencia}` : ""}
+          {movimiento.referencia ? (
+            <>
+              {" · "}
+              <EnlaceTramite id={movimiento.tramiteId} tab={tabParaFuente(movimiento.fuente)}>
+                {movimiento.referencia}
+              </EnlaceTramite>
+            </>
+          ) : null}
         </span>
       </td>
       <td className="px-4 py-2.5 text-xs text-slate-500">{movimiento.lineaServicio}</td>

@@ -9,7 +9,7 @@ export type Miga = { nombre: string; prefix: string };
 export type CarpetaRow = {
   nombre: string;
   prefix: string;
-  tramite?: { id: string; consecutivo: string; cliente: string; estado: string };
+  tramite?: { id: string; consecutivo: string; clienteId: string; cliente: string; estado: string };
 };
 
 export type ArchivoRow = {
@@ -63,6 +63,7 @@ function mapTramiteCarpeta(raw: unknown): CarpetaRow["tramite"] | undefined {
   return {
     id: String(raw.id ?? ""),
     consecutivo: String(raw.consecutivo ?? ""),
+    clienteId: String(raw.clienteId ?? ""),
     cliente: String(raw.cliente ?? ""),
     estado: String(raw.estado ?? ""),
   };

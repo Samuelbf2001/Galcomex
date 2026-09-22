@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { ModuleState } from "@/components/layout/module-state";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError } from "@/components/ui/toast";
+import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 
 import {
   type DashboardApiData,
@@ -107,10 +108,10 @@ function TablaPendientesFacturar({ rows }: { rows: PendienteFacturarRow[] }) {
               }`}
             >
               <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
-                <Link href={`/tramites/${row.id}`} className="text-cyan-700 underline-offset-4 hover:underline">{row.consecutivo}</Link>
+                <EnlaceTramite id={row.id}>{row.consecutivo}</EnlaceTramite>
               </td>
               <td className="px-4 py-3 text-xs text-slate-700 whitespace-nowrap">
-                {row.clienteNombre}
+                <EnlaceCliente id={row.clienteId}>{row.clienteNombre}</EnlaceCliente>
               </td>
               <td className="px-4 py-3 whitespace-nowrap">
                 <span className="inline-flex h-5 items-center border border-slate-200 bg-white px-1.5 text-xs text-slate-600">
@@ -170,10 +171,12 @@ function TablaCarteraVencida({ rows }: { rows: CarteraVencidaRow[] }) {
               className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50 transition-colors"
             >
               <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
-                {row.numSiigo}
+                <EnlaceFacturaVenta tramiteId={row.tramiteId} borradorId={row.borradorId}>
+                  {row.numSiigo}
+                </EnlaceFacturaVenta>
               </td>
               <td className="px-4 py-3 text-xs text-slate-700 whitespace-nowrap">
-                {row.clienteNombre}
+                <EnlaceCliente id={row.clienteId}>{row.clienteNombre}</EnlaceCliente>
               </td>
               <td className="px-4 py-3 text-right text-sm font-semibold text-rose-600 whitespace-nowrap">
                 {formatCOP(row.saldoACargoCliente)}
@@ -223,7 +226,7 @@ function TablaAlertasCartera({ rows }: { rows: ClienteAlertaCarteraRow[] }) {
                 className="border-b border-slate-100 bg-rose-50/40 last:border-b-0 transition-colors hover:bg-rose-50"
               >
                 <td className="px-4 py-3 text-xs font-medium text-slate-800 whitespace-nowrap">
-                  {row.clienteNombre}
+                  <EnlaceCliente id={row.clienteId}>{row.clienteNombre}</EnlaceCliente>
                 </td>
                 <td className="px-4 py-3 text-right text-sm font-bold text-rose-600 whitespace-nowrap">
                   {negativo ? "−" : ""}

@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -172,7 +173,7 @@ function DoHeader({ tramite }: { tramite: TramiteDetail }) {
       <div>
         <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Cliente</p>
         <p className="mt-0.5 text-sm font-semibold text-slate-800">
-          {tramite.cliente.nombre}
+          <EnlaceCliente id={tramite.cliente.id}>{tramite.cliente.nombre}</EnlaceCliente>
           <span className="ml-1.5 font-normal text-slate-500">{tramite.cliente.nit}</span>
         </p>
       </div>
@@ -297,7 +298,14 @@ function SeccionAnticipos({
 // Sub-componente: resumen del libro
 // ---------------------------------------------------------------------------
 
-function ResumenLibro({ libro }: { libro: LibroPagosData; filas: FilaLibro[] }) {
+function ResumenLibro({
+  libro,
+  tramiteId,
+}: {
+  libro: LibroPagosData;
+  filas: FilaLibro[];
+  tramiteId: string;
+}) {
   const cruce = libro.cruceFactura;
   // Cruce con cliente: usa SIEMPRE el saldo del borrador (derivado de Σ líneas
   // + comisión + IVA − retenciones). NO se rederiva contra Σ pagos.
@@ -359,7 +367,9 @@ function ResumenLibro({ libro }: { libro: LibroPagosData; filas: FilaLibro[] }) 
           </span>
           <span className="text-slate-700">
             {cruce.numSiigo ? (
-              <span className="font-mono">{cruce.numSiigo}</span>
+              <EnlaceFacturaVenta tramiteId={tramiteId} className="font-mono">
+                {cruce.numSiigo}
+              </EnlaceFacturaVenta>
             ) : (
               <span className="italic text-slate-500">
                 Borrador APROBADO (pendiente de estampar)
@@ -1552,7 +1562,7 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
         costosBancariosAnticipo={libro.costosBancariosAnticipo}
       />
 
-      <ResumenLibro libro={libro} filas={filas} />
+      <ResumenLibro libro={libro} filas={filas} tramiteId={tramiteId} />
 
       <div className="overflow-hidden border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">

@@ -94,6 +94,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
         select: {
           tramite: {
             select: {
+              id: true,
               consecutivo: true,
               tipoTramite: { select: { lineaServicio: true } },
             },
@@ -113,6 +114,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
     const lineaServicio =
       factura.borrador?.tramite?.tipoTramite?.lineaServicio ?? "TRAMITE";
     const referencia = factura.borrador?.tramite?.consecutivo ?? factura.numSiigo;
+    const tramiteId = factura.borrador?.tramite?.id ?? null;
 
     if (factura.saldoACargoCliente > 0n) {
       asientos.push(
@@ -125,6 +127,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
           fecha: factura.fecha,
           valor: factura.saldoACargoCliente,
           referencia,
+          tramiteId,
         }),
       );
     }
@@ -140,6 +143,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
         fecha: factura.fecha,
         valor: -factura.saldoAFavorCliente,
         referencia,
+        tramiteId,
       });
     }
 
@@ -159,6 +163,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
           fecha: pago.fecha,
           valor: pago.monto,
           referencia,
+          tramiteId,
           compensacionId: pago.compensacionId,
         }),
       );
@@ -196,6 +201,7 @@ async function asientosComoProveedor(empresaId: string): Promise<AsientoCuenta[]
       repercutible: true,
       tramite: {
         select: {
+          id: true,
           consecutivo: true,
           tipoTramite: { select: { lineaServicio: true } },
         },
@@ -217,6 +223,7 @@ async function asientosComoProveedor(empresaId: string): Promise<AsientoCuenta[]
       fecha: factura.fecha,
       valor: factura.valor,
       referencia: factura.tramite.consecutivo,
+      tramiteId: factura.tramite.id,
     }),
   );
 }
@@ -235,7 +242,7 @@ async function asientosManuales(empresaId: string): Promise<AsientoCuenta[]> {
       valor: true,
       fecha: true,
       compensacionId: true,
-      tramite: { select: { consecutivo: true } },
+      tramite: { select: { id: true, consecutivo: true } },
     },
   });
 
@@ -258,6 +265,7 @@ async function asientosManuales(empresaId: string): Promise<AsientoCuenta[]> {
         ? movimiento.valor
         : -movimiento.valor,
     referencia: movimiento.tramite?.consecutivo ?? null,
+    tramiteId: movimiento.tramite?.id ?? null,
     compensacionId: movimiento.compensacionId,
   }));
 }

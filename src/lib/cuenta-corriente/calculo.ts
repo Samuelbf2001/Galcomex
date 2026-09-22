@@ -49,6 +49,8 @@ export interface AsientoCuenta {
   valor: bigint;
   /** Referencia legible: consecutivo del DO, n° de factura, etc. */
   referencia?: string | null;
+  /** Id del DO al que pertenece el asiento (si aplica), para enlazarlo en la UI. */
+  tramiteId?: string | null;
   /** Cruce de saldos al que pertenece el asiento (las dos puntas comparten id). */
   compensacionId?: string | null;
 }

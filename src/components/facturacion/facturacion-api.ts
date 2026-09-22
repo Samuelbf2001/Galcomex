@@ -322,28 +322,61 @@ export async function fetchTramitesParaFacturacion(
 
   return (payload.tramites as unknown[]).filter(isRecord).filter(
     (t) => ESTADOS_FACTURABLES.includes(String(t.estado ?? "")),
-  ).map(
-    (t): TramiteParaFacturacion => {
-      const cliente = isRecord(t.cliente) ? t.cliente : {};
-      return {
-        id: String(t.id ?? ""),
-        consecutivo: String(t.consecutivo ?? ""),
-        estado: String(t.estado ?? ""),
-        eta: typeof t.eta === "string" ? t.eta : null,
-        cliente: {
-          id: String(cliente.id ?? ""),
-          nombre: String(cliente.nombre ?? ""),
-          nit: String(cliente.nit ?? ""),
-        },
-        ordenCompraNumero: typeof t.ordenCompraNumero === "string" && t.ordenCompraNumero ? t.ordenCompraNumero : null,
-        ordenCompraValor:
-          typeof t.ordenCompraValor === "string" || typeof t.ordenCompraValor === "number"
-            ? String(t.ordenCompraValor)
-            : null,
-        borradores: [],
-      };
+  ).map(mapTramiteParaFacturacion);
+}
+
+function mapTramiteParaFacturacion(t: Record<string, unknown>): TramiteParaFacturacion {
+  const cliente = isRecord(t.cliente) ? t.cliente : {};
+  return {
+    id: String(t.id ?? ""),
+    consecutivo: String(t.consecutivo ?? ""),
+    estado: String(t.estado ?? ""),
+    eta: typeof t.eta === "string" ? t.eta : null,
+    cliente: {
+      id: String(cliente.id ?? ""),
+      nombre: String(cliente.nombre ?? ""),
+      nit: String(cliente.nit ?? ""),
     },
-  );
+    ordenCompraNumero: typeof t.ordenCompraNumero === "string" && t.ordenCompraNumero ? t.ordenCompraNumero : null,
+    ordenCompraValor:
+      typeof t.ordenCompraValor === "string" || typeof t.ordenCompraValor === "number"
+        ? String(t.ordenCompraValor)
+        : null,
+    borradores: [],
+  };
+}
+
+/**
+ * Un solo trámite (GET /api/tramites/[id]) con la forma que usa Facturación.
+ * Lo usa el enlace directo `/facturacion?tramiteId=…&borrador=…`, que debe
+ * funcionar aunque el DO no esté entre los 100 que carga la tabla.
+ */
+export async function fetchTramiteParaFacturacion(
+  tramiteId: string,
+  signal?: AbortSignal,
+): Promise<TramiteParaFacturacion> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/tramites/${encodeURIComponent(tramiteId)}`, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new FacturacionApiError("No fue posible conectar con /api/tramites.");
+  }
+
+  if (!response.ok) {
+    const msg = await parseErrorMessage(response);
+    throw new FacturacionApiError(msg, response.status);
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!isRecord(payload) || !isRecord(payload.tramite)) {
+    throw new FacturacionApiError("Respuesta del trámite no válida.");
+  }
+  return mapTramiteParaFacturacion(payload.tramite);
 }
 
 export async function fetchBorradoresDeTramite(

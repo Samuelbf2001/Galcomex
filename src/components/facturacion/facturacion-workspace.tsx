@@ -10,6 +10,7 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
@@ -24,6 +25,7 @@ import {
   estadoBorradorColorClass,
   fetchBorradoresDeTramite,
   fetchBorradoresPorLote,
+  fetchTramiteParaFacturacion,
   fetchTramitesParaFacturacion,
   formatCOP,
   formatDate,
@@ -31,6 +33,7 @@ import {
   parseBigIntInput,
 } from "@/components/facturacion/facturacion-api";
 import { RevisorBorrador } from "@/components/facturacion/revisor-borrador";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -450,9 +453,11 @@ function FilaTramite({
     <tr className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50 transition-colors">
       <td className="px-4 py-3">
         <p className="font-mono text-sm font-semibold text-slate-900">
-          {tramite.consecutivo}
+          <EnlaceTramite id={tramite.id}>{tramite.consecutivo}</EnlaceTramite>
         </p>
-        <p className="text-xs text-slate-500">{tramite.cliente.nombre}</p>
+        <p className="text-xs text-slate-500">
+          <EnlaceCliente id={tramite.cliente.id}>{tramite.cliente.nombre}</EnlaceCliente>
+        </p>
       </td>
 
       <td className="px-4 py-3">
@@ -754,6 +759,65 @@ export function FacturacionWorkspace() {
     return () => controller.abort();
   }, [reloadKey, cargarBorradoresDeTramite, aplicarResultado]);
 
+  // ── Enlace directo: /facturacion?tramiteId=…&borrador=… ────────────────────
+  // Viene de EnlaceFacturaVenta (components/ui/enlace-entidad.tsx) y del botón
+  // "Ir a Facturación" del trámite. Carga ESE trámite y sus borradores por su
+  // cuenta (puede no estar entre los 100 de la tabla) y abre el revisor.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const { toast } = useToast();
+  const tramiteIdUrl = searchParams.get("tramiteId");
+  const borradorIdUrl = searchParams.get("borrador");
+
+  useEffect(() => {
+    if (!tramiteIdUrl) return;
+    const controller = new AbortController();
+
+    async function abrirDesdeUrl(tramiteId: string) {
+      try {
+        const [tramite, borradores] = await Promise.all([
+          fetchTramiteParaFacturacion(tramiteId, controller.signal),
+          fetchBorradoresDeTramite(tramiteId, controller.signal),
+        ]);
+        if (controller.signal.aborted) return;
+        const borrador =
+          (borradorIdUrl ? borradores.find((b) => b.id === borradorIdUrl) : null) ??
+          ultimoBorrador(borradores);
+        if (!borrador) {
+          toast({
+            variant: "info",
+            title: `El trámite ${tramite.consecutivo} aún no tiene borrador de factura.`,
+          });
+          return;
+        }
+        setRevisionState({
+          tramite: {
+            ...tramite,
+            borradores,
+            cargandoBorradores: false,
+            errorBorradores: null,
+          },
+          borrador,
+        });
+      } catch (caught) {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+        toast({
+          variant: "error",
+          title: describirError(caught, "No se pudo abrir la factura."),
+        });
+      }
+    }
+
+    void abrirDesdeUrl(tramiteIdUrl);
+    return () => controller.abort();
+  }, [tramiteIdUrl, borradorIdUrl, toast]);
+
+  function cerrarRevision() {
+    setRevisionState(null);
+    // Limpia el enlace directo para que refrescar no reabra el revisor.
+    if (tramiteIdUrl) router.replace("/facturacion", { scroll: false });
+  }
+
   // ── Filtrado ───────────────────────────────────────────────────────────────
 
   const tramitesFiltrados = tramites.filter((t) => {
@@ -942,7 +1006,7 @@ export function FacturacionWorkspace() {
           puedeAprobar={puedeAprobar}
           puedeFacturar={puedeFacturar}
           puedeEnviarRevision={puedeEnviarRevision}
-          onClose={() => setRevisionState(null)}
+          onClose={cerrarRevision}
           onBorradorActualizado={(borrador) =>
             handleBorradorActualizado(revisionState.tramite.id, borrador)
           }

@@ -268,6 +268,7 @@ export type FacturaElegibleMultiDORow = {
   fecha: string; // ISO
   tramiteId: string;
   tramiteConsecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   /** false = el DO no tiene anticipo aplicado; la UI debe marcarlo (regla "sin anticipo no hay pagos"). */
   tieneAnticipoAplicado: boolean;
@@ -304,6 +305,7 @@ export async function fetchFacturasElegiblesMultiDO(
     fecha: typeof f.fecha === "string" ? f.fecha : "",
     tramiteId: String(f.tramiteId ?? ""),
     tramiteConsecutivo: String(f.tramiteConsecutivo ?? ""),
+    clienteId: String(f.clienteId ?? ""),
     clienteNombre: String(f.clienteNombre ?? ""),
     tieneAnticipoAplicado: f.tieneAnticipoAplicado === true,
   }));

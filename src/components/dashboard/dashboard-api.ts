@@ -13,6 +13,7 @@ export type DosPorEstado = {
 export type PendienteFacturarRow = {
   id: string;
   consecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   estado: string;
   fechaRef: string | null;
@@ -23,7 +24,10 @@ export type PendienteFacturarRow = {
 export type CarteraVencidaRow = {
   id: string;
   numSiigo: string;
+  clienteId: string;
   clienteNombre: string;
+  tramiteId: string;
+  borradorId: string;
   saldoACargoCliente: string;
   fechaFactura: string;
   diasAntiguedad: number;
@@ -104,6 +108,7 @@ function mapPendienteRow(r: Record<string, unknown>): PendienteFacturarRow {
   return {
     id: String(r.id ?? ""),
     consecutivo: String(r.consecutivo ?? ""),
+    clienteId: String(r.clienteId ?? ""),
     clienteNombre: String(r.clienteNombre ?? ""),
     estado: String(r.estado ?? ""),
     fechaRef: typeof r.fechaRef === "string" ? r.fechaRef : null,
@@ -116,7 +121,10 @@ function mapCarteraVencidaRow(r: Record<string, unknown>): CarteraVencidaRow {
   return {
     id: String(r.id ?? ""),
     numSiigo: String(r.numSiigo ?? ""),
+    clienteId: String(r.clienteId ?? ""),
     clienteNombre: String(r.clienteNombre ?? ""),
+    tramiteId: String(r.tramiteId ?? ""),
+    borradorId: String(r.borradorId ?? ""),
     saldoACargoCliente: String(r.saldoACargoCliente ?? "0"),
     fechaFactura: String(r.fechaFactura ?? ""),
     diasAntiguedad: typeof r.diasAntiguedad === "number" ? r.diasAntiguedad : 0,

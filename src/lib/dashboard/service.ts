@@ -164,6 +164,7 @@ export type DosPorEstado = {
 export type PendienteFacturarRow = {
   id: string;
   consecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   estado: EstadoTramite;
   fechaRef: string | null;    // ISO date string
@@ -174,7 +175,10 @@ export type PendienteFacturarRow = {
 export type CarteraVencidaRow = {
   id: string;
   numSiigo: string;
+  clienteId: string;
   clienteNombre: string;
+  tramiteId: string;
+  borradorId: string;
   saldoACargoCliente: string; // BigInt as string
   fechaFactura: string;       // ISO date string
   diasAntiguedad: number;
@@ -249,6 +253,7 @@ type PendienteFacturarDbRow = {
   estado: EstadoTramite;
   fechaSalidaCarga: Date | null;
   fechaEnviadoAFacturar: Date | null;
+  clienteId: string;
   clienteNombre: string;
 };
 
@@ -295,6 +300,7 @@ async function getPendientesFacturar(hoy: Date): Promise<{
         t.estado,
         t."fechaSalidaCarga",
         t."fechaEnviadoAFacturar",
+        c.id AS "clienteId",
         c.nombre AS "clienteNombre"
       FROM tramite_do t
       JOIN cliente c ON c.id = t."clienteId"
@@ -324,6 +330,7 @@ async function getPendientesFacturar(hoy: Date): Promise<{
       return {
         id: do_.id,
         consecutivo: do_.consecutivo,
+        clienteId: do_.clienteId,
         clienteNombre: do_.clienteNombre,
         estado: do_.estado,
         fechaRef: fechaRef ? fechaRef.toISOString() : null,
@@ -366,7 +373,10 @@ async function getCarteraVencida(hoy: Date): Promise<{
         numSiigo: true,
         saldoACargoCliente: true,
         fecha: true,
+        clienteId: true,
         cliente: { select: { nombre: true } },
+        borradorId: true,
+        borrador: { select: { tramiteId: true } },
       },
       orderBy: [{ fecha: "asc" }, { id: "asc" }],
       take: LIMITE_LISTAS_DASHBOARD,
@@ -387,7 +397,10 @@ async function getCarteraVencida(hoy: Date): Promise<{
     return {
       id: f.id,
       numSiigo: f.numSiigo,
+      clienteId: f.clienteId,
       clienteNombre: f.cliente.nombre,
+      tramiteId: f.borrador.tramiteId,
+      borradorId: f.borradorId,
       saldoACargoCliente: f.saldoACargoCliente.toString(),
       fechaFactura: f.fecha.toISOString(),
       diasAntiguedad,

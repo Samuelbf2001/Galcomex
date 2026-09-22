@@ -8,6 +8,7 @@ export type LiquidacionTramiteRow = {
   borradorId: string;
   tramiteId: string;
   consecutivo: string;
+  clienteId: string;
   clienteNombre: string;
   numFacturaSiigo: string | null;
   fechaFactura: string | null;
@@ -47,6 +48,7 @@ function mapTramiteRow(t: Record<string, unknown>): LiquidacionTramiteRow {
     borradorId: String(t.borradorId ?? ""),
     tramiteId: String(t.tramiteId ?? ""),
     consecutivo: String(t.consecutivo ?? ""),
+    clienteId: String(t.clienteId ?? ""),
     clienteNombre: String(t.clienteNombre ?? ""),
     numFacturaSiigo:
       typeof t.numFacturaSiigo === "string" ? t.numFacturaSiigo : null,

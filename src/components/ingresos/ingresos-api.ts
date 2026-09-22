@@ -13,6 +13,10 @@ export type FilaIngreso = {
   id: string;
   tipo: TipoIngreso;
   referencia: string;
+  /** DO vinculado (aplicación de anticipo o trámite de la factura). Null si no aplica. */
+  tramiteId: string | null;
+  /** Borrador de la factura de venta vinculada (solo ABONO/DEVOLUCION). */
+  borradorId: string | null;
   montoConSigno: string;  // BigInt as string (positivo = entrada, negativo = salida)
   monto: string;          // BigInt as string (siempre positivo)
   canalPago: CanalPago | string;
@@ -60,6 +64,8 @@ function mapFila(raw: unknown): FilaIngreso | null {
     id: String(raw.id ?? ""),
     tipo: (raw.tipo as TipoIngreso) ?? "ABONO",
     referencia: String(raw.referencia ?? ""),
+    tramiteId: typeof raw.tramiteId === "string" ? raw.tramiteId : null,
+    borradorId: typeof raw.borradorId === "string" ? raw.borradorId : null,
     montoConSigno: String(raw.montoConSigno ?? "0"),
     monto: String(raw.monto ?? "0"),
     canalPago: String(raw.canalPago ?? ""),

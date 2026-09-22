@@ -14,11 +14,11 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -544,7 +544,9 @@ function AnticipoFila({
 
         {/* Cliente */}
         <td className="px-3 py-2.5 text-sm font-medium text-slate-800">
-          {anticipo.clienteNombre || anticipo.clienteId}
+          <EnlaceCliente id={anticipo.clienteId}>
+            {anticipo.clienteNombre || anticipo.clienteId}
+          </EnlaceCliente>
         </td>
 
         {/* Monto */}
@@ -671,12 +673,9 @@ function AnticipoFila({
                 {anticipo.aplicaciones.map((ap) => (
                   <tr key={ap.aplicacionId} className="border-t border-slate-100">
                     <td className="py-1.5">
-                      <Link
-                        href={`/tramites/${ap.tramiteId}`}
-                        className="font-medium text-cyan-700 hover:underline"
-                      >
+                      <EnlaceTramite id={ap.tramiteId} className="font-medium">
                         {ap.consecutivo}
-                      </Link>
+                      </EnlaceTramite>
                     </td>
                     <td className="py-1.5 text-right font-semibold text-slate-800">
                       {formatCOP(ap.montoAplicado)}

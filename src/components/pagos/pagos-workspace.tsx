@@ -10,7 +10,6 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
@@ -32,6 +31,7 @@ import {
 } from "@/components/pagos/pagos-global-api";
 import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { PagoMultiDOModal } from "@/components/pagos/pago-multi-do-modal";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
@@ -315,16 +315,19 @@ function FilaPagoRow({ fila, readOnly, isDeleting, onChange, onBlur, onDelete }:
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
         {/* DO */}
         <td className="whitespace-nowrap px-3 py-2">
-          <Link
-            href={`/tramites/${fila.tramiteId}`}
-            className="text-sm font-medium text-cyan-700 hover:underline"
+          <EnlaceTramite
+            id={fila.tramiteId}
+            tab="pagos"
+            className="text-sm font-medium"
           >
             {fila.consecutivo}
-          </Link>
+          </EnlaceTramite>
         </td>
 
         {/* Cliente */}
-        <td className="px-3 py-2 text-sm text-slate-700">{fila.clienteNombre}</td>
+        <td className="px-3 py-2 text-sm text-slate-700">
+          <EnlaceCliente id={fila.clienteId}>{fila.clienteNombre}</EnlaceCliente>
+        </td>
 
         {/* Concepto */}
         <td className="px-3 py-2">

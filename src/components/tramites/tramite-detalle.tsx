@@ -16,9 +16,11 @@ import {
   Wallet,
 } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import type { Rol } from "@/lib/auth/auth";
@@ -473,9 +475,11 @@ function estadoBorradorClass(estado: string): string {
 function SeccionBorradores({
   borradores,
   clienteId,
+  tramiteId,
 }: {
   borradores: BorradorEntry[];
   clienteId: string;
+  tramiteId: string;
 }) {
   if (borradores.length === 0) {
     return (
@@ -503,9 +507,13 @@ function SeccionBorradores({
                 {b.estado}
               </span>
               {b.numFacturaSiigo ? (
-                <span className="font-mono font-semibold text-slate-900 text-sm">
+                <EnlaceFacturaVenta
+                  tramiteId={tramiteId}
+                  borradorId={b.id}
+                  className="font-mono font-semibold text-slate-900 text-sm"
+                >
                   {b.numFacturaSiigo}
-                </span>
+                </EnlaceFacturaVenta>
               ) : null}
               {b.fechaFactura ? (
                 <span className="text-xs text-slate-500">{formatDate(b.fechaFactura)}</span>
@@ -749,12 +757,9 @@ function TabResumen({
         </div>
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Cliente</p>
-          <Link
-            href={`/clientes/${tramite.cliente.id}`}
-            className="mt-0.5 block font-semibold text-cyan-700 hover:underline"
-          >
+          <EnlaceCliente id={tramite.cliente.id} className="mt-0.5 block font-semibold">
             {tramite.cliente.nombre}
-          </Link>
+          </EnlaceCliente>
           <p className="text-xs text-slate-500">{tramite.cliente.nit}</p>
         </div>
         <div>
@@ -833,6 +838,7 @@ function TabResumen({
       <SeccionBorradores
         borradores={tramite.borradores ?? []}
         clienteId={tramite.cliente.id}
+        tramiteId={tramite.id}
       />
 
       {/* Checklist */}
@@ -1201,12 +1207,17 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [activeTab, setActiveTab] = useState<TabId>("hoja");
+  // `?tab=` (enlaces desde otros módulos, ver components/ui/enlace-entidad.tsx)
+  // abre el trámite directamente en esa pestaña.
+  const tabDeUrl = useSearchParams().get("tab");
+  const tabPedida = TABS.find((t) => t.id === tabDeUrl)?.id ?? null;
+  const [activeTab, setActiveTab] = useState<TabId>(tabPedida ?? "hoja");
   // Pestañas ya visitadas: se mantienen montadas (ocultas con `hidden`) para
   // no volver a cargar todo al regresar a ellas.
-  const [visitedTabs, setVisitedTabs] = useState<TabId[]>(["hoja"]);
+  const [visitedTabs, setVisitedTabs] = useState<TabId[]>(tabPedida ? [tabPedida] : ["hoja"]);
   // Solo la primera carga de un histórico salta a Documentos (ref: no re-renderiza ni entra al efecto).
-  const tabInicialAplicada = useRef(false);
+  // Si la URL ya pidió una pestaña, se respeta.
+  const tabInicialAplicada = useRef(tabPedida !== null);
   const [solicitandoFacturacion, setSolicitandoFacturacion] = useState(false);
   const [errorSolicitud, setErrorSolicitud] = useState<string | null>(null);
   const [topAction, setTopAction] = useState<

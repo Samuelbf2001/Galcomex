@@ -22,6 +22,7 @@ import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-cor
 import { SeccionPagosProveedor } from "@/components/clientes/seccion-pagos-proveedor";
 import { SeccionTarifario } from "@/components/clientes/seccion-tarifario";
 import { ModuleState } from "@/components/layout/module-state";
+import { EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, Skeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -291,7 +292,7 @@ function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
                 className="border-b border-slate-100 last:border-b-0"
               >
                 <td className="px-4 py-3 font-mono font-semibold text-slate-900">
-                  {tramite.consecutivo}
+                  <EnlaceTramite id={tramite.id}>{tramite.consecutivo}</EnlaceTramite>
                 </td>
                 <td className="px-4 py-3 text-slate-600">{tramite.ciudad}</td>
                 <td className="px-4 py-3">
@@ -441,7 +442,9 @@ function SeccionFacturas({ facturas }: { facturas: FacturaResumen[] }) {
                 className="border-b border-slate-100 last:border-b-0"
               >
                 <td className="px-4 py-3 font-mono font-semibold text-slate-900">
-                  {factura.numSiigo}
+                  <EnlaceFacturaVenta tramiteId={factura.tramiteId} borradorId={factura.borradorId}>
+                    {factura.numSiigo}
+                  </EnlaceFacturaVenta>
                 </td>
                 <td className="px-4 py-3 text-slate-600">{formatDate(factura.fecha)}</td>
                 <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">

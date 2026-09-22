@@ -28,6 +28,7 @@ import {
   validarArchivoSoporte,
 } from "@/components/anticipos/anticipos-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { EnlaceCliente } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
@@ -238,7 +239,9 @@ export function RegistrarAnticipoTramiteModal({
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
               Cliente
             </p>
-            <p className="mt-0.5 text-sm font-semibold text-slate-900">{cliente.nombre}</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-900">
+              <EnlaceCliente id={cliente.id}>{cliente.nombre}</EnlaceCliente>
+            </p>
             <p className="text-xs text-slate-500">{cliente.nit}</p>
           </div>
 
