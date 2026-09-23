@@ -864,7 +864,11 @@ export function RevisorBorrador({
     setEnviandoSiigo(true);
     setErrorTransicion(null);
     try {
-      const { siigoDraftId, enviadoEn } = await enviarBorradorASiigo(borradorActual.id);
+      // Con siigoDraftId es un "Reenviar": el servidor exige saber cuál reemplaza.
+      const { siigoDraftId, enviadoEn } = await enviarBorradorASiigo(
+        borradorActual.id,
+        borradorActual.siigoDraftId,
+      );
       const updated: BorradorRow = {
         ...borradorActual,
         siigoDraftId,

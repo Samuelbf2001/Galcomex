@@ -572,13 +572,21 @@ export async function generarBorrador(input: GenerarBorradorInput) {
  * - Al aprobar: guarda snapshotCalculo + aprobadoPorId + fechaAprobacion
  * - Al facturar: exige numFacturaSiigo + fechaFactura; solo si estado == APROBADO;
  *   crea registro Factura (cartera)
+ *
+ * Concurrencia: toma el mismo lock que la edición de líneas
+ * (`borrador_lineas:<id>`), así el snapshot de la aprobación no se toma a
+ * mitad de una edición; y el cambio de estado es condicional al estado leído
+ * (si otro camino lo cambió en medio, 409 sin escribir nada).
  */
 export async function transicionarBorrador(
   input: TransicionarBorradorInput,
 ): Promise<TransicionResult> {
   const { borradorId, nuevoEstado, usuarioId, numFacturaSiigo, fechaFactura } = input;
+  const lockKey = `borrador_lineas:${borradorId}`;
 
   return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+
     const borrador = await tx.borradorFactura.findUnique({
       where: { id: borradorId },
       include: {
@@ -639,9 +647,9 @@ export async function transicionarBorrador(
           })
         : undefined;
 
-    // Actualizar borrador
-    const updated = await tx.borradorFactura.update({
-      where: { id: borradorId },
+    // Actualizar borrador, solo si sigue en el estado validado arriba.
+    const cambio = await tx.borradorFactura.updateMany({
+      where: { id: borradorId, estado: borrador.estado },
       data: {
         estado: nuevoEstado,
         ...(nuevoEstado === EstadoBorrador.APROBADO && {
@@ -655,6 +663,17 @@ export async function transicionarBorrador(
           fechaFactura,
         }),
       },
+    });
+    if (cambio.count !== 1) {
+      return {
+        ok: false,
+        status: 409,
+        message: `El borrador cambió mientras se procesaba (ya no está en ${borrador.estado}). Recarga la página e inténtalo de nuevo.`,
+      };
+    }
+
+    const updated = await tx.borradorFactura.findUniqueOrThrow({
+      where: { id: borradorId },
       include: {
         lineasRevision: {
           orderBy: { orden: "asc" },

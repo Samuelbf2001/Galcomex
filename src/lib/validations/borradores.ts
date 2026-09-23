@@ -144,6 +144,29 @@ export const transicionBorradorPayloadSchema = z
 
 export type TransicionBorradorPayload = z.infer<typeof transicionBorradorPayloadSchema>;
 
+// ── Enviar a SIIGO ────────────────────────────────────────────────────────────
+
+/**
+ * Cuerpo (opcional) de POST /api/borradores/[id]/siigo-enviar. Sin cuerpo es un
+ * primer envío. Reenviar exige nombrar el borrador de Siigo que se reemplaza.
+ */
+export const enviarSiigoPayloadSchema = z
+  .object({
+    reenviar: z.boolean().optional(),
+    siigoDraftIdAnterior: z.string().trim().min(1).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.reenviar && !data.siigoDraftIdAnterior) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["siigoDraftIdAnterior"],
+        message: "Para reenviar indica el borrador de SIIGO que se reemplaza (siigoDraftIdAnterior).",
+      });
+    }
+  });
+
+export type EnviarSiigoPayload = z.infer<typeof enviarSiigoPayloadSchema>;
+
 // ── Registrar pago de factura ─────────────────────────────────────────────────
 
 export const registrarPagoFacturaPayloadSchema = z

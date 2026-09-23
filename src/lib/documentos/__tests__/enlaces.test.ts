@@ -17,6 +17,7 @@ import { CategoriaDocumento, Rol, TipoCliente } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/lib/db/prisma";
+import { prefijoTramite } from "@/lib/storage/service";
 
 // ─── Mock de storage (los tests de enlaces no tocan MinIO, pero
 // registrarDocumento() del fixture pasa por el mismo servicio) ───────────────
@@ -128,6 +129,7 @@ const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2
 
 type Fixture = {
   tramiteId: string;
+  consecutivo: string;
   admin: string;
   operativo: string;
   socio: string;
@@ -188,9 +190,11 @@ async function createFixture(): Promise<Fixture> {
     data: { nombre: "Cliente Vitest Enlaces Doc", nit: `${runId}-nit`, tipo: TipoCliente.PROPIO },
   });
 
+  const consecutivo = `DO.BAQ05-${runId.slice(-4)}`;
+
   const tramite = await prisma.tramiteDO.create({
     data: {
-      consecutivo: `DO.BAQ05-${runId.slice(-4)}`,
+      consecutivo,
       ciudad: "BAQ",
       anio: 3005,
       numero: Math.floor(Math.random() * 9000) + 1000,
@@ -200,7 +204,13 @@ async function createFixture(): Promise<Fixture> {
     },
   });
 
-  return { tramiteId: tramite.id, admin: admin.id, operativo: operativo.id, socio: socio.id };
+  return {
+    tramiteId: tramite.id,
+    consecutivo,
+    admin: admin.id,
+    operativo: operativo.id,
+    socio: socio.id,
+  };
 }
 
 function ensureDb(ctx: { skip: (note?: string) => void }): Fixture {
@@ -216,7 +226,7 @@ async function crearDocumentoDePrueba(db: Fixture, sufijo: string) {
     tramiteId: db.tramiteId,
     categoria: CategoriaDocumento.OTRO,
     nombreArchivo: `doc-${sufijo}.pdf`,
-    storageKey: `tramites/DO-TEST-3005/OTRO/${runId}-${sufijo}.pdf`,
+    storageKey: `${prefijoTramite(db.consecutivo)}OTRO/${runId}-${sufijo}.pdf`,
     mimeType: "application/pdf",
     tamanoBytes: 1024,
     subidoPorId: db.admin,

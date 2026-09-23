@@ -28,7 +28,7 @@ function vencimientoEpoch(expiresInSeconds: number): number {
   return Math.floor(Date.now() / 1000) + expiresInSeconds;
 }
 
-const DELETED_PREFIX = "deleted/";
+export const DELETED_PREFIX = "deleted/";
 
 export type StorageFileInput = {
   fileName?: string;
@@ -61,7 +61,10 @@ export class StorageValidationError extends Error {
 export function isAllowedStorageContentType(
   contentType: string,
 ): contentType is AllowedStorageContentType {
-  return contentType in ALLOWED_STORAGE_FILE_TYPES;
+  // `in` también es cierto para propiedades heredadas del prototipo (ej.
+  // "constructor", "toString"), lo que dejaba pasar tipos no permitidos.
+  // `Object.hasOwn` solo mira las propiedades propias del objeto literal.
+  return Object.hasOwn(ALLOWED_STORAGE_FILE_TYPES, contentType);
 }
 
 export function validateStorageFile(input: StorageFileInput): AllowedStorageContentType {
@@ -84,13 +87,29 @@ export function validateStorageFile(input: StorageFileInput): AllowedStorageCont
   }
 
   const extension = getFileExtension(input.fileName);
+
+  if (!extension) {
+    throw new StorageValidationError("El nombre del archivo debe incluir una extension");
+  }
+
   const expectedExtension = ALLOWED_STORAGE_FILE_TYPES[input.contentType];
 
-  if (extension && normalizeExtension(extension) !== expectedExtension) {
+  if (normalizeExtension(extension) !== expectedExtension) {
     throw new StorageValidationError("La extension no coincide con el tipo de archivo");
   }
 
   return input.contentType;
+}
+
+/**
+ * Prefijo de carpeta que le corresponde a un trámite dentro de `tramites/…`
+ * (mismo saneo de `consecutivo` que usa `generateStorageKey`). Sirve para
+ * validar que un `storageKey` recibido del cliente (registrar/reemplazar
+ * documento) SÍ pertenece al trámite que dice pertenecer — evita que un
+ * usuario registre la clave de un archivo de otro trámite (IDOR).
+ */
+export function prefijoTramite(consecutivo: string): string {
+  return `tramites/${sanitizePathSegment(consecutivo, "consecutivo")}/`;
 }
 
 export function generateStorageKey(input: StorageKeyInput): string {
