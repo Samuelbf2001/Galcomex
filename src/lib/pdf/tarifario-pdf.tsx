@@ -28,6 +28,8 @@ export type TarifaItemPdfDto = {
 export type TarifarioPdfDto = {
   empresaNombre: string;
   empresaNit: string;
+  /** Ciudad de la empresa; se omite la línea si no está (B3, 22-sep). */
+  empresaCiudad: string | null;
   contactoNombre: string | null;
   nombre: string;
   alcance: string;
@@ -36,7 +38,6 @@ export type TarifarioPdfDto = {
   vigenteDesde: Date;
   vigenteHasta: Date;
   fechaEmision: Date;
-  notas: string | null;
   items: TarifaItemPdfDto[];
 };
 
@@ -84,6 +85,11 @@ function fechaLarga(d: Date): string {
 
 function fechaCarta(d: Date): string {
   return `${MESES[d.getUTCMonth()]} ${String(d.getUTCDate()).padStart(2, "0")} de ${d.getUTCFullYear()}`;
+}
+
+/** La línea de ciudad del bloque "Señores" se omite si la empresa no la tiene (B3). */
+export function debeImprimirCiudad(ciudad: string | null): boolean {
+  return Boolean(ciudad && ciudad.trim());
 }
 
 /** Filas de texto (concepto → valor) como en la propuesta. Un ítem puede dar varias. */
@@ -167,7 +173,7 @@ export function TarifarioPDF({ data }: { data: TarifarioPdfDto }) {
           <Text style={styles.bold}>{data.empresaNombre}</Text>
           {data.contactoNombre ? <Text>Atn. {data.contactoNombre}</Text> : null}
           <Text>NIT {data.empresaNit}</Text>
-          <Text>Ciudad</Text>
+          {debeImprimirCiudad(data.empresaCiudad) ? <Text>{data.empresaCiudad}</Text> : null}
         </View>
 
         <Text style={styles.ref}>REF: COTIZACIÓN SERVICIOS DE ASESORÍA Y LOGÍSTICA EN COMERCIO EXTERIOR {ALCANCE_REF[data.alcance] ?? ""}</Text>
@@ -211,7 +217,6 @@ export function TarifarioPDF({ data }: { data: TarifarioPdfDto }) {
             {n}
           </Text>
         ))}
-        {data.notas ? <Text style={styles.nota}>{data.notas}</Text> : null}
 
         <Text style={[styles.parrafo, { marginTop: 14 }]}>Agradeciendo la atención y en espera de su respuesta, nos suscribimos.</Text>
         <Text>Cordialmente,</Text>

@@ -160,6 +160,8 @@ export const tarifarioSchema = z
   .object({
     /** Código de plantilla (ver `lib/tarifas/plantillas.ts`): rellena nombre, alcance e ítems si no vienen. */
     plantilla: z.string().trim().min(1).max(60).optional(),
+    /** Tarifario existente (de cualquier empresa) del que copiar los ítems (B2, "Copiar la tarifa de otra empresa"). */
+    origenTarifarioId: z.string().trim().min(1).max(60).optional(),
     nombre: z.string().trim().min(1, "El nombre es obligatorio").max(120).optional(),
     alcance: z.enum(ALCANCES_TARIFARIO).optional(),
     vigenteDesde: fechaSchema,
@@ -170,6 +172,10 @@ export const tarifarioSchema = z
   .refine((t) => t.vigenteHasta >= t.vigenteDesde, {
     path: ["vigenteHasta"],
     message: "La vigencia termina antes de empezar",
+  })
+  .refine((t) => !(t.plantilla && t.origenTarifarioId), {
+    path: ["origenTarifarioId"],
+    message: "Elige una plantilla o un tarifario de origen, no los dos a la vez",
   });
 
 export const tarifarioUpdateSchema = z
@@ -205,7 +211,14 @@ export const tarifarioDuplicarSchema = z
     message: "La vigencia termina antes de empezar",
   });
 
+/** Query de `GET /api/tarifarios` (catálogo ligero para "Copiar la tarifa de otra empresa", B2). */
+export const tarifariosListQuerySchema = z.object({
+  /** Empresa a excluir del listado (la que está armando su tarifario nuevo). */
+  excluirEmpresaId: z.string().trim().min(1).max(60).optional(),
+});
+
 export type TarifarioPayload = z.infer<typeof tarifarioSchema>;
+export type TarifariosListQuery = z.infer<typeof tarifariosListQuerySchema>;
 export type TarifarioUpdatePayload = z.infer<typeof tarifarioUpdateSchema>;
 export type TarifarioDuplicarPayload = z.infer<typeof tarifarioDuplicarSchema>;
 export type TarifaItemPayload = z.infer<typeof tarifaItemSchema>;

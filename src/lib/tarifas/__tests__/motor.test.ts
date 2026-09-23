@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   calcularLineasTarifa,
+  ejemploTramo,
   porcentajeSobre,
   tramoPara,
   vigenteEn,
   type ContextoTarifa,
   type ItemTarifaCalculable,
+  type TramoTarifa,
 } from "../motor";
+import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 
 // ---------------------------------------------------------------------------
 // Casos de referencia construidos desde las propuestas comerciales 2026:
@@ -304,6 +307,59 @@ describe("Polyrec ZF — tarifa por tramos", () => {
   });
 });
 
+// Editor de escalas de volumen (B6, 22-sep): el ejemplo en vivo reusa
+// `tramoPara`, la misma selección de tramo que usa `calcularLineasTarifa`.
+describe("ejemploTramo", () => {
+  const ESCALAS: TramoTarifa[] = [
+    { hasta: 10, valor: "500000" },
+    { hasta: 20, valor: "250000" },
+    { hasta: null, valor: "200000" },
+  ];
+
+  it("12 unidades caen en la escala 11–20", () => {
+    expect(ejemploTramo(ESCALAS, 12)).toEqual({
+      rango: "11–20",
+      cantidad: 12,
+      valorUnitario: 250_000n,
+      total: 3_000_000n,
+    });
+  });
+
+  it("1 unidad: cae en la primera escala (1–10)", () => {
+    expect(ejemploTramo(ESCALAS, 1)?.rango).toBe("1–10");
+  });
+
+  it("por encima del último tope cerrado: escala abierta", () => {
+    expect(ejemploTramo(ESCALAS, 25)).toEqual({
+      rango: "21 o más",
+      cantidad: 25,
+      valorUnitario: 200_000n,
+      total: 5_000_000n,
+    });
+  });
+
+  it("0 o negativo, sin tramos, o ningún tramo cubre la cantidad → null", () => {
+    expect(ejemploTramo(ESCALAS, 0)).toBeNull();
+    expect(ejemploTramo(ESCALAS, -1)).toBeNull();
+    expect(ejemploTramo([], 5)).toBeNull();
+    expect(ejemploTramo([{ hasta: 2, valor: "1000" }], 5)).toBeNull();
+  });
+
+  it("Polyrec ZF: 1 contenedor 300.000; 2 contenedores 250.000 c/u = 500.000", () => {
+    const polyrecZf: TramoTarifa[] = [
+      { hasta: 1, valor: "300000" },
+      { hasta: null, valor: "250000" },
+    ];
+    expect(ejemploTramo(polyrecZf, 1)).toEqual({ rango: "1", cantidad: 1, valorUnitario: 300_000n, total: 300_000n });
+    expect(ejemploTramo(polyrecZf, 2)).toEqual({
+      rango: "2 o más",
+      cantidad: 2,
+      valorUnitario: 250_000n,
+      total: 500_000n,
+    });
+  });
+});
+
 describe("vigenteEn", () => {
   const litoplas = { vigenteDesde: new Date("2026-02-02T00:00:00.000Z"), vigenteHasta: new Date("2027-01-31T00:00:00.000Z") };
 
@@ -312,6 +368,34 @@ describe("vigenteEn", () => {
     expect(vigenteEn(litoplas, new Date("2027-01-31T15:00:00.000Z"))).toBe(true);
     expect(vigenteEn(litoplas, new Date("2026-02-01T23:59:59.000Z"))).toBe(false);
     expect(vigenteEn(litoplas, new Date("2027-02-01T00:00:00.000Z"))).toBe(false);
+  });
+});
+
+describe("vigenteEn + fechaCalendarioBogota (F5) — 'hoy' es el día calendario en Bogotá, no el instante UTC", () => {
+  const litoplas = { vigenteDesde: new Date("2026-02-02T00:00:00.000Z"), vigenteHasta: new Date("2027-01-31T00:00:00.000Z") };
+
+  // `vigenteEn` no cambia (compara por día, en UTC — a propósito): el fix es
+  // pasarle el "hoy" ya convertido al día calendario de Bogotá.
+  it("vigenteHasta 2027-01-31: sigue vigente a las 23:30 Bogotá y ya no a las 00:30 Bogotá del día siguiente", () => {
+    // 2027-01-31 23:30 Bogotá = 2027-02-01 04:30Z (Colombia es UTC−5)
+    expect(vigenteEn(litoplas, fechaCalendarioBogota(new Date("2027-02-01T04:30:00.000Z")))).toBe(
+      true,
+    );
+    // 2027-02-01 00:30 Bogotá = 2027-02-01 05:30Z
+    expect(vigenteEn(litoplas, fechaCalendarioBogota(new Date("2027-02-01T05:30:00.000Z")))).toBe(
+      false,
+    );
+  });
+
+  it("vigenteDesde 2026-09-22: no vigente a las 20:00 Bogotá del día anterior", () => {
+    const tarifario = {
+      vigenteDesde: new Date("2026-09-22T00:00:00.000Z"),
+      vigenteHasta: new Date("2026-12-31T00:00:00.000Z"),
+    };
+    // 2026-09-21 20:00 Bogotá = 2026-09-22 01:00Z
+    expect(
+      vigenteEn(tarifario, fechaCalendarioBogota(new Date("2026-09-22T01:00:00.000Z"))),
+    ).toBe(false);
   });
 });
 

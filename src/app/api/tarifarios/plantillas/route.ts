@@ -16,6 +16,7 @@ export async function GET() {
   return jsonResponse({
     plantillas: PLANTILLAS_TARIFARIO.map((p) => ({
       codigo: p.codigo,
+      cliente: p.cliente,
       nombre: p.nombre,
       descripcion: p.descripcion,
       alcance: p.alcance,

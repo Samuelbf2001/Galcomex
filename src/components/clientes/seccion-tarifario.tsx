@@ -7,12 +7,13 @@ import {
   Copy,
   FileText,
   Loader2,
+  Lock,
   Pencil,
   Plus,
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import {
   ALCANCES,
@@ -31,22 +32,31 @@ import {
   fetchEventosCatalogo,
   fetchPlantillas,
   fetchTarifarios,
+  fetchTarifariosLigero,
+  formatCOP,
   formatFecha,
   type DisparadorTarifa,
   type EventoCatalogoRow,
   type PlantillaRow,
   type TarifaItemForm,
   type TarifaItemRow,
+  type TarifarioLigero,
   type TarifarioRow,
   type TipoCalculoTarifa,
   type UnidadTarifa,
 } from "@/components/clientes/tarifas-api";
+import {
+  fetchConceptosVenta,
+  type ConceptoVentaRow,
+} from "@/components/configuracion/catalogos/catalogos-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin } from "@/lib/auth/rol-context";
+import { ejemploTramo } from "@/lib/tarifas/motor";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -102,7 +112,9 @@ function NuevoTarifarioModal({
   onCreated: (t: TarifarioRow) => void;
 }) {
   const [plantillas, setPlantillas] = useState<PlantillaRow[]>([]);
+  const [otrasEmpresas, setOtrasEmpresas] = useState<TarifarioLigero[]>([]);
   const [plantilla, setPlantilla] = useState("");
+  const [origenId, setOrigenId] = useState("");
   const [nombre, setNombre] = useState("");
   const [alcance, setAlcance] = useState("TRAMITE");
   const [desde, setDesde] = useState(hoyIso());
@@ -116,15 +128,39 @@ function NuevoTarifarioModal({
     fetchPlantillas(controller.signal)
       .then(setPlantillas)
       .catch(() => setPlantillas([]));
+    fetchTarifariosLigero(clienteId, controller.signal)
+      .then(setOtrasEmpresas)
+      .catch(() => setOtrasEmpresas([]));
     return () => controller.abort();
-  }, []);
+  }, [clienteId]);
 
-  function elegirPlantilla(codigo: string) {
-    setPlantilla(codigo);
-    const p = plantillas.find((x) => x.codigo === codigo);
-    if (p) {
-      setNombre(p.nombre);
-      setAlcance(p.alcance);
+  /** Valor combinado del <select>: "plantilla:<codigo>" u "origen:<id>". */
+  function elegirFuente(valorCombinado: string) {
+    if (valorCombinado === "") {
+      setPlantilla("");
+      setOrigenId("");
+      return;
+    }
+    const separador = valorCombinado.indexOf(":");
+    const tipo = valorCombinado.slice(0, separador);
+    const valor = valorCombinado.slice(separador + 1);
+
+    if (tipo === "plantilla") {
+      setPlantilla(valor);
+      setOrigenId("");
+      const p = plantillas.find((x) => x.codigo === valor);
+      if (p) {
+        setNombre(p.nombre);
+        setAlcance(p.alcance);
+      }
+    } else if (tipo === "origen") {
+      setOrigenId(valor);
+      setPlantilla("");
+      const t = otrasEmpresas.find((x) => x.id === valor);
+      if (t) {
+        setNombre(t.nombre);
+        setAlcance(t.alcance);
+      }
     }
   }
 
@@ -136,6 +172,7 @@ function NuevoTarifarioModal({
     try {
       const creado = await crearTarifario(clienteId, {
         plantilla: plantilla || undefined,
+        origenTarifarioId: origenId || undefined,
         nombre: nombre.trim() || undefined,
         alcance,
         vigenteDesde: desde,
@@ -151,21 +188,39 @@ function NuevoTarifarioModal({
   }
 
   const plantillaSel = plantillas.find((p) => p.codigo === plantilla);
+  const origenSel = otrasEmpresas.find((t) => t.id === origenId);
+  const valorFuente = plantilla ? `plantilla:${plantilla}` : origenId ? `origen:${origenId}` : "";
 
   return (
     <ModalShell open onClose={onClose} title="Nuevo tarifario" description="Nace como borrador: se revisan los ítems y se publica." size="lg" dismissible={!enviando}>
       <form onSubmit={handleSubmit} className="space-y-4 p-5">
         <label className="block space-y-1">
           <span className={LABEL}>Arrancar desde</span>
-          <select value={plantilla} onChange={(e) => elegirPlantilla(e.target.value)} className={INPUT}>
+          <select value={valorFuente} onChange={(e) => elegirFuente(e.target.value)} className={INPUT}>
             <option value="">En blanco (agregar ítems a mano)</option>
-            {plantillas.map((p) => (
-              <option key={p.codigo} value={p.codigo}>
-                {p.nombre} · {alcanceLabel(p.alcance)} · {p.items} ítems
-              </option>
-            ))}
+            <optgroup label="Propuestas (plantillas)">
+              {plantillas.map((p) => (
+                <option key={`plantilla:${p.codigo}`} value={`plantilla:${p.codigo}`}>
+                  {p.cliente} · {p.nombre} · {alcanceLabel(p.alcance)} · {p.items} ítems
+                </option>
+              ))}
+            </optgroup>
+            {otrasEmpresas.length > 0 ? (
+              <optgroup label="Copiar la tarifa de otra empresa">
+                {otrasEmpresas.map((t) => (
+                  <option key={`origen:${t.id}`} value={`origen:${t.id}`}>
+                    {t.empresaNombre} · {t.nombre} · v{t.version} · {etiquetaEstado(t.estado)} · {t.items} ítems
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
           </select>
           {plantillaSel ? <p className="text-xs text-slate-500">{plantillaSel.descripcion}</p> : null}
+          {origenSel ? (
+            <p className="text-xs text-slate-500">
+              Copia los {origenSel.items} ítems de &quot;{origenSel.nombre}&quot; v{origenSel.version} de {origenSel.empresaNombre}, tal cual (sin incremento).
+            </p>
+          ) : null}
         </label>
 
         <div className="grid gap-3 sm:grid-cols-2">
@@ -194,7 +249,7 @@ function NuevoTarifarioModal({
         </div>
 
         <label className="block space-y-1">
-          <span className={LABEL}>Notas</span>
+          <span className={LABEL}>Nota interna (no sale en el PDF)</span>
           <textarea value={notas} onChange={(e) => setNotas(e.target.value)} rows={2} className="w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan-600" />
         </label>
 
@@ -373,28 +428,219 @@ function formDesdeEstado(s: ItemFormState): TarifaItemForm {
   };
 }
 
+// ─── Selector buscable de concepto de venta (mismo patrón de SiigoProductoSelect, conceptos-tab.tsx) ──
+
+function etiquetaConcepto(c: ConceptoVentaRow): string {
+  return c.siigoProducto ? `${c.nombre} — Siigo ${c.siigoProducto.codigo} ${c.siigoProducto.nombre}` : c.nombre;
+}
+
+function ConceptoVentaSelect({
+  conceptos,
+  value,
+  onSelect,
+}: {
+  conceptos: ConceptoVentaRow[];
+  value: string;
+  onSelect: (concepto: ConceptoVentaRow) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  function cerrar() {
+    setOpen(false);
+    setQuery("");
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    function onClickOutside(e: MouseEvent) {
+      if (!containerRef.current?.contains(e.target as Node)) cerrar();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") cerrar();
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onKey);
+    requestAnimationFrame(() => searchRef.current?.focus());
+    return () => {
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const seleccionado = conceptos.find((c) => c.codigo === value) ?? null;
+
+  const filtrados = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q === "") return conceptos;
+    return conceptos.filter(
+      (c) =>
+        c.nombre.toLowerCase().includes(q) ||
+        c.codigo.toLowerCase().includes(q) ||
+        (c.siigoProducto?.codigo.toLowerCase().includes(q) ?? false) ||
+        (c.siigoProducto?.nombre.toLowerCase().includes(q) ?? false),
+    );
+  }, [conceptos, query]);
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={`flex h-10 w-full items-center justify-between gap-2 border bg-white px-3 text-left text-sm transition hover:border-slate-400 ${
+          value && !seleccionado ? "border-red-300" : "border-slate-300"
+        }`}
+      >
+        <span className={`truncate ${seleccionado ? "text-slate-900" : value ? "text-red-600" : "text-slate-400"}`}>
+          {seleccionado
+            ? etiquetaConcepto(seleccionado)
+            : value
+              ? "Este concepto no está en el catálogo; elige uno"
+              : "Selecciona un concepto…"}
+        </span>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`}
+          aria-hidden="true"
+        />
+      </button>
+
+      {open ? (
+        <div className="absolute z-30 mt-1 max-h-80 w-full overflow-hidden border border-slate-200 bg-white shadow-lg">
+          <div className="border-b border-slate-200 p-2">
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Buscar por nombre o código Siigo…"
+              className="w-full border border-slate-300 px-2 py-1 text-sm focus:border-slate-400 focus:outline-none"
+            />
+          </div>
+          <div className="max-h-64 overflow-auto">
+            {filtrados.length === 0 ? (
+              <p className="px-3 py-3 text-center text-xs text-slate-400">
+                {conceptos.length === 0
+                  ? "No hay conceptos activos en el catálogo."
+                  : "No hay conceptos con ese nombre o código."}
+              </p>
+            ) : (
+              filtrados.map((c) => {
+                const activo = c.codigo === value;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => {
+                      onSelect(c);
+                      cerrar();
+                    }}
+                    className={`block w-full border-b border-slate-100 px-3 py-2 text-left text-sm last:border-b-0 transition ${
+                      activo ? "bg-cyan-50" : "hover:bg-slate-50"
+                    }`}
+                  >
+                    <span className="block font-medium text-slate-800">{etiquetaConcepto(c)}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Validación del editor de escalas (B6): ascendente, solo la última puede quedar abierta. */
+function validarEscalas(tramos: { hasta: string; valor: string }[]): string | null {
+  if (tramos.length === 0) return "Agrega al menos una escala.";
+  let anterior = 0;
+  for (let i = 0; i < tramos.length; i++) {
+    const t = tramos[i]!;
+    const esUltimo = i === tramos.length - 1;
+    if (!t.valor.trim()) return `Escala ${i + 1}: falta el precio por unidad.`;
+    if (t.hasta.trim() === "") {
+      if (!esUltimo) return `Solo la última escala puede quedar sin "Hasta" (en adelante).`;
+    } else {
+      const n = Number(t.hasta);
+      if (!Number.isInteger(n) || n <= anterior) {
+        return `Escala ${i + 1}: "Hasta" debe ser un número mayor que ${anterior}, en orden ascendente.`;
+      }
+      anterior = n;
+    }
+  }
+  return null;
+}
+
+/** "Desde" de la fila i: 1 en la primera, "Hasta" de la anterior + 1 en las demás. */
+function desdeDeEscala(tramos: { hasta: string; valor: string }[], i: number): number | null {
+  if (i === 0) return 1;
+  const anterior = Number(tramos[i - 1]?.hasta);
+  return Number.isInteger(anterior) && anterior > 0 ? anterior + 1 : null;
+}
+
 function ItemModal({
   tarifario,
   item,
   eventos,
+  conceptos,
   onClose,
   onSaved,
 }: {
   tarifario: TarifarioRow;
   item: TarifaItemRow | null;
   eventos: EventoCatalogoRow[];
+  conceptos: ConceptoVentaRow[];
   onClose: () => void;
   onSaved: (t: TarifarioRow) => void;
 }) {
+  const esAdmin = useEsAdmin();
   const [s, setS] = useState<ItemFormState>(() => estadoDesdeItem(item, (tarifario.items.length + 1) * 10));
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [probarCantidad, setProbarCantidad] = useState("12");
+  // Recuerda el último nombre público que se puso SOLO porque se eligió un
+  // concepto: si el usuario no lo tocó desde entonces, el siguiente concepto
+  // lo puede volver a rellenar; si lo editó a mano, se respeta (B1).
+  const nombrePublicoAutoRef = useRef(item?.nombrePublico ?? "");
   const set = <K extends keyof ItemFormState>(k: K, v: ItemFormState[K]) => setS((prev) => ({ ...prev, [k]: v }));
+
+  const conceptoSel = conceptos.find((c) => c.codigo === s.concepto) ?? null;
+
+  function seleccionarConcepto(concepto: ConceptoVentaRow) {
+    setS((prev) => {
+      const eraAuto = prev.nombrePublico.trim() === "" || prev.nombrePublico === nombrePublicoAutoRef.current;
+      return {
+        ...prev,
+        concepto: concepto.codigo,
+        siigoCodigo: concepto.siigoProducto?.codigo ?? "",
+        aplicaIva: concepto.aplicaIva,
+        nombrePublico: eraAuto ? concepto.nombre : prev.nombrePublico,
+        tipoCalculo: !item && concepto.tipoCalculoSugerido ? concepto.tipoCalculoSugerido : prev.tipoCalculo,
+        unidad: !item && concepto.unidadSugerida ? concepto.unidadSugerida : prev.unidad,
+      };
+    });
+    nombrePublicoAutoRef.current = concepto.nombre;
+  }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (enviando) return;
     setError(null);
+
+    if (!conceptoSel) {
+      setError("Elige un concepto del catálogo antes de guardar.");
+      return;
+    }
+    if (s.tipoCalculo === "POR_TRAMO") {
+      const mensaje = validarEscalas(s.tramos);
+      if (mensaje) {
+        setError(mensaje);
+        return;
+      }
+    }
+
     setEnviando(true);
     try {
       const form = formDesdeEstado(s);
@@ -411,7 +657,7 @@ function ItemModal({
   const usaUnidad = s.tipoCalculo === "POR_UNIDAD" || s.tipoCalculo === "PRIMERO_MAS_ADICIONAL" || s.tipoCalculo === "POR_TRAMO";
 
   function setTramo(i: number, campo: "hasta" | "valor", v: string) {
-    setS((prev) => ({ ...prev, tramos: prev.tramos.map((t, j) => (j === i ? { ...t, [campo]: soloDigitos(v) } : t)) }));
+    setS((prev) => ({ ...prev, tramos: prev.tramos.map((t, j) => (j === i ? { ...t, [campo]: v } : t)) }));
   }
   function quitarTramo(i: number) {
     setS((prev) => ({ ...prev, tramos: prev.tramos.filter((_, j) => j !== i) }));
@@ -419,6 +665,12 @@ function ItemModal({
   function agregarTramo() {
     setS((prev) => ({ ...prev, tramos: [...prev.tramos, { hasta: "", valor: "" }] }));
   }
+
+  const tramosParaEjemplo = s.tramos
+    .filter((t) => t.valor.trim() !== "")
+    .map((t) => ({ hasta: t.hasta.trim() === "" ? null : Number(t.hasta), valor: t.valor.trim() }));
+  const ejemplo = ejemploTramo(tramosParaEjemplo, Number(probarCantidad) || 0);
+  const unidadEjemplo = UNIDADES.find((u) => u.value === s.unidad)?.label.toLowerCase() ?? "unidades";
 
   return (
     <ModalShell open onClose={onClose} title={item ? `Editar ${item.nombrePublico}` : "Agregar ítem al tarifario"} size="lg" dismissible={!enviando}>
@@ -429,8 +681,25 @@ function ItemModal({
             <input value={s.nombrePublico} onChange={(e) => set("nombrePublico", e.target.value)} required className={INPUT} placeholder="Gastos de trámite por embarque" />
           </label>
           <label className="block space-y-1">
-            <span className={LABEL}>Concepto (código) *</span>
-            <input value={s.concepto} onChange={(e) => set("concepto", e.target.value.toUpperCase())} required className={INPUT} placeholder="GASTOS_TRAMITE" pattern="[A-Z0-9_ ]+" />
+            <span className={LABEL}>Concepto de venta *</span>
+            <ConceptoVentaSelect conceptos={conceptos} value={s.concepto} onSelect={seleccionarConcepto} />
+            {conceptoSel ? (
+              <p className="text-xs text-slate-500">
+                Siigo {conceptoSel.siigoProducto?.codigo ?? "—"} · {conceptoSel.aplicaIva ? "Lleva IVA" : "No lleva IVA"}
+              </p>
+            ) : s.concepto ? (
+              <p className="text-xs text-red-600">Este concepto no está en el catálogo; elige uno.</p>
+            ) : null}
+            {esAdmin ? (
+              <a
+                href="/configuracion/catalogos"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-block text-xs text-cyan-700 underline hover:text-cyan-900"
+              >
+                ¿No está? Créalo en Configuración → Catálogos
+              </a>
+            ) : null}
           </label>
           <label className="block space-y-1">
             <span className={LABEL}>Cómo se calcula</span>
@@ -471,13 +740,13 @@ function ItemModal({
           {s.tipoCalculo !== "PORCENTAJE_MIN" && s.tipoCalculo !== "ESPEJO_DE_COSTO" && s.tipoCalculo !== "POR_TRAMO" ? (
             <label className="block space-y-1">
               <span className={LABEL}>{s.tipoCalculo === "PRIMERO_MAS_ADICIONAL" ? "Valor del primero (COP) *" : "Valor (COP) *"}</span>
-              <input value={s.valor} onChange={(e) => set("valor", soloDigitos(e.target.value))} inputMode="numeric" required className={INPUT} placeholder="100000" />
+              <CampoMoneda value={s.valor} onValueChange={(v) => set("valor", v)} required className={INPUT} placeholder="100.000" />
             </label>
           ) : null}
           {s.tipoCalculo === "PRIMERO_MAS_ADICIONAL" ? (
             <label className="block space-y-1">
               <span className={LABEL}>Cada adicional (COP) *</span>
-              <input value={s.valorAdicional} onChange={(e) => set("valorAdicional", soloDigitos(e.target.value))} inputMode="numeric" required className={INPUT} placeholder="180000" />
+              <CampoMoneda value={s.valorAdicional} onValueChange={(v) => set("valorAdicional", v)} required className={INPUT} placeholder="180.000" />
             </label>
           ) : null}
           {usaUnidad ? (
@@ -502,15 +771,15 @@ function ItemModal({
               <div className="sm:col-span-2 grid gap-3 sm:grid-cols-3">
                 <label className="block space-y-1">
                   <span className={LABEL}>Mínimo carga suelta</span>
-                  <input value={s.minSuelta} onChange={(e) => set("minSuelta", soloDigitos(e.target.value))} inputMode="numeric" className={INPUT} placeholder="370000" />
+                  <CampoMoneda value={s.minSuelta} onValueChange={(v) => set("minSuelta", v)} className={INPUT} placeholder="370.000" />
                 </label>
                 <label className="block space-y-1">
                   <span className={LABEL}>Mínimo contenedor 20′</span>
-                  <input value={s.min20} onChange={(e) => set("min20", soloDigitos(e.target.value))} inputMode="numeric" className={INPUT} placeholder="498000" />
+                  <CampoMoneda value={s.min20} onValueChange={(v) => set("min20", v)} className={INPUT} placeholder="498.000" />
                 </label>
                 <label className="block space-y-1">
                   <span className={LABEL}>Mínimo contenedor 40′ / HQ</span>
-                  <input value={s.min40} onChange={(e) => set("min40", soloDigitos(e.target.value))} inputMode="numeric" className={INPUT} placeholder="554000" />
+                  <CampoMoneda value={s.min40} onValueChange={(v) => set("min40", v)} className={INPUT} placeholder="554.000" />
                 </label>
               </div>
             </>
@@ -518,26 +787,86 @@ function ItemModal({
 
           {s.tipoCalculo === "POR_TRAMO" ? (
             <div className="space-y-2 sm:col-span-2">
-              <span className={LABEL}>Tramos (el precio del tramo aplica a todas las unidades) *</span>
-              <ul className="space-y-1.5">
-                {s.tramos.map((t, i) => (
-                  <li key={i} className="flex items-center gap-2 text-sm">
-                    <span className="w-14 shrink-0 text-slate-500">Hasta</span>
-                    <input value={t.hasta} onChange={(e) => setTramo(i, "hasta", e.target.value)} inputMode="numeric" className={`${INPUT} w-20`} placeholder="∞" aria-label={`Tramo ${i + 1}: hasta cuántas unidades (vacío = en adelante)`} />
-                    <span className="shrink-0 text-slate-500">{UNIDADES.find((u) => u.value === s.unidad)?.label.toLowerCase() ?? "unidades"} →</span>
-                    <input value={t.valor} onChange={(e) => setTramo(i, "valor", e.target.value)} inputMode="numeric" required className={`${INPUT} flex-1`} placeholder="300000" aria-label={`Tramo ${i + 1}: valor por unidad en COP`} />
-                    <span className="shrink-0 text-slate-500">c/u</span>
-                    <button type="button" onClick={() => quitarTramo(i)} disabled={s.tramos.length <= 1} className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-slate-300 text-slate-500 hover:bg-slate-50 disabled:opacity-40" aria-label={`Quitar tramo ${i + 1}`}>
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <span className={LABEL}>Escalas de volumen (el precio de la escala aplica a todas las unidades) *</span>
+              <div className="overflow-x-auto border border-slate-200">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-2 py-1.5">Desde</th>
+                      <th className="px-2 py-1.5">Hasta</th>
+                      <th className="px-2 py-1.5">Precio por unidad</th>
+                      <th className="px-2 py-1.5" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {s.tramos.map((t, i) => {
+                      const esUltimo = i === s.tramos.length - 1;
+                      const desde = desdeDeEscala(s.tramos, i);
+                      return (
+                        <tr key={i} className="border-t border-slate-100">
+                          <td className="px-2 py-1.5 text-slate-500">{desde ?? "—"}</td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              value={t.hasta}
+                              onChange={(e) => setTramo(i, "hasta", soloDigitos(e.target.value))}
+                              inputMode="numeric"
+                              className={`${INPUT} w-24`}
+                              placeholder={esUltimo ? "En adelante" : "20"}
+                              aria-label={`Escala ${i + 1}: hasta cuántas unidades${esUltimo ? " (vacío = en adelante)" : ""}`}
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <CampoMoneda
+                              value={t.valor}
+                              onValueChange={(v) => setTramo(i, "valor", v)}
+                              className={INPUT}
+                              placeholder="250.000"
+                              aria-label={`Escala ${i + 1}: precio por unidad en COP`}
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <button
+                              type="button"
+                              onClick={() => quitarTramo(i)}
+                              disabled={s.tramos.length <= 1}
+                              className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-slate-300 text-slate-500 hover:bg-slate-50 disabled:opacity-40"
+                              aria-label={`Quitar escala ${i + 1}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
               <button type="button" onClick={agregarTramo} className="inline-flex h-8 items-center gap-1 border border-slate-300 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50">
                 <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                Agregar tramo
+                Agregar escala
               </button>
-              <p className="text-xs text-slate-500">Deja &quot;hasta&quot; vacío en el último tramo para &quot;en adelante&quot;. Polyrec ZF: hasta 1 → 300.000; vacío → 250.000.</p>
+              <p className="text-xs text-slate-500">
+                El precio de la escala se cobra por cada unidad del trámite. Deja &quot;Hasta&quot; vacío solo en la última escala, para &quot;en adelante&quot;.
+              </p>
+
+              <div className="border border-slate-200 bg-slate-50 p-2.5">
+                <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                  Probar con
+                  <input
+                    type="number"
+                    min={1}
+                    value={probarCantidad}
+                    onChange={(e) => setProbarCantidad(e.target.value.replace(/\D/g, ""))}
+                    className="h-8 w-20 border border-slate-300 px-2 text-sm"
+                  />
+                  {unidadEjemplo}
+                </label>
+                <p className="mt-1.5 text-sm font-medium text-slate-800">
+                  {ejemplo
+                    ? `Escala ${ejemplo.rango} → ${ejemplo.cantidad} × ${formatCOP(ejemplo.valorUnitario.toString())} = ${formatCOP(ejemplo.total.toString())}`
+                    : "Completa las escalas y una cantidad para ver el ejemplo."}
+                </p>
+              </div>
             </div>
           ) : null}
 
@@ -549,10 +878,6 @@ function ItemModal({
           ) : null}
 
           <label className="block space-y-1">
-            <span className={LABEL}>Código producto Siigo</span>
-            <input value={s.siigoCodigo} onChange={(e) => set("siigoCodigo", e.target.value)} className={INPUT} placeholder="005" />
-          </label>
-          <label className="block space-y-1">
             <span className={LABEL}>Orden</span>
             <input value={s.orden} onChange={(e) => set("orden", soloDigitos(e.target.value))} inputMode="numeric" className={INPUT} />
           </label>
@@ -561,7 +886,7 @@ function ItemModal({
             Lleva IVA
           </label>
           <label className="block space-y-1 sm:col-span-2">
-            <span className={LABEL}>Notas</span>
+            <span className={LABEL}>Nota para el cliente (sale en el PDF)</span>
             <input value={s.notas} onChange={(e) => set("notas", e.target.value)} className={INPUT} />
           </label>
         </div>
@@ -631,7 +956,12 @@ function TarjetaTarifario({
             {alcanceLabel(tarifario.alcance)} · {formatFecha(tarifario.vigenteDesde)} → {formatFecha(tarifario.vigenteHasta)} · {tarifario.items.length} ítems
             {tarifario.creadoPor ? ` · ${tarifario.creadoPor}` : ""}
           </p>
-          {tarifario.notas ? <p className="mt-1 text-xs text-slate-500">{tarifario.notas}</p> : null}
+          {tarifario.notas ? (
+            <p className="mt-1 flex items-start gap-1 text-xs text-slate-500">
+              <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+              Nota interna: {tarifario.notas}
+            </p>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -693,7 +1023,7 @@ function TarjetaTarifario({
                       <td className="px-4 py-2">
                         <p className="font-medium text-slate-900">{it.nombrePublico}</p>
                         <p className="text-xs text-slate-500">{it.concepto}</p>
-                        {it.notas ? <p className="mt-0.5 text-xs text-amber-700">{it.notas}</p> : null}
+                        {it.notas ? <p className="mt-0.5 text-xs text-slate-500">Nota en PDF: {it.notas}</p> : null}
                       </td>
                       <td className="px-4 py-2 text-slate-700">{describirCalculo(it)}</td>
                       <td className="px-4 py-2 text-slate-700">
@@ -752,6 +1082,7 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
 
   const [tarifarios, setTarifarios] = useState<TarifarioRow[]>([]);
   const [eventos, setEventos] = useState<EventoCatalogoRow[]>([]);
+  const [conceptos, setConceptos] = useState<ConceptoVentaRow[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -761,10 +1092,16 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    Promise.all([fetchTarifarios(clienteId, controller.signal), fetchEventosCatalogo(controller.signal).catch(() => [])])
-      .then(([lista, cat]) => {
+    Promise.all([
+      fetchTarifarios(clienteId, controller.signal),
+      fetchEventosCatalogo(controller.signal).catch(() => []),
+      fetchConceptosVenta(controller.signal).catch(() => []),
+    ])
+      .then(([lista, cat, conceptosCat]) => {
         setTarifarios(lista);
         setEventos(cat);
+        // Alta/edición MANUAL de ítems solo puede usar conceptos ACTIVOS (B1).
+        setConceptos(conceptosCat.filter((c) => c.activo));
         setLoadState("ready");
       })
       .catch((caught: unknown) => {
@@ -927,6 +1264,7 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
           tarifario={modal.tarifario}
           item={modal.item}
           eventos={eventos}
+          conceptos={conceptos}
           onClose={() => setModal(null)}
           onSaved={(t) => {
             reemplazar(t);

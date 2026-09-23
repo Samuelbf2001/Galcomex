@@ -366,6 +366,41 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
   }
 }
 
+export interface EjemploTramo {
+  /** "1", "11–20", "21 o más" — mismo formato que usa la tabla de ítems. */
+  rango: string;
+  cantidad: number;
+  valorUnitario: bigint;
+  total: bigint;
+}
+
+/**
+ * Ejemplo en vivo para el editor de escalas de volumen (B6, 22-sep): qué
+ * escala le toca a `n` unidades y cuánto da en total. Reusa `tramoPara` — la
+ * MISMA selección de tramo que usa `calcularLineasTarifa` — así que si el
+ * motor cambia de criterio el ejemplo cambia con él. No agrega ni modifica
+ * ningún cálculo existente.
+ */
+export function ejemploTramo(tramos: TramoTarifa[], n: number): EjemploTramo | null {
+  if (n <= 0 || tramos.length === 0) return null;
+  const tramo = tramoPara(tramos, n);
+  if (!tramo) return null;
+  const valorUnitario = valorTramo(tramo);
+  if (valorUnitario === null) return null;
+
+  const ordenados = [...tramos].sort((a, b) => {
+    if (a.hasta === null) return 1;
+    if (b.hasta === null) return -1;
+    return a.hasta - b.hasta;
+  });
+  const idx = ordenados.indexOf(tramo);
+  const anterior = idx > 0 ? (ordenados[idx - 1]?.hasta ?? 0) : 0;
+  const rango =
+    tramo.hasta === null ? `${anterior + 1} o más` : tramo.hasta === 1 ? "1" : `${anterior + 1}–${tramo.hasta}`;
+
+  return { rango, cantidad: n, valorUnitario, total: valorUnitario * BigInt(n) };
+}
+
 /**
  * Calcula las líneas de la factura de venta a partir del tarifario y del
  * contexto del trámite. Determinista: mismo input → mismo output.

@@ -47,12 +47,13 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     const tarifario = await getTarifario(id);
     const empresa = await prisma.cliente.findUnique({
       where: { id: tarifario.empresaId },
-      select: { nombre: true, nit: true, contactoNombre: true },
+      select: { nombre: true, nit: true, contactoNombre: true, ciudad: true },
     });
 
     const pdf = await renderTarifarioPdf({
       empresaNombre: empresa?.nombre ?? tarifario.empresa.nombre,
       empresaNit: empresa?.nit ?? tarifario.empresa.nit,
+      empresaCiudad: empresa?.ciudad ?? null,
       contactoNombre: empresa?.contactoNombre ?? null,
       nombre: tarifario.nombre,
       alcance: tarifario.alcance,
@@ -61,7 +62,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       vigenteDesde: tarifario.vigenteDesde,
       vigenteHasta: tarifario.vigenteHasta,
       fechaEmision: new Date(),
-      notas: tarifario.notas,
+      // Tarifario.notas es una nota INTERNA: nunca sale en el PDF (B4, 22-sep).
       items: tarifario.items.map((i) => ({
         nombrePublico: i.nombrePublico,
         tipoCalculo: i.tipoCalculo,
