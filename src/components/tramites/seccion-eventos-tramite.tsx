@@ -53,6 +53,57 @@ function enteroONull(raw: string): number | null {
   return raw.trim() === "" ? null : Number(raw);
 }
 
+/** Las seis columnas de la base de cálculo del tarifario (M2/M3). */
+export const CAMPOS_BASE_CALCULO_TODOS = [
+  "valorCif",
+  "tipoCarga",
+  "numContenedores",
+  "numDeclaraciones",
+  "numDocumentos",
+  "numItems",
+] as const;
+
+export type CampoBaseCalculo = (typeof CAMPOS_BASE_CALCULO_TODOS)[number];
+
+/**
+ * Qué campos de la base de cálculo mostrar (M4, revisión de Ernesto
+ * 22-sep-2026). Función PURA: el tipo de trámite decide el universo
+ * (CLASIFICACION solo usa `numItems`) y las capacidades de la empresa
+ * siguen gobernando Valor CIF / Tipo de carga como siempre — es una
+ * intersección, nunca un reemplazo. `camposTipo` vacío/ausente = sin
+ * restricción del tipo (IMPORTACION y OTRO, y respuestas viejas del API).
+ */
+export function camposBaseCalculoVisibles(
+  camposTipo: readonly string[] | null | undefined,
+  aplicaCifOTarifario: boolean,
+): Set<CampoBaseCalculo> {
+  const universo: readonly string[] =
+    camposTipo && camposTipo.length > 0 ? camposTipo : CAMPOS_BASE_CALCULO_TODOS;
+  const visibles = new Set<CampoBaseCalculo>();
+
+  for (const campo of CAMPOS_BASE_CALCULO_TODOS) {
+    if (!universo.includes(campo)) continue;
+    if ((campo === "valorCif" || campo === "tipoCarga") && !aplicaCifOTarifario) continue;
+    visibles.add(campo);
+  }
+
+  return visibles;
+}
+
+/**
+ * Muestra la lista de eventos del catálogo: el tipo de trámite debe usarlos
+ * (`usaEventos`, false en CLASIFICACION) Y la empresa debe tener la
+ * capacidad `eventos_facturables` encendida — las dos condiciones, no una en
+ * vez de la otra. `usaEventosTipo` ausente = sin restricción (comportamiento
+ * histórico).
+ */
+export function muestraListaEventos(
+  usaEventosTipo: boolean | null | undefined,
+  capacidadEventos: boolean,
+): boolean {
+  return (usaEventosTipo ?? true) && capacidadEventos;
+}
+
 /**
  * Base de cálculo del tarifario y eventos del trámite (M2 + M3). Va en la
  * pestaña Resumen del DO. Solo aparece cuando la empresa tiene encendida
@@ -63,11 +114,17 @@ export function SeccionEventosTramite({
   clienteId,
   puedeEditar,
   onRefresh,
+  camposBaseCalculo,
+  usaEventos,
 }: {
   tramiteId: string;
   clienteId: string;
   puedeEditar: boolean;
   onRefresh?: () => void;
+  /** Campos de la base de cálculo que aplica el tipo de trámite (M4). Vacío/ausente = todos. */
+  camposBaseCalculo?: string[] | null;
+  /** El tipo de trámite usa la lista de eventos (M4). Ausente = true (histórico). */
+  usaEventos?: boolean | null;
 }) {
   const { toast } = useToast();
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -189,7 +246,11 @@ export function SeccionEventosTramite({
   }
 
   const resultado = propuesta?.resultado ?? null;
-  const editableEventos = puedeEditar && aplica.eventos;
+  // M4: el tipo de trámite decide el universo de campos/eventos; las
+  // capacidades de la empresa siguen gobernando CIF y eventos como siempre.
+  const campos = camposBaseCalculoVisibles(camposBaseCalculo, aplica.cif || aplica.tarifario);
+  const muestraEventos = muestraListaEventos(usaEventos, aplica.eventos);
+  const editableEventos = puedeEditar && muestraEventos;
 
   return (
     <div className="border border-slate-200 bg-white p-5">
@@ -214,7 +275,7 @@ export function SeccionEventosTramite({
             <div>
               <p className="mb-2 text-xs text-slate-500">Lo que el tarifario necesita para calcular. Vacío = todavía no se sabe.</p>
               <div className="grid grid-cols-2 gap-3">
-                {aplica.cif || aplica.tarifario ? (
+                {campos.has("valorCif") ? (
                   <>
                     <label className="block space-y-1">
                       <span className={LABEL}>Valor CIF (COP)</span>
@@ -231,22 +292,30 @@ export function SeccionEventosTramite({
                     </label>
                   </>
                 ) : null}
-                <label className="block space-y-1">
-                  <span className={LABEL}>Contenedores</span>
-                  <input value={form.numContenedores} onChange={(e) => setForm({ ...form, numContenedores: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
-                </label>
-                <label className="block space-y-1">
-                  <span className={LABEL}>Declaraciones</span>
-                  <input value={form.numDeclaraciones} onChange={(e) => setForm({ ...form, numDeclaraciones: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
-                </label>
-                <label className="block space-y-1">
-                  <span className={LABEL}>Documentos revisados</span>
-                  <input value={form.numDocumentos} onChange={(e) => setForm({ ...form, numDocumentos: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
-                </label>
-                <label className="block space-y-1">
-                  <span className={LABEL}>Ítems clasificados</span>
-                  <input value={form.numItems} onChange={(e) => setForm({ ...form, numItems: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
-                </label>
+                {campos.has("numContenedores") ? (
+                  <label className="block space-y-1">
+                    <span className={LABEL}>Contenedores</span>
+                    <input value={form.numContenedores} onChange={(e) => setForm({ ...form, numContenedores: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
+                  </label>
+                ) : null}
+                {campos.has("numDeclaraciones") ? (
+                  <label className="block space-y-1">
+                    <span className={LABEL}>Declaraciones</span>
+                    <input value={form.numDeclaraciones} onChange={(e) => setForm({ ...form, numDeclaraciones: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
+                  </label>
+                ) : null}
+                {campos.has("numDocumentos") ? (
+                  <label className="block space-y-1">
+                    <span className={LABEL}>Documentos revisados</span>
+                    <input value={form.numDocumentos} onChange={(e) => setForm({ ...form, numDocumentos: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
+                  </label>
+                ) : null}
+                {campos.has("numItems") ? (
+                  <label className="block space-y-1">
+                    <span className={LABEL}>Ítems clasificados</span>
+                    <input value={form.numItems} onChange={(e) => setForm({ ...form, numItems: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
+                  </label>
+                ) : null}
                 {aplica.oc ? (
                   <>
                     <label className="block space-y-1">
@@ -272,11 +341,13 @@ export function SeccionEventosTramite({
             {/* Eventos */}
             <div>
               <p className="mb-2 text-xs text-slate-500">
-                {aplica.eventos
+                {muestraEventos
                   ? "Lo circunstancial: se marca solo si pasó. Al marcarlo entran sus documentos al checklist y su cobro al tarifario."
-                  : "Esta empresa no tiene encendidos los eventos facturables (ficha, pestaña Funciones)."}
+                  : aplica.eventos
+                    ? "Este tipo de trámite no usa eventos."
+                    : "Esta empresa no tiene encendidos los eventos facturables (ficha, pestaña Funciones)."}
               </p>
-              {aplica.eventos ? (
+              {muestraEventos ? (
                 <ul className="divide-y divide-slate-100 border border-slate-200">
                   {catalogo.map((ev) => {
                     const marcado = marcados.find((m) => m.codigo === ev.codigo);

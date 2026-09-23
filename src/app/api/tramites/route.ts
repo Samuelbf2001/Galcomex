@@ -31,6 +31,8 @@ export async function GET(request: NextRequest) {
       clienteId: request.nextUrl.searchParams.get("clienteId") ?? undefined,
       tipoCliente: request.nextUrl.searchParams.get("tipoCliente") ?? undefined,
       facturado: request.nextUrl.searchParams.get("facturado") ?? undefined,
+      ordenarPor: request.nextUrl.searchParams.get("ordenarPor") ?? undefined,
+      direccion: request.nextUrl.searchParams.get("direccion") ?? undefined,
       take: request.nextUrl.searchParams.get("take") ?? undefined,
       skip: request.nextUrl.searchParams.get("skip") ?? undefined,
     });

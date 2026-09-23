@@ -8,6 +8,7 @@ import {
   fetchRequisitosDo,
   fetchTiposTramiteEmpresa,
   fetchTramitesPage,
+  TRAMITES_PAGE_SIZE,
   type ClienteOption,
   type DocumentoObligatorioCodigo,
   type RequisitosDo,
@@ -65,6 +66,7 @@ const TIPO_IMPORTACION: TipoTramiteOption = {
   requiereAgenciaAduanas: true,
   requiereEta: true,
   etiquetaReferenciaExterna: null,
+  usaCamposDo: true,
 };
 
 function requisitosFixture(
@@ -154,6 +156,19 @@ async function esperarRequisitos() {
 function ultimaLlamadaPagina() {
   const llamadas = vi.mocked(fetchTramitesPage).mock.calls;
   return llamadas[llamadas.length - 1]?.[2];
+}
+
+/** Cuarto argumento de `fetchTramitesPage`: el orden (A8). `null` = orden de siempre. */
+function ultimaLlamadaOrden() {
+  const llamadas = vi.mocked(fetchTramitesPage).mock.calls;
+  return llamadas[llamadas.length - 1]?.[3] ?? null;
+}
+
+/** Botón de un encabezado ordenable por su texto visible ("Cliente", "Apertura"...). */
+function botonEncabezado(texto: string) {
+  return [...container.querySelectorAll("th button")].find((b) =>
+    b.textContent?.includes(texto),
+  ) as HTMLButtonElement | undefined;
 }
 
 describe("Crear DO — D1 tarifa vigente", () => {
@@ -310,5 +325,54 @@ describe("Trámites — A7 paginación", () => {
     });
 
     expect(ultimaLlamadaPagina()).toEqual({ take: 25, skip: 0 });
+  });
+});
+
+describe("Trámites — A8 columnas ordenables", () => {
+  it("no pide orden hasta que el usuario haga clic en un encabezado", async () => {
+    await montarWorkspace();
+    expect(ultimaLlamadaOrden()).toBeNull();
+  });
+
+  it("clic en 'Cliente' (columna de texto) ordena ascendente y reinicia a la página 1", async () => {
+    await montarWorkspace();
+    const siguiente = container.querySelector('button[aria-label="Página siguiente"]') as HTMLButtonElement;
+    await act(async () => siguiente.click());
+    expect(ultimaLlamadaPagina()).toEqual({ take: 25, skip: 25 });
+
+    await act(async () => botonEncabezado("Cliente")!.click());
+
+    expect(ultimaLlamadaOrden()).toEqual({ campo: "cliente", direccion: "asc" });
+    expect(ultimaLlamadaPagina()).toEqual({ take: 25, skip: 0 });
+  });
+
+  it("clic en 'Apertura' (columna de fecha) ordena descendente primero; un segundo clic invierte", async () => {
+    await montarWorkspace();
+
+    await act(async () => botonEncabezado("Apertura")!.click());
+    expect(ultimaLlamadaOrden()).toEqual({ campo: "apertura", direccion: "desc" });
+
+    await act(async () => botonEncabezado("Apertura")!.click());
+    expect(ultimaLlamadaOrden()).toEqual({ campo: "apertura", direccion: "asc" });
+  });
+
+  it("Referencia y Docs no son ordenables: no tienen botón de encabezado", async () => {
+    await montarWorkspace();
+    expect(botonEncabezado("Referencia")).toBeUndefined();
+    expect(botonEncabezado("Docs")).toBeUndefined();
+  });
+
+  it("la vista kanban nunca manda el orden elegido en la tabla", async () => {
+    await montarWorkspace();
+    await act(async () => botonEncabezado("Cliente")!.click());
+    expect(ultimaLlamadaOrden()).toEqual({ campo: "cliente", direccion: "asc" });
+
+    const botonKanban = container.querySelector('button[title="Vista kanban"]') as HTMLButtonElement;
+    await act(async () => botonKanban.click());
+
+    const llamadaKanban = vi
+      .mocked(fetchTramitesPage)
+      .mock.calls.find((llamada) => llamada[2]?.take === TRAMITES_PAGE_SIZE);
+    expect(llamadaKanban?.[3] ?? null).toBeNull();
   });
 });

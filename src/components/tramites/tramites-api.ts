@@ -34,6 +34,23 @@ export type TramiteFilters = {
   facturado?: FacturadoFilter;
 };
 
+/**
+ * Columnas ordenables de la tabla de trámites (A8). Referencia (coalesce de
+ * doAgencia/doCliente/proveedorCliente) y Docs (conteo calculado en el
+ * cliente) no están: no son ordenables.
+ */
+export type CampoOrdenTramite =
+  | "consecutivo"
+  | "cliente"
+  | "estado"
+  | "ciudad"
+  | "modalidad"
+  | "apertura"
+  | "movimiento"
+  | "responsable";
+
+export type OrdenTramites = { campo: CampoOrdenTramite; direccion: "asc" | "desc" };
+
 const allFilterValue = "todos";
 
 /** Tamaño de página por defecto de la lista maestra (el API admite hasta 200). */
@@ -50,7 +67,11 @@ export type TramitesPage = {
   total: number;
 };
 
-function buildTramitesQuery(filters?: TramiteFilters, page?: TramitesPageOptions): string {
+function buildTramitesQuery(
+  filters?: TramiteFilters,
+  page?: TramitesPageOptions,
+  orden?: OrdenTramites | null,
+): string {
   const params = new URLSearchParams();
   const q = filters?.q?.trim();
 
@@ -60,6 +81,11 @@ function buildTramitesQuery(filters?: TramiteFilters, page?: TramitesPageOptions
 
   if (page?.skip !== undefined && page.skip > 0) {
     params.set("skip", String(page.skip));
+  }
+
+  if (orden) {
+    params.set("ordenarPor", orden.campo);
+    params.set("direccion", orden.direccion);
   }
 
   if (!filters) {
@@ -104,6 +130,8 @@ export type TipoTramiteOption = {
   requiereAgenciaAduanas: boolean;
   requiereEta: boolean;
   etiquetaReferenciaExterna: string | null;
+  /** Muestra "DO agencia"/"DO cliente" en el formulario. false en CLASIFICACION. */
+  usaCamposDo: boolean;
 };
 
 /** Agencia fija de la empresa (capacidad regla_agencia_fija), si la tiene. */
@@ -192,6 +220,23 @@ function readNestedClienteId(record: Record<string, unknown>): string | null {
     return cliente.id;
   }
   return null;
+}
+
+/**
+ * Tipos con `usaCamposDo=false` (CLASIFICACION) no tienen DO agencia/cliente:
+ * la columna "Referencia" de la lista debe mostrar `referenciaExterna` (el
+ * número de la clasificadora) en vez del coalesce de siempre.
+ */
+function referenciaExternaSiAplica(record: Record<string, unknown>): string | null {
+  const tipoTramite = record.tipoTramite;
+  const usaCamposDo = isRecord(tipoTramite) ? tipoTramite.usaCamposDo !== false : true;
+
+  if (usaCamposDo) {
+    return null;
+  }
+
+  const valor = record.referenciaExterna;
+  return typeof valor === "string" && valor.trim() ? valor.trim() : null;
 }
 
 function readText(record: Record<string, unknown>, keys: string[]): string {
@@ -299,7 +344,7 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
     estado: readText(row, textKeys.estado) || "Sin estado",
     ciudad: readText(row, textKeys.ciudad) || "Sin ciudad",
     modalidad: readText(row, textKeys.modalidad) || "Sin modalidad",
-    referencia: readText(row, textKeys.referencia) || "-",
+    referencia: referenciaExternaSiAplica(row) ?? (readText(row, textKeys.referencia) || "-"),
     fechaApertura: formatDate(readText(row, textKeys.fechaApertura)) || "-",
     ultimoMovimiento: formatDate(readText(row, textKeys.ultimoMovimiento)) || "-",
     responsable: readText(row, textKeys.responsable) || "Sin asignar",
@@ -323,11 +368,12 @@ export async function fetchTramitesPage(
   signal?: AbortSignal,
   filters?: TramiteFilters,
   page: TramitesPageOptions = { take: TRAMITES_PAGE_SIZE, skip: 0 },
+  orden?: OrdenTramites | null,
 ): Promise<TramitesPage> {
   let response: Response;
 
   try {
-    response = await fetch(`/api/tramites${buildTramitesQuery(filters, page)}`, {
+    response = await fetch(`/api/tramites${buildTramitesQuery(filters, page, orden)}`, {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal,
@@ -465,6 +511,7 @@ export async function fetchTiposTramiteEmpresa(
       typeof tipo.etiquetaReferenciaExterna === "string"
         ? tipo.etiquetaReferenciaExterna
         : null,
+    usaCamposDo: tipo.usaCamposDo !== false,
   }));
 
   return { tipos, reglaAgencia };

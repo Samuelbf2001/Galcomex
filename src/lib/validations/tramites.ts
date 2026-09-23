@@ -7,6 +7,8 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 
+import { CAMPOS_ORDEN_TRAMITE } from "@/lib/tramites/orden";
+
 const optionalDate = z
   .string()
   .datetime()
@@ -113,6 +115,9 @@ export const tramiteQuerySchema = z.object({
     .enum(["true", "false"])
     .optional()
     .transform((value) => (value === undefined ? undefined : value === "true")),
+  /** Columna de orden (A8); ausente = orden de siempre (DO más nuevo primero). */
+  ordenarPor: z.enum(CAMPOS_ORDEN_TRAMITE).optional(),
+  direccion: z.enum(["asc", "desc"]).optional(),
   take: z.coerce.number().int().min(1).max(200).default(50),
   skip: z.coerce.number().int().min(0).default(0),
 });

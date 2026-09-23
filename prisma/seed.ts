@@ -136,7 +136,17 @@ async function main() {
       requiereAgenciaAduanas: true,
       requiereEta: true,
       usaChecklist: true,
+      usaCamposDo: true,
       etiquetaReferenciaExterna: null,
+      camposBaseCalculo: [
+        "valorCif",
+        "tipoCarga",
+        "numContenedores",
+        "numDeclaraciones",
+        "numDocumentos",
+        "numItems",
+      ],
+      usaEventos: true,
       orden: 10,
     },
     {
@@ -153,7 +163,13 @@ async function main() {
       requiereAgenciaAduanas: false,
       requiereEta: false,
       usaChecklist: false,
+      usaCamposDo: false,
       etiquetaReferenciaExterna: "N° de informe de la clasificadora",
+      // El motor de tarifas de clasificación solo usa ítems clasificados
+      // (unidad ITEM); el panel del DO oculta el resto de la base de cálculo
+      // y no usa la lista de eventos.
+      camposBaseCalculo: ["numItems"],
+      usaEventos: false,
       orden: 20,
     },
     {
@@ -172,7 +188,17 @@ async function main() {
       requiereAgenciaAduanas: false,
       requiereEta: false,
       usaChecklist: false,
+      usaCamposDo: true,
       etiquetaReferenciaExterna: "Servicio prestado",
+      camposBaseCalculo: [
+        "valorCif",
+        "tipoCarga",
+        "numContenedores",
+        "numDeclaraciones",
+        "numDocumentos",
+        "numItems",
+      ],
+      usaEventos: true,
       orden: 30,
     },
   ];

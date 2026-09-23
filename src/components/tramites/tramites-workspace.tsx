@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ModuleState } from "@/components/layout/module-state";
 import { KanbanTramites } from "@/components/tramites/kanban-tramites";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { EncabezadoOrdenable } from "@/components/ui/encabezado-ordenable";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { Paginacion } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
@@ -44,6 +45,7 @@ import {
   type CreateTramiteInput,
   type DocumentoObligatorioCodigo,
   type FacturadoFilter,
+  type OrdenTramites,
   type RequisitosDo,
   type TipoTramiteOption,
   type TramiteFilters,
@@ -145,6 +147,8 @@ function useTramitesResultado(
   page: { take: number; skip: number },
   activo: boolean,
   reloadSignal: number,
+  /** `null` (por defecto) = orden de siempre. La vista kanban nunca lo manda. */
+  orden: OrdenTramites | null = null,
 ) {
   const [resultado, setResultado] = useState<ResultadoTramites | null>(null);
 
@@ -157,6 +161,7 @@ function useTramitesResultado(
     filters.facturado ?? "",
     page.take,
     page.skip,
+    orden ? `${orden.campo}:${orden.direccion}` : "",
     reloadSignal,
   ]);
 
@@ -173,7 +178,7 @@ function useTramitesResultado(
 
     const controller = new AbortController();
 
-    fetchTramitesPage(controller.signal, filters, page)
+    fetchTramitesPage(controller.signal, filters, page, orden)
       .then((result) => {
         setResultado({ key, rows: result.rows, total: result.total, error: null });
       })
@@ -191,8 +196,8 @@ function useTramitesResultado(
       });
 
     return () => controller.abort();
-    // `key` ya resume filtros+página+recarga; `filters`/`page` son el mismo
-    // objeto que produjo esa clave.
+    // `key` ya resume filtros+página+orden+recarga; `filters`/`page`/`orden`
+    // son el mismo objeto que produjo esa clave.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, activo]);
 
@@ -427,6 +432,9 @@ export function CreateTramiteDialog({
     tiposCargados.clienteId === clienteId ? tiposCargados.reglaAgencia : null;
   const pideEta = tipoTramiteSeleccionado?.requiereEta ?? true;
   const etiquetaReferencia = tipoTramiteSeleccionado?.etiquetaReferenciaExterna ?? null;
+  // CLASIFICACION no tiene DO de agencia ni de cliente (revisión de Ernesto,
+  // 22-sep-2026): solo lleva el número que asigna la clasificadora.
+  const usaCamposDo = tipoTramiteSeleccionado?.usaCamposDo ?? true;
 
   function handleTipoClienteChange(next: ClienteTipo) {
     if (next === tipoCliente) {
@@ -536,8 +544,8 @@ export function CreateTramiteDialog({
       agenciaAduanas: pideAgencia
         ? (agenciaFija?.agencia ?? String(formData.get("agenciaAduanas") ?? ""))
         : undefined,
-      doAgencia: optionalText(formData.get("doAgencia")),
-      doCliente: optionalText(formData.get("doCliente")),
+      doAgencia: usaCamposDo ? optionalText(formData.get("doAgencia")) : undefined,
+      doCliente: usaCamposDo ? optionalText(formData.get("doCliente")) : undefined,
       // TODO(invariante 7): ramifica por TipoCliente (SOCIO_LM) para decidir
       // si se pide ETA; migrar a una capacidad cuando se aborde el resto de
       // las 131 ramas vivas (ver CLAUDE.md).
@@ -822,26 +830,30 @@ export function CreateTramiteDialog({
                 )}
               </label>
             ) : null}
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">DO agencia</span>
-              <input
-                name="doAgencia"
-                placeholder={agenciaFija?.formatoDoAgencia ? pistaFormato(agenciaFija.formatoDoAgencia) : "I########"}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-              {agenciaFija?.formatoDoAgencia ? (
-                <span className="block text-xs text-slate-500">
-                  {agenciaFija.mensajeFormato ?? `Formato exigido: ${pistaFormato(agenciaFija.formatoDoAgencia)}`}
-                </span>
-              ) : null}
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">DO cliente</span>
-              <input
-                name="doCliente"
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
+            {usaCamposDo ? (
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">DO agencia</span>
+                <input
+                  name="doAgencia"
+                  placeholder={agenciaFija?.formatoDoAgencia ? pistaFormato(agenciaFija.formatoDoAgencia) : "I########"}
+                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                />
+                {agenciaFija?.formatoDoAgencia ? (
+                  <span className="block text-xs text-slate-500">
+                    {agenciaFija.mensajeFormato ?? `Formato exigido: ${pistaFormato(agenciaFija.formatoDoAgencia)}`}
+                  </span>
+                ) : null}
+              </label>
+            ) : null}
+            {usaCamposDo ? (
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">DO cliente</span>
+                <input
+                  name="doCliente"
+                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                />
+              </label>
+            ) : null}
             {etiquetaReferencia ? (
               <label className="space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">
@@ -1053,6 +1065,9 @@ export function TramitesWorkspace() {
   const [pagina, setPagina] = useState(1);
   const [porPagina, setPorPagina] = useState(25);
   const [reloadSignal, setReloadSignal] = useState(0);
+  // Orden de la vista tabla (A8). `null` = orden de siempre (DO más nuevo
+  // primero) — el mismo que usa la vista kanban, que nunca lo recibe.
+  const [orden, setOrden] = useState<OrdenTramites | null>(null);
   const tablaRef = useRef<HTMLDivElement>(null);
 
   const reload = useCallback(() => setReloadSignal((s) => s + 1), []);
@@ -1062,6 +1077,13 @@ export function TramitesWorkspace() {
   function handlePaginaChange(next: number) {
     setPagina(next);
     tablaRef.current?.scrollIntoView?.({ block: "start" });
+  }
+
+  // Cambiar el orden vuelve a la página 1: el rango visible de antes ya no
+  // corresponde al nuevo orden.
+  function handleOrdenar(next: OrdenTramites) {
+    setOrden(next);
+    setPagina(1);
   }
 
   // Debounce del texto de busqueda para no re-consultar por cada tecla.
@@ -1103,16 +1125,19 @@ export function TramitesWorkspace() {
     Promise.resolve().then(() => setPagina(1));
   }, [filters]);
 
-  // Vista tabla: página server-side (25/50/100, por defecto 25).
+  // Vista tabla: página server-side (25/50/100, por defecto 25), con el
+  // orden que haya elegido el usuario (A8).
   const tabla = useTramitesResultado(
     filters,
     { take: porPagina, skip: (pagina - 1) * porPagina },
     true,
     reloadSignal,
+    orden,
   );
   // Vista kanban: trae su propia página (más grande, como antes de A7) en vez
   // de reusar la de la tabla — así no se ve recortada a 25 tarjetas. Solo
-  // pide datos mientras es la vista activa.
+  // pide datos mientras es la vista activa, y siempre con el orden de
+  // siempre: el orden elegido en la tabla es propio de esa vista.
   const kanban = useTramitesResultado(
     filters,
     { take: TRAMITES_PAGE_SIZE, skip: 0 },
@@ -1376,16 +1401,32 @@ export function TramitesWorkspace() {
             <table className="min-w-[1080px] w-full border-collapse text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
-                  <th className="border-b border-slate-200 px-4 py-3">DO</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Cliente</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Estado</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Ciudad</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Modalidad</th>
+                  <EncabezadoOrdenable campo="consecutivo" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar}>
+                    DO
+                  </EncabezadoOrdenable>
+                  <EncabezadoOrdenable campo="cliente" ordenActual={orden} onOrdenar={handleOrdenar}>
+                    Cliente
+                  </EncabezadoOrdenable>
+                  <EncabezadoOrdenable campo="estado" ordenActual={orden} onOrdenar={handleOrdenar}>
+                    Estado
+                  </EncabezadoOrdenable>
+                  <EncabezadoOrdenable campo="ciudad" ordenActual={orden} onOrdenar={handleOrdenar}>
+                    Ciudad
+                  </EncabezadoOrdenable>
+                  <EncabezadoOrdenable campo="modalidad" ordenActual={orden} onOrdenar={handleOrdenar}>
+                    Modalidad
+                  </EncabezadoOrdenable>
                   <th className="border-b border-slate-200 px-4 py-3">Referencia</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Apertura</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Movimiento</th>
+                  <EncabezadoOrdenable campo="apertura" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar}>
+                    Apertura
+                  </EncabezadoOrdenable>
+                  <EncabezadoOrdenable campo="movimiento" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar}>
+                    Movimiento
+                  </EncabezadoOrdenable>
                   <th className="border-b border-slate-200 px-4 py-3">Docs</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Responsable</th>
+                  <EncabezadoOrdenable campo="responsable" ordenActual={orden} onOrdenar={handleOrdenar}>
+                    Responsable
+                  </EncabezadoOrdenable>
                 </tr>
               </thead>
               <tbody>

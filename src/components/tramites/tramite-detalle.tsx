@@ -25,6 +25,7 @@ import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import type { Rol } from "@/lib/auth/auth";
 import { useRol } from "@/lib/auth/rol-context";
+import { visibilidadCabeceraDo } from "@/lib/tramites/cabecera-do";
 
 import {
   RegistrarAnticipoTramiteModal,
@@ -146,6 +147,14 @@ type TramiteDetalleData = {
     etiquetaReferenciaExterna: string | null;
     facturacionSeparada: boolean;
     lineaServicio: string;
+    /** Muestra "ETA" en la cabecera. */
+    requiereEta: boolean;
+    /** Muestra "DO Agencia" y "DO Cliente" en la cabecera. false en CLASIFICACION. */
+    usaCamposDo: boolean;
+    /** Campos de la base de cálculo que aplica este tipo (M2/M3). */
+    camposBaseCalculo: string[];
+    /** Muestra la lista de eventos en "Base de cálculo y eventos". */
+    usaEventos: boolean;
   } | null;
   checklistItems: ChecklistItem[];
   estadoLogs?: EstadoLogEntry[];
@@ -336,7 +345,7 @@ function InlineDateField({ label, fieldKey, value, tramiteId, editable, onSaved 
 
 type InlineTextFieldProps = {
   label: string;
-  fieldKey: "doAgencia" | "doCliente" | "comentarios";
+  fieldKey: "doAgencia" | "doCliente" | "comentarios" | "referenciaExterna";
   value: string | null;
   tramiteId: string;
   onSaved: (updated: TramiteDetalleData) => void;
@@ -670,6 +679,9 @@ function TabResumen({
   const estadoIdx = PIPELINE.indexOf(tramite.estado);
   const checklistEditable =
     puedeEditar && estadoIdx !== -1 && estadoIdx <= PIPELINE.indexOf("APERTURA");
+  const { etiquetaReferenciaExterna, muestraCamposDo, muestraEta } = visibilidadCabeceraDo(
+    tramite.tipoTramite,
+  );
 
   return (
     <div className="space-y-6">
@@ -695,37 +707,55 @@ function TabResumen({
             </span>
           ) : null}
         </div>
-        {tramite.referenciaExterna ? (
+        {etiquetaReferenciaExterna ? (
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              {tramite.tipoTramite?.etiquetaReferenciaExterna ?? "Referencia externa"}
-            </p>
-            <p className="mt-0.5 font-mono font-semibold text-slate-800">
-              {tramite.referenciaExterna}
-            </p>
+            {puedeEditar ? (
+              <InlineTextField
+                label={etiquetaReferenciaExterna}
+                fieldKey="referenciaExterna"
+                value={tramite.referenciaExterna ?? null}
+                tramiteId={tramite.id}
+                onSaved={onFieldSaved}
+              />
+            ) : (
+              <>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  {etiquetaReferenciaExterna}
+                </p>
+                <p className="mt-0.5 font-mono font-semibold text-slate-800">
+                  {tramite.referenciaExterna ?? "—"}
+                </p>
+              </>
+            )}
           </div>
         ) : null}
-        <div>
-          {puedeEditar ? (
-            <InlineTextField
-              label="DO Agencia"
-              fieldKey="doAgencia"
-              value={tramite.doAgencia}
-              tramiteId={tramite.id}
-              onSaved={onFieldSaved}
-            />
-          ) : tramite.doAgencia ? (
-            <>
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Agencia</p>
-              <p className="mt-0.5 font-semibold text-slate-800">{tramite.doAgencia}</p>
-            </>
-          ) : null}
-        </div>
-        {puedeEditar ? <InlineTextField label="DO Cliente" fieldKey="doCliente" value={tramite.doCliente} tramiteId={tramite.id} onSaved={onFieldSaved} /> : tramite.doCliente ? (
+        {muestraCamposDo ? (
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Cliente</p>
-            <p className="mt-0.5 font-semibold text-slate-800">{tramite.doCliente}</p>
+            {puedeEditar ? (
+              <InlineTextField
+                label="DO Agencia"
+                fieldKey="doAgencia"
+                value={tramite.doAgencia}
+                tramiteId={tramite.id}
+                onSaved={onFieldSaved}
+              />
+            ) : tramite.doAgencia ? (
+              <>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Agencia</p>
+                <p className="mt-0.5 font-semibold text-slate-800">{tramite.doAgencia}</p>
+              </>
+            ) : null}
           </div>
+        ) : null}
+        {muestraCamposDo ? (
+          puedeEditar ? (
+            <InlineTextField label="DO Cliente" fieldKey="doCliente" value={tramite.doCliente} tramiteId={tramite.id} onSaved={onFieldSaved} />
+          ) : tramite.doCliente ? (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Cliente</p>
+              <p className="mt-0.5 font-semibold text-slate-800">{tramite.doCliente}</p>
+            </div>
+          ) : null
         ) : null}
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Estado</p>
@@ -748,10 +778,12 @@ function TabResumen({
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Ciudad</p>
           <p className="mt-0.5 text-sm text-slate-700">{tramite.ciudad}</p>
         </div>
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">ETA</p>
-          <p className="mt-0.5 text-sm font-semibold text-slate-800">{formatDate(tramite.eta)}</p>
-        </div>
+        {muestraEta ? (
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">ETA</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-800">{formatDate(tramite.eta)}</p>
+          </div>
+        ) : null}
       </div>
 
       {/* Fechas clave con edición inline */}
@@ -858,12 +890,16 @@ function TabResumen({
         </div>
       ) : null}
 
-      {/* Base de cálculo del tarifario y eventos (M2 + M3) */}
+      {/* Base de cálculo del tarifario y eventos (M2 + M3). Qué campos y si
+          hay eventos lo decide el tipo de trámite (M4): CLASIFICACION solo
+          usa Ítems clasificados y no usa eventos. */}
       <SeccionEventosTramite
         tramiteId={tramite.id}
         clienteId={tramite.cliente.id}
         puedeEditar={puedeEditar}
         onRefresh={onRefresh}
+        camposBaseCalculo={tramite.tipoTramite?.camposBaseCalculo ?? null}
+        usaEventos={tramite.tipoTramite?.usaEventos ?? true}
       />
 
       {/* Comentarios */}

@@ -42,6 +42,11 @@ import {
   filtroSecuencia,
   formatConsecutivo,
 } from "@/lib/tramites/consecutivo";
+import {
+  construirOrdenTramites,
+  type DireccionOrden,
+  type OrdenTramitesCampo,
+} from "@/lib/tramites/orden";
 
 type CreateTramiteInput = {
   ciudad: Ciudad;
@@ -556,6 +561,14 @@ export const tramiteInclude = {
       tipo: true,
     },
   },
+  // Solo `usaCamposDo`: la lista lo usa para decidir si la columna
+  // "Referencia" muestra `referenciaExterna` en vez del coalesce de siempre
+  // (ver `normalizeRow` en tramites-api.ts).
+  tipoTramite: {
+    select: {
+      usaCamposDo: true,
+    },
+  },
   creadoPor: {
     select: {
       id: true,
@@ -591,6 +604,9 @@ export type TramiteListQuery = {
   tipoCliente?: TipoCliente;
   /** true = solo facturados, false = solo no facturados, undefined = sin filtro. */
   facturado?: boolean;
+  /** Columna de orden (A8); ausente = orden de siempre. La vista kanban nunca la manda. */
+  ordenarPor?: OrdenTramitesCampo;
+  direccion?: DireccionOrden;
   take?: number;
   skip?: number;
 };
@@ -663,7 +679,7 @@ export async function listTramites(
   const [tramites, total] = await prisma.$transaction([
     prisma.tramiteDO.findMany({
       where,
-      orderBy: [{ anio: "desc" }, { ciudad: "asc" }, { numero: "desc" }],
+      orderBy: construirOrdenTramites(query.ordenarPor, query.direccion),
       take: query.take ?? 50,
       skip: query.skip ?? 0,
       include: tramiteInclude,
@@ -690,6 +706,12 @@ export const tramiteDetalleInclude = {
       etiquetaReferenciaExterna: true,
       facturacionSeparada: true,
       lineaServicio: true,
+      // Revisión de Ernesto 22-sep-2026 (tanda 2): la cabecera del DO y el
+      // panel "Base de cálculo y eventos" ocultan campos por tipo de trámite.
+      requiereEta: true,
+      usaCamposDo: true,
+      camposBaseCalculo: true,
+      usaEventos: true,
     },
   },
   creadoPor: {
