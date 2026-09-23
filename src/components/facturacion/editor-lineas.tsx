@@ -18,6 +18,7 @@ import {
   fetchSiigoProductos,
   type SiigoProductoRow,
 } from "@/components/configuracion/siigo-productos-api";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { describirError, useToast } from "@/components/ui/toast";
 import { ModuleState } from "@/components/layout/module-state";
@@ -549,6 +550,8 @@ function ComisionEditable({
   // componente — y reinicializa `modo` desde el valor real — cada vez que
   // cambia la comisión guardada en el server.
   const [modo, setModo] = useState<OpcionComision>(() => modoComisionDesde(borrador.comision));
+  const [valorLibreRaw, setValorLibreRaw] = useState(borrador.comision);
+  const cancelarBlurLibre = useRef(false);
 
   if (!puedeEditar) {
     return (
@@ -560,6 +563,7 @@ function ComisionEditable({
   }
 
   async function commitValor(valorRaw: string) {
+    if (cancelarBlurLibre.current) { cancelarBlurLibre.current = false; return; }
     const parsed = parseBigIntInput(valorRaw);
     if (parsed === null || parsed === borrador.comision) return;
     await ejecutar(() => apiActualizarComision(borrador.id, parsed));
@@ -569,6 +573,7 @@ function ComisionEditable({
     if (value === "otro") {
       // Deja el campo libre visible para que el usuario escriba el valor;
       // no se guarda nada hasta que lo confirme.
+      setValorLibreRaw(borrador.comision);
       setModo("otro");
       return;
     }
@@ -591,20 +596,22 @@ function ComisionEditable({
           <option value="otro">Otro valor…</option>
         </select>
         {modo === "otro" ? (
-          <input
-            defaultValue={borrador.comision}
-            onBlur={(e) => void commitValor(e.currentTarget.value)}
+          <CampoMoneda
+            value={valorLibreRaw}
+            onValueChange={setValorLibreRaw}
+            onBlur={() => void commitValor(valorLibreRaw)}
             onKeyDown={(e) => {
               if (e.key === "Enter") e.currentTarget.blur();
               if (e.key === "Escape") {
-                e.currentTarget.value = borrador.comision;
+                cancelarBlurLibre.current = true;
+                setValorLibreRaw(borrador.comision);
                 e.currentTarget.blur();
               }
             }}
             disabled={guardando}
-            inputMode="numeric"
             placeholder="Valor en COP"
-            className="w-36 border border-slate-300 px-2 py-1 text-right text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
+            wrapperClassName="w-36"
+            className="w-full border border-slate-300 px-2 py-1 text-right text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:opacity-50"
           />
         ) : null}
       </div>
@@ -665,26 +672,41 @@ function CampoLinea({ valor, etiqueta, numerico = false, guardando, guardar }: {
     if (ok) setLocal(limpio);
   }
 
+  const claseCampo = `min-h-11 w-full rounded-md border bg-white px-2 font-medium focus:outline-none focus:ring-2 disabled:opacity-60 ${numerico ? "text-right" : "text-left"} ${errorCampo ? "border-rose-400 focus:ring-rose-100" : "border-slate-200 focus:border-cyan-600 focus:ring-cyan-100"}`;
+  const manejarEscape = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      cancelarBlur.current = true;
+      setLocal(valor);
+      setErrorCampo(null);
+    }
+    if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+  };
+
   return (
     <div className={numerico ? "w-36" : "min-w-48"}>
-      <input
-        value={local}
-        aria-label={etiqueta}
-        aria-invalid={Boolean(errorCampo)}
-        inputMode={numerico ? "numeric" : undefined}
-        disabled={guardando}
-        onChange={(e) => { setLocal(e.target.value); setErrorCampo(null); }}
-        onBlur={() => void commit()}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            cancelarBlur.current = true;
-            setLocal(valor);
-            setErrorCampo(null);
-          }
-          if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
-        }}
-        className={`min-h-11 w-full rounded-md border bg-white px-2 font-medium focus:outline-none focus:ring-2 disabled:opacity-60 ${numerico ? "text-right" : "text-left"} ${errorCampo ? "border-rose-400 focus:ring-rose-100" : "border-slate-200 focus:border-cyan-600 focus:ring-cyan-100"}`}
-      />
+      {numerico ? (
+        <CampoMoneda
+          value={local}
+          onValueChange={(digitos) => { setLocal(digitos); setErrorCampo(null); }}
+          aria-label={etiqueta}
+          aria-invalid={Boolean(errorCampo)}
+          disabled={guardando}
+          onBlur={() => void commit()}
+          onKeyDown={manejarEscape}
+          className={claseCampo}
+        />
+      ) : (
+        <input
+          value={local}
+          aria-label={etiqueta}
+          aria-invalid={Boolean(errorCampo)}
+          disabled={guardando}
+          onChange={(e) => { setLocal(e.target.value); setErrorCampo(null); }}
+          onBlur={() => void commit()}
+          onKeyDown={manejarEscape}
+          className={claseCampo}
+        />
+      )}
       {errorCampo ? (
         <div className="mt-1 text-left text-xs font-normal text-rose-700" role="alert">
           <p>{errorCampo}</p>
@@ -1082,12 +1104,12 @@ function SubseccionLineas({
             ) : null}
             <label className="flex flex-col text-xs text-slate-600">
               Valor (COP)
-              <input
+              <CampoMoneda
                 value={nuevoValor}
-                onChange={(e) => setNuevoValor(e.target.value)}
-                className="mt-1 min-h-11 w-36 border border-slate-300 px-2 py-1 text-right text-sm"
+                onValueChange={setNuevoValor}
+                wrapperClassName="mt-1 w-36"
+                className="min-h-11 w-full border border-slate-300 px-2 py-1 text-right text-sm"
                 placeholder="0"
-                inputMode="numeric"
               />
             </label>
             <button

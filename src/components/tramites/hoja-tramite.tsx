@@ -11,6 +11,7 @@ import {
   formatCOP,
 } from "@/components/pagos/pagos-api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
@@ -1057,11 +1058,10 @@ function ComisionInternaModal({
   const { toast } = useToast();
 
   const opcion = OPCIONES_TIPO_PAGO_COMISION_LM.find((o) => opcionKey(o) === opcionKeySel);
-  const montoLimpio = monto.replace(/\D/g, "");
   const montoBig = (() => {
-    if (montoLimpio.length === 0) return null;
+    if (monto.length === 0) return null;
     try {
-      return BigInt(montoLimpio);
+      return BigInt(monto);
     } catch {
       return null;
     }
@@ -1117,11 +1117,9 @@ function ComisionInternaModal({
             <span className="text-sm font-medium text-slate-700">
               Comisión (COP) *
             </span>
-            <input
-              type="text"
-              inputMode="numeric"
+            <CampoMoneda
               value={monto}
-              onChange={(e) => setMonto(e.target.value)}
+              onValueChange={setMonto}
               disabled={guardando}
               placeholder="150.000"
               className="h-10 w-full border border-slate-300 px-3 text-right font-mono text-sm outline-none focus:border-sky-500"

@@ -14,12 +14,15 @@ import {
 
 /**
  * Confirmación accesible basada en <dialog> nativo (foco atrapado, Escape,
- * role="dialog" y backdrop sin código extra). Reemplaza a window.confirm.
+ * role="dialog"). Reemplaza a window.confirm.
  *
  *   const confirmar = useConfirm();
  *   if (!(await confirmar({ title: "¿Anular este pago?", variant: "danger" }))) return;
  *
- * Fuera del provider cae a window.confirm para no romper nada.
+ * Pedido de Ernesto, 22-sep: el clic en el fondo ya NO cancela (solo pasó a
+ * los modales de formulario para no perder lo escrito, pero aquí no hay nada
+ * que perder); Escape sí cancela. Fuera del provider cae a window.confirm
+ * para no romper nada.
  */
 
 export type ConfirmOptions = {
@@ -87,11 +90,10 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         aria-labelledby="confirm-title"
         aria-describedby={o?.description ? "confirm-desc" : undefined}
         onCancel={(e) => {
+          // Escape sí cancela (resuelve false): no se pierde nada, a
+          // diferencia de cerrar un formulario a medio llenar.
           e.preventDefault();
           cerrar(false);
-        }}
-        onClick={(e) => {
-          if (e.target === dialogRef.current) cerrar(false);
         }}
         className="m-auto w-[min(92vw,440px)] border border-slate-200 bg-white p-0 text-slate-900 shadow-2xl backdrop:bg-slate-950/50"
       >

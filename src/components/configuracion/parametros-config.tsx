@@ -5,6 +5,7 @@ import { useId, useState } from "react";
 
 import { patchJson } from "@/components/configuracion/respuesta-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { describirError, useToast } from "@/components/ui/toast";
 
 export type ParametroRow = {
@@ -13,6 +14,25 @@ export type ParametroRow = {
   valor: string;
   descripcion: string | null;
 };
+
+/**
+ * Claves de `Parametro` que son montos COP enteros — se editan con separador
+ * de miles (`CampoMoneda`). El resto (tasas como IVA_COMISION/TASA_4X1000,
+ * días, NITs o texto libre como WHATSAPP_*) son valores no monetarios y
+ * siguen editándose como texto plano — ver tabla de parámetros en CLAUDE.md.
+ */
+function esParametroMonedaCOP(clave: string): boolean {
+  return clave === "COMISION_LM" || clave.startsWith("UMBRAL_");
+}
+
+/**
+ * Único parámetro de moneda que legítimamente admite negativos: el umbral de
+ * cartera dispara la alerta cuando el saldo neto del cliente cae por debajo
+ * de un valor negativo (ej. -20.000.000).
+ */
+function permiteNegativoParametro(clave: string): boolean {
+  return clave === "UMBRAL_ALERTA_CARTERA_CLIENTE";
+}
 
 /**
  * Tabla de Parametro genéricos del sistema. Solo lectura para roles
@@ -109,22 +129,43 @@ export function ParametrosConfig({
                 <td className="px-4 py-3">
                   {esAdmin && editando === parametro.clave ? (
                     <div className="flex flex-col gap-1">
-                      <input
-                        value={valor}
-                        onChange={(e) => setValor(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void guardar(parametro.clave);
-                          if (e.key === "Escape") cerrar();
-                        }}
-                        autoFocus
-                        disabled={guardando}
-                        aria-label={`Valor de ${parametro.clave}`}
-                        aria-invalid={error ? true : undefined}
-                        aria-describedby={error ? errorId : undefined}
-                        className={`h-8 w-48 border px-2 text-sm outline-none focus:border-cyan-600 ${
-                          error ? "border-rose-500" : "border-slate-300"
-                        }`}
-                      />
+                      {esParametroMonedaCOP(parametro.clave) ? (
+                        <CampoMoneda
+                          value={valor}
+                          onValueChange={setValor}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void guardar(parametro.clave);
+                            if (e.key === "Escape") cerrar();
+                          }}
+                          permitirNegativo={permiteNegativoParametro(parametro.clave)}
+                          autoFocus
+                          disabled={guardando}
+                          aria-label={`Valor de ${parametro.clave}`}
+                          aria-invalid={error ? true : undefined}
+                          aria-describedby={error ? errorId : undefined}
+                          wrapperClassName="w-48"
+                          className={`h-8 w-full border px-2 text-sm outline-none focus:border-cyan-600 ${
+                            error ? "border-rose-500" : "border-slate-300"
+                          }`}
+                        />
+                      ) : (
+                        <input
+                          value={valor}
+                          onChange={(e) => setValor(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void guardar(parametro.clave);
+                            if (e.key === "Escape") cerrar();
+                          }}
+                          autoFocus
+                          disabled={guardando}
+                          aria-label={`Valor de ${parametro.clave}`}
+                          aria-invalid={error ? true : undefined}
+                          aria-describedby={error ? errorId : undefined}
+                          className={`h-8 w-48 border px-2 text-sm outline-none focus:border-cyan-600 ${
+                            error ? "border-rose-500" : "border-slate-300"
+                          }`}
+                        />
+                      )}
                       {error ? (
                         <span id={errorId} role="alert" className="text-xs text-red-600">
                           {error}

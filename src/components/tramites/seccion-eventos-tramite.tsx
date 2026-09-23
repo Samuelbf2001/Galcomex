@@ -16,6 +16,7 @@ import {
   type PropuestaTarifaRow,
   type TipoCarga,
 } from "@/components/tramites/eventos-api";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 
@@ -217,7 +218,7 @@ export function SeccionEventosTramite({
                   <>
                     <label className="block space-y-1">
                       <span className={LABEL}>Valor CIF (COP)</span>
-                      <input value={form.valorCif} onChange={(e) => setForm({ ...form, valorCif: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} placeholder="300000000" />
+                      <CampoMoneda value={form.valorCif} onValueChange={(digitos) => setForm({ ...form, valorCif: digitos })} disabled={!puedeEditar} className={INPUT} placeholder="300000000" />
                     </label>
                     <label className="block space-y-1">
                       <span className={LABEL}>Tipo de carga</span>
@@ -254,7 +255,7 @@ export function SeccionEventosTramite({
                     </label>
                     <label className="block space-y-1">
                       <span className={LABEL}>Valor de la OC (COP, sin IVA)</span>
-                      <input value={form.ordenCompraValor} onChange={(e) => setForm({ ...form, ordenCompraValor: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} placeholder="4500000" />
+                      <CampoMoneda value={form.ordenCompraValor} onValueChange={(digitos) => setForm({ ...form, ordenCompraValor: digitos })} disabled={!puedeEditar} className={INPUT} placeholder="4500000" />
                     </label>
                     <p className="col-span-2 text-xs text-slate-500">El cliente devuelve la OC por el valor de la solicitud de fondos. En la revisión de la factura se contrasta y el número va en la descripción.</p>
                   </>

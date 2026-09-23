@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConciliarLoteModal } from "@/components/cartera/conciliar-lote-modal";
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
@@ -340,11 +341,10 @@ function RegistrarPagoModal({
             <span className="text-sm font-medium text-slate-700">
               Monto (COP) *
             </span>
-            <input
+            <CampoMoneda
               value={montoRaw}
-              onChange={(e) => setMontoRaw(e.target.value)}
+              onValueChange={setMontoRaw}
               placeholder="1.500.000"
-              inputMode="numeric"
               className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
             />
             {montoValido && (

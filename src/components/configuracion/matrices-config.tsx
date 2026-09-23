@@ -5,6 +5,7 @@ import { useId, useState } from "react";
 
 import { patchJson } from "@/components/configuracion/respuesta-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { describirError, useToast } from "@/components/ui/toast";
 
 export type MatrizRecaudoRow = {
@@ -146,11 +147,9 @@ export function MatricesConfig({
     if (!(esAdmin && editando === key)) return esAdmin ? <button type="button" disabled={editando !== null} onClick={() => abrir(tabla, clave, costoFijo)} aria-label={`Editar costo de ${etiqueta}`} className="min-h-10 rounded border border-dashed border-slate-300 px-3 font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60">{formatCOP(costoFijo)}</button> : formatCOP(costoFijo);
     return (
       <div className="flex flex-col gap-1">
-        <input
-          type="text"
-          inputMode="numeric"
+        <CampoMoneda
           value={valor}
-          onChange={(e) => setValor(e.target.value)}
+          onValueChange={setValor}
           onKeyDown={(e) => {
             if (e.key === "Enter") void guardarCosto(tabla, clave, etiqueta);
             if (e.key === "Escape") cerrar();
@@ -160,7 +159,8 @@ export function MatricesConfig({
           aria-label={`Costo fijo de ${etiqueta}`}
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? errorId : undefined}
-          className={`h-8 w-32 border px-2 text-sm outline-none focus:border-cyan-600 ${
+          wrapperClassName="w-32"
+          className={`h-8 w-full border px-2 text-sm outline-none focus:border-cyan-600 ${
             error ? "border-rose-500" : "border-slate-300"
           }`}
         />

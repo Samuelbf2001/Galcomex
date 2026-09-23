@@ -28,6 +28,7 @@ import {
   validarArchivoSoporte,
 } from "@/components/anticipos/anticipos-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -255,11 +256,10 @@ export function RegistrarAnticipoTramiteModal({
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Monto (COP) *</span>
-              <input
+              <CampoMoneda
                 value={montoRaw}
-                onChange={(e) => setMontoRaw(e.target.value)}
+                onValueChange={setMontoRaw}
                 placeholder="5.800.000"
-                inputMode="numeric"
                 autoFocus
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
@@ -348,11 +348,10 @@ export function RegistrarAnticipoTramiteModal({
                 <span className="text-sm font-medium text-slate-700">
                   Monto a aplicar a este DO (COP) *
                 </span>
-                <input
+                <CampoMoneda
                   value={montoAplicarRaw}
-                  onChange={(e) => setMontoAplicarRaw(e.target.value)}
+                  onValueChange={setMontoAplicarRaw}
                   placeholder="2.000.000"
-                  inputMode="numeric"
                   className={`h-10 w-full border px-3 text-sm outline-none focus:border-cyan-600 ${
                     sobreAplicando ? "border-rose-400 bg-rose-50" : "border-slate-300"
                   }`}
@@ -547,11 +546,10 @@ function AplicarExistenteModal({
                 <span className="text-sm font-medium text-slate-700">
                   Monto a aplicar a este DO (COP) *
                 </span>
-                <input
+                <CampoMoneda
                   value={montoRaw}
-                  onChange={(e) => setMontoRaw(e.target.value)}
+                  onValueChange={setMontoRaw}
                   placeholder="5.800.000"
-                  inputMode="numeric"
                   className={`h-10 w-full border px-3 text-sm outline-none focus:border-cyan-600 ${
                     sobreAplicando ? "border-rose-400 bg-rose-50" : "border-slate-300"
                   }`}

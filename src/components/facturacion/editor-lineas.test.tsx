@@ -57,7 +57,7 @@ describe("Editor de líneas: recuperación de errores", () => {
     const agregar = [...container.querySelectorAll("button")].find((button) => button.textContent === "Agregar línea")!;
     await act(async () => agregar.click());
     expect(concepto.value).toBe("Flete nuevo");
-    expect(valor.value).toBe("50000");
+    expect(valor.value).toBe("50.000");
     expect(container.textContent).toContain("No se guardó el cambio");
     await act(async () => agregar.click());
     expect(crearLineaManual).toHaveBeenCalledTimes(2);
