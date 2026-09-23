@@ -14,7 +14,8 @@ import {
 } from "@/components/clientes/cuenta-api";
 import { claseCampo } from "@/components/clientes/form-campos";
 import { ModuleState } from "@/components/layout/module-state";
-import { EnlaceTramite, type TabTramite } from "@/components/ui/enlace-entidad";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
+import { EnlaceFacturaVenta, EnlaceTramite, type TabTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -63,6 +64,19 @@ const LINEAS_SERVICIO = ["TRAMITE", "CLASIFICACION", "PLAN_VALLEJO", "OTROS", "C
 /** Pestaña del DO más relevante para cada fuente de asiento, al enlazar la referencia. */
 function tabParaFuente(fuente: string): TabTramite | undefined {
   return fuente === "FACTURA_PROVEEDOR" ? "facturas-proveedor" : undefined;
+}
+
+/**
+ * `true` para los dos asientos que hablan de una factura de venta concreta
+ * ("Factura BAQ-…" y "Saldo a favor del cliente · factura BAQ-…"): esos
+ * llevan `facturaId`/`borradorId` (ver `asientosComoCliente`) y su concepto
+ * enlaza a la factura en vez de pintarse como texto plano.
+ */
+function esConceptoFacturaVenta(movimiento: MovimientoCuentaRow): boolean {
+  return (
+    movimiento.fuente === "FACTURA_VENTA" ||
+    (movimiento.fuente === "AJUSTE" && movimiento.concepto.startsWith("Saldo a favor del cliente"))
+  );
 }
 
 function MovimientoModal({
@@ -156,19 +170,18 @@ function MovimientoModal({
           </label>
           <label className="space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
-            <input
+            <CampoMoneda
               name="valor"
               required
-              inputMode="numeric"
-              placeholder="4000000"
+              placeholder="4.000.000"
               className={claseCampo(false, "font-mono")}
             />
           </label>
           <label className="space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Tipo *</span>
             <select name="tipo" required defaultValue="ABONO" className={claseCampo(false, "bg-white")}>
-              <option value="ABONO">Le debemos (sube el saldo a su favor)</option>
-              <option value="CARGO">Nos debe (sube el saldo a su cargo)</option>
+              <option value="ABONO">A favor (sube el saldo que le debemos)</option>
+              <option value="CARGO">A cargo (sube el saldo que nos debe)</option>
             </select>
           </label>
           <label className="space-y-1.5">
@@ -236,13 +249,26 @@ function FilaMovimiento({
   onDeshacer?: (compensacionId: string) => void;
   deshaciendo: boolean;
 }) {
-  const aFavorNuestro = !movimiento.valor.startsWith("-");
+  // Convención de la cuenta corriente: valor positivo = la empresa nos debe
+  // (a su cargo); negativo = le debemos (a su favor). Nunca rojo/verde: son
+  // los mismos dos colores que "Saldo a cargo" / "Saldo a favor" arriba.
+  const esACargo = !movimiento.valor.startsWith("-");
 
   return (
     <tr className="border-b border-slate-100 last:border-b-0">
       <td className="px-4 py-2.5 text-slate-600">{formatFecha(movimiento.fecha)}</td>
       <td className="px-4 py-2.5">
-        <span className="font-medium text-slate-900">{movimiento.concepto}</span>
+        {esConceptoFacturaVenta(movimiento) && movimiento.tramiteId ? (
+          <EnlaceFacturaVenta
+            tramiteId={movimiento.tramiteId}
+            borradorId={movimiento.borradorId}
+            className="font-medium text-slate-900"
+          >
+            {movimiento.concepto}
+          </EnlaceFacturaVenta>
+        ) : (
+          <span className="font-medium text-slate-900">{movimiento.concepto}</span>
+        )}
         {movimiento.compensacionId ? (
           <span className="ml-2 inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-semibold uppercase text-cyan-700">
             <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />
@@ -276,7 +302,7 @@ function FilaMovimiento({
       <td className="px-4 py-2.5 text-xs text-slate-500">{movimiento.lineaServicio}</td>
       <td
         className={`px-4 py-2.5 text-right font-mono font-semibold ${
-          aFavorNuestro ? "text-emerald-700" : "text-rose-700"
+          esACargo ? "text-amber-800" : "text-cyan-800"
         }`}
       >
         {formatCOP(movimiento.valor)}
@@ -418,19 +444,21 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
           <div className="grid gap-px border-b border-slate-200 bg-slate-200 sm:grid-cols-3">
             <div className="bg-white px-4 py-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                Nos debe
+                Saldo a cargo de {cuenta.empresa.nombre}
               </p>
-              <p className="mt-0.5 font-mono text-lg font-bold text-slate-900">
+              <p className="mt-0.5 font-mono text-lg font-bold text-amber-800">
                 {formatCOP(cuenta.totalACargo)}
               </p>
+              <p className="mt-0.5 text-xs text-slate-500">le debe a Galcomex</p>
             </div>
             <div className="bg-white px-4 py-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                Le debemos
+                Saldo a favor de {cuenta.empresa.nombre}
               </p>
-              <p className="mt-0.5 font-mono text-lg font-bold text-slate-900">
+              <p className="mt-0.5 font-mono text-lg font-bold text-cyan-800">
                 {formatCOP(cuenta.totalAFavor)}
               </p>
+              <p className="mt-0.5 text-xs text-slate-500">Galcomex le debe</p>
             </div>
             <div className="bg-white px-4 py-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
@@ -438,7 +466,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
               </p>
               <p
                 className={`mt-0.5 font-mono text-lg font-bold ${
-                  neto > 0n ? "text-emerald-700" : neto < 0n ? "text-rose-700" : "text-slate-900"
+                  neto > 0n ? "text-amber-800" : neto < 0n ? "text-cyan-800" : "text-slate-900"
                 }`}
               >
                 {formatCOP(cuenta.neto)}

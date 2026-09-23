@@ -51,6 +51,13 @@ export interface AsientoCuenta {
   referencia?: string | null;
   /** Id del DO al que pertenece el asiento (si aplica), para enlazarlo en la UI. */
   tramiteId?: string | null;
+  /**
+   * Factura de venta a la que pertenece el asiento (si aplica) y su borrador,
+   * para enlazarla en la UI con `EnlaceFacturaVenta`. Aditivo: solo lo traen
+   * los asientos de `asientosComoCliente` que hablan de una factura concreta.
+   */
+  facturaId?: string | null;
+  borradorId?: string | null;
   /** Cruce de saldos al que pertenece el asiento (las dos puntas comparten id). */
   compensacionId?: string | null;
 }

@@ -104,11 +104,20 @@ export type FacturaRow = {
   /** NOTA: Fórmula pendiente de confirmar con Camila. */
   totalRealLM: string;             // saldoNetoLM − costosBancariosCliente − costosBancariosLM
   pagos: PagoFacturaRow[];
+  // Campos aditivos (revisión 22-sep, sección Cartera de la ficha de empresa).
+  // Opcionales para no romper a quien construye un FacturaRow "a mano" con el
+  // shape mínimo (p. ej. liquidacion-workspace.tsx); fetchCartera SIEMPRE los trae.
+  /** "TRAMITE" | "CLASIFICACION" | "PLAN_VALLEJO" | "OTROS"… (línea del tipo de trámite). */
+  lineaServicio?: string;
+  abonosCliente?: string;      // BigInt as string; Σ PagoFactura tipo=ABONO destino=CLIENTE
+  devolucionesCliente?: string; // BigInt as string; Σ PagoFactura tipo=DEVOLUCION destino=CLIENTE
 };
 
 export type CarteraData = {
   facturas: FacturaRow[];
-  cruceCliente: string;  // BigInt as string; >0 → cliente debe; <0 → Galcomex debe
+  // Suma de saldoNetoCliente de todas las facturas: misma convención (>0 →
+  // Galcomex debe/a favor del cliente; <0 → el cliente debe/a cargo del cliente).
+  cruceCliente: string;  // BigInt as string
   cruceLM: string;       // BigInt as string
   totalFacturas: number;
 };
@@ -258,6 +267,9 @@ function mapFacturaRow(f: Record<string, unknown>): FacturaRow {
     costosBancariosLM: String(f.costosBancariosLM ?? "0"),
     totalRealLM: String(f.totalRealLM ?? "0"),
     pagos: rawPagos.filter(isRecord).map(mapPagoRow),
+    lineaServicio: String(f.lineaServicio ?? ""),
+    abonosCliente: String(f.abonosCliente ?? "0"),
+    devolucionesCliente: String(f.devolucionesCliente ?? "0"),
   };
 }
 

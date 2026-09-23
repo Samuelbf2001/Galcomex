@@ -96,6 +96,7 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
     where: { clienteId: empresaId },
     select: {
       id: true,
+      borradorId: true,
       numSiigo: true,
       fecha: true,
       saldoAFavorCliente: true,
@@ -138,6 +139,8 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
           valor: factura.saldoACargoCliente,
           referencia,
           tramiteId,
+          facturaId: factura.id,
+          borradorId: factura.borradorId,
         }),
       );
     }
@@ -154,6 +157,8 @@ async function asientosComoCliente(empresaId: string): Promise<AsientoCuenta[]> 
         valor: -factura.saldoAFavorCliente,
         referencia,
         tramiteId,
+        facturaId: factura.id,
+        borradorId: factura.borradorId,
       });
     }
 

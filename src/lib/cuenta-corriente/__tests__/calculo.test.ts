@@ -55,6 +55,35 @@ describe("asientoDesde — signo por fuente", () => {
     expect(asiento("AJUSTE", -120_000n).valor).toBe(-120_000n);
     expect(asiento("AJUSTE", 120_000n).valor).toBe(120_000n);
   });
+
+  it("facturaId/borradorId son campos aditivos: pasan intactos, sin tocar el signo", () => {
+    const conFactura = asientoDesde({
+      id: "factura:f1",
+      fuente: "FACTURA_VENTA",
+      lineaServicio: "TRAMITE",
+      concepto: "Factura BAQ-18453",
+      fecha: new Date("2026-03-01"),
+      valor: 1_946_500n,
+      tramiteId: "t1",
+      facturaId: "f1",
+      borradorId: "b1",
+    });
+
+    expect(conFactura.facturaId).toBe("f1");
+    expect(conFactura.borradorId).toBe("b1");
+    expect(conFactura.valor).toBe(1_946_500n);
+
+    const sinFactura = asientoDesde({
+      id: "manual:m1",
+      fuente: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Mensualidad",
+      fecha: new Date("2026-03-01"),
+      valor: 4_000_000n,
+    });
+    expect(sinFactura.facturaId).toBeUndefined();
+    expect(sinFactura.borradorId).toBeUndefined();
+  });
 });
 
 describe("calcularCuentaCorriente", () => {
