@@ -108,6 +108,8 @@ model Cliente {
   contactoNombre String?
   contactoEmail  String?
   contactoTel    String?
+  /// Ciudad de la empresa; sale en la cotización (PDF del tarifario).
+  ciudad         String?
   /// @deprecated Migrado a la capacidad `anticipos_cliente`. Se mantiene
   /// sincronizado durante la transición; leer vía `capacidadesDe()`.
   manejaAnticipo Boolean     @default(true)

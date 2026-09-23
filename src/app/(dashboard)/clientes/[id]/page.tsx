@@ -2,15 +2,20 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 
 import { ClienteDetallePage as ClienteDetalleWorkspace } from "@/components/clientes/cliente-detalle";
+import { parsearAbrirPopup } from "@/components/clientes/clientes-api";
 import { exigirAccesoPagina } from "@/lib/auth/page-guard";
 
 type Props = {
   params: Promise<{ id: string }>;
+  /** `?abrir=tarifas|funciones|contacto` — deep link a un pop-up de la ficha. */
+  searchParams: Promise<{ abrir?: string | string[] }>;
 };
 
-export default async function ClienteDetallePage({ params }: Props) {
+export default async function ClienteDetallePage({ params, searchParams }: Props) {
   const { id } = await params;
   await exigirAccesoPagina(`/clientes/${id}`);
+  const { abrir } = await searchParams;
+  const abrirInicial = parsearAbrirPopup(abrir);
 
   return (
     <section className="space-y-5">
@@ -30,7 +35,7 @@ export default async function ClienteDetallePage({ params }: Props) {
         </div>
       </div>
 
-      <ClienteDetalleWorkspace clienteId={id} />
+      <ClienteDetalleWorkspace clienteId={id} abrirInicial={abrirInicial} />
     </section>
   );
 }

@@ -71,6 +71,13 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
   try {
     const { id } = await context.params;
+    // F1: `clienteUpdateSchema` no trae `.default()` (ver
+    // `src/lib/validations/clientes.ts`), así que `clienteData` solo trae las
+    // claves que el body realmente envió — incluida `manejaAnticipo`, que
+    // sigue en espejo con la capacidad `anticipos_cliente`
+    // (`src/lib/capacidades/service.ts`) — y un PATCH parcial (p. ej. el
+    // pop-up de Contacto) no reescribe tipo/activo/esCliente/esProveedor/
+    // manejaAnticipo/ciudad con valores por defecto.
     const payload = clienteUpdateSchema.parse(await request.json());
     const { tarifas, ...clienteData } = payload;
 

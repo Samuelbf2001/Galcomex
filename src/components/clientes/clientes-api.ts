@@ -1,3 +1,5 @@
+import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
+
 export type TarifaCliente = {
   anio: number;
   tipo: string;
@@ -12,6 +14,8 @@ export type ClienteRow = {
   contactoNombre: string | null;
   contactoEmail: string | null;
   contactoTel: string | null;
+  /** Ciudad de la empresa; sale en la cotización (PDF del tarifario). */
+  ciudad: string | null;
   manejaAnticipo: boolean;
   activo: boolean;
   esCliente: boolean;
@@ -61,6 +65,7 @@ export type CreateClienteInput = {
   contactoNombre?: string | null;
   contactoEmail?: string | null;
   contactoTel?: string | null;
+  ciudad?: string | null;
   manejaAnticipo: boolean;
   esCliente?: boolean;
   esProveedor?: boolean;
@@ -142,6 +147,7 @@ function normalizeCliente(row: unknown): ClienteRow | null {
     contactoNombre: typeof row.contactoNombre === "string" ? row.contactoNombre : null,
     contactoEmail: typeof row.contactoEmail === "string" ? row.contactoEmail : null,
     contactoTel: typeof row.contactoTel === "string" ? row.contactoTel : null,
+    ciudad: typeof row.ciudad === "string" ? row.ciudad : null,
     manejaAnticipo: row.manejaAnticipo !== false,
     activo: row.activo !== false,
     esCliente: row.esCliente !== false,
@@ -338,6 +344,57 @@ export async function upsertTarifa(
   }
 
   return updateCliente(clienteId, { tarifas: nextTarifas });
+}
+
+// ---------------------------------------------------------------------------
+// Pop-up de la ficha (`?abrir=` deep link) — helpers puros de la cabecera
+// ---------------------------------------------------------------------------
+
+export type PopupFicha = "funciones" | "contacto" | "tarifas";
+
+const POPUPS_FICHA: readonly PopupFicha[] = ["funciones", "contacto", "tarifas"];
+
+/**
+ * Valida el parámetro `?abrir=` de la ficha del cliente (deep link desde otro
+ * módulo, p. ej. un DO sin tarifa vigente manda a `/clientes/{id}?abrir=tarifas`).
+ * Cualquier otro valor —o una lista, si Next repite el parámetro en la URL—
+ * se ignora y no abre nada.
+ */
+export function parsearAbrirPopup(
+  valor: string | string[] | null | undefined,
+): PopupFicha | null {
+  const candidato = Array.isArray(valor) ? valor[0] : valor;
+  return (POPUPS_FICHA as readonly string[]).includes(candidato ?? "")
+    ? (candidato as PopupFicha)
+    : null;
+}
+
+/** Forma mínima que necesita `tieneTarifarioVigenteHoy` (subconjunto de `TarifarioRow`). */
+export type TarifarioVigenciaRow = {
+  estado: string;
+  vigenteDesde: string;
+  vigenteHasta: string;
+};
+
+/**
+ * `true` si alguno de los tarifarios está `VIGENTE` y su vigencia (fechas
+ * ISO, comparadas por día calendario) cubre `hoy`. Alimenta el punto ámbar
+ * del botón "Tarifas" en la cabecera de la ficha.
+ */
+export function tieneTarifarioVigenteHoy(
+  tarifarios: TarifarioVigenciaRow[],
+  // F5: "hoy" es el día calendario en Bogotá, no el instante UTC — si no, el
+  // punto ámbar se apaga 5 horas antes de medianoche en Bogotá el último día
+  // de vigencia. Ver `lib/tiempo/bogota.ts`.
+  hoy: Date = fechaCalendarioBogota(),
+): boolean {
+  const hoyIso = hoy.toISOString().slice(0, 10);
+  return tarifarios.some(
+    (t) =>
+      t.estado === "VIGENTE" &&
+      t.vigenteDesde.slice(0, 10) <= hoyIso &&
+      hoyIso <= t.vigenteHasta.slice(0, 10),
+  );
 }
 
 export async function createCliente(input: CreateClienteInput): Promise<ClienteRow> {

@@ -1,47 +1,147 @@
 "use client";
 
-import { useId, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { type ClienteDetalle, updateCliente } from "./clientes-api";
-import { describirError, useToast } from "@/components/ui/toast";
+import { useId, useState, type FormEvent } from "react";
 
-const fields = [
+import { type ClienteDetalle, updateCliente } from "@/components/clientes/clientes-api";
+import { ModalShell } from "@/components/ui/modal-shell";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useEsAdmin } from "@/lib/auth/rol-context";
+
+const CAMPOS = [
   { key: "contactoNombre", label: "Nombre del contacto", type: "text" },
   { key: "contactoEmail", label: "Correo electrónico", type: "email" },
   { key: "contactoTel", label: "Teléfono", type: "tel" },
 ] as const;
-type Contacto = Record<(typeof fields)[number]["key"], string>;
 
-export function ContactoEditor({ cliente, onSaved }: { cliente: ClienteDetalle; onSaved: (cliente: ClienteDetalle) => void }) {
-  const id = useId();
-  const [draft, setDraft] = useState<Partial<Contacto>>({});
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+type ClaveContacto = (typeof CAMPOS)[number]["key"];
+type Draft = Record<ClaveContacto, string>;
+
+const INPUT_CONTACTO =
+  "h-11 w-full border px-3 text-sm outline-none transition focus:border-cyan-600 disabled:bg-slate-50 disabled:opacity-60";
+
+function claseInputContacto(invalido: boolean): string {
+  return `${INPUT_CONTACTO} ${invalido ? "border-rose-500 bg-rose-50/40" : "border-slate-300"}`;
+}
+
+function draftDesdeCliente(cliente: ClienteDetalle): Draft {
+  return {
+    contactoNombre: cliente.contactoNombre ?? "",
+    contactoEmail: cliente.contactoEmail ?? "",
+    contactoTel: cliente.contactoTel ?? "",
+  };
+}
+
+/**
+ * Pop-up "Contacto de la empresa" de la ficha del cliente. ADMIN ve un
+ * formulario editable (nombre, correo, teléfono); el resto de roles ve la
+ * misma información en solo lectura, con "Sin registrar" para lo vacío.
+ */
+export function ContactoEditor({
+  cliente,
+  onClose,
+  onSaved,
+}: {
+  cliente: ClienteDetalle;
+  onClose: () => void;
+  onSaved: (cliente: ClienteDetalle) => void;
+}) {
+  const esAdmin = useEsAdmin();
   const { toast } = useToast();
-  const changed = fields.some(({ key }) => draft[key] !== undefined && draft[key] !== (cliente[key] ?? ""));
+  const formId = useId();
+  const [draft, setDraft] = useState<Draft>(() => draftDesdeCliente(cliente));
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function save(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!changed || saving) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const patch = Object.fromEntries(fields.filter(({ key }) => draft[key] !== undefined).map(({ key }) => [key, draft[key]?.trim() || null]));
-      const updated = await updateCliente(cliente.id, patch);
-      onSaved({ ...cliente, ...updated });
-      setDraft({});
-      toast({ title: "Contacto actualizado", variant: "success" });
-    } catch (caught) { setError(describirError(caught, "No se pudo guardar el contacto. Tus cambios se conservan.")); }
-    finally { setSaving(false); }
+  function cambiar(clave: ClaveContacto, valor: string) {
+    setDraft((prev) => ({ ...prev, [clave]: valor }));
   }
 
-  return <form onSubmit={save} aria-busy={saving} className="space-y-3 rounded-xl border border-slate-200 bg-white p-5">
-    <div><h2 className="text-sm font-semibold text-slate-900">Contacto de la empresa</h2><p className="mt-1 text-xs text-slate-500">Edita directamente los datos. Guarda los cambios al terminar.</p></div>
-    <div className="grid gap-3 md:grid-cols-3">{fields.map(({ key, label, type }) => <label key={key} className="min-w-0 space-y-1.5">
-      <span className="text-xs font-medium text-slate-600">{label}</span>
-      <input type={type} value={draft[key] ?? cliente[key] ?? ""} disabled={saving} aria-describedby={error ? `${id}-error` : undefined} onChange={(event) => { setDraft((prev) => ({ ...prev, [key]: event.target.value })); setError(null); }} className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm focus:border-cyan-600 focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:opacity-60" placeholder="Sin registrar" />
-    </label>)}</div>
-    {changed ? <div className="flex flex-wrap items-center gap-3"><button type="submit" disabled={saving} className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-cyan-700 px-4 text-sm font-semibold text-white disabled:opacity-60">{saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}{saving ? "Guardando…" : error ? "Reintentar guardado" : "Guardar contacto"}</button><button type="button" disabled={saving} onClick={() => { setDraft({}); setError(null); }} className="min-h-11 px-3 text-sm text-slate-600">Deshacer</button><span className="text-xs text-slate-500" role="status">Cambios sin guardar</span></div> : null}
-    {error ? <p id={`${id}-error`} role="alert" className="text-sm text-rose-700">{error}</p> : null}
-  </form>;
+  async function guardar(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (guardando) return;
+    setError(null);
+    setGuardando(true);
+    try {
+      const updated = await updateCliente(cliente.id, {
+        contactoNombre: draft.contactoNombre.trim() || null,
+        contactoEmail: draft.contactoEmail.trim() || null,
+        contactoTel: draft.contactoTel.trim() || null,
+      });
+      toast({ title: "Contacto actualizado", variant: "success" });
+      onSaved({ ...cliente, ...updated });
+      onClose();
+    } catch (caught) {
+      // Lo escrito se conserva: el `draft` no se toca en el catch.
+      setError(describirError(caught, "No fue posible guardar el contacto. Tus cambios se conservan."));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <ModalShell
+      open
+      onClose={onClose}
+      title="Contacto de la empresa"
+      size="md"
+      dismissible={!guardando}
+      footer={
+        esAdmin ? (
+          <>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={guardando}
+              className="min-h-11 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              form={formId}
+              disabled={guardando}
+              className="inline-flex min-h-11 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+            >
+              {guardando ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+              {guardando ? "Guardando…" : "Guardar contacto"}
+            </button>
+          </>
+        ) : undefined
+      }
+    >
+      {esAdmin ? (
+        <form id={formId} onSubmit={guardar} className="space-y-4">
+          {CAMPOS.map(({ key, label, type }) => (
+            <label key={key} className="block space-y-1.5">
+              <span className="text-sm font-medium text-slate-700">{label}</span>
+              <input
+                type={type}
+                value={draft[key]}
+                disabled={guardando}
+                onChange={(event) => cambiar(key, event.target.value)}
+                placeholder="Sin registrar"
+                className={claseInputContacto(false)}
+              />
+            </label>
+          ))}
+
+          {error ? (
+            <div role="alert" className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          ) : null}
+        </form>
+      ) : (
+        <dl className="space-y-3">
+          {CAMPOS.map(({ key, label }) => (
+            <div key={key}>
+              <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+              <dd className="mt-0.5 text-sm text-slate-800">{cliente[key] || "Sin registrar"}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </ModalShell>
+  );
 }

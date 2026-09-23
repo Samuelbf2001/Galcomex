@@ -1,29 +1,34 @@
 "use client";
 
-import { CheckCircle2, ExternalLink, Loader2, Pencil, RotateCcw } from "lucide-react";
+import { BadgeDollarSign, CheckCircle2, ExternalLink, Loader2, Pencil, RotateCcw, Settings, UserRound } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useId, useState } from "react";
 
 import {
   ClientesApiError,
   erroresPorCampo,
   fetchClienteDetalle,
+  tieneTarifarioVigenteHoy,
   updateCliente,
   type AnticipoResumen,
   type ClienteDetalle,
-  type FacturaResumen,
+  type PopupFicha,
   type TramiteResumen,
   type UpdateClienteInput,
 } from "@/components/clientes/clientes-api";
 import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
 import { ContactoEditor } from "@/components/clientes/contacto-editor";
 import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
+import { SeccionCarteraEmpresa } from "@/components/clientes/seccion-cartera-empresa";
 import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
 import { SeccionPagosProveedor } from "@/components/clientes/seccion-pagos-proveedor";
 import { SeccionTarifario } from "@/components/clientes/seccion-tarifario";
+import { fetchTarifarios, type TarifarioRow } from "@/components/clientes/tarifas-api";
 import { ModuleState } from "@/components/layout/module-state";
-import { EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, Skeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin } from "@/lib/auth/rol-context";
@@ -98,11 +103,13 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
     setIsSubmitting(true);
 
     const fd = new FormData(e.currentTarget);
+    const ciudad = String(fd.get("ciudad") ?? "").trim();
 
     const input: UpdateClienteInput = {
       nombre: String(fd.get("nombre") ?? "").trim(),
       nit: String(fd.get("nit") ?? "").trim(),
       tipo: String(fd.get("tipo") ?? "PROPIO") as "PROPIO" | "SOCIO_LM",
+      ciudad: ciudad.length > 0 ? ciudad : null,
       manejaAnticipo: fd.get("manejaAnticipo") === "on",
       activo: fd.get("activo") === "on",
       esCliente: fd.get("esCliente") === "on",
@@ -138,7 +145,7 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
       open
       onClose={onClose}
       title="Editar cliente"
-      description={`${cliente.nombre} · El contacto se edita directamente en la ficha.`}
+      description={`${cliente.nombre} · El contacto se edita desde el botón "Contacto".`}
       size="lg"
       dismissible={!isSubmitting}
       footer={
@@ -205,6 +212,19 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
             </select>
             <MensajeCampo id={campo("tipo").errorId} error={errores.tipo} />
           </label>
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Ciudad</span>
+            <input
+              name="ciudad"
+              maxLength={80}
+              defaultValue={cliente.ciudad ?? ""}
+              placeholder="Ej.: Barranquilla"
+              aria-invalid={campo("ciudad").invalido || undefined}
+              aria-describedby={campo("ciudad").describedBy}
+              className={claseCampo(campo("ciudad").invalido)}
+            />
+            <MensajeCampo id={campo("ciudad").errorId} error={errores.ciudad} />
+          </label>
         </div>
 
 
@@ -263,60 +283,73 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
 // ---------------------------------------------------------------------------
 
 function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
+  const { visibles, pagina, porPagina, total, setPagina, setPorPagina } = usePaginacionLocal(tramites, 25);
+
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
       <div className="border-b border-slate-200 px-4 py-3">
         <p className="text-sm font-semibold text-slate-900">Trámites ({tramites.length})</p>
       </div>
 
-      <table className="min-w-[580px] w-full border-collapse text-left text-sm">
-        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-          <tr>
-            <th className="border-b border-slate-200 px-4 py-3">Consecutivo</th>
-            <th className="border-b border-slate-200 px-4 py-3">Ciudad</th>
-            <th className="border-b border-slate-200 px-4 py-3">Estado</th>
-            <th className="border-b border-slate-200 px-4 py-3 w-14"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {tramites.length === 0 ? (
+      <div className="overflow-x-auto">
+        <table className="min-w-[580px] w-full border-collapse text-left text-sm">
+          <thead className="bg-slate-50 text-xs uppercase text-slate-500">
             <tr>
-              <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
-                Sin trámites registrados
-              </td>
+              <th className="border-b border-slate-200 px-4 py-3">Consecutivo</th>
+              <th className="border-b border-slate-200 px-4 py-3">Ciudad</th>
+              <th className="border-b border-slate-200 px-4 py-3">Estado</th>
+              <th className="border-b border-slate-200 px-4 py-3 w-14"></th>
             </tr>
-          ) : (
-            tramites.map((tramite) => (
-              <tr
-                key={tramite.id}
-                className="border-b border-slate-100 last:border-b-0"
-              >
-                <td className="px-4 py-3 font-mono font-semibold text-slate-900">
-                  <EnlaceTramite id={tramite.id}>{tramite.consecutivo}</EnlaceTramite>
-                </td>
-                <td className="px-4 py-3 text-slate-600">{tramite.ciudad}</td>
-                <td className="px-4 py-3">
-                  <span
-                    className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${estadoBadgeClass(tramite.estado)}`}
-                  >
-                    {tramite.estado}
-                  </span>
-                </td>
-                <td className="px-4 py-3">
-                  <Link
-                    href={`/tramites/${tramite.id}`}
-                    className="inline-flex h-11 w-11 items-center justify-center text-slate-400 transition hover:text-cyan-700"
-                    aria-label={`Ver trámite ${tramite.consecutivo}`}
-                    title="Ver trámite"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                  </Link>
+          </thead>
+          <tbody>
+            {visibles.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
+                  Sin trámites registrados
                 </td>
               </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+            ) : (
+              visibles.map((tramite) => (
+                <tr
+                  key={tramite.id}
+                  className="border-b border-slate-100 last:border-b-0"
+                >
+                  <td className="px-4 py-3 font-mono font-semibold text-slate-900">
+                    <EnlaceTramite id={tramite.id}>{tramite.consecutivo}</EnlaceTramite>
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">{tramite.ciudad}</td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${estadoBadgeClass(tramite.estado)}`}
+                    >
+                      {tramite.estado}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Link
+                      href={`/tramites/${tramite.id}`}
+                      className="inline-flex h-11 w-11 items-center justify-center text-slate-400 transition hover:text-cyan-700"
+                      aria-label={`Ver trámite ${tramite.consecutivo}`}
+                      title="Ver trámite"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    </Link>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <Paginacion
+        total={total}
+        pagina={pagina}
+        porPagina={porPagina}
+        onPaginaChange={setPagina}
+        onPorPaginaChange={setPorPagina}
+        etiqueta="trámites"
+      />
     </div>
   );
 }
@@ -407,79 +440,31 @@ function SeccionAnticipos({ anticipos }: { anticipos: AnticipoResumen[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-componente: sección de facturas
-// ---------------------------------------------------------------------------
-
-function SeccionFacturas({ facturas }: { facturas: FacturaResumen[] }) {
-  return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-      <div className="border-b border-slate-200 px-4 py-3">
-        <p className="text-sm font-semibold text-slate-900">Facturas ({facturas.length})</p>
-      </div>
-
-      <table className="min-w-[580px] w-full border-collapse text-left text-sm">
-        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-          <tr>
-            <th className="border-b border-slate-200 px-4 py-3">N° Siigo</th>
-            <th className="border-b border-slate-200 px-4 py-3">Fecha</th>
-            <th className="border-b border-slate-200 px-4 py-3 text-right">Total factura</th>
-            <th className="border-b border-slate-200 px-4 py-3 text-right">Saldo a favor</th>
-            <th className="border-b border-slate-200 px-4 py-3 text-right">Saldo a cargo</th>
-            <th className="border-b border-slate-200 px-4 py-3">Fecha pago</th>
-          </tr>
-        </thead>
-        <tbody>
-          {facturas.length === 0 ? (
-            <tr>
-              <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                Sin facturas registradas
-              </td>
-            </tr>
-          ) : (
-            facturas.map((factura) => (
-              <tr
-                key={factura.id}
-                className="border-b border-slate-100 last:border-b-0"
-              >
-                <td className="px-4 py-3 font-mono font-semibold text-slate-900">
-                  <EnlaceFacturaVenta tramiteId={factura.tramiteId} borradorId={factura.borradorId}>
-                    {factura.numSiigo}
-                  </EnlaceFacturaVenta>
-                </td>
-                <td className="px-4 py-3 text-slate-600">{formatDate(factura.fecha)}</td>
-                <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
-                  {formatCOP(factura.totalFactura)}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-emerald-700">
-                  {formatCOP(factura.saldoAFavorCliente)}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-rose-600">
-                  {formatCOP(factura.saldoACargoCliente)}
-                </td>
-                <td className="px-4 py-3 text-slate-600">
-                  {formatDate(factura.fechaPagoCliente)}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Sub-componente: cabecera del cliente
 // ---------------------------------------------------------------------------
 
-function ClienteCabecera({
+const BTN_CABECERA =
+  "relative inline-flex min-h-11 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50";
+
+/** Punto ámbar de aviso, superpuesto en la esquina del botón. */
+const PUNTO_AVISO = "absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-amber-500";
+
+export function ClienteCabecera({
   cliente,
   puedeEditar,
+  contactoVacio,
+  sinTarifaVigente,
+  onAbrirPopup,
   onEdit,
 }: {
   cliente: ClienteDetalle;
   /** `PATCH /api/clientes/[id]` es solo ADMIN. */
   puedeEditar: boolean;
+  /** Punto ámbar en "Contacto": nombre, correo y teléfono vacíos a la vez. */
+  contactoVacio: boolean;
+  /** Punto ámbar en "Tarifas": sin tarifario VIGENTE cuya vigencia cubra hoy. */
+  sinTarifaVigente: boolean;
+  onAbrirPopup: (popup: PopupFicha) => void;
   onEdit: () => void;
 }) {
   return (
@@ -498,6 +483,12 @@ function ClienteCabecera({
               {cliente.nit}
             </p>
           </div>
+          {cliente.ciudad ? (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Ciudad</p>
+              <p className="mt-0.5 text-sm text-slate-700">{cliente.ciudad}</p>
+            </div>
+          ) : null}
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Rol</p>
             <p className="mt-0.5 text-sm text-slate-700">
@@ -531,40 +522,51 @@ function ClienteCabecera({
           ) : null}
         </div>
 
-        {puedeEditar ? (
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={onEdit}
-            className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            onClick={() => onAbrirPopup("funciones")}
+            aria-label="Funciones"
+            title="Funciones y configuración"
+            className={BTN_CABECERA}
           >
-            <Pencil className="h-4 w-4" aria-hidden="true" />
-            Editar empresa
+            <Settings className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">Funciones</span>
           </button>
-        ) : null}
-      </div>
-
-      {!puedeEditar && (cliente.contactoNombre || cliente.contactoEmail || cliente.contactoTel) ? (
-        <div className="mt-3 border-t border-slate-100 pt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm text-slate-600">
-          {cliente.contactoNombre ? (
-            <span>
-              <span className="font-medium text-slate-500">Contacto:</span>{" "}
-              {cliente.contactoNombre}
-            </span>
-          ) : null}
-          {cliente.contactoEmail ? (
-            <span>
-              <span className="font-medium text-slate-500">Email:</span>{" "}
-              {cliente.contactoEmail}
-            </span>
-          ) : null}
-          {cliente.contactoTel ? (
-            <span>
-              <span className="font-medium text-slate-500">Tel:</span>{" "}
-              {cliente.contactoTel}
-            </span>
+          <button
+            type="button"
+            onClick={() => onAbrirPopup("contacto")}
+            aria-label="Contacto"
+            title="Contacto de la empresa"
+            className={BTN_CABECERA}
+          >
+            <UserRound className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">Contacto</span>
+            {contactoVacio ? <span aria-hidden="true" className={PUNTO_AVISO} /> : null}
+          </button>
+          <button
+            type="button"
+            onClick={() => onAbrirPopup("tarifas")}
+            aria-label="Tarifas"
+            title={sinTarifaVigente ? "Sin tarifa vigente" : "Tarifario"}
+            className={BTN_CABECERA}
+          >
+            <BadgeDollarSign className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">Tarifas</span>
+            {sinTarifaVigente ? <span aria-hidden="true" className={PUNTO_AVISO} /> : null}
+          </button>
+          {puedeEditar ? (
+            <button
+              type="button"
+              onClick={onEdit}
+              className={BTN_CABECERA}
+            >
+              <Pencil className="h-4 w-4" aria-hidden="true" />
+              Editar empresa
+            </button>
           ) : null}
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -589,7 +591,7 @@ function SeccionSkeleton({ rows, cols, rowHeight }: { rows: number; cols: number
 function FichaSkeleton() {
   return (
     <section className="space-y-4" aria-busy="true" aria-label="Cargando ficha del cliente">
-      {/* Cabecera: 4 datos en fila + línea de contacto (≈ 112 px). */}
+      {/* Cabecera: datos en fila + grupo de botones (≈ 96 px). */}
       <div className="border border-slate-200 bg-white px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex flex-wrap gap-x-8 gap-y-3">
@@ -597,24 +599,25 @@ function FichaSkeleton() {
               <Skeleton className="h-3 w-32" />
               <Skeleton className="mt-2 h-6 w-56" />
             </div>
-            {[0, 1, 2].map((i) => (
+            {[0, 1, 2, 3].map((i) => (
               <div key={i}>
                 <Skeleton className="h-3 w-12" />
                 <Skeleton className="mt-2 h-5 w-24" />
               </div>
             ))}
           </div>
-          <Skeleton className="h-9 w-24" />
-        </div>
-        <div className="mt-3 border-t border-slate-100 pt-3">
-          <Skeleton className="h-4 w-80 max-w-full" />
+          <div className="flex flex-wrap gap-2">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-11 w-24" />
+            ))}
+          </div>
         </div>
       </div>
       <div className="flex justify-end">
         <Skeleton className="h-9 w-28" />
       </div>
-      {/* Funciones (filas altas), cuenta corriente (3 KPI + tabla) y las 4 tablas. */}
-      <SeccionSkeleton rows={4} cols={3} rowHeight={72} />
+      {/* Cartera (reemplaza a Facturas), cuenta corriente (3 KPI + tabla), trámites y anticipos. */}
+      <SeccionSkeleton rows={3} cols={6} />
       <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-4 py-3">
           <Skeleton className="h-4 w-40" />
@@ -623,9 +626,7 @@ function FichaSkeleton() {
         <CardsSkeleton count={3} height={72} />
         <TableSkeleton rows={4} cols={4} />
       </div>
-      <SeccionSkeleton rows={2} cols={3} />
       <SeccionSkeleton rows={4} cols={4} />
-      <SeccionSkeleton rows={3} cols={6} />
       <SeccionSkeleton rows={3} cols={6} />
     </section>
   );
@@ -637,14 +638,35 @@ function FichaSkeleton() {
 
 type LoadState = "loading" | "ready" | "error";
 
-export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
+export function ClienteDetallePage({
+  clienteId,
+  abrirInicial = null,
+}: {
+  clienteId: string;
+  /** `?abrir=` de la URL (ver `parsearAbrirPopup`): abre ese pop-up al cargar. */
+  abrirInicial?: PopupFicha | null;
+}) {
   // Editar cliente y tarifas pega a `PATCH /api/clientes/[id]` (solo ADMIN).
   const puedeEditar = useEsAdmin();
+  const router = useRouter();
   const [cliente, setCliente] = useState<ClienteDetalle | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [editModalOpen, setEditModalOpen] = useState(false);
+
+  // Pop-ups de la cabecera (Funciones / Contacto / Tarifas). `abrirInicial`
+  // (el `?abrir=` de la URL) solo cuenta para el primer render: si más
+  // adelante `recargar()` trae una ficha nueva, el pop-up no se reabre solo.
+  // `popupDesdeUrl` recuerda si el que está abierto vino de ese deep link,
+  // para saber si hay que limpiar la URL al cerrarlo.
+  const [popup, setPopup] = useState<PopupFicha | null>(abrirInicial ?? null);
+  const [popupDesdeUrl, setPopupDesdeUrl] = useState(Boolean(abrirInicial));
+
+  // Lista aparte y silenciosa, solo para el punto ámbar de "Tarifas": el
+  // detalle real vive dentro del propio pop-up de tarifario.
+  const [tarifarios, setTarifarios] = useState<TarifarioRow[]>([]);
+  const [tarifariosReloadKey, setTarifariosReloadKey] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -667,7 +689,32 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
     return () => controller.abort();
   }, [clienteId, reloadKey]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchTarifarios(clienteId, controller.signal)
+      .then(setTarifarios)
+      .catch(() => {
+        // El punto ámbar es solo una pista visual: si falla, no se muestra.
+      });
+    return () => controller.abort();
+  }, [clienteId, tarifariosReloadKey]);
+
   const recargar = () => setReloadKey((k) => k + 1);
+
+  function abrirPopup(clave: PopupFicha) {
+    setPopup(clave);
+    setPopupDesdeUrl(false);
+  }
+
+  function cerrarPopup() {
+    // Se acaba de cerrar Tarifas: puede haber una versión nueva vigente.
+    if (popup === "tarifas") setTarifariosReloadKey((k) => k + 1);
+    setPopup(null);
+    if (popupDesdeUrl) {
+      setPopupDesdeUrl(false);
+      router.replace(`/clientes/${clienteId}`, { scroll: false });
+    }
+  }
 
   if (loadState === "loading" && !cliente) {
     return <FichaSkeleton />;
@@ -684,11 +731,17 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
     );
   }
 
+  const contactoVacio = !cliente.contactoNombre && !cliente.contactoEmail && !cliente.contactoTel;
+  const sinTarifaVigente = !tieneTarifarioVigenteHoy(tarifarios);
+
   return (
     <section className="space-y-4">
       <ClienteCabecera
         cliente={cliente}
         puedeEditar={puedeEditar}
+        contactoVacio={contactoVacio}
+        sinTarifaVigente={sinTarifaVigente}
+        onAbrirPopup={abrirPopup}
         onEdit={() => setEditModalOpen(true)}
       />
 
@@ -706,15 +759,9 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
         </button>
       </div>
 
-      {puedeEditar ? <ContactoEditor cliente={cliente} onSaved={setCliente} /> : null}
-      <details className="rounded-xl border border-slate-200 bg-white p-4">
-        <summary className="min-h-11 cursor-pointer text-sm font-semibold text-slate-800">Funciones y configuración de la empresa</summary>
-        <div className="mt-3"><SeccionCapacidades clienteId={cliente.id} /></div>
-      </details>
+      <SeccionCarteraEmpresa clienteId={cliente.id} nombreEmpresa={cliente.nombre} />
 
       <SeccionCuentaCorriente clienteId={cliente.id} />
-
-      <SeccionTarifario clienteId={cliente.id} />
 
       {cliente.esProveedor ? <SeccionPagosProveedor empresaId={cliente.id} nombreEmpresa={cliente.nombre} /> : null}
 
@@ -722,7 +769,27 @@ export function ClienteDetallePage({ clienteId }: { clienteId: string }) {
 
       <SeccionAnticipos anticipos={cliente.anticipos} />
 
-      <SeccionFacturas facturas={cliente.facturas} />
+      {popup === "funciones" ? (
+        <ModalShell
+          open
+          onClose={cerrarPopup}
+          title="Funciones y configuración"
+          description="Se activan o desactivan por empresa. Solo el administrador puede cambiarlas."
+          size="xl"
+        >
+          <SeccionCapacidades clienteId={cliente.id} />
+        </ModalShell>
+      ) : null}
+
+      {popup === "contacto" ? (
+        <ContactoEditor cliente={cliente} onClose={cerrarPopup} onSaved={setCliente} />
+      ) : null}
+
+      {popup === "tarifas" ? (
+        <ModalShell open onClose={cerrarPopup} title={`Tarifario de ${cliente.nombre}`} size="full">
+          <SeccionTarifario clienteId={cliente.id} />
+        </ModalShell>
+      ) : null}
 
       {editModalOpen && puedeEditar ? (
         <EditClienteModal
