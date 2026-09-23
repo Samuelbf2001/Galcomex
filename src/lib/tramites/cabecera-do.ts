@@ -32,3 +32,33 @@ export function visibilidadCabeceraDo(tipoTramite: TipoTramiteCabecera): Visibil
     muestraEta: tipoTramite?.requiereEta ?? true,
   };
 }
+
+/**
+ * Qué "Fechas clave" del DO se muestran, según el tipo de trámite (revisión
+ * de Ernesto 22-sep-2026, tanda 2). Función PURA. CLASIFICACION solo usa
+ * "Documentos OK" y "Enviado a facturar" — las demás (aceptación de
+ * declaración, levante, salida de carga) son de un trámite de importación
+ * real. Sin tipo cargado, o con `fechasClave` ausente/vacío (respuestas
+ * viejas del API antes de esta revisión), se muestran las cinco como
+ * fallback seguro: nunca se oculta una fecha por un dato faltante.
+ */
+
+export const FECHAS_CLAVE_DO = [
+  "fechaAceptacionDeclaracion",
+  "fechaLevante",
+  "fechaEnviadoAFacturar",
+  "fechaDocumentosOk",
+  "fechaSalidaCarga",
+] as const;
+
+export type FechaClaveDo = (typeof FECHAS_CLAVE_DO)[number];
+
+export type TipoTramiteFechasClave = {
+  fechasClave: string[];
+} | null | undefined;
+
+export function fechasClaveVisibles(tipoTramite: TipoTramiteFechasClave): FechaClaveDo[] {
+  const config = tipoTramite?.fechasClave;
+  if (!config || config.length === 0) return [...FECHAS_CLAVE_DO];
+  return FECHAS_CLAVE_DO.filter((fecha) => config.includes(fecha));
+}

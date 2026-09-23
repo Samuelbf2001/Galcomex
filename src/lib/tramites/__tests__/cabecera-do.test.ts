@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { visibilidadCabeceraDo } from "../cabecera-do";
+import { fechasClaveVisibles, visibilidadCabeceraDo } from "../cabecera-do";
 
 describe("visibilidadCabeceraDo", () => {
   it("sin tipo de trámite (respuesta vieja) conserva el comportamiento histórico", () => {
@@ -56,5 +56,50 @@ describe("visibilidadCabeceraDo", () => {
       muestraCamposDo: true,
       muestraEta: false,
     });
+  });
+});
+
+describe("fechasClaveVisibles", () => {
+  it("CLASIFICACION: solo Documentos OK y Enviado a facturar", () => {
+    const visibles = fechasClaveVisibles({
+      fechasClave: ["fechaDocumentosOk", "fechaEnviadoAFacturar"],
+    });
+    expect(visibles).toHaveLength(2);
+    expect(visibles).toEqual(["fechaEnviadoAFacturar", "fechaDocumentosOk"]);
+  });
+
+  it("IMPORTACION: las cinco fechas", () => {
+    const visibles = fechasClaveVisibles({
+      fechasClave: [
+        "fechaAceptacionDeclaracion",
+        "fechaLevante",
+        "fechaEnviadoAFacturar",
+        "fechaDocumentosOk",
+        "fechaSalidaCarga",
+      ],
+    });
+    expect(visibles).toHaveLength(5);
+  });
+
+  it("OTRO: las cinco fechas", () => {
+    const visibles = fechasClaveVisibles({
+      fechasClave: [
+        "fechaAceptacionDeclaracion",
+        "fechaLevante",
+        "fechaEnviadoAFacturar",
+        "fechaDocumentosOk",
+        "fechaSalidaCarga",
+      ],
+    });
+    expect(visibles).toHaveLength(5);
+  });
+
+  it("sin tipo de trámite (respuesta vieja): las cinco fechas como fallback seguro", () => {
+    expect(fechasClaveVisibles(null)).toHaveLength(5);
+    expect(fechasClaveVisibles(undefined)).toHaveLength(5);
+  });
+
+  it("config vacía: las cinco fechas como fallback seguro", () => {
+    expect(fechasClaveVisibles({ fechasClave: [] })).toHaveLength(5);
   });
 });

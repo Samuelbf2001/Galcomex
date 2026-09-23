@@ -147,6 +147,13 @@ async function main() {
         "numItems",
       ],
       usaEventos: true,
+      fechasClave: [
+        "fechaAceptacionDeclaracion",
+        "fechaLevante",
+        "fechaEnviadoAFacturar",
+        "fechaDocumentosOk",
+        "fechaSalidaCarga",
+      ],
       orden: 10,
     },
     {
@@ -170,6 +177,9 @@ async function main() {
       // y no usa la lista de eventos.
       camposBaseCalculo: ["numItems"],
       usaEventos: false,
+      // Sin declaración, levante ni salida de carga: esas fechas son de un
+      // trámite de importación real, no de clasificación arancelaria.
+      fechasClave: ["fechaDocumentosOk", "fechaEnviadoAFacturar"],
       orden: 20,
     },
     {
@@ -199,6 +209,13 @@ async function main() {
         "numItems",
       ],
       usaEventos: true,
+      fechasClave: [
+        "fechaAceptacionDeclaracion",
+        "fechaLevante",
+        "fechaEnviadoAFacturar",
+        "fechaDocumentosOk",
+        "fechaSalidaCarga",
+      ],
       orden: 30,
     },
   ];

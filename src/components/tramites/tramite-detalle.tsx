@@ -25,7 +25,7 @@ import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import type { Rol } from "@/lib/auth/auth";
 import { useRol } from "@/lib/auth/rol-context";
-import { visibilidadCabeceraDo } from "@/lib/tramites/cabecera-do";
+import { fechasClaveVisibles, visibilidadCabeceraDo } from "@/lib/tramites/cabecera-do";
 
 import {
   RegistrarAnticipoTramiteModal,
@@ -155,6 +155,8 @@ type TramiteDetalleData = {
     camposBaseCalculo: string[];
     /** Muestra la lista de eventos en "Base de cálculo y eventos". */
     usaEventos: boolean;
+    /** Fechas clave del DO que aplica este tipo. CLASIFICACION solo lleva 2. */
+    fechasClave: string[];
   } | null;
   checklistItems: ChecklistItem[];
   estadoLogs?: EstadoLogEntry[];
@@ -682,6 +684,7 @@ function TabResumen({
   const { etiquetaReferenciaExterna, muestraCamposDo, muestraEta } = visibilidadCabeceraDo(
     tramite.tipoTramite,
   );
+  const fechasVisibles = fechasClaveVisibles(tramite.tipoTramite);
 
   return (
     <div className="space-y-6">
@@ -796,46 +799,56 @@ function TabResumen({
           ) : null}
         </div>
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          <InlineDateField
-            label="Documentos OK"
-            fieldKey="fechaDocumentosOk"
-            value={tramite.fechaDocumentosOk}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
-          <InlineDateField
-            label="Aceptación declaración"
-            fieldKey="fechaAceptacionDeclaracion"
-            value={tramite.fechaAceptacionDeclaracion}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
-          <InlineDateField
-            label="Levante"
-            fieldKey="fechaLevante"
-            value={tramite.fechaLevante}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
-          <InlineDateField
-            label="Salida de carga"
-            fieldKey="fechaSalidaCarga"
-            value={tramite.fechaSalidaCarga}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
-          <InlineDateField
-            label="Enviado a facturar"
-            fieldKey="fechaEnviadoAFacturar"
-            value={tramite.fechaEnviadoAFacturar}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
+          {fechasVisibles.includes("fechaDocumentosOk") ? (
+            <InlineDateField
+              label="Documentos OK"
+              fieldKey="fechaDocumentosOk"
+              value={tramite.fechaDocumentosOk}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
+          {fechasVisibles.includes("fechaAceptacionDeclaracion") ? (
+            <InlineDateField
+              label="Aceptación declaración"
+              fieldKey="fechaAceptacionDeclaracion"
+              value={tramite.fechaAceptacionDeclaracion}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
+          {fechasVisibles.includes("fechaLevante") ? (
+            <InlineDateField
+              label="Levante"
+              fieldKey="fechaLevante"
+              value={tramite.fechaLevante}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
+          {fechasVisibles.includes("fechaSalidaCarga") ? (
+            <InlineDateField
+              label="Salida de carga"
+              fieldKey="fechaSalidaCarga"
+              value={tramite.fechaSalidaCarga}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
+          {fechasVisibles.includes("fechaEnviadoAFacturar") ? (
+            <InlineDateField
+              label="Enviado a facturar"
+              fieldKey="fechaEnviadoAFacturar"
+              value={tramite.fechaEnviadoAFacturar}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
         </div>
       </div>
 

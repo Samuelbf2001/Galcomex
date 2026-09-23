@@ -712,6 +712,7 @@ export const tramiteDetalleInclude = {
       usaCamposDo: true,
       camposBaseCalculo: true,
       usaEventos: true,
+      fechasClave: true,
     },
   },
   creadoPor: {

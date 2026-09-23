@@ -370,6 +370,14 @@ model TipoTramite {
   /// false en CLASIFICACION: la tarifa de clasificación no depende de eventos.
   usaEventos        Boolean  @default(true)
 
+  /// Fechas clave del DO que aplican a este tipo (revisión de Ernesto
+  /// 22-sep-2026, tanda 2). Subconjunto de fechaAceptacionDeclaracion,
+  /// fechaLevante, fechaEnviadoAFacturar, fechaDocumentosOk, fechaSalidaCarga.
+  /// El bloque "Fechas clave" del DO solo muestra estas. CLASIFICACION solo
+  /// usa fechaDocumentosOk y fechaEnviadoAFacturar (sin declaración, levante
+  /// ni salida de carga); IMPORTACION y OTRO usan las cinco, igual que siempre.
+  fechasClave String[] @default(["fechaAceptacionDeclaracion", "fechaLevante", "fechaEnviadoAFacturar", "fechaDocumentosOk", "fechaSalidaCarga"])
+
   orden     Int      @default(0)
   activo    Boolean  @default(true)
   createdAt DateTime @default(now())
