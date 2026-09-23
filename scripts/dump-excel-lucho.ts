@@ -3,7 +3,12 @@
  * para diseñar el modelo FacturaProveedor / SolicitudFacturacion.
  * Uso: npx tsx scripts/dump-excel-lucho.ts <ruta.xls>
  */
+import * as fs from "node:fs";
 import * as XLSX from "xlsx";
+
+// El build ESM de xlsx no detecta `fs` automáticamente; sin esto
+// `XLSX.readFile` falla con "Cannot access file" aunque el archivo exista.
+XLSX.set_fs(fs);
 
 const file = process.argv[2];
 if (!file) {

@@ -12,7 +12,14 @@
  *   const parseado = parseBorradorLucho("ruta/al/archivo.xls");
  */
 
+import * as fs from "node:fs";
 import * as XLSX from "xlsx";
+
+// El build ESM de xlsx (usado por `import * as XLSX from "xlsx"`) no detecta
+// `fs` automáticamente como sí lo hacía el build CJS de la versión anterior:
+// sin esto, `XLSX.readFile` falla con "Cannot access file" aunque el archivo
+// exista (visto al subir xlsx a 0.20.3, sept-2026).
+XLSX.set_fs(fs);
 
 // ─── Tipos exportados ─────────────────────────────────────────────────────────
 
