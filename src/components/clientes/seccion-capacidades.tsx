@@ -5,9 +5,11 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   fetchCapacidades,
+  fetchTiposTramiteCatalogo,
   guardarCapacidades,
   type CapacidadRow,
   type ConfigCapacidad,
+  type TipoTramiteCatalogo,
 } from "@/components/clientes/capacidades-api";
 import { ModuleState } from "@/components/layout/module-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,12 +24,105 @@ const ETIQUETA_GRUPO: Record<string, string> = {
   Documentos: "Documentos",
 };
 
+/** Nombre corto para las casillas; un tipo nuevo usa el nombre que trae el API. */
+const ETIQUETA_TIPO_TRAMITE: Record<string, string> = {
+  IMPORTACION: "Importación",
+  CLASIFICACION: "Clasificación arancelaria",
+  OTRO: "Otros (Plan Vallejo, sellos…)",
+};
+
+/** Si el API de tipos falla, al menos se ven los tres de siempre. */
+const TIPOS_TRAMITE_RESPALDO: TipoTramiteCatalogo[] = [
+  { codigo: "IMPORTACION", nombre: "Trámite de importación" },
+  { codigo: "CLASIFICACION", nombre: "Clasificación arancelaria" },
+  { codigo: "OTRO", nombre: "Otros servicios" },
+];
+
 /** Solo se editan configs planas de texto; el resto se muestra como JSON. */
 function entradasEditables(config: ConfigCapacidad): [string, string][] {
   if (!config) return [];
 
   return Object.entries(config).filter(
     (entrada): entrada is [string, string] => typeof entrada[1] === "string",
+  );
+}
+
+/** `config.tiposTramite` si es una lista de códigos; `null` si la función no la usa. */
+function tiposTramiteDeConfig(config: ConfigCapacidad): string[] | null {
+  const valor = config?.tiposTramite;
+  if (!Array.isArray(valor) || !valor.every((v): v is string => typeof v === "string")) {
+    return null;
+  }
+  return valor;
+}
+
+/**
+ * Una casilla por tipo de trámite para las funciones que se aplican por tipo
+ * (DO solo con tarifa vigente, BL y factura comercial obligatorios).
+ */
+function CasillasTiposTramite({
+  capacidad,
+  marcados,
+  tipos,
+  deshabilitado,
+  onCambiar,
+}: {
+  capacidad: CapacidadRow;
+  marcados: string[];
+  tipos: TipoTramiteCatalogo[];
+  deshabilitado: boolean;
+  onCambiar: (tiposTramite: string[]) => void;
+}) {
+  // Un código guardado que ya no está en el catálogo (tipo inactivo) se sigue
+  // mostrando para poder desmarcarlo.
+  const opciones = [
+    ...tipos,
+    ...marcados
+      .filter((codigo) => !tipos.some((tipo) => tipo.codigo === codigo))
+      .map((codigo) => ({ codigo, nombre: codigo })),
+  ];
+
+  function alternar(codigo: string) {
+    const siguiente = marcados.includes(codigo)
+      ? marcados.filter((c) => c !== codigo)
+      : [...marcados, codigo];
+    // Mismo orden que el catálogo, para que la config no cambie por el orden de los clics.
+    onCambiar(
+      opciones.map((opcion) => opcion.codigo).filter((c) => siguiente.includes(c)),
+    );
+  }
+
+  return (
+    <fieldset className="mt-3 border border-slate-200 bg-slate-50 px-3 py-2">
+      <legend className="px-1 text-xs font-semibold text-slate-700">
+        Se aplica a estos tipos de trámite
+      </legend>
+      <div className="flex flex-wrap gap-x-5 gap-y-2">
+        {opciones.map((opcion) => (
+          <label
+            key={opcion.codigo}
+            className="flex min-h-9 cursor-pointer items-center gap-2 text-sm text-slate-800 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60"
+          >
+            <input
+              type="checkbox"
+              checked={marcados.includes(opcion.codigo)}
+              disabled={deshabilitado}
+              onChange={() => alternar(opcion.codigo)}
+              aria-label={`${capacidad.nombre}: ${ETIQUETA_TIPO_TRAMITE[opcion.codigo] ?? opcion.nombre}`}
+              className="h-5 w-5 accent-emerald-600"
+            />
+            {ETIQUETA_TIPO_TRAMITE[opcion.codigo] ?? opcion.nombre}
+          </label>
+        ))}
+      </div>
+      <p
+        className={`mt-2 text-xs ${marcados.length === 0 ? "font-medium text-amber-700" : "text-slate-500"}`}
+      >
+        {marcados.length === 0
+          ? "No marcaste ningún tipo: la función queda encendida pero no exige nada."
+          : "Solo los trámites de los tipos marcados tienen que cumplir esta regla."}
+      </p>
+    </fieldset>
   );
 }
 
@@ -67,6 +162,7 @@ function FilaCapacidad({
   capacidad,
   editable,
   guardando,
+  tiposTramite,
   onToggle,
   onHeredar,
   onConfig,
@@ -74,11 +170,13 @@ function FilaCapacidad({
   capacidad: CapacidadRow;
   editable: boolean;
   guardando: boolean;
+  tiposTramite: TipoTramiteCatalogo[];
   onToggle: (capacidad: CapacidadRow) => void;
   onHeredar: (capacidad: CapacidadRow) => void;
-  onConfig: (capacidad: CapacidadRow, clave: string, valor: string) => void;
+  onConfig: (capacidad: CapacidadRow, clave: string, valor: unknown) => void;
 }) {
   const editables = entradasEditables(capacidad.config);
+  const tiposMarcados = tiposTramiteDeConfig(capacidad.config);
 
   return (
     <div className="flex items-start gap-4 border-b border-slate-100 px-4 py-3 last:border-b-0">
@@ -136,6 +234,16 @@ function FilaCapacidad({
               </label>
             ))}
           </div>
+        ) : null}
+
+        {capacidad.habilitado && tiposMarcados !== null ? (
+          <CasillasTiposTramite
+            capacidad={capacidad}
+            marcados={tiposMarcados}
+            tipos={tiposTramite}
+            deshabilitado={!editable || guardando}
+            onCambiar={(tipos) => onConfig(capacidad, "tiposTramite", tipos)}
+          />
         ) : null}
       </div>
 
@@ -197,6 +305,23 @@ export function SeccionCapacidades({ clienteId }: { clienteId: string }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [errorGuardado, setErrorGuardado] = useState<string | null>(null);
   const [guardando, setGuardando] = useState<string | null>(null);
+  const [tiposTramite, setTiposTramite] = useState<TipoTramiteCatalogo[]>(TIPOS_TRAMITE_RESPALDO);
+
+  // Tipos de trámite para las funciones que se configuran por tipo. Si el API
+  // falla, quedan los tres de siempre: no vale la pena bloquear la pestaña.
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetchTiposTramiteCatalogo(controller.signal)
+      .then((tipos) => {
+        if (tipos.length > 0) setTiposTramite(tipos);
+      })
+      .catch(() => {
+        /* se queda el respaldo */
+      });
+
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -235,10 +360,14 @@ export function SeccionCapacidades({ clienteId }: { clienteId: string }) {
         ]);
         setCapacidades(filas);
         const nueva = filas.find((f) => f.codigo === capacidad.codigo);
+        const soloConfig =
+          cambio.config !== undefined && cambio.habilitado === capacidad.habilitado;
         toast({
           title: cambio.heredar
             ? `${capacidad.nombre}: vuelve a heredar`
-            : `${capacidad.nombre}: ${nueva?.habilitado ? "activada" : "desactivada"}`,
+            : soloConfig
+              ? `${capacidad.nombre}: ajuste guardado`
+              : `${capacidad.nombre}: ${nueva?.habilitado ? "activada" : "desactivada"}`,
           variant: "success",
         });
       } catch (caught: unknown) {
@@ -309,6 +438,7 @@ export function SeccionCapacidades({ clienteId }: { clienteId: string }) {
                   capacidad={capacidad}
                   editable={editable}
                   guardando={guardando === capacidad.codigo}
+                  tiposTramite={tiposTramite}
                   onToggle={(fila) => void aplicar(fila, { habilitado: !fila.habilitado })}
                   onHeredar={(fila) => void aplicar(fila, { heredar: true })}
                   onConfig={(fila, clave, valor) =>

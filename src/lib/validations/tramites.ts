@@ -78,6 +78,26 @@ export const estadoTransitionSchema = z.object({
   estado: z.nativeEnum(EstadoTramite),
 });
 
+/**
+ * `GET /api/tramites/requisitos`: qué le exige el sistema a un DO de esta
+ * empresa y tipo (tarifa vigente, BL y factura comercial) antes de crearlo.
+ */
+export const requisitosQuerySchema = z.object({
+  clienteId: z
+    .string({ error: "Indica la empresa del DO." })
+    .trim()
+    .min(1, "Indica la empresa del DO."),
+  /** Código de `TipoTramite`. Ausente = IMPORTACION, igual que al crear. */
+  tipoTramiteCodigo: z
+    .string({ error: "El tipo de trámite debe ser un texto." })
+    .trim()
+    .min(1, "El tipo de trámite no puede ir vacío.")
+    .max(40, "El tipo de trámite es demasiado largo.")
+    .optional(),
+});
+
+export type RequisitosQuery = z.infer<typeof requisitosQuerySchema>;
+
 export const checklistUpdateSchema = z.object({
   recibido: z.boolean(),
 });

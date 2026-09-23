@@ -105,7 +105,7 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 - Dos cálculos de 4x1000: el **interno** (base = anticipo, para cruce LM) sigue en `motor-factura.ts`; el **de factura** (base = Σ líneas TERCEROS, round-half-up `(base×4+500)/1000`) materializa la línea `IMPUESTO_4X1000` que se envía a Siigo.
 - Tercero del 4x1000 SIEMPRE Banco de Occidente (NIT `890300279`) — `resolverNit4x1000` lo retorna de forma incondicional.
 - Observación de cabecera "NO PRACTICAR RETEFUENTE NI RETEICA" se siembra automáticamente en `comentariosCabecera` al generar borrador SOCIO_LM (sale en col AE del export Excel y en `observations` del envío Siigo).
-- BL/Guía + Factura Comercial son obligatorios al crear el DO para clientes SOCIO_LM.
+- BL/Guía + Factura Comercial ya NO es una diferencia de SOCIO_LM: desde el 22-sep-2026 es la capacidad `docs_bl_factura_obligatorios`, encendida para todas las empresas (ver "Transiciones de estado del DO").
 - Detalle implementado en `src/lib/borradores/lineas-fijas.ts`, `src/lib/calculations/total-lineas.ts` y `src/lib/siigo/envio-factura-service.ts`.
 
 ### Formato de factura CONCEPTOS_IVA (Galcomex propio) — función `factura_conceptos_iva`
@@ -227,6 +227,9 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
 `SOLICITUD → APERTURA → EN_TRAMITE → EN_PUERTO → DESPACHADO → ENVIADO_A_FACTURAR → FACTURADO → PAGADO → CERRADO`
 
 - **APERTURA → EN_TRAMITE:** bloqueado si hay `ChecklistItem` requerido sin marcar
+- **Tarifa vigente (`do_exige_tarifa_vigente`, encendida por defecto; la migración `20260923092000` la apaga en las empresas SOCIO_LM):** sin tarifario VIGENTE hoy de la línea de servicio del tipo (config `tiposTramite`) no se crea el DO (`TarifaVigenteRequeridaError`, 422, `codigo` + `detalles`). La solicitud pública (`POST /api/solicitudes`, `origen: "SOLICITUD_PUBLICA"`) sí entra, pero SOLICITUD → APERTURA exige la tarifa. Sin excepción de ADMIN: se apaga la función en la ficha.
+- **BL + factura comercial (`docs_bl_factura_obligatorios`, encendida por defecto, config `tiposTramite`: solo `IMPORTACION`):** pasar de SOLICITUD/APERTURA a EN_TRAMITE o más allá exige documentos `BL` y `FACTURA_COMERCIAL` no eliminados (422 `DOCUMENTOS_OBLIGATORIOS_FALTANTES`). El formulario los pide al crear (se suben justo después del POST). La excepción del ADMIN (`bypassChecklist`) deja pasar con `advertencias` y un `AuditLog` `OMITIR_REQUISITOS` (checklist y documentos pendientes).
+- Lógica pura de ambas reglas en `src/lib/tramites/requisitos.ts`; la UI las consulta antes de crear con `GET /api/tramites/requisitos?clienteId=&tipoTramiteCodigo=` (`fetchRequisitosDo` en `tramites-api.ts`).
 - Toda transición queda en `EstadoLog` con usuario y timestamp
 
 ## Storage (bodega S3: MinIO local / Cloudflare R2)

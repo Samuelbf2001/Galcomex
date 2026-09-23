@@ -52,6 +52,7 @@ import {
 import { InlineTramiteField } from "@/components/tramites/inline-tramite-field";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import { SeccionEventosTramite } from "@/components/tramites/seccion-eventos-tramite";
+import { cambiarEstadoTramite, mensajeAdvertenciasEstado } from "@/components/tramites/tramites-api";
 import {
   type FacturaProveedorRow,
   solicitarFacturacion,
@@ -230,6 +231,7 @@ function accionLabel(accion: string): string {
     CREATE: "Trámite creado",
     UPDATE: "Datos actualizados",
     UPDATE_ESTADO: "Cambio de estado",
+    OMITIR_REQUISITOS: "Avanzó con requisitos pendientes (excepción de ADMIN)",
     APPROVE: "Borrador aprobado",
     FACTURAR: "Factura generada",
   };
@@ -303,35 +305,6 @@ async function patchFechasClave(
   return payload.tramite as TramiteDetalleData;
 }
 
-async function patchEstado(
-  tramiteId: string,
-  estado: string,
-): Promise<TramiteDetalleData> {
-  const res = await fetch(`/api/tramites/${tramiteId}/estado`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ estado }),
-  });
-
-  let faltantes: string[] | undefined;
-  if (!res.ok) {
-    let msg = `Error ${res.status}`;
-    try {
-      const payload: unknown = await res.json();
-      if (isRecord(payload)) {
-        if (typeof payload.error === "string") msg = payload.error;
-        if (Array.isArray(payload.faltantes)) faltantes = payload.faltantes as string[];
-      }
-    } catch { /* ignore */ }
-    throw Object.assign(new Error(msg), { faltantes });
-  }
-
-  const payload: unknown = await res.json();
-  if (!isRecord(payload) || !isRecord(payload.tramite)) {
-    throw new Error("Respuesta inesperada al cambiar estado.");
-  }
-  return payload.tramite as TramiteDetalleData;
-}
 
 // ─── Sub-componentes ──────────────────────────────────────────────────────────
 
@@ -406,12 +379,21 @@ function CambioEstadoButton({
     setError(null);
     setFaltantes([]);
     try {
-      const updated = await patchEstado(tramite.id, selected);
+      const { tramite: updated, advertencias } = await cambiarEstadoTramite<TramiteDetalleData>(
+        tramite.id,
+        selected,
+      );
       toast({
         title: "Estado actualizado",
         description: `${tramite.consecutivo} → ${selected.replace(/_/g, " ")}`,
         variant: "success",
       });
+      // F6: el ADMIN pudo haber saltado requisitos (checklist, BL, factura
+      // comercial) con su excepción — se avisa aparte para que no pase inadvertido.
+      const advertencia = mensajeAdvertenciasEstado(advertencias);
+      if (advertencia) {
+        toast({ ...advertencia, variant: "warning" });
+      }
       setSelected("");
       onChanged(updated);
     } catch (caught) {

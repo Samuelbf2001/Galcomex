@@ -157,9 +157,15 @@ describe("catálogo", () => {
     const mapa = resolverCapacidades(CAPACIDADES);
 
     expect(mapa.size).toBe(CAPACIDADES.length);
-    // Único encendido por defecto hoy: los anticipos (equivale al viejo
-    // Cliente.manejaAnticipo, que venía con default true).
-    expect(capacidadesActivas(mapa)).toEqual(["anticipos_cliente"]);
+    // Encendidas por defecto: los anticipos (equivale al viejo
+    // Cliente.manejaAnticipo, que venía con default true) y los dos requisitos
+    // del DO que Ernesto pidió para todas las empresas (22-sep-2026): tarifa
+    // vigente (D1) y BL + factura comercial (D2).
+    expect(capacidadesActivas(mapa)).toEqual([
+      "anticipos_cliente",
+      "do_exige_tarifa_vigente",
+      "docs_bl_factura_obligatorios",
+    ]);
   });
 
   it("esCodigoCapacidad discrimina códigos del catálogo", () => {

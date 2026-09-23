@@ -122,3 +122,45 @@ export async function guardarCapacidades(
 
   return parseLista(await response.json());
 }
+
+/** Tipo de trámite para las casillas de config `tiposTramite`. */
+export type TipoTramiteCatalogo = {
+  codigo: string;
+  nombre: string;
+};
+
+/**
+ * Todos los tipos de trámite activos (`GET /api/tipos-tramite`, sin empresa):
+ * las funciones con config `tiposTramite` muestran una casilla por tipo, y un
+ * tipo nuevo aparece solo, sin tocar la pantalla.
+ */
+export async function fetchTiposTramiteCatalogo(
+  signal?: AbortSignal,
+): Promise<TipoTramiteCatalogo[]> {
+  const response = await fetch("/api/tipos-tramite", {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new CapacidadesApiError(
+      await mensajeDeError(response, "No fue posible cargar los tipos de trámite."),
+      response.status,
+    );
+  }
+
+  const payload: unknown = await response.json();
+
+  if (!isRecord(payload) || !Array.isArray(payload.tipos)) {
+    return [];
+  }
+
+  return payload.tipos
+    .filter(isRecord)
+    .filter((tipo): tipo is Record<string, unknown> & { codigo: string } => typeof tipo.codigo === "string")
+    .map((tipo) => ({
+      codigo: tipo.codigo,
+      nombre: typeof tipo.nombre === "string" ? tipo.nombre : tipo.codigo,
+    }));
+}

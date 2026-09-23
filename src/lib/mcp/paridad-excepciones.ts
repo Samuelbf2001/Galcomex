@@ -83,4 +83,16 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/borradores/[param]/devolver",
     "Devolución del revisor: falta tool borrador_devolver",
   ),
+
+  // Revisión de Ernesto (2026-09-22). Las tools van en galcomex-mcp/server.mjs.
+  pendiente(
+    "GET",
+    "/api/tramites/requisitos",
+    "Requisitos para abrir un DO (tarifa vigente, BL y factura): falta tool tramite_requisitos",
+  ),
+  pendiente(
+    "GET",
+    "/api/tarifarios",
+    "Lista liviana de tarifarios de todas las empresas para «Arrancar desde»: falta tool tarifarios_listar_todos",
+  ),
 ];

@@ -59,6 +59,21 @@ export const CAPACIDADES = [
     orden: 20,
   },
   {
+    // Decisión D1 de Ernesto (22-sep-2026): encendida por defecto para que toda
+    // empresa nueva de Galcomex quede cubierta; la migración 20260923092000 la
+    // apaga en las empresas del socio (se facturan por comisión, sin tarifa).
+    // Consumidor: guards de `lib/tramites/service.ts` + `lib/tramites/requisitos.ts`.
+    codigo: "do_exige_tarifa_vigente",
+    nombre: "DO solo con tarifa vigente",
+    descripcion:
+      "No deja crear un DO si la empresa no tiene una tarifa vigente para esa línea de servicio. Las solicitudes que llegan de afuera sí entran, pero no se pueden abrir hasta que la tarifa esté publicada.",
+    grupo: "Comercial",
+    ambito: "EMPRESA",
+    porDefecto: true,
+    configPorDefecto: { tiposTramite: ["IMPORTACION", "CLASIFICACION", "OTRO"] },
+    orden: 25,
+  },
+  {
     codigo: "base_cif",
     nombre: "CIF como base de cálculo",
     descripcion:
@@ -191,14 +206,17 @@ export const CAPACIDADES = [
     orden: 65,
   },
   {
+    // Decisión D2 de Ernesto (22-sep-2026): encendida por defecto para todas
+    // las empresas; cada una puede apagarla o cambiar a qué tipos aplica.
+    // Consumidor: `transitionTramite` (APERTURA → EN_TRAMITE) + formulario de DO.
     codigo: "docs_bl_factura_obligatorios",
     nombre: "BL y factura comercial obligatorios",
     descripcion:
-      "Sin BL/Guía y factura comercial adjuntos no se puede crear el trámite.",
+      "Al crear el DO se piden el BL (o guía) y la factura comercial, y el DO no pasa de Apertura a En trámite si no están adjuntos. Aplica solo a los tipos de trámite marcados.",
     grupo: "Documentos",
     ambito: "EMPRESA",
-    porDefecto: false,
-    configPorDefecto: null,
+    porDefecto: true,
+    configPorDefecto: { tiposTramite: ["IMPORTACION"] },
     orden: 120,
   },
 ] as const satisfies readonly DefinicionCapacidad[];

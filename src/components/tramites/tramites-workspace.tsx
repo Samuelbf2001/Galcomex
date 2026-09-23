@@ -1,9 +1,9 @@
 "use client";
 
 import {
+  AlertTriangle,
   Building2,
   CheckCircle2,
-  ChevronDown,
   FileText,
   Kanban,
   LayoutList,
@@ -16,27 +16,35 @@ import {
   Upload,
   Users,
 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
 import { KanbanTramites } from "@/components/tramites/kanban-tramites";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { Paginacion } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
-import { usePermiso } from "@/lib/auth/rol-context";
+import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
 
 import {
+  CODIGO_TARIFA_VIGENTE_REQUERIDA,
   createTramite,
+  ETIQUETA_DOCUMENTO_OBLIGATORIO,
   fetchClienteOptions,
+  fetchRequisitosDo,
   fetchTiposTramiteEmpresa,
   type ReglaAgenciaEmpresa,
   fetchTramitesPage,
   TRAMITES_PAGE_SIZE,
+  TramitesApiError,
   type ClienteOption,
   type CreateTramiteInput,
+  type DocumentoObligatorioCodigo,
   type FacturadoFilter,
+  type RequisitosDo,
   type TipoTramiteOption,
   type TramiteFilters,
   type TramiteRow,
@@ -114,27 +122,31 @@ function statusClassName(status: string) {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
-/**
- * Lista paginada de trámites. La primera página pide `take=100` (el API
- * recortaba a 50 en silencio); "Cargar más" acumula `skip` mientras
- * `rows.length < total`.
- */
 type ResultadoTramites = {
-  /** Clave de filtros+recarga a la que pertenece este resultado. */
+  /** Clave de filtros+página+recarga a la que pertenece este resultado. */
   key: string;
   rows: TramiteRow[];
   total: number;
   error: string | null;
 };
 
-function useTramites(filters: TramiteFilters) {
-  // El estado de carga se DERIVA: si el último resultado no corresponde a la
-  // clave actual (filtros + reloadKey), estamos cargando. Así el efecto no
-  // llama a setState de forma síncrona (react-hooks/set-state-in-effect).
+/**
+ * Trae UNA página de trámites (`take`/`skip`) para una combinación de
+ * filtros. El estado de carga se DERIVA: si el último resultado no
+ * corresponde a la clave actual (filtros + página + tamaño + recarga),
+ * estamos cargando. Así el efecto no llama a setState de forma síncrona
+ * (react-hooks/set-state-in-effect).
+ *
+ * `activo=false` no dispara la petición — la vista kanban la usa para no
+ * traer su propia página mientras no es la vista visible.
+ */
+function useTramitesResultado(
+  filters: TramiteFilters,
+  page: { take: number; skip: number },
+  activo: boolean,
+  reloadSignal: number,
+) {
   const [resultado, setResultado] = useState<ResultadoTramites | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
-  const { toast } = useToast();
 
   const key = JSON.stringify([
     filters.q ?? "",
@@ -143,15 +155,27 @@ function useTramites(filters: TramiteFilters) {
     filters.clienteId ?? "",
     filters.tipoCliente ?? "",
     filters.facturado ?? "",
-    reloadKey,
+    page.take,
+    page.skip,
+    reloadSignal,
   ]);
 
+  // Una recarga explícita (botón "Reintentar" o justo después de crear un DO)
+  // descarta las filas previas para que se vea el skeleton, no una
+  // actualización silenciosa. Reset en async para evitar el warning de
+  // react-hooks/set-state-in-effect (mismo idioma que seccion-documentos.tsx).
   useEffect(() => {
+    Promise.resolve().then(() => setResultado(null));
+  }, [reloadSignal]);
+
+  useEffect(() => {
+    if (!activo) return;
+
     const controller = new AbortController();
 
-    fetchTramitesPage(controller.signal, filters, { take: TRAMITES_PAGE_SIZE, skip: 0 })
-      .then((page) => {
-        setResultado({ key, rows: page.rows, total: page.total, error: null });
+    fetchTramitesPage(controller.signal, filters, page)
+      .then((result) => {
+        setResultado({ key, rows: result.rows, total: result.total, error: null });
       })
       .catch((caught: unknown) => {
         if (caught instanceof DOMException && caught.name === "AbortError") {
@@ -167,64 +191,21 @@ function useTramites(filters: TramiteFilters) {
       });
 
     return () => controller.abort();
-    // `key` ya resume los filtros por valor; `filters` es el mismo objeto
-    // memoizado por el llamador.
+    // `key` ya resume filtros+página+recarga; `filters`/`page` son el mismo
+    // objeto que produjo esa clave.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, activo]);
 
   const actual = resultado?.key === key ? resultado : null;
   const state: LoadState = actual ? (actual.error ? "error" : "ready") : "loading";
-  // Mientras llega la nueva página se conservan las filas anteriores (recarga
-  // secundaria); tras un error o en la primera carga no hay filas.
+  // Mientras llega la página nueva se conservan las filas anteriores (recarga
+  // secundaria); tras un error, una recarga explícita o en la primera carga
+  // no hay filas.
   const rows = actual ? actual.rows : (resultado?.rows ?? []);
   const total = actual ? actual.total : (resultado?.total ?? 0);
   const error = actual?.error ?? null;
-  const hasMore = state === "ready" && rows.length < total;
 
-  const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore) return;
-    setLoadingMore(true);
-    try {
-      const page = await fetchTramitesPage(undefined, filters, {
-        take: TRAMITES_PAGE_SIZE,
-        skip: rows.length,
-      });
-      setResultado((prev) => {
-        if (!prev || prev.key !== key) return prev;
-        const conocidos = new Set(prev.rows.map((row) => row.id));
-        return {
-          ...prev,
-          rows: [...prev.rows, ...page.rows.filter((row) => !conocidos.has(row.id))],
-          total: page.total,
-        };
-      });
-    } catch (caught: unknown) {
-      toast({
-        title: "No se pudieron cargar más trámites",
-        description: describirError(caught),
-        variant: "error",
-      });
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [filters, hasMore, key, loadingMore, rows.length, toast]);
-
-  const reload = useCallback(() => {
-    // Descarta las filas previas para que la recarga muestre el skeleton.
-    setResultado(null);
-    setReloadKey((k) => k + 1);
-  }, []);
-
-  return {
-    error,
-    hasMore,
-    loadMore,
-    loadingMore,
-    reload,
-    rows,
-    state,
-    total,
-  };
+  return { error, rows, state, total };
 }
 
 /**
@@ -300,7 +281,22 @@ function optionalText(value: FormDataEntryValue | null) {
   return text ? text : null;
 }
 
-function CreateTramiteDialog({
+/** Cómo se nombra un documento obligatorio dentro de una frase ("Adjunta el BL…"). */
+const FRASE_DOCUMENTO: Record<DocumentoObligatorioCodigo, string> = {
+  BL: "el BL",
+  FACTURA_COMERCIAL: "la factura comercial",
+};
+
+/** "Adjunta el BL y la factura comercial para crear este DO." — solo los que faltan. */
+function mensajeDocumentosFaltantes(faltantes: DocumentoObligatorioCodigo[]): string {
+  const partes = faltantes.map((categoria) => FRASE_DOCUMENTO[categoria]);
+  const lista =
+    partes.length <= 1 ? partes.join("") : `${partes.slice(0, -1).join(", ")} y ${partes[partes.length - 1]}`;
+
+  return `Adjunta ${lista} para crear este DO.`;
+}
+
+export function CreateTramiteDialog({
   open,
   onClose,
   onCreated,
@@ -332,6 +328,7 @@ function CreateTramiteDialog({
   const cargandoTipos = Boolean(clienteId) && tiposCargados.clienteId !== clienteId && tiposError?.clienteId !== clienteId;
   const errorTiposActual = tiposError?.clienteId === clienteId ? tiposError.message : null;
   const { toast } = useToast();
+  const esAdmin = useEsAdmin();
 
   const CATEGORIAS: { key: string; label: string }[] = [
     { key: "FACTURA_COMERCIAL",  label: "Factura comercial" },
@@ -377,6 +374,50 @@ function CreateTramiteDialog({
   );
 
   const tipoTramiteCodigo = tipoTramiteSeleccionado?.codigo ?? "IMPORTACION";
+
+  // Requisitos del DO (D1 tarifa vigente, D2 documentos obligatorios): se
+  // consultan en cuanto hay empresa + tipo de trámite elegidos. El estado de
+  // carga se DERIVA igual que `tiposCargados` arriba: si el último resultado
+  // no corresponde a la clave actual (empresa + tipo), estamos cargando.
+  const [requisitosResultado, setRequisitosResultado] = useState<{
+    key: string;
+    data: RequisitosDo | null;
+    error: string | null;
+  } | null>(null);
+  const requisitosKey = clienteId ? `${clienteId}::${tipoTramiteCodigo}` : "";
+  const requisitosActual = requisitosResultado?.key === requisitosKey ? requisitosResultado : null;
+  const requisitosLoading = Boolean(clienteId) && !requisitosActual;
+  const requisitos = requisitosActual?.data ?? null;
+
+  useEffect(() => {
+    if (!open || !clienteId) {
+      return;
+    }
+
+    const controller = new AbortController();
+    // Pequeño debounce: evita dos peticiones seguidas cuando cambiar de
+    // empresa también cambia el tipo de trámite por defecto.
+    const timeout = setTimeout(() => {
+      fetchRequisitosDo(clienteId, tipoTramiteCodigo, controller.signal)
+        .then((data) => {
+          setRequisitosResultado({ key: requisitosKey, data, error: null });
+        })
+        .catch((caught: unknown) => {
+          if (caught instanceof DOMException && caught.name === "AbortError") return;
+          setRequisitosResultado({
+            key: requisitosKey,
+            data: null,
+            error: describirError(caught, "No se pudo consultar la tarifa vigente de esta empresa."),
+          });
+        });
+    }, 300);
+
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, requisitosKey]);
 
   // Qué campos pide el formulario lo decide el tipo de trámite, no un if por
   // cliente. Sin tipo cargado todavía se asume el comportamiento histórico.
@@ -453,10 +494,19 @@ function CreateTramiteDialog({
     return null;
   }
 
-  const isSocioLM = clienteSeleccionado?.tipo === "SOCIO_LM";
-  const missingRequiredDocs =
-    isSocioLM &&
-    (stagedFiles["BL"] === null || stagedFiles["BL"] === undefined || stagedFiles["FACTURA_COMERCIAL"] === null || stagedFiles["FACTURA_COMERCIAL"] === undefined);
+  // D2: qué documentos exige ESTE trámite (empresa + tipo), no el tipo de
+  // cliente — ver `documentosObligatorios.requeridos` de `GET
+  // /api/tramites/requisitos` (invariante 7: cero ramas por TipoCliente).
+  const documentosRequeridos = requisitos?.documentosObligatorios.requeridos ?? [];
+  const documentosFaltantes = documentosRequeridos.filter((categoria) => {
+    const file = stagedFiles[categoria];
+    return file === null || file === undefined;
+  });
+  const missingRequiredDocs = documentosFaltantes.length > 0;
+  // D1: sin tarifa vigente no se puede crear el DO.
+  const bloqueadoPorTarifa = Boolean(
+    requisitos && requisitos.tarifaVigente.requerida && !requisitos.tarifaVigente.cumple,
+  );
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -464,8 +514,9 @@ function CreateTramiteDialog({
     setSuccess(null);
 
     if (isSubmitting || cargandoTipos || errorTiposActual || !clienteId || tiposTramite.length === 0) return;
+    if (bloqueadoPorTarifa) return;
     if (missingRequiredDocs) {
-      setError("Adjunta BL y Factura Comercial para clientes SOCIO_LM.");
+      setError(mensajeDocumentosFaltantes(documentosFaltantes));
       return;
     }
 
@@ -487,6 +538,9 @@ function CreateTramiteDialog({
         : undefined,
       doAgencia: optionalText(formData.get("doAgencia")),
       doCliente: optionalText(formData.get("doCliente")),
+      // TODO(invariante 7): ramifica por TipoCliente (SOCIO_LM) para decidir
+      // si se pide ETA; migrar a una capacidad cuando se aborde el resto de
+      // las 131 ramas vivas (ver CLAUDE.md).
       eta:
         pideEta && clienteSeleccionado?.tipo !== "SOCIO_LM"
           ? formatDateInputAsIso(formData.get("eta"))
@@ -528,6 +582,17 @@ function CreateTramiteDialog({
       setStagedFiles({});
     } catch (caught) {
       setError(describirError(caught, "No fue posible crear el trámite."));
+
+      // Carrera: el servidor confirma que ya no hay tarifa vigente aunque el
+      // panel decía lo contrario (se publicó/venció justo ahora). Refresca los
+      // requisitos para que el panel ámbar y sus acciones queden al día.
+      if (caught instanceof TramitesApiError && caught.codigo === CODIGO_TARIFA_VIGENTE_REQUERIDA) {
+        fetchRequisitosDo(clienteId, tipoTramiteCodigo)
+          .then((data) => setRequisitosResultado({ key: requisitosKey, data, error: null }))
+          .catch(() => {
+            // Sin refresco al menos queda el mensaje del 422 en el banner de error.
+          });
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -686,6 +751,47 @@ function CreateTramiteDialog({
             </div>
           ) : null}
 
+          {/* D1: tarifa vigente — sin ella el servidor no crea el DO. */}
+          {clienteId && requisitosLoading ? (
+            <p role="status" className="flex items-center gap-2 text-xs text-slate-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              Comprobando tarifa vigente…
+            </p>
+          ) : null}
+          {bloqueadoPorTarifa && requisitos ? (
+            <div
+              role="alert"
+              className="space-y-2 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+            >
+              <p className="flex items-start gap-2 font-medium">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                {requisitos.tarifaVigente.mensaje ??
+                  `${clienteSeleccionado?.nombre ?? "Esta empresa"} no tiene una tarifa vigente para esta línea. Sin tarifa no se puede crear el DO.`}
+              </p>
+              {esAdmin ? (
+                requisitos.tarifaVigente.tarifarioPropioHabilitado ? (
+                  <Link
+                    href={`/clientes/${clienteId}?abrir=tarifas`}
+                    onClick={onClose}
+                    className="inline-flex h-9 items-center border border-amber-400 bg-white px-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100"
+                  >
+                    Crear tarifa
+                  </Link>
+                ) : (
+                  <Link
+                    href={`/clientes/${clienteId}?abrir=funciones`}
+                    onClick={onClose}
+                    className="inline-flex h-9 items-center border border-amber-400 bg-white px-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100"
+                  >
+                    Activar «Tarifario propio»
+                  </Link>
+                )
+              ) : (
+                <p>Pídele a Camila que publique la tarifa de esta empresa.</p>
+              )}
+            </div>
+          ) : null}
+
           <div className="grid gap-4 md:grid-cols-3">
             {pideAgencia ? (
               <label className="space-y-1.5">
@@ -761,16 +867,17 @@ function CreateTramiteDialog({
             </label>
           ) : null}
 
-          {/* Documentos obligatorios para SOCIO_LM */}
-          {isSocioLM ? (
+          {/* D2: documentos obligatorios — los exige el trámite (empresa +
+              tipo), no el tipo de cliente. */}
+          {documentosRequeridos.length > 0 ? (
             <div className="space-y-2">
               <span className="text-sm font-medium text-slate-700">
                 Documentos obligatorios{" "}
-                <span className="text-xs font-normal text-rose-600">(requeridos para SOCIO_LM)</span>
+                <span className="text-xs font-normal text-rose-600">(obligatorio para este trámite)</span>
               </span>
               <ul className="divide-y divide-slate-100 border border-rose-200 bg-rose-50">
-                {(["BL", "FACTURA_COMERCIAL"] as const).map((key) => {
-                  const label = key === "BL" ? "BL / Guía" : "Factura Comercial";
+                {documentosRequeridos.map((key) => {
+                  const label = ETIQUETA_DOCUMENTO_OBLIGATORIO[key];
                   const file = stagedFiles[key] ?? null;
                   const inputId = `req-adjunto-${key}`;
                   return (
@@ -829,7 +936,7 @@ function CreateTramiteDialog({
           <div className="space-y-2">
             <span className="text-sm font-medium text-slate-700">Documentos adjuntos</span>
             <ul className="divide-y divide-slate-100 border border-slate-200 bg-white">
-              {CATEGORIAS.filter(({ key }) => !isSocioLM || (key !== "BL" && key !== "FACTURA_COMERCIAL")).map(({ key, label }) => {
+              {CATEGORIAS.filter(({ key }) => !documentosRequeridos.includes(key as DocumentoObligatorioCodigo)).map(({ key, label }) => {
                 const file = stagedFiles[key] ?? null;
                 const inputId = `adjunto-${key}`;
                 return (
@@ -906,7 +1013,17 @@ function CreateTramiteDialog({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || loadingClientes || cargandoTipos || Boolean(errorTiposActual) || !clienteId || tiposTramite.length === 0 || missingRequiredDocs}
+              disabled={
+                isSubmitting ||
+                loadingClientes ||
+                cargandoTipos ||
+                Boolean(errorTiposActual) ||
+                !clienteId ||
+                tiposTramite.length === 0 ||
+                requisitosLoading ||
+                bloqueadoPorTarifa ||
+                missingRequiredDocs
+              }
               className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
             >
               {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
@@ -933,6 +1050,19 @@ export function TramitesWorkspace() {
   const [facturado, setFacturado] = useState<FacturadoFilter>("todos");
   const [viewMode, setViewMode] = useState<ViewMode>("tabla");
   const [filterClientes, setFilterClientes] = useState<ClienteOption[]>([]);
+  const [pagina, setPagina] = useState(1);
+  const [porPagina, setPorPagina] = useState(25);
+  const [reloadSignal, setReloadSignal] = useState(0);
+  const tablaRef = useRef<HTMLDivElement>(null);
+
+  const reload = useCallback(() => setReloadSignal((s) => s + 1), []);
+
+  // Cambiar de página desplaza el listado a la vista (si quedó scrolleado
+  // hacia abajo, la página nueva se ve desde el principio).
+  function handlePaginaChange(next: number) {
+    setPagina(next);
+    tablaRef.current?.scrollIntoView?.({ block: "start" });
+  }
 
   // Debounce del texto de busqueda para no re-consultar por cada tecla.
   useEffect(() => {
@@ -965,9 +1095,31 @@ export function TramitesWorkspace() {
     [debouncedSearch, estado, ciudad, clienteId, tipoCliente, facturado],
   );
 
-  const { error, hasMore, loadMore, loadingMore, reload, rows, state, total } =
-    useTramites(filters);
-  const filteredRows = rows;
+  // Cambiar cualquier filtro o la búsqueda vuelve a la página 1: el rango
+  // visible de antes ya no tiene sentido con el nuevo resultado. Reset en
+  // async para evitar el warning de react-hooks/set-state-in-effect (mismo
+  // idioma que seccion-documentos.tsx).
+  useEffect(() => {
+    Promise.resolve().then(() => setPagina(1));
+  }, [filters]);
+
+  // Vista tabla: página server-side (25/50/100, por defecto 25).
+  const tabla = useTramitesResultado(
+    filters,
+    { take: porPagina, skip: (pagina - 1) * porPagina },
+    true,
+    reloadSignal,
+  );
+  // Vista kanban: trae su propia página (más grande, como antes de A7) en vez
+  // de reusar la de la tabla — así no se ve recortada a 25 tarjetas. Solo
+  // pide datos mientras es la vista activa.
+  const kanban = useTramitesResultado(
+    filters,
+    { take: TRAMITES_PAGE_SIZE, skip: 0 },
+    viewMode === "kanban",
+    reloadSignal,
+  );
+  const vistaActiva = viewMode === "kanban" ? kanban : tabla;
 
   const hasFilters =
     Boolean(search.trim()) ||
@@ -987,11 +1139,9 @@ export function TramitesWorkspace() {
     setFacturado("todos");
   }
 
-  const isLoading = state === "loading";
-  const isError = state === "error";
   // Carga inicial (sin filas todavía) → skeleton que reserva el alto de la
   // tabla; recargas con filas ya visibles → ModuleState loading.
-  const isInitialLoading = isLoading && rows.length === 0;
+  const tablaInitialLoading = tabla.state === "loading" && tabla.rows.length === 0;
   const emptyTitle = hasFilters ? "Sin resultados para los filtros" : "Sin trámites registrados";
   const emptyDetail = hasFilters
     ? "Ajusta estado, ciudad, cliente, tipo o búsqueda para ampliar la consulta."
@@ -1158,7 +1308,7 @@ export function TramitesWorkspace() {
               </select>
             </label>
 
-            {hasFilters && (isLoading || filteredRows.length > 0) ? <button
+            {hasFilters && (vistaActiva.state === "loading" || vistaActiva.rows.length > 0) ? <button
               type="button"
               onClick={limpiarFiltros}
               disabled={!hasFilters}
@@ -1171,53 +1321,58 @@ export function TramitesWorkspace() {
         </div>
       </div>
 
-      {/* Vista Kanban */}
+      {/* Vista Kanban: trae su propia página (TRAMITES_PAGE_SIZE), no la
+          paginada de la tabla — ver comentario junto a `kanban` arriba. */}
       {viewMode === "kanban" ? (
         <div>
-          {isLoading ? (
+          {kanban.state === "loading" ? (
             <ModuleState type="loading" title="Cargando trámites…" />
-          ) : isError ? (
+          ) : kanban.state === "error" ? (
             <ModuleState
               type="error"
               title="No se pudieron cargar los trámites"
-              detail={error ?? undefined}
+              detail={kanban.error ?? undefined}
               action={{ label: "Reintentar", onClick: reload }}
             />
-          ) : filteredRows.length === 0 ? (
+          ) : kanban.rows.length === 0 ? (
             <ModuleState type="empty" title={emptyTitle} detail={emptyDetail} action={hasFilters ? { label: "Limpiar filtros", onClick: limpiarFiltros, icon: false } : undefined} />
           ) : (
-            <KanbanTramites rows={filteredRows} onEstadoChanged={reload} />
+            <KanbanTramites rows={kanban.rows} onEstadoChanged={reload} />
           )}
         </div>
       ) : null}
 
       {/* Vista Tabla: la carga inicial reserva el alto de la tabla con un skeleton */}
-      {viewMode === "tabla" && isInitialLoading ? (
+      {viewMode === "tabla" && tablaInitialLoading ? (
         <TableSkeleton rows={8} cols={10} rowHeight={45} />
       ) : null}
-      {viewMode === "tabla" && !isInitialLoading ? (
-        <div className="overflow-hidden border border-slate-200 bg-white">
+      {viewMode === "tabla" && !tablaInitialLoading ? (
+        <div ref={tablaRef} className="overflow-hidden border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 text-sm">
             <p className="font-semibold text-slate-900">DOs operativos</p>
             <p className="text-slate-500" aria-live="polite">
-              {isError ? "—" : isLoading ? "Actualizando resultados…" : `Mostrando ${filteredRows.length} de ${total}`}
+              {tabla.state === "error"
+                ? "—"
+                : tabla.state === "loading"
+                  ? "Actualizando resultados…"
+                  : `Mostrando ${tabla.rows.length} de ${tabla.total}`}
             </p>
           </div>
-          {isError ? (
+          {tabla.state === "error" ? (
             <div className="p-4">
               <ModuleState
                 type="error"
                 title="No se pudieron cargar los trámites"
-                detail={error ?? undefined}
+                detail={tabla.error ?? undefined}
                 action={{ label: "Reintentar", onClick: reload }}
               />
             </div>
-          ) : filteredRows.length === 0 ? (
+          ) : tabla.rows.length === 0 ? (
             <div className="p-4">
               <ModuleState type="empty" title={emptyTitle} detail={emptyDetail} action={hasFilters ? { label: "Limpiar filtros", onClick: limpiarFiltros, icon: false } : undefined} />
             </div>
           ) : (
-          <div className="overflow-x-auto" aria-busy={isLoading}>
+          <div className="overflow-x-auto" aria-busy={tabla.state === "loading"}>
             <table className="min-w-[1080px] w-full border-collapse text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
@@ -1234,7 +1389,7 @@ export function TramitesWorkspace() {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((tramite) => (
+                {tabla.rows.map((tramite) => (
                       <tr
                         key={tramite.id}
                         className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
@@ -1287,25 +1442,17 @@ export function TramitesWorkspace() {
             </table>
           </div>
           )}
-          {hasMore ? (
-            <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-sm">
-              <p className="text-slate-500">
-                Mostrando {filteredRows.length} de {total} trámites
-              </p>
-              <button
-                type="button"
-                onClick={() => void loadMore()}
-                disabled={loadingMore}
-                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
-              >
-                {loadingMore ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <ChevronDown className="h-4 w-4" aria-hidden="true" />
-                )}
-                Cargar más
-              </button>
-            </div>
+          {tabla.state !== "error" ? (
+            <Paginacion
+              total={tabla.total}
+              pagina={pagina}
+              porPagina={porPagina}
+              onPaginaChange={handlePaginaChange}
+              onPorPaginaChange={setPorPagina}
+              opciones={[25, 50, 100]}
+              etiqueta="trámites"
+              cargando={tabla.state === "loading"}
+            />
           ) : null}
         </div>
       ) : null}

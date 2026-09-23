@@ -28,6 +28,16 @@ const IMPORTACION: ConfigConsecutivo = {
   incluyeCiudadEnConsecutivo: true,
 };
 
+/**
+ * Estos tests no son sobre los requisitos D1/D2 (tarifa vigente, BL + factura
+ * comercial), que vienen encendidos por defecto: las empresas de prueba los
+ * tienen apagados. Esas reglas se prueban en `requisitos.integration.test.ts`.
+ */
+const SIN_REQUISITOS_DO = [
+  { codigo: "do_exige_tarifa_vigente", habilitado: false },
+  { codigo: "docs_bl_factura_obligatorios", habilitado: false },
+];
+
 const TEST_PREFIX = "vitest-tramites";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const templatePrefix = "000 Vitest Tramites";
@@ -155,6 +165,7 @@ async function createFixture(): Promise<Fixture> {
       nombre: "Cliente Vitest Tramites",
       nit: `${runId}-nit`,
       tipo: TipoCliente.PROPIO,
+      capacidades: { create: SIN_REQUISITOS_DO },
     },
   });
 
@@ -307,6 +318,7 @@ describe("tramites service con Postgres local", () => {
         tipo: TipoCliente.PROPIO,
         capacidades: {
           create: [
+            ...SIN_REQUISITOS_DO,
             { codigo: "clasificacion_arancelaria", habilitado: true },
             {
               codigo: "regla_agencia_fija",
@@ -411,6 +423,7 @@ describe("tramites service con Postgres local", () => {
           nombre: "Cliente Vitest Filtros Propio",
           nit: `${runId}-list-propio`,
           tipo: TipoCliente.PROPIO,
+          capacidades: { create: SIN_REQUISITOS_DO },
         },
       });
       const socio = await prisma.cliente.create({
@@ -418,6 +431,7 @@ describe("tramites service con Postgres local", () => {
           nombre: "Cliente Vitest Filtros Socio",
           nit: `${runId}-list-socio`,
           tipo: TipoCliente.SOCIO_LM,
+          capacidades: { create: SIN_REQUISITOS_DO },
         },
       });
 

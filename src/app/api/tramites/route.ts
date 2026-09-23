@@ -5,7 +5,11 @@ import { ZodError } from "zod";
 import { requireRole } from "@/lib/auth/session";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import { createTramite, listTramites } from "@/lib/tramites/service";
+import {
+  createTramite,
+  listTramites,
+  TarifaVigenteRequeridaError,
+} from "@/lib/tramites/service";
 import {
   tramiteCreateSchema,
   tramiteQuerySchema,
@@ -66,6 +70,16 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);
+    }
+
+    // Sin tarifa vigente no hay DO (capacidad `do_exige_tarifa_vigente`). Lleva
+    // `codigo` y `detalles` para que la UI mande al usuario a la tarifa de la
+    // empresa (`/clientes/{clienteId}?abrir=tarifas`).
+    if (error instanceof TarifaVigenteRequeridaError) {
+      return NextResponse.json(
+        { error: error.message, codigo: error.codigo, detalles: error.detalles },
+        { status: error.status },
+      );
     }
 
     // Tipo de trámite inexistente, no habilitado para la empresa o sin agencia

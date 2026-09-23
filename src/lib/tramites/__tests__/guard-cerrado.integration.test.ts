@@ -163,6 +163,17 @@ async function createFixture(): Promise<Fixture> {
       nombre: "Cliente Vitest Guard Cerrado",
       nit: `${TEST_PREFIX}-${runId}`,
       tipo: TipoCliente.PROPIO,
+      // Este archivo prueba el guard transversal de CERRADO (pagos, anticipos,
+      // documentos, reapertura ADMIN/REVISOR), no D1/D2 — se apagan para no
+      // arrastrar el fixture de tarifa vigente + BL/factura de
+      // `requisitos.integration.test.ts` (que sí las ejercita a propósito,
+      // incluso durante la reapertura, F4).
+      capacidades: {
+        create: [
+          { codigo: "do_exige_tarifa_vigente", habilitado: false },
+          { codigo: "docs_bl_factura_obligatorios", habilitado: false },
+        ],
+      },
     },
   });
 

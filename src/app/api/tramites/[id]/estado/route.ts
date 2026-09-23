@@ -36,12 +36,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
         {
           error: result.message,
           faltantes: result.faltantes,
+          // Bloqueos por reglas de la empresa (tarifa vigente, BL y factura
+          // comercial): código estable + datos para que la UI guíe al usuario.
+          codigo: result.codigo,
+          detalles: result.detalles,
         },
         { status: result.status },
       );
     }
 
-    return jsonResponse({ tramite: result.tramite });
+    // `advertencias`: requisitos que el ADMIN se saltó con su excepción.
+    return jsonResponse({ tramite: result.tramite, advertencias: result.advertencias });
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);
