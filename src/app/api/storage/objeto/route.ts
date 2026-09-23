@@ -27,6 +27,16 @@ function rechazo(motivo: string, status = 403) {
 }
 
 /**
+ * Tipos que la app sabe previsualizar (visor de documentos, miniaturas):
+ * PDF y las dos imágenes que acepta la bodega (JPG/PNG). Cualquier otro tipo
+ * se sirve SIEMPRE como descarga (`attachment`) y con
+ * `application/octet-stream`, sin importar lo que pida `?descargar=`: un XLS,
+ * ZIP o EML no debe poder "abrirse" dentro del navegador (riesgo de XSS/
+ * MIME-sniffing si el archivo trae HTML disfrazado de otra extensión).
+ */
+const TIPOS_PREVISUALIZABLES = new Set(["application/pdf", "image/jpeg", "image/png"]);
+
+/**
  * Los archivos cargados por fuera de la app (rclone, mc) pueden venir sin
  * `Content-Type`; se deduce por extensión para que el navegador los abra.
  */
@@ -106,9 +116,14 @@ export async function GET(request: NextRequest) {
     const tipoGuardado = stat.metaData?.["content-type"];
     // MinIO/S3 guardan `binary/octet-stream` o `application/octet-stream` cuando
     // el archivo se subió sin tipo (rclone, mc): en ese caso vale más la extensión.
-    const tipo =
+    const tipoDetectado =
       !tipoGuardado || /octet-stream$/i.test(tipoGuardado) ? tipoPorExtension(nombre) : tipoGuardado;
-    const disposicion = request.nextUrl.searchParams.get("descargar") === "1" ? "attachment" : "inline";
+    const previsualizable = TIPOS_PREVISUALIZABLES.has(tipoDetectado);
+    const pideInline = request.nextUrl.searchParams.get("descargar") !== "1";
+    const disposicion = previsualizable && pideInline ? "inline" : "attachment";
+    // Si no es un tipo previsualizable el navegador nunca debe "abrirlo": se
+    // fuerza octet-stream aunque la bodega tenga guardado otro Content-Type.
+    const tipo = previsualizable ? tipoDetectado : "application/octet-stream";
 
     return new Response(Readable.toWeb(objeto) as unknown as globalThis.ReadableStream, {
       status: 200,
@@ -117,6 +132,8 @@ export async function GET(request: NextRequest) {
         "content-length": String(stat.size),
         "content-disposition": contentDisposition(disposicion, nombre),
         "cache-control": "private, no-store",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "sandbox",
       },
     });
   } catch (error) {

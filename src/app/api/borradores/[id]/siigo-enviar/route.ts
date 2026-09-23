@@ -11,14 +11,21 @@
  * Si SIIGO rechaza o no responde, el borrador permanece en APROBADO con
  * ultimoErrorSiigo poblado para que el ADMIN pueda corregir y reintentar.
  *
+ * Cuerpo opcional `{ reenviar: true, siigoDraftIdAnterior }`: sin él, un
+ * borrador que ya tiene siigoDraftId se rechaza (409) para no duplicar la
+ * factura en Siigo. Envíos simultáneos del mismo borrador → 409 "en curso".
+ *
  * Roles: ADMIN.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
+import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
+import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { enviarBorradorASiigo } from "@/lib/siigo/envio-factura-service";
+import { enviarSiigoPayloadSchema, type EnviarSiigoPayload } from "@/lib/validations/borradores";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -30,13 +37,33 @@ const STATUS_POR_TIPO = {
   db: 500,
 } as const;
 
-export async function POST(_request: NextRequest, { params }: RouteParams) {
+export async function POST(request: NextRequest, { params }: RouteParams) {
   const session = await requireRole(["ADMIN"]);
   if (session instanceof NextResponse) return session;
 
   const { id: borradorId } = await params;
 
-  const result = await enviarBorradorASiigo(borradorId, session.user.id);
+  // El cuerpo es opcional (primer envío): vacío equivale a `{}`.
+  let body: unknown = {};
+  try {
+    const texto = await request.text();
+    if (texto.trim()) body = JSON.parse(texto);
+  } catch {
+    return NextResponse.json({ error: "JSON inválido" }, { status: 400 });
+  }
+
+  let payload: EnviarSiigoPayload;
+  try {
+    payload = enviarSiigoPayloadSchema.parse(body);
+  } catch (error) {
+    if (error instanceof ZodError) return validationError(error);
+    throw error;
+  }
+
+  const result = await enviarBorradorASiigo(borradorId, session.user.id, {
+    reenviar: payload.reenviar ?? false,
+    siigoDraftIdAnterior: payload.siigoDraftIdAnterior ?? null,
+  });
 
   if (!result.ok) {
     return NextResponse.json(

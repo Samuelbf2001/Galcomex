@@ -12,6 +12,7 @@
  *   npx tsx scripts/importar-status-lucho.ts --dir /app/import-lucho --dry
  *   npx tsx scripts/importar-status-lucho.ts --dir /app/import-lucho
  */
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { EstadoTramite, Rol, TipoCliente } from "@prisma/client";
@@ -29,6 +30,10 @@ import {
   parseDoSheetFromWorkbook,
 } from "../src/lib/excel/galcomex-workbook";
 import { crearPago } from "../src/lib/pagos/service";
+
+// El build ESM de xlsx no detecta `fs` automáticamente; sin esto
+// `XLSX.readFile` falla con "Cannot access file" aunque el archivo exista.
+XLSX.set_fs(fs);
 
 const ARCHIVOS: Array<{ file: string; nombre: string; nit: string }> = [
   { file: "PCC 2026.xlsm", nombre: "PCC", nit: "LM-PCC" },

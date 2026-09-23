@@ -19,6 +19,7 @@ import { CategoriaDocumento, Rol, TipoCliente } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/lib/db/prisma";
+import { prefijoTramite } from "@/lib/storage/service";
 
 // ─── Mock de storage ANTES de importar el servicio ───────────────────────────
 // Evita que listarDocumentos y eliminarDocumento fallen si MinIO no está disponible.
@@ -38,10 +39,14 @@ vi.mock("@/lib/storage/service", async (importOriginal) => {
 
 // Importar el servicio DESPUÉS del mock
 import {
+  DocumentoNoEncontradoError,
   eliminarDocumento,
   listarDocumentos,
+  reemplazarDocumento,
   registrarDocumento,
+  StorageKeyInvalidoError,
 } from "../service";
+import { StorageValidationError } from "@/lib/storage/service";
 
 // ─── Constantes del test ──────────────────────────────────────────────────────
 
@@ -51,6 +56,10 @@ const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2
 type Fixture = {
   tramiteId: string;
   userId: string;
+  consecutivo: string;
+  /** Segundo trámite (mismo cliente), para probar el IDOR de storageKey cruzado. */
+  otroTramiteId: string;
+  otroConsecutivo: string;
 };
 
 let fixture: Fixture | null = null;
@@ -123,9 +132,11 @@ async function createFixture(): Promise<Fixture> {
     },
   });
 
+  const consecutivo = `DO.BAQ05-${runId.slice(-4)}`;
+
   const tramite = await prisma.tramiteDO.create({
     data: {
-      consecutivo: `DO.BAQ05-${runId.slice(-4)}`,
+      consecutivo,
       ciudad: "BAQ",
       anio: 3005,
       numero: Math.floor(Math.random() * 9000) + 1000,
@@ -135,7 +146,27 @@ async function createFixture(): Promise<Fixture> {
     },
   });
 
-  return { tramiteId: tramite.id, userId: user.id };
+  const otroConsecutivo = `DO.BAQ05-${runId.slice(-4)}-B`;
+
+  const otroTramite = await prisma.tramiteDO.create({
+    data: {
+      consecutivo: otroConsecutivo,
+      ciudad: "BAQ",
+      anio: 3005,
+      numero: Math.floor(Math.random() * 9000) + 1000,
+      clienteId: cliente.id,
+      agenciaAduanas: "COLDEX",
+      creadoPorId: user.id,
+    },
+  });
+
+  return {
+    tramiteId: tramite.id,
+    userId: user.id,
+    consecutivo,
+    otroTramiteId: otroTramite.id,
+    otroConsecutivo,
+  };
 }
 
 function ensureDb(ctx: { skip: (note?: string) => void }): Fixture {
@@ -180,7 +211,7 @@ describe("documentos service — capa de persistencia", () => {
   it("registrarDocumento crea el registro en BD con todos los campos", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const storageKey = `tramites/DO-TEST-3005/${CategoriaDocumento.FACTURA_COMERCIAL}/${runId}.pdf`;
+    const storageKey = `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.FACTURA_COMERCIAL}/${runId}.pdf`;
 
     const doc = await registrarDocumento({
       tramiteId: db.tramiteId,
@@ -214,7 +245,7 @@ describe("documentos service — capa de persistencia", () => {
   it("listarDocumentos devuelve el documento agrupado por categoría con downloadUrl vacía (sin MinIO)", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const storageKey2 = `tramites/DO-TEST-3005/${CategoriaDocumento.BL}/${runId}-bl.pdf`;
+    const storageKey2 = `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.BL}/${runId}-bl.pdf`;
 
     await registrarDocumento({
       tramiteId: db.tramiteId,
@@ -249,7 +280,7 @@ describe("documentos service — capa de persistencia", () => {
   it("eliminarDocumento hace soft-delete: eliminado=true en BD y no aparece en listarDocumentos", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const storageKey3 = `tramites/DO-TEST-3005/${CategoriaDocumento.PACKING_LIST}/${runId}-pl.pdf`;
+    const storageKey3 = `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.PACKING_LIST}/${runId}-pl.pdf`;
 
     const doc = await registrarDocumento({
       tramiteId: db.tramiteId,
@@ -284,5 +315,134 @@ describe("documentos service — capa de persistencia", () => {
     });
     expect(auditLog).toBeTruthy();
     expect(auditLog?.usuarioId).toBe(db.userId);
+  });
+});
+
+// ─── Fix de seguridad 2026-09-22: IDOR de storageKey al registrar/reemplazar ──
+//
+// Antes, registrarDocumento()/reemplazarDocumento() confiaban ciegamente en el
+// storageKey que mandaba el cliente: un SOCIO (u OPERATIVO) podía registrar la
+// clave del archivo de OTRO trámite/cliente y luego pedir su enlace firmado de
+// descarga (GET /api/tramites/[id]/documentos/[documentoId]). Ahora se exige
+// que el storageKey esté bajo la carpeta del trámite (`tramites/<consecutivo>/…`,
+// el prefijo que arma solicitarSubida) y que no esté ya en uso.
+
+describe("registrarDocumento — storageKey debe pertenecer al trámite (IDOR)", () => {
+  it("SOCIO no puede registrar la clave de un archivo de OTRO trámite → StorageKeyInvalidoError", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    // El SOCIO dice subir a `db.tramiteId` pero manda el storageKey de
+    // `db.otroTramiteId` (otro DO del mismo cliente en este fixture; en el
+    // caso real sería de OTRO cliente por completo).
+    const storageKeyAjeno = `${prefijoTramite(db.otroConsecutivo)}${CategoriaDocumento.FACTURA_COMERCIAL}/${runId}-ajeno.pdf`;
+
+    await expect(
+      registrarDocumento({
+        tramiteId: db.tramiteId,
+        categoria: CategoriaDocumento.FACTURA_COMERCIAL,
+        nombreArchivo: "factura-ajena.pdf",
+        storageKey: storageKeyAjeno,
+        mimeType: "application/pdf",
+        tamanoBytes: 1024,
+        subidoPorId: db.userId,
+      }),
+    ).rejects.toMatchObject({ name: "StorageKeyInvalidoError", status: 400 });
+
+    const documentos = await prisma.documento.findMany({ where: { storageKey: storageKeyAjeno } });
+    expect(documentos).toHaveLength(0);
+  });
+
+  it("rechaza un storageKey que ya está registrado en otro Documento no eliminado", async (ctx) => {
+    const db = ensureDb(ctx);
+    const storageKeyCompartido = `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.OTRO}/${runId}-duplicado.pdf`;
+
+    await registrarDocumento({
+      tramiteId: db.tramiteId,
+      categoria: CategoriaDocumento.OTRO,
+      nombreArchivo: "primero.pdf",
+      storageKey: storageKeyCompartido,
+      mimeType: "application/pdf",
+      tamanoBytes: 1024,
+      subidoPorId: db.userId,
+    });
+
+    await expect(
+      registrarDocumento({
+        tramiteId: db.tramiteId,
+        categoria: CategoriaDocumento.OTRO,
+        nombreArchivo: "segundo.pdf",
+        storageKey: storageKeyCompartido,
+        mimeType: "application/pdf",
+        tamanoBytes: 2048,
+        subidoPorId: db.userId,
+      }),
+    ).rejects.toBeInstanceOf(StorageKeyInvalidoError);
+  });
+
+  it("rechaza un trámite inexistente antes de tocar el storageKey", async (ctx) => {
+    ensureDb(ctx);
+
+    await expect(
+      registrarDocumento({
+        tramiteId: "tramite-que-no-existe",
+        categoria: CategoriaDocumento.OTRO,
+        nombreArchivo: "x.pdf",
+        storageKey: "tramites/lo-que-sea/OTRO/x.pdf",
+        mimeType: "application/pdf",
+        tamanoBytes: 1024,
+        subidoPorId: "user-inexistente",
+      }),
+    ).rejects.toBeInstanceOf(DocumentoNoEncontradoError);
+  });
+
+  it("rechaza (fix tipo/tamaño) un archivo cuya extensión no coincide con el mimeType", async (ctx) => {
+    const db = ensureDb(ctx);
+    const storageKey = `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.OTRO}/${runId}-tipo-invalido.xlsx`;
+
+    await expect(
+      registrarDocumento({
+        tramiteId: db.tramiteId,
+        categoria: CategoriaDocumento.OTRO,
+        nombreArchivo: "disfrazado.xlsx",
+        storageKey,
+        mimeType: "application/pdf", // el nombre dice .xlsx pero el mimeType es PDF
+        tamanoBytes: 1024,
+        subidoPorId: db.userId,
+      }),
+    ).rejects.toBeInstanceOf(StorageValidationError);
+  });
+});
+
+describe("reemplazarDocumento — storageKey debe pertenecer al trámite (IDOR)", () => {
+  it("no puede reemplazar con la clave de un archivo de OTRO trámite → StorageKeyInvalidoError", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    const doc = await registrarDocumento({
+      tramiteId: db.tramiteId,
+      categoria: CategoriaDocumento.OTRO,
+      nombreArchivo: "original.pdf",
+      storageKey: `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.OTRO}/${runId}-reemplazo-original.pdf`,
+      mimeType: "application/pdf",
+      tamanoBytes: 1024,
+      subidoPorId: db.userId,
+    });
+
+    const storageKeyAjeno = `${prefijoTramite(db.otroConsecutivo)}${CategoriaDocumento.OTRO}/${runId}-reemplazo-ajeno.pdf`;
+
+    await expect(
+      reemplazarDocumento({
+        documentoId: doc.id,
+        usuarioId: db.userId,
+        rol: Rol.ADMIN,
+        storageKey: storageKeyAjeno,
+        nombreArchivo: "reemplazo-ajeno.pdf",
+        mimeType: "application/pdf",
+        tamanoBytes: 2048,
+      }),
+    ).rejects.toMatchObject({ name: "StorageKeyInvalidoError", status: 400 });
+
+    // El documento original no debió cambiar
+    const persisted = await prisma.documento.findUnique({ where: { id: doc.id } });
+    expect(persisted?.storageKey).toBe(doc.storageKey);
   });
 });

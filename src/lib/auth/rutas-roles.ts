@@ -80,12 +80,33 @@ export function rutasVisiblesPara(rol: Rol): RutaDashboard[] {
 }
 
 /**
- * Valida un destino `?next=` para evitar redirecciones abiertas:
- * solo rutas internas absolutas, sin protocolo ni host, y nunca de vuelta al login.
+ * Valida un destino `?next=` para evitar redirecciones abiertas: solo rutas
+ * internas absolutas, sin protocolo ni host, y nunca de vuelta al login.
+ *
+ * Rechaza caracteres de control (`\u0000`-`\u001F`, `\u007F`) porque los
+ * parsers de URL del navegador los eliminan antes de resolver: un
+ * `?next=/%09/evil.com` llega aquí ya decodificado como `/\t/evil.com`, y al
+ * pasar por `new URL(...)` el tab se borra dejando `//evil.com`, es decir un
+ * host distinto. También rechaza `\` (el navegador lo normaliza a `/`, con el
+ * mismo efecto) y cualquier `//` inicial. Como cinturón y tirantes, se exige
+ * además que `new URL(next, base)` conserve el origen ficticio `base` y que
+ * el pathname resultante siga siendo absoluto.
  */
 export function destinoInternoSeguro(next: string | null | undefined): string | null {
   if (!next) return null;
-  if (!next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return null;
+  if (/[\u0000-\u001F\u007F]/.test(next)) return null;
+  if (next.includes("\\")) return null;
+  if (!next.startsWith("/") || next.startsWith("//")) return null;
   if (next.startsWith("/auth/") || next.startsWith("/api/")) return null;
+
+  const BASE = "http://x.local";
+  let url: URL;
+  try {
+    url = new URL(next, BASE);
+  } catch {
+    return null;
+  }
+  if (url.origin !== BASE || !url.pathname.startsWith("/")) return null;
+
   return next;
 }

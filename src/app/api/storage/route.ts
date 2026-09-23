@@ -2,10 +2,12 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z, ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
+import { prisma } from "@/lib/db/prisma";
 import { jsonResponse } from "@/lib/http/json";
 import {
   createPresignedDownloadUrl,
   createPresignedUploadUrl,
+  DELETED_PREFIX,
   listStorageObjects,
   softDeleteStorageObject,
   StorageValidationError,
@@ -61,10 +63,16 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const objects = await listStorageObjects({
-      prefix: request.nextUrl.searchParams.get("prefix") ?? undefined,
-      includeDeleted: request.nextUrl.searchParams.get("includeDeleted") === "true",
-    });
+    const prefix = request.nextUrl.searchParams.get("prefix") ?? undefined;
+    const includeDeleted = request.nextUrl.searchParams.get("includeDeleted") === "true";
+
+    // La papelera (`deleted/`) solo la ve ADMIN (igual que el explorador de
+    // archivos, ver lib/storage/explorador.ts#puedeVerPrefijo).
+    if (session.user.rol !== "ADMIN" && (includeDeleted || prefix?.startsWith(DELETED_PREFIX))) {
+      return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+    }
+
+    const objects = await listStorageObjects({ prefix, includeDeleted });
 
     return jsonResponse({ objects });
   } catch (error) {
@@ -93,9 +101,14 @@ export async function POST(request: NextRequest) {
     }
 
     if (payload?.action === "downloadUrl") {
-      const downloadUrl = await createPresignedDownloadUrl(
-        downloadUrlSchema.parse(payload),
-      );
+      const parsed = downloadUrlSchema.parse(payload);
+
+      // Igual que en GET: la papelera solo la puede descargar ADMIN.
+      if (session.user.rol !== "ADMIN" && parsed.storageKey.startsWith(DELETED_PREFIX)) {
+        return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+      }
+
+      const downloadUrl = await createPresignedDownloadUrl(parsed);
 
       return jsonResponse({ downloadUrl });
     }
@@ -110,8 +123,17 @@ export async function POST(request: NextRequest) {
   }
 }
 
+/**
+ * Solo ADMIN: enviar un objeto de la bodega directamente a la papelera
+ * (`deleted/`), sin pasar por el repositorio documental del DO. REVISOR y
+ * OPERATIVO quedaban antes con esta puerta abierta y podían borrar CUALQUIER
+ * archivo con solo conocer su storageKey (sin registro en BD ni AuditLog).
+ * Las claves que SÍ están registradas como Documento activo se rechazan:
+ * esas se eliminan desde `DELETE /api/tramites/[id]/documentos/[documentoId]`,
+ * que además valida permisos por rol y deja su propio AuditLog.
+ */
 export async function DELETE(request: NextRequest) {
-  const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO"]);
+  const session = await requireRole(["ADMIN"]);
 
   if (session instanceof NextResponse) {
     return session;
@@ -123,9 +145,35 @@ export async function DELETE(request: NextRequest) {
         storageKey: z.string().min(1),
       })
       .parse(await request.json());
+
+    const documentoActivo = await prisma.documento.findFirst({
+      where: { storageKey: payload.storageKey, eliminado: false },
+      select: { id: true, tramiteId: true },
+    });
+
+    if (documentoActivo) {
+      return NextResponse.json(
+        {
+          error:
+            "Ese archivo está registrado como documento de un trámite; elimínalo desde el repositorio de documentos del DO.",
+        },
+        { status: 409 },
+      );
+    }
+
     const deleted = await softDeleteStorageObject({
       storageKey: payload.storageKey,
       deletedBy: session.user.id,
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        entidad: "StorageObject",
+        entidadId: payload.storageKey,
+        accion: "DELETE",
+        usuarioId: session.user.id,
+        despues: JSON.parse(JSON.stringify(deleted)),
+      },
     });
 
     return jsonResponse({ deleted });

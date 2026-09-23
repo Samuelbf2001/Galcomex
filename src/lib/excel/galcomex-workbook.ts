@@ -1,4 +1,9 @@
+import * as fs from "node:fs";
 import * as XLSX from "xlsx";
+
+// El build ESM de xlsx no detecta `fs` automáticamente (ver borrador-lucho.ts);
+// sin esto `XLSX.readFile` falla con "Cannot access file" aunque el archivo exista.
+XLSX.set_fs(fs);
 
 export const DEFAULT_DO_SHEET = "BUN26-0026";
 

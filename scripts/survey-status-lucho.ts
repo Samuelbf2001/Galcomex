@@ -14,6 +14,10 @@ import * as XLSX from "xlsx";
 
 import { listDoSheets, readGalcomexWorkbook } from "../src/lib/excel/galcomex-workbook";
 
+// El build ESM de xlsx no detecta `fs` automáticamente; sin esto
+// `XLSX.readFile` falla con "Cannot access file" aunque el archivo exista.
+XLSX.set_fs(fs);
+
 const DOWNLOADS = "C:\\Users\\samue\\Downloads";
 
 export const FILES: Array<{ file: string; clienteNombre: string }> = [

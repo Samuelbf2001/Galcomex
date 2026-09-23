@@ -21,6 +21,7 @@ import { CategoriaDocumento, Rol, TipoCliente } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/lib/db/prisma";
+import { prefijoTramite } from "@/lib/storage/service";
 
 // ─── Mock de storage (igual que service.test.ts) ─────────────────────────────
 vi.mock("@/lib/storage/service", async (importOriginal) => {
@@ -81,6 +82,7 @@ const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2
 
 type Fixture = {
   tramiteId: string;
+  consecutivo: string;
   admin: string;
   revisor: string;
   operativo: string; // sube el documento de prueba
@@ -151,9 +153,11 @@ async function createFixture(): Promise<Fixture> {
     data: { nombre: "Cliente Vitest Permisos Doc", nit: `${runId}-nit`, tipo: TipoCliente.PROPIO },
   });
 
+  const consecutivo = `DO.BAQ05-${runId.slice(-4)}`;
+
   const tramite = await prisma.tramiteDO.create({
     data: {
-      consecutivo: `DO.BAQ05-${runId.slice(-4)}`,
+      consecutivo,
       ciudad: "BAQ",
       anio: 3005,
       numero: Math.floor(Math.random() * 9000) + 1000,
@@ -165,6 +169,7 @@ async function createFixture(): Promise<Fixture> {
 
   return {
     tramiteId: tramite.id,
+    consecutivo,
     admin: admin.id,
     revisor: revisor.id,
     operativo: operativo.id,
@@ -186,7 +191,7 @@ async function crearDocumentoDePrueba(db: Fixture, subidoPorId: string, sufijo: 
     tramiteId: db.tramiteId,
     categoria: CategoriaDocumento.OTRO,
     nombreArchivo: `doc-${sufijo}.pdf`,
-    storageKey: `tramites/DO-TEST-3005/OTRO/${runId}-${sufijo}.pdf`,
+    storageKey: `${prefijoTramite(db.consecutivo)}OTRO/${runId}-${sufijo}.pdf`,
     mimeType: "application/pdf",
     tamanoBytes: 1024,
     subidoPorId,
@@ -270,7 +275,7 @@ describe("reemplazarDocumento — matriz de roles (integración BD)", () => {
       documentoId: doc.id,
       usuarioId: db.admin,
       rol: Rol.ADMIN,
-      storageKey: `tramites/DO-TEST-3005/OTRO/${runId}-admin-nuevo.pdf`,
+      storageKey: `${prefijoTramite(db.consecutivo)}OTRO/${runId}-admin-nuevo.pdf`,
       nombreArchivo: "nuevo-admin.pdf",
       mimeType: "application/pdf",
       tamanoBytes: 2048,
@@ -297,7 +302,7 @@ describe("reemplazarDocumento — matriz de roles (integración BD)", () => {
       documentoId: doc.id,
       usuarioId: db.revisor,
       rol: Rol.REVISOR,
-      storageKey: `tramites/DO-TEST-3005/OTRO/${runId}-revisor-nuevo.pdf`,
+      storageKey: `${prefijoTramite(db.consecutivo)}OTRO/${runId}-revisor-nuevo.pdf`,
       nombreArchivo: "nuevo-revisor.pdf",
       mimeType: "application/pdf",
       tamanoBytes: 3072,
@@ -314,7 +319,7 @@ describe("reemplazarDocumento — matriz de roles (integración BD)", () => {
       documentoId: doc.id,
       usuarioId: db.operativo,
       rol: Rol.OPERATIVO,
-      storageKey: `tramites/DO-TEST-3005/OTRO/${runId}-operativo-nuevo.pdf`,
+      storageKey: `${prefijoTramite(db.consecutivo)}OTRO/${runId}-operativo-nuevo.pdf`,
       nombreArchivo: "nuevo-operativo.pdf",
       mimeType: "application/pdf",
       tamanoBytes: 4096,
