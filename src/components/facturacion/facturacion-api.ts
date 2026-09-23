@@ -835,13 +835,20 @@ export async function sincronizarFacturaDesdeSiigo(
  * ADMIN lo marca como FACTURADO con el flujo manual existente.
  *
  * Si SIIGO falla, lanza FacturacionApiError con el detalle para reintentar.
+ *
+ * `siigoDraftIdAnterior`: pásalo SOLO para "Reenviar" (el borrador de Siigo que
+ * se reemplaza). Sin él, el servidor rechaza un borrador ya enviado.
  */
 export async function enviarBorradorASiigo(
   borradorId: string,
+  siigoDraftIdAnterior: string | null = null,
 ): Promise<{ siigoDraftId: string; enviadoEn: string }> {
   const response = await fetch(`/api/borradores/${borradorId}/siigo-enviar`, {
     method: "POST",
-    headers: { accept: "application/json" },
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify(
+      siigoDraftIdAnterior ? { reenviar: true, siigoDraftIdAnterior } : {},
+    ),
   });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {

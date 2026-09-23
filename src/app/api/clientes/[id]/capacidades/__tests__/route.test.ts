@@ -382,3 +382,57 @@ describe("cascada con grupo económico", () => {
     expect(ajena.origenHabilitado).toBe("DEFECTO");
   });
 });
+
+describe("config por tipo de trámite (requisitos del DO)", () => {
+  it("guarda la lista de tipos de trámite y la devuelve tal cual", async (ctx) => {
+    ensureDb(ctx);
+
+    const response = await capacidadesPUT(
+      putRequest({
+        cambios: [
+          {
+            codigo: "docs_bl_factura_obligatorios",
+            habilitado: true,
+            config: { tiposTramite: ["IMPORTACION", "OTRO"] },
+          },
+        ],
+      }),
+      routeCtx(empresaId),
+    );
+
+    expect(response.status).toBe(200);
+    const docs = buscar(await leerCapacidades(empresaId), "docs_bl_factura_obligatorios");
+    expect(docs.habilitado).toBe(true);
+    expect(docs.config).toEqual({ tiposTramite: ["IMPORTACION", "OTRO"] });
+    expect(docs.origenConfig).toBe("EMPRESA");
+  });
+
+  it("encendidas por defecto con su config de fábrica", async (ctx) => {
+    ensureDb(ctx);
+
+    const capacidades = await leerCapacidades(empresaEnGrupoId);
+    const tarifa = buscar(capacidades, "do_exige_tarifa_vigente");
+    expect(tarifa.habilitado).toBe(true);
+    expect(tarifa.config).toEqual({ tiposTramite: ["IMPORTACION", "CLASIFICACION", "OTRO"] });
+  });
+
+  it("rechaza una config que no es una lista de códigos", async (ctx) => {
+    ensureDb(ctx);
+
+    for (const config of [
+      { tiposTramite: "IMPORTACION" },
+      { tiposTramite: ["importacion"] },
+      { tiposTramite: ["IMPORTACION", "IMPORTACION"] },
+      {},
+    ]) {
+      const response = await capacidadesPUT(
+        putRequest({ cambios: [{ codigo: "do_exige_tarifa_vigente", habilitado: true, config }] }),
+        routeCtx(empresaId),
+      );
+      const payload = (await response.json()) as { details: { campo: string }[] };
+
+      expect(response.status).toBe(400);
+      expect(payload.details.some((d) => d.campo.startsWith("cambios.0.config"))).toBe(true);
+    }
+  });
+});

@@ -13,6 +13,9 @@ export type MovimientoCuentaRow = {
   referencia: string | null;
   /** Id del DO al que pertenece el asiento (si aplica), para enlazarlo. */
   tramiteId: string | null;
+  /** Factura de venta y borrador del asiento (si aplica), para enlazarla con `EnlaceFacturaVenta`. */
+  facturaId: string | null;
+  borradorId: string | null;
   /** Cruce de saldos al que pertenece (las dos puntas comparten id). */
   compensacionId: string | null;
 };
@@ -40,6 +43,8 @@ export type CuentaCorriente = {
   porLinea: SaldoLineaRow[];
   movimientos: MovimientoCuentaRow[];
   cantidad: number;
+  /** Función `cuenta_corriente` encendida para la empresa; apagada, la ficha no muestra la sección. */
+  habilitada: boolean;
   permiteCargosManuales: boolean;
   /** Cuánto se puede cruzar hoy (la punta menor). */
   maximoCompensable: string;
@@ -131,11 +136,16 @@ function normalizar(payload: unknown): CuentaCorriente | null {
             typeof movimiento.referencia === "string" ? movimiento.referencia : null,
           tramiteId:
             typeof movimiento.tramiteId === "string" ? movimiento.tramiteId : null,
+          facturaId:
+            typeof movimiento.facturaId === "string" ? movimiento.facturaId : null,
+          borradorId:
+            typeof movimiento.borradorId === "string" ? movimiento.borradorId : null,
           compensacionId:
             typeof movimiento.compensacionId === "string" ? movimiento.compensacionId : null,
         }))
       : [],
     cantidad: typeof cuenta.cantidad === "number" ? cuenta.cantidad : 0,
+    habilitada: cuenta.habilitada === true,
     permiteCargosManuales: cuenta.permiteCargosManuales === true,
     maximoCompensable: String(cuenta.maximoCompensable ?? "0"),
     compensables: normalizarCompensables(cuenta.compensables),

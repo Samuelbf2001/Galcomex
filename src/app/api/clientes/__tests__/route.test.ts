@@ -33,7 +33,7 @@ vi.mock("@/lib/auth/auth", () => {
 import { auth } from "@/lib/auth/auth";
 import { prisma } from "@/lib/db/prisma";
 import { GET as clientesGET, POST as clientesPOST } from "@/app/api/clientes/route";
-import { GET as clienteByIdGET } from "@/app/api/clientes/[id]/route";
+import { GET as clienteByIdGET, PATCH as clientePATCH } from "@/app/api/clientes/[id]/route";
 
 // ── Setup: sesión ADMIN siempre activa ────────────────────────────────────────
 
@@ -107,6 +107,17 @@ async function postCliente(body: unknown): Promise<Response> {
   );
 }
 
+async function patchCliente(id: string, body: unknown): Promise<Response> {
+  return clientePATCH(
+    makeRequest(`/api/clientes/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    }),
+    routeCtx(id),
+  );
+}
+
 // ── Lifecycle ──────────────────────────────────────────────────────────────────
 
 beforeAll(async () => {
@@ -147,6 +158,9 @@ afterAll(async () => {
   });
   if (extraClientes.length > 0) {
     const ids = extraClientes.map((c) => c.id);
+    // F1: algunos tests marcan esProveedor=true, lo que crea un Beneficiario
+    // enlazado (`asegurarBeneficiarioDeEmpresa`).
+    await prisma.beneficiario.deleteMany({ where: { empresaId: { in: ids } } });
     await prisma.tarifaCliente.deleteMany({ where: { clienteId: { in: ids } } });
     await prisma.cliente.deleteMany({ where: { id: { in: ids } } });
   }
@@ -308,6 +322,152 @@ describe("A1-T2 — API /api/clientes (integración BD)", () => {
       expect(res2.status).toBe(409);
       const body2 = await res2.json() as { error: string };
       expect(body2.error).toMatch(/ya existe/i);
+    });
+  });
+
+  // ── ciudad — round-trip POST/PATCH/GET ───────────────────────────────────────
+
+  describe("ciudad — persiste en POST/PATCH y se refleja en GET", () => {
+    it("POST con ciudad la persiste, PATCH la actualiza y la vacía, y un PATCH sin ciudad no la borra", async (ctx) => {
+      ensureDb(ctx);
+
+      // POST con ciudad
+      const postRes = await postCliente({
+        nombre: "Cliente Test Ciudad",
+        nit: nit("ciudad-roundtrip"),
+        ciudad: "Barranquilla",
+      });
+      expect(postRes.status).toBe(201);
+      const postBody = (await postRes.json()) as { cliente: { id: string; ciudad: string | null } };
+      expect(postBody.cliente.ciudad).toBe("Barranquilla");
+
+      const clienteId = postBody.cliente.id;
+      createdClienteIds.push(clienteId);
+
+      // GET /[id] la refleja
+      const getRes1 = await clienteByIdGET(makeRequest(`/api/clientes/${clienteId}`), routeCtx(clienteId));
+      const getBody1 = (await getRes1.json()) as { cliente: { ciudad: string | null } };
+      expect(getBody1.cliente.ciudad).toBe("Barranquilla");
+
+      // PATCH cambia la ciudad
+      const patchRes1 = await patchCliente(clienteId, { ciudad: "Bogotá" });
+      expect(patchRes1.status).toBe(200);
+      const patchBody1 = (await patchRes1.json()) as { cliente: { ciudad: string | null } };
+      expect(patchBody1.cliente.ciudad).toBe("Bogotá");
+
+      // PATCH sin mencionar `ciudad` (solo nombre) no la toca
+      const patchRes2 = await patchCliente(clienteId, { nombre: "Cliente Test Ciudad (renombrado)" });
+      expect(patchRes2.status).toBe(200);
+      const patchBody2 = (await patchRes2.json()) as { cliente: { ciudad: string | null; nombre: string } };
+      expect(patchBody2.cliente.nombre).toBe("Cliente Test Ciudad (renombrado)");
+      expect(patchBody2.cliente.ciudad).toBe("Bogotá");
+
+      // PATCH con ciudad "" la deja en null
+      const patchRes3 = await patchCliente(clienteId, { ciudad: "" });
+      expect(patchRes3.status).toBe(200);
+      const patchBody3 = (await patchRes3.json()) as { cliente: { ciudad: string | null } };
+      expect(patchBody3.cliente.ciudad).toBeNull();
+
+      // GET /[id] final confirma el null
+      const getRes2 = await clienteByIdGET(makeRequest(`/api/clientes/${clienteId}`), routeCtx(clienteId));
+      const getBody2 = (await getRes2.json()) as { cliente: { ciudad: string | null } };
+      expect(getBody2.cliente.ciudad).toBeNull();
+    });
+  });
+
+  // ── F1 — PATCH parcial no reinicia los defaults ─────────────────────────────
+
+  type ClienteFlags = {
+    tipo: string;
+    activo: boolean;
+    esCliente: boolean;
+    esProveedor: boolean;
+    manejaAnticipo: boolean;
+    ciudad: string | null;
+    contactoNombre: string | null;
+    contactoEmail: string | null;
+    contactoTel: string | null;
+  };
+
+  describe("F1 — PATCH parcial (pop-up de Contacto) no resetea tipo/activo/esCliente/esProveedor/manejaAnticipo/ciudad", () => {
+    it("un PATCH que solo trae contactoNombre/contactoEmail/contactoTel deja intactas las demás banderas de una empresa SOCIO_LM inactiva y solo-proveedor", async (ctx) => {
+      ensureDb(ctx);
+
+      // Empresa deliberadamente "no default": SOCIO_LM, inactiva, solo
+      // proveedor (esCliente=false, esProveedor=true) y sin manejo de
+      // anticipo — lo opuesto de los defaults de clientePayloadSchema.
+      const postRes = await postCliente({
+        nombre: "Cliente F1 Partial Patch",
+        nit: nit("f1-partial-patch"),
+        tipo: TipoCliente.SOCIO_LM,
+        activo: false,
+        esCliente: false,
+        esProveedor: true,
+        manejaAnticipo: false,
+        ciudad: "Cartagena",
+      });
+      expect(postRes.status).toBe(201);
+      const postBody = (await postRes.json()) as { cliente: ClienteFlags & { id: string } };
+      const clienteId = postBody.cliente.id;
+      createdClienteIds.push(clienteId);
+
+      // Confirma que el POST respetó los valores explícitos (no los defaults)
+      expect(postBody.cliente.tipo).toBe(TipoCliente.SOCIO_LM);
+      expect(postBody.cliente.activo).toBe(false);
+      expect(postBody.cliente.esCliente).toBe(false);
+      expect(postBody.cliente.esProveedor).toBe(true);
+      expect(postBody.cliente.manejaAnticipo).toBe(false);
+      expect(postBody.cliente.ciudad).toBe("Cartagena");
+
+      // PATCH solo-contacto, como manda `contacto-editor.tsx`
+      const patchRes = await patchCliente(clienteId, {
+        contactoNombre: "Nuevo Contacto",
+        contactoEmail: "contacto@ejemplo.com",
+        contactoTel: "3001234567",
+      });
+      expect(patchRes.status).toBe(200);
+      const patchBody = (await patchRes.json()) as { cliente: ClienteFlags };
+
+      // Los tres campos de contacto sí se actualizaron
+      expect(patchBody.cliente.contactoNombre).toBe("Nuevo Contacto");
+      expect(patchBody.cliente.contactoEmail).toBe("contacto@ejemplo.com");
+      expect(patchBody.cliente.contactoTel).toBe("3001234567");
+
+      // El resto queda exactamente igual — sin resetear a los defaults
+      expect(patchBody.cliente.tipo).toBe(TipoCliente.SOCIO_LM);
+      expect(patchBody.cliente.activo).toBe(false);
+      expect(patchBody.cliente.esCliente).toBe(false);
+      expect(patchBody.cliente.esProveedor).toBe(true);
+      expect(patchBody.cliente.manejaAnticipo).toBe(false);
+      expect(patchBody.cliente.ciudad).toBe("Cartagena");
+
+      // GET /[id] confirma que quedó persistido así en BD, no solo en la respuesta
+      const getRes = await clienteByIdGET(makeRequest(`/api/clientes/${clienteId}`), routeCtx(clienteId));
+      const getBody = (await getRes.json()) as { cliente: ClienteFlags };
+      expect(getBody.cliente.tipo).toBe(TipoCliente.SOCIO_LM);
+      expect(getBody.cliente.activo).toBe(false);
+      expect(getBody.cliente.esCliente).toBe(false);
+      expect(getBody.cliente.esProveedor).toBe(true);
+      expect(getBody.cliente.manejaAnticipo).toBe(false);
+      expect(getBody.cliente.ciudad).toBe("Cartagena");
+    });
+
+    it("POST sin banderas explícitas sigue aplicando los defaults de negocio", async (ctx) => {
+      ensureDb(ctx);
+
+      const postRes = await postCliente({
+        nombre: "Cliente F1 Defaults",
+        nit: nit("f1-post-defaults"),
+      });
+      expect(postRes.status).toBe(201);
+      const postBody = (await postRes.json()) as { cliente: ClienteFlags & { id: string } };
+      createdClienteIds.push(postBody.cliente.id);
+
+      expect(postBody.cliente.tipo).toBe(TipoCliente.PROPIO);
+      expect(postBody.cliente.activo).toBe(true);
+      expect(postBody.cliente.esCliente).toBe(true);
+      expect(postBody.cliente.esProveedor).toBe(false);
+      expect(postBody.cliente.manejaAnticipo).toBe(true);
     });
   });
 });

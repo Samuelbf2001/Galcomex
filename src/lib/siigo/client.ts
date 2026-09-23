@@ -79,11 +79,17 @@ function leerConfig(): { username: string; accessKey: string; baseUrl: string } 
 
 // ─── Funciones públicas ───────────────────────────────────────────────────────
 
-export async function getToken(): Promise<string> {
+/** Opciones de red comunes; `signal` permite cortar una llamada que no responde. */
+export interface OpcionesLlamadaSiigo {
+  signal?: AbortSignal;
+}
+
+export async function getToken(opciones: OpcionesLlamadaSiigo = {}): Promise<string> {
   const { username, accessKey, baseUrl } = leerConfig();
 
   const response = await fetch(`${baseUrl}/auth/token`, {
     method: "POST",
+    signal: opciones.signal,
     headers: {
       "Content-Type": "application/json",
       "Partner-Id": "galcomex",
@@ -300,11 +306,13 @@ export interface SiigoFacturaPostResponse {
 export async function postFactura(
   token: string,
   dto: SiigoFacturaPostDto,
+  opciones: OpcionesLlamadaSiigo = {},
 ): Promise<SiigoFacturaPostResponse> {
   const { baseUrl } = leerConfig();
 
   const response = await fetch(`${baseUrl}/v1/invoices`, {
     method: "POST",
+    signal: opciones.signal,
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",

@@ -18,6 +18,8 @@ import type { TarifaItemInput } from "@/lib/validations/tarifas";
 
 export type PlantillaTarifario = {
   codigo: string;
+  /** Empresa cuya propuesta es esta plantilla (para el select "Arrancar desde", B2). */
+  cliente: string;
   nombre: string;
   descripcion: string;
   alcance: "TRAMITE" | "CLASIFICACION" | "PLAN_VALLEJO" | "EXPORTACION" | "OTROS";
@@ -87,6 +89,7 @@ function item(parcial: Partial<TarifaItemInput> & Pick<TarifaItemInput, "concept
 /** LITOPLAS S.A. — importaciones y exportaciones aéreas y marítimas por BAQ y CTG. */
 export const PLANTILLA_LITOPLAS_IMPO: PlantillaTarifario = {
   codigo: "LITOPLAS_IMPO_2026",
+  cliente: "Litoplas",
   nombre: "Tarifas 2026 importaciones",
   descripcion: "Propuesta Litoplas 2-feb-2026 → 31-ene-2027: gastos fijos por embarque, documentación por declaración y los circunstanciales (revisión, entrega directa, registro).",
   alcance: "TRAMITE",
@@ -96,7 +99,7 @@ export const PLANTILLA_LITOPLAS_IMPO: PlantillaTarifario = {
     item({ concepto: "REVISION_DESPACHO", nombrePublico: "Servicios logísticos de revisión e inventario en despacho", tipoCalculo: "FIJO", valor: 180_000n, disparador: "EVENTO", eventoCodigo: "REVISION_DESPACHO", orden: 20 }),
     item({ concepto: "ENTREGA_DIRECTA", nombrePublico: "Servicios logísticos de despacho entrega directa", tipoCalculo: "FIJO", valor: 200_000n, disparador: "EVENTO", eventoCodigo: "ENTREGA_DIRECTA", orden: 30 }),
     item({ concepto: "SISTEMATIZACION", nombrePublico: "Sistematización", tipoCalculo: "FIJO", valor: 20_000n, orden: 40 }),
-    item({ concepto: "DOCUMENTACION", nombrePublico: "Documentación", tipoCalculo: "POR_UNIDAD", unidad: "DECLARACION", valor: 10_000n, orden: 50, notas: "La propuesta dice 20.000; en la práctica se cobran 10.000 por declaración (min 13:33). Confirmar con Camila." }),
+    item({ concepto: "DOCUMENTACION", nombrePublico: "Documentación", tipoCalculo: "POR_UNIDAD", unidad: "DECLARACION", valor: 10_000n, orden: 50 }),
     item({ concepto: "DOCUMENTOS_DESPACHO", nombrePublico: "Documentos de despacho", tipoCalculo: "FIJO", valor: 20_000n, orden: 60 }),
     item({ concepto: "PAPELERIA", nombrePublico: "Papelería", tipoCalculo: "FIJO", valor: 10_000n, orden: 70 }),
     item({ concepto: "ELABORACION_REGISTRO", nombrePublico: "Elaboración de registro de importación", tipoCalculo: "FIJO", valor: 433_000n, disparador: "EVENTO", eventoCodigo: "ELABORACION_REGISTRO", orden: 80 }),
@@ -106,6 +109,7 @@ export const PLANTILLA_LITOPLAS_IMPO: PlantillaTarifario = {
 /** LITOPLAS S.A. — clasificación arancelaria, se factura aparte (tipo de trámite CLASIFICACION). */
 export const PLANTILLA_LITOPLAS_CLASIFICACION: PlantillaTarifario = {
   codigo: "LITOPLAS_CLAS_2026",
+  cliente: "Litoplas",
   nombre: "Tarifas 2026 clasificación arancelaria",
   descripcion: "380.000 + IVA el primer ítem y 180.000 + IVA cada ítem adicional del mismo informe.",
   alcance: "CLASIFICACION",
@@ -118,6 +122,7 @@ export const PLANTILLA_LITOPLAS_CLASIFICACION: PlantillaTarifario = {
 /** LITOPLAS S.A. — exportaciones terrestres a Venezuela. */
 export const PLANTILLA_LITOPLAS_EXPO: PlantillaTarifario = {
   codigo: "LITOPLAS_EXPO_2026",
+  cliente: "Litoplas",
   nombre: "Tarifas 2026 exportaciones terrestres",
   descripcion: "Propuesta Litoplas para exportaciones terrestres a Venezuela, misma vigencia.",
   alcance: "EXPORTACION",
@@ -136,6 +141,7 @@ export const PLANTILLA_LITOPLAS_EXPO: PlantillaTarifario = {
 /** CW ASIA SAS — tarifa única sobre el valor en aduana con mínimos por tipo de carga. */
 export const PLANTILLA_CW_ASIA: PlantillaTarifario = {
   codigo: "CW_ASIA_2026",
+  cliente: "CW Asia",
   nombre: "Tarifas 2026 (IPC 5,29 %)",
   descripcion: "Propuesta CW ASIA 11-mar-2026: 0,37 % sobre el valor en aduana con mínimos (suelta 370.000 · 20′ 498.000 · 40′/HQ 554.000), gastos por contenedor y circunstanciales.",
   alcance: "TRAMITE",
@@ -149,14 +155,14 @@ export const PLANTILLA_CW_ASIA: PlantillaTarifario = {
       minimos: { SUELTA: "370000", CONTENEDOR_20: "498000", CONTENEDOR_40: "554000" },
       orden: 10,
     }),
-    item({ concepto: "ELABORACION_REGISTRO", nombrePublico: "Elaboración registro de importación en VUCE (mínimo)", tipoCalculo: "FIJO", valor: 280_000n, disparador: "EVENTO", eventoCodigo: "ELABORACION_REGISTRO", orden: 20, notas: "Cuando no sea mínimo: 30.000 por cada 5.000 caracteres (mismo valor que cobra Mincomex). Ajustar a mano." }),
+    item({ concepto: "ELABORACION_REGISTRO", nombrePublico: "Elaboración registro de importación en VUCE (mínimo)", tipoCalculo: "FIJO", valor: 280_000n, disparador: "EVENTO", eventoCodigo: "ELABORACION_REGISTRO", orden: 20 }),
     item({ concepto: "MODIFICACION_REGISTRO", nombrePublico: "Modificación de registro de importación", tipoCalculo: "POR_UNIDAD", valor: 100_000n, disparador: "EVENTO", eventoCodigo: "MODIFICACION_REGISTRO", orden: 30 }),
     item({ concepto: "GASTOS_TRAMITE", nombrePublico: "Gastos de trámite por contenedor", tipoCalculo: "POR_UNIDAD", unidad: "CONTENEDOR", valor: 100_000n, orden: 40 }),
     item({ concepto: "DESPACHO_PARCIAL", nombrePublico: "Gastos de trámite por despacho parcial", tipoCalculo: "POR_UNIDAD", valor: 50_000n, disparador: "EVENTO", eventoCodigo: "DESPACHO_PARCIAL", orden: 50 }),
     item({ concepto: "SISTEMATIZACION", nombrePublico: "Sistematización de archivos", tipoCalculo: "FIJO", valor: 30_000n, orden: 60 }),
     item({ concepto: "DOCUMENTACION", nombrePublico: "Revisión y clasificación documental por archivo", tipoCalculo: "POR_UNIDAD", unidad: "DOCUMENTO", valor: 20_000n, orden: 70 }),
     item({ concepto: "INGRESO_ZF", nombrePublico: "Servicio trámite de ingreso ZF por contenedor", tipoCalculo: "POR_UNIDAD", valor: 166_000n, disparador: "EVENTO", eventoCodigo: "INGRESO_ZF", orden: 80 }),
-    item({ concepto: "PAGO_REGISTRO", nombrePublico: "Pago del registro de importación (VUCE)", tipoCalculo: "ESPEJO_DE_COSTO", conceptoCosto: "registro", aplicaIva: false, orden: 90, notas: "Ingreso de tercero: se cobra lo mismo que se pagó en la página (min 78:14 a 79:04)." }),
+    item({ concepto: "PAGO_REGISTRO", nombrePublico: "Pago del registro de importación (VUCE)", tipoCalculo: "ESPEJO_DE_COSTO", conceptoCosto: "registro", aplicaIva: false, orden: 90 }),
   ],
 };
 
@@ -168,6 +174,7 @@ export const PLANTILLA_CW_ASIA: PlantillaTarifario = {
  */
 export const PLANTILLA_POLYREC_ZF: PlantillaTarifario = {
   codigo: "POLYREC_ZF_2026",
+  cliente: "Polyrec Zona Franca",
   nombre: "Traslados zona franca 2026",
   descripcion: "Traslado de contenedores en zona franca: 300.000 si es un contenedor; 250.000 por contenedor si son dos o más.",
   alcance: "TRAMITE",
@@ -183,7 +190,6 @@ export const PLANTILLA_POLYREC_ZF: PlantillaTarifario = {
         { hasta: null, valor: "250000" },
       ],
       orden: 10,
-      notas: "El precio del tramo aplica a todos los contenedores del trámite: 2 contenedores = 500.000, no 550.000.",
     }),
   ],
 };

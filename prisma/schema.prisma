@@ -108,6 +108,8 @@ model Cliente {
   contactoNombre String?
   contactoEmail  String?
   contactoTel    String?
+  /// Ciudad de la empresa; sale en la cotización (PDF del tarifario).
+  ciudad         String?
   /// @deprecated Migrado a la capacidad `anticipos_cliente`. Se mantiene
   /// sincronizado durante la transición; leer vía `capacidadesDe()`.
   manejaAnticipo Boolean     @default(true)
@@ -348,9 +350,33 @@ model TipoTramite {
   agenciaAduanasPorDefecto  AgenciaAduanas?
   requiereEta               Boolean         @default(true)
   usaChecklist              Boolean         @default(true)
+  /// Muestra "DO Agencia" y "DO Cliente" en la cabecera del DO y en el modal
+  /// de creación. false en CLASIFICACION: ese tipo no tiene DO de agencia ni
+  /// de cliente, solo el número que asigna la clasificadora (ver
+  /// `etiquetaReferenciaExterna`).
+  usaCamposDo               Boolean         @default(true)
   /// Etiqueta del número externo de referencia (el consecutivo que asigna la
   /// clasificadora: 2110, 2117, 2140). Null = el tipo no lleva referencia externa.
   etiquetaReferenciaExterna String?
+
+  // Base de cálculo del tarifario (M2/M3) — revisión de Ernesto 22-sep-2026.
+  /// Subconjunto de valorCif, tipoCarga, numContenedores, numDeclaraciones,
+  /// numDocumentos, numItems que aplica a este tipo. El panel "Base de cálculo
+  /// y eventos" del DO solo muestra estos campos. CLASIFICACION solo usa
+  /// numItems (el motor de tarifas la cobra por ítem); IMPORTACION y OTRO usan
+  /// los seis, igual que siempre.
+  camposBaseCalculo String[] @default(["valorCif", "tipoCarga", "numContenedores", "numDeclaraciones", "numDocumentos", "numItems"])
+  /// Muestra la lista de eventos del catálogo en "Base de cálculo y eventos".
+  /// false en CLASIFICACION: la tarifa de clasificación no depende de eventos.
+  usaEventos        Boolean  @default(true)
+
+  /// Fechas clave del DO que aplican a este tipo (revisión de Ernesto
+  /// 22-sep-2026, tanda 2). Subconjunto de fechaAceptacionDeclaracion,
+  /// fechaLevante, fechaEnviadoAFacturar, fechaDocumentosOk, fechaSalidaCarga.
+  /// El bloque "Fechas clave" del DO solo muestra estas. CLASIFICACION solo
+  /// usa fechaDocumentosOk y fechaEnviadoAFacturar (sin declaración, levante
+  /// ni salida de carga); IMPORTACION y OTRO usan las cinco, igual que siempre.
+  fechasClave String[] @default(["fechaAceptacionDeclaracion", "fechaLevante", "fechaEnviadoAFacturar", "fechaDocumentosOk", "fechaSalidaCarga"])
 
   orden     Int      @default(0)
   activo    Boolean  @default(true)

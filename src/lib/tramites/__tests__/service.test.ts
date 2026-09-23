@@ -28,6 +28,16 @@ const IMPORTACION: ConfigConsecutivo = {
   incluyeCiudadEnConsecutivo: true,
 };
 
+/**
+ * Estos tests no son sobre los requisitos D1/D2 (tarifa vigente, BL + factura
+ * comercial), que vienen encendidos por defecto: las empresas de prueba los
+ * tienen apagados. Esas reglas se prueban en `requisitos.integration.test.ts`.
+ */
+const SIN_REQUISITOS_DO = [
+  { codigo: "do_exige_tarifa_vigente", habilitado: false },
+  { codigo: "docs_bl_factura_obligatorios", habilitado: false },
+];
+
 const TEST_PREFIX = "vitest-tramites";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const templatePrefix = "000 Vitest Tramites";
@@ -155,6 +165,7 @@ async function createFixture(): Promise<Fixture> {
       nombre: "Cliente Vitest Tramites",
       nit: `${runId}-nit`,
       tipo: TipoCliente.PROPIO,
+      capacidades: { create: SIN_REQUISITOS_DO },
     },
   });
 
@@ -307,6 +318,7 @@ describe("tramites service con Postgres local", () => {
         tipo: TipoCliente.PROPIO,
         capacidades: {
           create: [
+            ...SIN_REQUISITOS_DO,
             { codigo: "clasificacion_arancelaria", habilitado: true },
             {
               codigo: "regla_agencia_fija",
@@ -411,6 +423,7 @@ describe("tramites service con Postgres local", () => {
           nombre: "Cliente Vitest Filtros Propio",
           nit: `${runId}-list-propio`,
           tipo: TipoCliente.PROPIO,
+          capacidades: { create: SIN_REQUISITOS_DO },
         },
       });
       const socio = await prisma.cliente.create({
@@ -418,6 +431,7 @@ describe("tramites service con Postgres local", () => {
           nombre: "Cliente Vitest Filtros Socio",
           nit: `${runId}-list-socio`,
           tipo: TipoCliente.SOCIO_LM,
+          capacidades: { create: SIN_REQUISITOS_DO },
         },
       });
 
@@ -661,6 +675,116 @@ describe("tramites service con Postgres local", () => {
 
       expect(ids).toContain(socio.id);
       expect(ids).not.toContain(propio.id);
+      void db;
+    });
+  });
+
+  // A8 — Columnas ordenables del listado (revisión de Ernesto, 22-sep-2026).
+  // El builder puro (`construirOrdenTramites`) ya se prueba exhaustivamente
+  // sin BD en `orden.test.ts`; aquí solo se confirma el cableado end-to-end
+  // con Postgres para dos columnas representativas (relación y enum).
+  describe("listTramites - orden (A8)", () => {
+    it("ordenarPor=cliente ordena por el nombre de la empresa (asc)", async (ctx) => {
+      const db = ensureDb(ctx);
+      const token = `${runId}-orden-cliente`;
+      const zebra = await prisma.cliente.create({
+        data: {
+          nombre: `Zebra Vitest ${token}`,
+          nit: `${token}-z`,
+          tipo: TipoCliente.PROPIO,
+          capacidades: { create: SIN_REQUISITOS_DO },
+        },
+      });
+      const alfa = await prisma.cliente.create({
+        data: {
+          nombre: `Alfa Vitest ${token}`,
+          nit: `${token}-a`,
+          tipo: TipoCliente.PROPIO,
+          capacidades: { create: SIN_REQUISITOS_DO },
+        },
+      });
+
+      await createTramite(
+        createInput({ clienteId: zebra.id, comentarios: `${TEST_PREFIX}:${runId}:orden:cliente:zebra` }),
+      );
+      await createTramite(
+        createInput({ clienteId: alfa.id, comentarios: `${TEST_PREFIX}:${runId}:orden:cliente:alfa` }),
+      );
+
+      const result = await listTramites(
+        { q: token, ordenarPor: "cliente", direccion: "asc", take: 10 },
+        {},
+      );
+
+      expect(result.tramites.map((t) => t.cliente.nombre)).toEqual([
+        `Alfa Vitest ${token}`,
+        `Zebra Vitest ${token}`,
+      ]);
+      void db;
+    });
+
+    it("ordenarPor=estado ordena por el pipeline (SOLICITUD antes que EN_PUERTO)", async (ctx) => {
+      const db = ensureDb(ctx);
+      const cliente = await prisma.cliente.create({
+        data: {
+          nombre: `Cliente Vitest Orden Estado ${runId}`,
+          nit: `${runId}-orden-estado`,
+          tipo: TipoCliente.PROPIO,
+          capacidades: { create: SIN_REQUISITOS_DO },
+        },
+      });
+
+      const enPuerto = await createTramite(
+        createInput({ clienteId: cliente.id, comentarios: `${TEST_PREFIX}:${runId}:orden:estado:en-puerto` }),
+      );
+      await prisma.tramiteDO.update({
+        where: { id: enPuerto.id },
+        data: { estado: EstadoTramite.EN_PUERTO },
+      });
+      const solicitud = await createTramite(
+        createInput({ clienteId: cliente.id, comentarios: `${TEST_PREFIX}:${runId}:orden:estado:solicitud` }),
+      );
+
+      const result = await listTramites(
+        { clienteId: cliente.id, ordenarPor: "estado", direccion: "asc", take: 10 },
+        {},
+      );
+
+      expect(result.tramites.map((t) => t.id)).toEqual([solicitud.id, enPuerto.id]);
+      void db;
+    });
+
+    it("sin ordenarPor mantiene el orden de siempre (el que usa la vista kanban)", async (ctx) => {
+      const db = ensureDb(ctx);
+      const cliente = await prisma.cliente.create({
+        data: {
+          nombre: `Cliente Vitest Orden Defecto ${runId}`,
+          nit: `${runId}-orden-defecto`,
+          tipo: TipoCliente.PROPIO,
+          capacidades: { create: SIN_REQUISITOS_DO },
+        },
+      });
+      const primero = await createTramite(
+        createInput({
+          clienteId: cliente.id,
+          ciudad: Ciudad.BAQ,
+          anio: 2050,
+          comentarios: `${TEST_PREFIX}:${runId}:orden:defecto:1`,
+        }),
+      );
+      const segundo = await createTramite(
+        createInput({
+          clienteId: cliente.id,
+          ciudad: Ciudad.BAQ,
+          anio: 2050,
+          comentarios: `${TEST_PREFIX}:${runId}:orden:defecto:2`,
+        }),
+      );
+
+      const result = await listTramites({ clienteId: cliente.id, take: 10 }, {});
+
+      // Orden de siempre: numero desc -> el ultimo creado primero.
+      expect(result.tramites.map((t) => t.id)).toEqual([segundo.id, primero.id]);
       void db;
     });
   });

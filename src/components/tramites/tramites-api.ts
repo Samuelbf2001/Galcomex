@@ -34,6 +34,23 @@ export type TramiteFilters = {
   facturado?: FacturadoFilter;
 };
 
+/**
+ * Columnas ordenables de la tabla de trámites (A8). Referencia (coalesce de
+ * doAgencia/doCliente/proveedorCliente) y Docs (conteo calculado en el
+ * cliente) no están: no son ordenables.
+ */
+export type CampoOrdenTramite =
+  | "consecutivo"
+  | "cliente"
+  | "estado"
+  | "ciudad"
+  | "modalidad"
+  | "apertura"
+  | "movimiento"
+  | "responsable";
+
+export type OrdenTramites = { campo: CampoOrdenTramite; direccion: "asc" | "desc" };
+
 const allFilterValue = "todos";
 
 /** Tamaño de página por defecto de la lista maestra (el API admite hasta 200). */
@@ -50,7 +67,11 @@ export type TramitesPage = {
   total: number;
 };
 
-function buildTramitesQuery(filters?: TramiteFilters, page?: TramitesPageOptions): string {
+function buildTramitesQuery(
+  filters?: TramiteFilters,
+  page?: TramitesPageOptions,
+  orden?: OrdenTramites | null,
+): string {
   const params = new URLSearchParams();
   const q = filters?.q?.trim();
 
@@ -60,6 +81,11 @@ function buildTramitesQuery(filters?: TramiteFilters, page?: TramitesPageOptions
 
   if (page?.skip !== undefined && page.skip > 0) {
     params.set("skip", String(page.skip));
+  }
+
+  if (orden) {
+    params.set("ordenarPor", orden.campo);
+    params.set("direccion", orden.direccion);
   }
 
   if (!filters) {
@@ -104,6 +130,8 @@ export type TipoTramiteOption = {
   requiereAgenciaAduanas: boolean;
   requiereEta: boolean;
   etiquetaReferenciaExterna: string | null;
+  /** Muestra "DO agencia"/"DO cliente" en el formulario. false en CLASIFICACION. */
+  usaCamposDo: boolean;
 };
 
 /** Agencia fija de la empresa (capacidad regla_agencia_fija), si la tiene. */
@@ -136,11 +164,27 @@ export type CreateTramiteInput = {
 
 export class TramitesApiError extends Error {
   status?: number;
+  /**
+   * Código estable del bloqueo cuando el servidor lo manda (p. ej.
+   * `TARIFA_VIGENTE_REQUERIDA` al crear un DO sin tarifa vigente).
+   */
+  codigo?: string;
+  /** Datos del bloqueo (p. ej. `{ clienteId, lineaServicio, tipoTramiteCodigo }`). */
+  detalles?: Record<string, unknown>;
+  /** Checklist pendiente cuando el bloqueo es "Checklist requerido incompleto". */
+  faltantes?: string[];
 
-  constructor(message: string, status?: number) {
+  constructor(
+    message: string,
+    status?: number,
+    extra?: { codigo?: string; detalles?: Record<string, unknown>; faltantes?: string[] },
+  ) {
     super(message);
     this.name = "TramitesApiError";
     this.status = status;
+    this.codigo = extra?.codigo;
+    this.detalles = extra?.detalles;
+    this.faltantes = extra?.faltantes;
   }
 }
 
@@ -176,6 +220,23 @@ function readNestedClienteId(record: Record<string, unknown>): string | null {
     return cliente.id;
   }
   return null;
+}
+
+/**
+ * Tipos con `usaCamposDo=false` (CLASIFICACION) no tienen DO agencia/cliente:
+ * la columna "Referencia" de la lista debe mostrar `referenciaExterna` (el
+ * número de la clasificadora) en vez del coalesce de siempre.
+ */
+function referenciaExternaSiAplica(record: Record<string, unknown>): string | null {
+  const tipoTramite = record.tipoTramite;
+  const usaCamposDo = isRecord(tipoTramite) ? tipoTramite.usaCamposDo !== false : true;
+
+  if (usaCamposDo) {
+    return null;
+  }
+
+  const valor = record.referenciaExterna;
+  return typeof valor === "string" && valor.trim() ? valor.trim() : null;
 }
 
 function readText(record: Record<string, unknown>, keys: string[]): string {
@@ -283,7 +344,7 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
     estado: readText(row, textKeys.estado) || "Sin estado",
     ciudad: readText(row, textKeys.ciudad) || "Sin ciudad",
     modalidad: readText(row, textKeys.modalidad) || "Sin modalidad",
-    referencia: readText(row, textKeys.referencia) || "-",
+    referencia: referenciaExternaSiAplica(row) ?? (readText(row, textKeys.referencia) || "-"),
     fechaApertura: formatDate(readText(row, textKeys.fechaApertura)) || "-",
     ultimoMovimiento: formatDate(readText(row, textKeys.ultimoMovimiento)) || "-",
     responsable: readText(row, textKeys.responsable) || "Sin asignar",
@@ -307,11 +368,12 @@ export async function fetchTramitesPage(
   signal?: AbortSignal,
   filters?: TramiteFilters,
   page: TramitesPageOptions = { take: TRAMITES_PAGE_SIZE, skip: 0 },
+  orden?: OrdenTramites | null,
 ): Promise<TramitesPage> {
   let response: Response;
 
   try {
-    response = await fetch(`/api/tramites${buildTramitesQuery(filters, page)}`, {
+    response = await fetch(`/api/tramites${buildTramitesQuery(filters, page, orden)}`, {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal,
@@ -449,6 +511,7 @@ export async function fetchTiposTramiteEmpresa(
       typeof tipo.etiquetaReferenciaExterna === "string"
         ? tipo.etiquetaReferenciaExterna
         : null,
+    usaCamposDo: tipo.usaCamposDo !== false,
   }));
 
   return { tipos, reglaAgencia };
@@ -472,7 +535,7 @@ export async function createTramite(input: CreateTramiteInput): Promise<TramiteR
         ? payload.error
         : "No fue posible crear el trámite.";
 
-    throw new TramitesApiError(message, response.status);
+    throw new TramitesApiError(message, response.status, extraDeError(payload));
   }
 
   if (!isRecord(payload)) {
@@ -486,4 +549,188 @@ export async function createTramite(input: CreateTramiteInput): Promise<TramiteR
   }
 
   return row;
+}
+
+/** Resultado de `cambiarEstadoTramite` (F6): el trámite actualizado + lo que el ADMIN se saltó. */
+export type CambioEstadoResultado<T = Record<string, unknown>> = {
+  tramite: T;
+  /**
+   * Requisitos que el ADMIN se saltó con su excepción (checklist, BL y
+   * factura comercial) — vacío en una transición normal. El llamador decide
+   * cómo mostrarlas (toast de advertencia tras el de éxito).
+   */
+  advertencias: string[];
+};
+
+/**
+ * POST /api/tramites/[id]/estado — mueve el trámite a otro estado del
+ * pipeline. Único punto de llamada al endpoint (F6): antes cada pantalla
+ * (ficha del DO, kanban) hacía su propio `fetch` y descartaba `advertencias`
+ * en silencio; ahora todas pasan por acá y el llamador puede avisarle al
+ * usuario que se saltó un requisito.
+ */
+export async function cambiarEstadoTramite<T = Record<string, unknown>>(
+  tramiteId: string,
+  estado: string,
+): Promise<CambioEstadoResultado<T>> {
+  const response = await fetch(`/api/tramites/${tramiteId}/estado`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ estado }),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `No fue posible cambiar el estado (${response.status}).`;
+    const faltantes =
+      isRecord(payload) && Array.isArray(payload.faltantes)
+        ? (payload.faltantes as string[])
+        : undefined;
+
+    throw new TramitesApiError(message, response.status, { ...extraDeError(payload), faltantes });
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.tramite)) {
+    throw new TramitesApiError("Respuesta inesperada al cambiar estado.");
+  }
+
+  return {
+    tramite: payload.tramite as T,
+    advertencias: Array.isArray(payload.advertencias)
+      ? payload.advertencias.filter((a): a is string => typeof a === "string")
+      : [],
+  };
+}
+
+/**
+ * Título + descripción para el toast de advertencia tras un cambio de estado
+ * con `advertencias` (F6) — p. ej. "Se avanzó saltando requisitos: falta el
+ * BL y la factura comercial…". `null` si no hubo ninguna (transición normal).
+ */
+export function mensajeAdvertenciasEstado(
+  advertencias: string[],
+): { title: string; description: string } | null {
+  if (advertencias.length === 0) return null;
+  return { title: "Se avanzó saltando requisitos", description: advertencias.join(" ") };
+}
+
+// ─── Requisitos del DO (tarifa vigente, BL + factura comercial) ──────────────
+
+/** `codigo`/`detalles` de un error del API, si vienen (ver `TramitesApiError`). */
+function extraDeError(payload: unknown): { codigo?: string; detalles?: Record<string, unknown> } {
+  if (!isRecord(payload)) return {};
+  return {
+    codigo: typeof payload.codigo === "string" ? payload.codigo : undefined,
+    detalles: isRecord(payload.detalles) ? payload.detalles : undefined,
+  };
+}
+
+/** Códigos de bloqueo que manda el servidor al crear o mover un DO. */
+export const CODIGO_TARIFA_VIGENTE_REQUERIDA = "TARIFA_VIGENTE_REQUERIDA";
+export const CODIGO_DOCUMENTOS_OBLIGATORIOS_FALTANTES = "DOCUMENTOS_OBLIGATORIOS_FALTANTES";
+
+/** Categorías de documento que exige la función "BL y factura comercial obligatorios". */
+export type DocumentoObligatorioCodigo = "BL" | "FACTURA_COMERCIAL";
+
+export const ETIQUETA_DOCUMENTO_OBLIGATORIO: Record<DocumentoObligatorioCodigo, string> = {
+  BL: "BL o guía",
+  FACTURA_COMERCIAL: "Factura comercial",
+};
+
+/** Respuesta de `GET /api/tramites/requisitos`. */
+export type RequisitosDo = {
+  tarifaVigente: {
+    /** La empresa tiene encendida "DO solo con tarifa vigente" para este tipo. */
+    requerida: boolean;
+    /** `true` si no se exige o si hay tarifa vigente hoy: se puede crear el DO. */
+    cumple: boolean;
+    /** Línea de servicio del tipo (TRAMITE, CLASIFICACION, OTROS…). */
+    lineaServicio: string;
+    /** Tarifa vigente hoy para esa línea (se exija o no). */
+    tarifario: { id: string; nombre: string; version: number; vigenteHasta: string } | null;
+    /** Sin "Tarifario propio versionado" la empresa no puede cargar tarifas: hay que activarlo primero. */
+    tarifarioPropioHabilitado: boolean;
+    /** El mismo texto que devolvería el servidor al crear; `null` si cumple. */
+    mensaje: string | null;
+  };
+  documentosObligatorios: {
+    /** Documentos que el DO debe tener (vacío = ninguno). Se suben justo después de crearlo. */
+    requeridos: DocumentoObligatorioCodigo[];
+  };
+};
+
+function esDocumentoObligatorio(valor: unknown): valor is DocumentoObligatorioCodigo {
+  return valor === "BL" || valor === "FACTURA_COMERCIAL";
+}
+
+function normalizarRequisitos(payload: unknown): RequisitosDo {
+  const tarifa = isRecord(payload) && isRecord(payload.tarifaVigente) ? payload.tarifaVigente : {};
+  const documentos =
+    isRecord(payload) && isRecord(payload.documentosObligatorios)
+      ? payload.documentosObligatorios
+      : {};
+  const tarifario = isRecord(tarifa.tarifario) ? tarifa.tarifario : null;
+
+  return {
+    tarifaVigente: {
+      requerida: tarifa.requerida === true,
+      // Ante una respuesta rara no se bloquea en el navegador: el servidor manda.
+      cumple: tarifa.cumple !== false,
+      lineaServicio: typeof tarifa.lineaServicio === "string" ? tarifa.lineaServicio : "",
+      tarifario:
+        tarifario && typeof tarifario.id === "string"
+          ? {
+              id: tarifario.id,
+              nombre: typeof tarifario.nombre === "string" ? tarifario.nombre : "",
+              version: typeof tarifario.version === "number" ? tarifario.version : 0,
+              vigenteHasta: typeof tarifario.vigenteHasta === "string" ? tarifario.vigenteHasta : "",
+            }
+          : null,
+      tarifarioPropioHabilitado: tarifa.tarifarioPropioHabilitado === true,
+      mensaje: typeof tarifa.mensaje === "string" ? tarifa.mensaje : null,
+    },
+    documentosObligatorios: {
+      requeridos: Array.isArray(documentos.requeridos)
+        ? documentos.requeridos.filter(esDocumentoObligatorio)
+        : [],
+    },
+  };
+}
+
+/**
+ * Qué le exige el sistema a un DO de esta empresa y tipo ANTES de crearlo:
+ * tarifa vigente (si no cumple, llevar a `/clientes/{clienteId}?abrir=tarifas`)
+ * y documentos obligatorios (pedirlos en el formulario).
+ */
+export async function fetchRequisitosDo(
+  clienteId: string,
+  tipoTramiteCodigo?: string,
+  signal?: AbortSignal,
+): Promise<RequisitosDo> {
+  const params = new URLSearchParams({ clienteId });
+  if (tipoTramiteCodigo) params.set("tipoTramiteCodigo", tipoTramiteCodigo);
+
+  const response = await fetch(`/api/tramites/requisitos?${params.toString()}`, {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new TramitesApiError(
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : "No fue posible consultar los requisitos del DO.",
+      response.status,
+      extraDeError(payload),
+    );
+  }
+
+  return normalizarRequisitos(payload);
 }

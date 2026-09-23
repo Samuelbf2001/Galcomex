@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
@@ -600,11 +601,10 @@ export function ModalFacturaProveedor({
 
             <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
-              <input
+              <CampoMoneda
                 value={valorRaw}
-                onChange={(e) => setValorRaw(e.target.value)}
+                onValueChange={setValorRaw}
                 placeholder="1.000.000"
-                inputMode="numeric"
                 required
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />

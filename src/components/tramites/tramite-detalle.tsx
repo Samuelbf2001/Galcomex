@@ -25,6 +25,7 @@ import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import type { Rol } from "@/lib/auth/auth";
 import { useRol } from "@/lib/auth/rol-context";
+import { fechasClaveVisibles, visibilidadCabeceraDo } from "@/lib/tramites/cabecera-do";
 
 import {
   RegistrarAnticipoTramiteModal,
@@ -52,6 +53,7 @@ import {
 import { InlineTramiteField } from "@/components/tramites/inline-tramite-field";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import { SeccionEventosTramite } from "@/components/tramites/seccion-eventos-tramite";
+import { cambiarEstadoTramite, mensajeAdvertenciasEstado } from "@/components/tramites/tramites-api";
 import {
   type FacturaProveedorRow,
   solicitarFacturacion,
@@ -145,6 +147,16 @@ type TramiteDetalleData = {
     etiquetaReferenciaExterna: string | null;
     facturacionSeparada: boolean;
     lineaServicio: string;
+    /** Muestra "ETA" en la cabecera. */
+    requiereEta: boolean;
+    /** Muestra "DO Agencia" y "DO Cliente" en la cabecera. false en CLASIFICACION. */
+    usaCamposDo: boolean;
+    /** Campos de la base de cálculo que aplica este tipo (M2/M3). */
+    camposBaseCalculo: string[];
+    /** Muestra la lista de eventos en "Base de cálculo y eventos". */
+    usaEventos: boolean;
+    /** Fechas clave del DO que aplica este tipo. CLASIFICACION solo lleva 2. */
+    fechasClave: string[];
   } | null;
   checklistItems: ChecklistItem[];
   estadoLogs?: EstadoLogEntry[];
@@ -230,6 +242,7 @@ function accionLabel(accion: string): string {
     CREATE: "Trámite creado",
     UPDATE: "Datos actualizados",
     UPDATE_ESTADO: "Cambio de estado",
+    OMITIR_REQUISITOS: "Avanzó con requisitos pendientes (excepción de ADMIN)",
     APPROVE: "Borrador aprobado",
     FACTURAR: "Factura generada",
   };
@@ -303,35 +316,6 @@ async function patchFechasClave(
   return payload.tramite as TramiteDetalleData;
 }
 
-async function patchEstado(
-  tramiteId: string,
-  estado: string,
-): Promise<TramiteDetalleData> {
-  const res = await fetch(`/api/tramites/${tramiteId}/estado`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ estado }),
-  });
-
-  let faltantes: string[] | undefined;
-  if (!res.ok) {
-    let msg = `Error ${res.status}`;
-    try {
-      const payload: unknown = await res.json();
-      if (isRecord(payload)) {
-        if (typeof payload.error === "string") msg = payload.error;
-        if (Array.isArray(payload.faltantes)) faltantes = payload.faltantes as string[];
-      }
-    } catch { /* ignore */ }
-    throw Object.assign(new Error(msg), { faltantes });
-  }
-
-  const payload: unknown = await res.json();
-  if (!isRecord(payload) || !isRecord(payload.tramite)) {
-    throw new Error("Respuesta inesperada al cambiar estado.");
-  }
-  return payload.tramite as TramiteDetalleData;
-}
 
 // ─── Sub-componentes ──────────────────────────────────────────────────────────
 
@@ -363,7 +347,7 @@ function InlineDateField({ label, fieldKey, value, tramiteId, editable, onSaved 
 
 type InlineTextFieldProps = {
   label: string;
-  fieldKey: "doAgencia" | "doCliente" | "comentarios";
+  fieldKey: "doAgencia" | "doCliente" | "comentarios" | "referenciaExterna";
   value: string | null;
   tramiteId: string;
   onSaved: (updated: TramiteDetalleData) => void;
@@ -406,12 +390,21 @@ function CambioEstadoButton({
     setError(null);
     setFaltantes([]);
     try {
-      const updated = await patchEstado(tramite.id, selected);
+      const { tramite: updated, advertencias } = await cambiarEstadoTramite<TramiteDetalleData>(
+        tramite.id,
+        selected,
+      );
       toast({
         title: "Estado actualizado",
         description: `${tramite.consecutivo} → ${selected.replace(/_/g, " ")}`,
         variant: "success",
       });
+      // F6: el ADMIN pudo haber saltado requisitos (checklist, BL, factura
+      // comercial) con su excepción — se avisa aparte para que no pase inadvertido.
+      const advertencia = mensajeAdvertenciasEstado(advertencias);
+      if (advertencia) {
+        toast({ ...advertencia, variant: "warning" });
+      }
       setSelected("");
       onChanged(updated);
     } catch (caught) {
@@ -688,6 +681,10 @@ function TabResumen({
   const estadoIdx = PIPELINE.indexOf(tramite.estado);
   const checklistEditable =
     puedeEditar && estadoIdx !== -1 && estadoIdx <= PIPELINE.indexOf("APERTURA");
+  const { etiquetaReferenciaExterna, muestraCamposDo, muestraEta } = visibilidadCabeceraDo(
+    tramite.tipoTramite,
+  );
+  const fechasVisibles = fechasClaveVisibles(tramite.tipoTramite);
 
   return (
     <div className="space-y-6">
@@ -713,37 +710,55 @@ function TabResumen({
             </span>
           ) : null}
         </div>
-        {tramite.referenciaExterna ? (
+        {etiquetaReferenciaExterna ? (
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              {tramite.tipoTramite?.etiquetaReferenciaExterna ?? "Referencia externa"}
-            </p>
-            <p className="mt-0.5 font-mono font-semibold text-slate-800">
-              {tramite.referenciaExterna}
-            </p>
+            {puedeEditar ? (
+              <InlineTextField
+                label={etiquetaReferenciaExterna}
+                fieldKey="referenciaExterna"
+                value={tramite.referenciaExterna ?? null}
+                tramiteId={tramite.id}
+                onSaved={onFieldSaved}
+              />
+            ) : (
+              <>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  {etiquetaReferenciaExterna}
+                </p>
+                <p className="mt-0.5 font-mono font-semibold text-slate-800">
+                  {tramite.referenciaExterna ?? "—"}
+                </p>
+              </>
+            )}
           </div>
         ) : null}
-        <div>
-          {puedeEditar ? (
-            <InlineTextField
-              label="DO Agencia"
-              fieldKey="doAgencia"
-              value={tramite.doAgencia}
-              tramiteId={tramite.id}
-              onSaved={onFieldSaved}
-            />
-          ) : tramite.doAgencia ? (
-            <>
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Agencia</p>
-              <p className="mt-0.5 font-semibold text-slate-800">{tramite.doAgencia}</p>
-            </>
-          ) : null}
-        </div>
-        {puedeEditar ? <InlineTextField label="DO Cliente" fieldKey="doCliente" value={tramite.doCliente} tramiteId={tramite.id} onSaved={onFieldSaved} /> : tramite.doCliente ? (
+        {muestraCamposDo ? (
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Cliente</p>
-            <p className="mt-0.5 font-semibold text-slate-800">{tramite.doCliente}</p>
+            {puedeEditar ? (
+              <InlineTextField
+                label="DO Agencia"
+                fieldKey="doAgencia"
+                value={tramite.doAgencia}
+                tramiteId={tramite.id}
+                onSaved={onFieldSaved}
+              />
+            ) : tramite.doAgencia ? (
+              <>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Agencia</p>
+                <p className="mt-0.5 font-semibold text-slate-800">{tramite.doAgencia}</p>
+              </>
+            ) : null}
           </div>
+        ) : null}
+        {muestraCamposDo ? (
+          puedeEditar ? (
+            <InlineTextField label="DO Cliente" fieldKey="doCliente" value={tramite.doCliente} tramiteId={tramite.id} onSaved={onFieldSaved} />
+          ) : tramite.doCliente ? (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">DO Cliente</p>
+              <p className="mt-0.5 font-semibold text-slate-800">{tramite.doCliente}</p>
+            </div>
+          ) : null
         ) : null}
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Estado</p>
@@ -766,10 +781,12 @@ function TabResumen({
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Ciudad</p>
           <p className="mt-0.5 text-sm text-slate-700">{tramite.ciudad}</p>
         </div>
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">ETA</p>
-          <p className="mt-0.5 text-sm font-semibold text-slate-800">{formatDate(tramite.eta)}</p>
-        </div>
+        {muestraEta ? (
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">ETA</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-800">{formatDate(tramite.eta)}</p>
+          </div>
+        ) : null}
       </div>
 
       {/* Fechas clave con edición inline */}
@@ -782,46 +799,56 @@ function TabResumen({
           ) : null}
         </div>
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          <InlineDateField
-            label="Documentos OK"
-            fieldKey="fechaDocumentosOk"
-            value={tramite.fechaDocumentosOk}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
-          <InlineDateField
-            label="Aceptación declaración"
-            fieldKey="fechaAceptacionDeclaracion"
-            value={tramite.fechaAceptacionDeclaracion}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
-          <InlineDateField
-            label="Levante"
-            fieldKey="fechaLevante"
-            value={tramite.fechaLevante}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
-          <InlineDateField
-            label="Salida de carga"
-            fieldKey="fechaSalidaCarga"
-            value={tramite.fechaSalidaCarga}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
-          <InlineDateField
-            label="Enviado a facturar"
-            fieldKey="fechaEnviadoAFacturar"
-            value={tramite.fechaEnviadoAFacturar}
-            tramiteId={tramite.id}
-            editable={puedeEditar}
-            onSaved={onDateSaved}
-          />
+          {fechasVisibles.includes("fechaDocumentosOk") ? (
+            <InlineDateField
+              label="Documentos OK"
+              fieldKey="fechaDocumentosOk"
+              value={tramite.fechaDocumentosOk}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
+          {fechasVisibles.includes("fechaAceptacionDeclaracion") ? (
+            <InlineDateField
+              label="Aceptación declaración"
+              fieldKey="fechaAceptacionDeclaracion"
+              value={tramite.fechaAceptacionDeclaracion}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
+          {fechasVisibles.includes("fechaLevante") ? (
+            <InlineDateField
+              label="Levante"
+              fieldKey="fechaLevante"
+              value={tramite.fechaLevante}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
+          {fechasVisibles.includes("fechaSalidaCarga") ? (
+            <InlineDateField
+              label="Salida de carga"
+              fieldKey="fechaSalidaCarga"
+              value={tramite.fechaSalidaCarga}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
+          {fechasVisibles.includes("fechaEnviadoAFacturar") ? (
+            <InlineDateField
+              label="Enviado a facturar"
+              fieldKey="fechaEnviadoAFacturar"
+              value={tramite.fechaEnviadoAFacturar}
+              tramiteId={tramite.id}
+              editable={puedeEditar}
+              onSaved={onDateSaved}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -876,12 +903,16 @@ function TabResumen({
         </div>
       ) : null}
 
-      {/* Base de cálculo del tarifario y eventos (M2 + M3) */}
+      {/* Base de cálculo del tarifario y eventos (M2 + M3). Qué campos y si
+          hay eventos lo decide el tipo de trámite (M4): CLASIFICACION solo
+          usa Ítems clasificados y no usa eventos. */}
       <SeccionEventosTramite
         tramiteId={tramite.id}
         clienteId={tramite.cliente.id}
         puedeEditar={puedeEditar}
         onRefresh={onRefresh}
+        camposBaseCalculo={tramite.tipoTramite?.camposBaseCalculo ?? null}
+        usaEventos={tramite.tipoTramite?.usaEventos ?? true}
       />
 
       {/* Comentarios */}

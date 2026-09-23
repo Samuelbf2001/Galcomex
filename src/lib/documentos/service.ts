@@ -14,8 +14,10 @@ import { CategoriaDocumento, type Documento, Prisma, type Rol } from "@prisma/cl
 import { prisma } from "@/lib/db/prisma";
 import {
   createPresignedDownloadUrl,
+  esClaveSegura,
   generateStorageKey,
   moveStorageObject,
+  prefijoTramite,
   softDeleteStorageObject,
   validateStorageFile,
 } from "@/lib/storage/service";
@@ -101,6 +103,24 @@ export class DocumentoPermisoError extends Error {
   }
 }
 
+/**
+ * El `storageKey` recibido del cliente no corresponde a la carpeta del
+ * trámite (no lo generó `solicitarSubida` para este DO), o ya está en uso
+ * por otro Documento no eliminado. Sin esta validación, un SOCIO podía
+ * registrar/reemplazar con la clave de un archivo de OTRO trámite (IDOR) y
+ * obtener luego un enlace firmado de descarga sobre datos ajenos.
+ */
+export class StorageKeyInvalidoError extends Error {
+  public readonly status = 400;
+
+  constructor(
+    message = "El archivo indicado no corresponde a este trámite o ya está registrado",
+  ) {
+    super(message);
+    this.name = "StorageKeyInvalidoError";
+  }
+}
+
 // ─── Matriz de roles: eliminar/reemplazar documentos ─────────────────────────
 // Decisión confirmada por el usuario (reunión 1-jul, confirmada 2026-08-26):
 //  - ADMIN y REVISOR: eliminan y reemplazan cualquier documento.
@@ -151,6 +171,41 @@ function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(
     JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
   ) as Prisma.InputJsonValue;
+}
+
+/**
+ * Valida que `storageKey` pertenezca a la carpeta del trámite `consecutivo`
+ * (el prefijo que arma `solicitarSubida`/`generateStorageKey`) y que no esté
+ * ya en uso por otro Documento no eliminado. Debe llamarse SIEMPRE antes de
+ * persistir un `storageKey` que llegó del cliente (registrar/reemplazar):
+ * es la defensa contra IDOR, no una validación de UX.
+ */
+async function assertStorageKeyDelTramite(
+  tx: Prisma.TransactionClient,
+  consecutivo: string,
+  storageKey: string,
+  excluirDocumentoId?: string,
+): Promise<void> {
+  const prefijo = prefijoTramite(consecutivo);
+
+  if (!esClaveSegura(storageKey) || !storageKey.startsWith(prefijo)) {
+    throw new StorageKeyInvalidoError(
+      "El archivo indicado no corresponde a la carpeta de este trámite",
+    );
+  }
+
+  const enUso = await tx.documento.findFirst({
+    where: {
+      storageKey,
+      eliminado: false,
+      ...(excluirDocumentoId ? { id: { not: excluirDocumentoId } } : {}),
+    },
+    select: { id: true },
+  });
+
+  if (enUso) {
+    throw new StorageKeyInvalidoError("Ese archivo ya está registrado en otro documento");
+  }
 }
 
 /**
@@ -225,7 +280,30 @@ export async function registrarDocumento(
   input: RegistrarDocumentoInput,
 ): Promise<Documento> {
   return prisma.$transaction(async (tx) => {
-    await assertTramiteModificable(tx, input.tramiteId);
+    const tramite = await tx.tramiteDO.findUnique({
+      where: { id: input.tramiteId },
+      select: { id: true, consecutivo: true, estado: true },
+    });
+
+    if (!tramite) {
+      throw new DocumentoNoEncontradoError(input.tramiteId);
+    }
+
+    await assertTramiteModificable(tx, tramite);
+
+    // Tipo/tamaño del archivo (mismas reglas que al pedir la URL de subida):
+    // sin esto se podía registrar cualquier storageKey con un mimeType/tamaño
+    // que nunca pasaron por validateStorageFile.
+    validateStorageFile({
+      fileName: input.nombreArchivo,
+      contentType: input.mimeType,
+      sizeBytes: input.tamanoBytes,
+    });
+
+    // El storageKey debe ser el que generó solicitarSubida() para ESTE
+    // trámite (evita IDOR: un SOCIO no puede registrar la clave de un
+    // archivo de otro cliente/trámite y luego pedir su enlace de descarga).
+    await assertStorageKeyDelTramite(tx, tramite.consecutivo, input.storageKey);
 
     const documento = await tx.documento.create({
       data: {
@@ -418,10 +496,29 @@ export async function reemplazarDocumento(
     );
   }
 
+  // Mismas reglas de tipo/tamaño que al registrar (ver registrarDocumento).
+  validateStorageFile({
+    fileName: input.nombreArchivo,
+    contentType: input.mimeType,
+    sizeBytes: input.tamanoBytes,
+  });
+
   const storageKeyAnterior = doc.storageKey;
 
   const actualizado = await prisma.$transaction(async (tx) => {
-    await assertTramiteModificable(tx, doc.tramiteId);
+    const tramite = await tx.tramiteDO.findUnique({
+      where: { id: doc.tramiteId },
+      select: { id: true, consecutivo: true, estado: true },
+    });
+
+    if (tramite) {
+      await assertTramiteModificable(tx, tramite);
+      // El nuevo storageKey debe pertenecer al mismo trámite y no estar en
+      // uso por otro documento (evita IDOR al reemplazar, igual que al
+      // registrar). Se excluye este mismo documentoId por si se reintenta
+      // con la misma clave.
+      await assertStorageKeyDelTramite(tx, tramite.consecutivo, input.storageKey, input.documentoId);
+    }
 
     const updated = await tx.documento.update({
       where: { id: input.documentoId },

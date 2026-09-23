@@ -33,6 +33,7 @@ import {
   parseBigIntInput,
 } from "@/components/facturacion/facturacion-api";
 import { RevisorBorrador } from "@/components/facturacion/revisor-borrador";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
@@ -186,11 +187,10 @@ function GenerarBorradorModal({
             <span className="text-sm font-medium text-slate-700">
               Comisión Galcomex/LM (COP) *
             </span>
-            <input
+            <CampoMoneda
               value={comisionRaw}
-              onChange={(e) => setComisionRaw(e.target.value)}
+              onValueChange={setComisionRaw}
               placeholder="150000"
-              inputMode="numeric"
               required
               className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
             />
@@ -201,11 +201,10 @@ function GenerarBorradorModal({
             <span className="text-sm font-medium text-slate-700">
               Monto LM (COP) — opcional
             </span>
-            <input
+            <CampoMoneda
               value={montoLMRaw}
-              onChange={(e) => setMontoLMRaw(e.target.value)}
+              onValueChange={setMontoLMRaw}
               placeholder="0"
-              inputMode="numeric"
               className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
             />
             <span className="text-xs text-slate-400">
@@ -217,11 +216,10 @@ function GenerarBorradorModal({
             <span className="text-sm font-medium text-slate-700">
               Retenciones (COP)
             </span>
-            <input
+            <CampoMoneda
               value={retencionesRaw}
-              onChange={(e) => setRetencionesRaw(e.target.value)}
+              onValueChange={setRetencionesRaw}
               placeholder="0"
-              inputMode="numeric"
               className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
             />
             <span className="text-xs text-slate-400">
@@ -258,12 +256,12 @@ function GenerarBorradorModal({
                     placeholder="Nombre del concepto"
                     className="h-8 flex-1 border border-slate-300 px-2 text-xs outline-none focus:border-cyan-600"
                   />
-                  <input
+                  <CampoMoneda
                     value={c.valorRaw}
-                    onChange={(e) => updateConcepto(c.id, "valorRaw", e.target.value)}
+                    onValueChange={(digitos) => updateConcepto(c.id, "valorRaw", digitos)}
                     placeholder="Valor"
-                    inputMode="numeric"
-                    className="h-8 w-28 border border-slate-300 px-2 text-right text-xs outline-none focus:border-cyan-600"
+                    wrapperClassName="w-28"
+                    className="h-8 w-full border border-slate-300 px-2 text-right text-xs outline-none focus:border-cyan-600"
                   />
                   {conceptos.length > 1 ? (
                     <button

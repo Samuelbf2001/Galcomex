@@ -17,6 +17,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
@@ -211,11 +212,10 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Monto (COP) *</span>
-              <input
+              <CampoMoneda
                 value={montoRaw}
-                onChange={(e) => setMontoRaw(e.target.value)}
+                onValueChange={setMontoRaw}
                 placeholder="5.800.000"
-                inputMode="numeric"
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
@@ -416,11 +416,10 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
 
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Monto a aplicar (COP) *</span>
-            <input
+            <CampoMoneda
               value={montoRaw}
-              onChange={(e) => setMontoRaw(e.target.value)}
+              onValueChange={setMontoRaw}
               placeholder="5.800.000"
-              inputMode="numeric"
               className={`h-10 w-full border px-3 text-sm outline-none focus:border-cyan-600 ${sobreAplicando ? "border-rose-400 bg-rose-50" : "border-slate-300"}`}
             />
             {/* Indicador en vivo */}

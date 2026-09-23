@@ -4,7 +4,11 @@ import { AlertTriangle, ChevronRight, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
-import { type TramiteRow } from "@/components/tramites/tramites-api";
+import {
+  cambiarEstadoTramite,
+  mensajeAdvertenciasEstado,
+  type TramiteRow,
+} from "@/components/tramites/tramites-api";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
 
@@ -24,12 +28,6 @@ const PIPELINE: string[] = [
 
 /** POST /api/tramites/[id]/estado exige ADMIN/REVISOR/OPERATIVO. */
 const ROLES_MOVER_ESTADO = ["ADMIN", "REVISOR", "OPERATIVO"] as const;
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function columnColor(estado: string): {
   header: string;
@@ -116,25 +114,18 @@ function KanbanCard({
     setMoving(true);
     setAdvError(null);
     try {
-      const res = await fetch(`/api/tramites/${tramite.id}/estado`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ estado: selected }),
-      });
-      if (!res.ok) {
-        const payload: unknown = await res.json().catch(() => null);
-        const msg =
-          isRecord(payload) && typeof payload.error === "string"
-            ? payload.error
-            : `Error ${res.status}`;
-        setAdvError(msg);
-        return;
-      }
+      const { advertencias } = await cambiarEstadoTramite(tramite.id, selected);
       toast({
         title: "Estado actualizado",
         description: `${tramite.doNumber} → ${selected.replace(/_/g, " ")}`,
         variant: "success",
       });
+      // F6: el ADMIN pudo haber saltado requisitos (checklist, BL, factura
+      // comercial) con su excepción — se avisa aparte para que no pase inadvertido.
+      const advertencia = mensajeAdvertenciasEstado(advertencias);
+      if (advertencia) {
+        toast({ ...advertencia, variant: "warning" });
+      }
       setSelected("");
       onEstadoChanged?.();
     } catch (caught) {

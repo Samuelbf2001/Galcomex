@@ -15,6 +15,7 @@ import {
   formatDate,
   subirComprobante,
 } from "@/components/pagos/pagos-global-api";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
@@ -316,12 +317,11 @@ export function PagoMultiDOModal({ onClose, onCreated, beneficiarioInicial = nul
                             <td className="px-3 py-2 text-slate-500">{formatDate(f.fecha)}</td>
                             <td className="px-3 py-2 text-right text-slate-600">{formatCOP(f.valor)}</td>
                             <td className="px-3 py-2 text-right">
-                              <input
+                              <CampoMoneda
                                 value={seleccionada ? montos[f.id] : ""}
                                 disabled={!seleccionada}
-                                onChange={(e) => setMonto(f.id, e.target.value)}
+                                onValueChange={(digitos) => setMonto(f.id, digitos)}
                                 placeholder="Monto a pagar"
-                                inputMode="numeric"
                                 aria-label={`Monto a pagar de la factura ${f.numFactura}`}
                                 className="h-8 w-32 border border-slate-300 px-2 text-right text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50"
                               />

@@ -300,7 +300,6 @@ async function publicarPlantillas(empresa: EmpresaReunion, empresaId: string, us
       aviso(`Plantilla ${p.codigo} no existe en lib/tarifas/plantillas.ts`);
       continue;
     }
-    const marca = `[PLANTILLA ${p.codigo}]`;
     const ya = await prisma.tarifario.findFirst({
       where: { empresaId, alcance: plantilla.alcance, estado: { in: ["VIGENTE", "BORRADOR"] } },
       select: { id: true, nombre: true, version: true, estado: true, notas: true },
@@ -309,12 +308,13 @@ async function publicarPlantillas(empresa: EmpresaReunion, empresaId: string, us
       nota(`Tarifario ${plantilla.alcance.toLowerCase()} ya existe: "${ya.nombre}" v${ya.version} (${ya.estado}); no se toca.`);
       continue;
     }
+    // Sin marca "[PLANTILLA …]": la nota interna la pone `crearTarifario` por
+    // defecto (Cargado desde la plantilla…) y nunca sale en el PDF (B4, 22-sep).
     const creado = await crearTarifario({
       empresaId,
       plantilla: p.codigo,
       vigenteDesde: fecha(p.desde),
       vigenteHasta: fecha(p.hasta),
-      notas: `${marca} · ${plantilla.fuente}`,
       items: [],
       usuarioId,
     });

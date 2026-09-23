@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import {
   CANALES_PAGO,
   type CanalPago,
@@ -228,11 +229,10 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
-              <input
+              <CampoMoneda
                 value={valorRaw}
-                onChange={(ev) => setValorRaw(ev.target.value)}
+                onValueChange={setValorRaw}
                 placeholder="1.000.000"
-                inputMode="numeric"
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
@@ -430,12 +430,11 @@ function FilaPagoRow({
           {readOnly ? (
             <span className="text-sm font-medium text-slate-900">{formatCOP(fila.valor)}</span>
           ) : (
-            <input
+            <CampoMoneda
               value={fila.editingValor}
-              onChange={(e) => onChange(fila.id, "editingValor", e.target.value)}
+              onValueChange={(digitos) => onChange(fila.id, "editingValor", digitos)}
               onFocus={(e) => e.target.select()}
               onBlur={() => onBlur(fila.id)}
-              inputMode="numeric"
               aria-label={`Valor del ${etiqueta} (COP)`}
               className="h-8 w-full min-w-[110px] border border-transparent bg-transparent px-1 text-right text-sm font-medium text-slate-900 outline-none focus:border-cyan-400 focus:bg-white"
             />

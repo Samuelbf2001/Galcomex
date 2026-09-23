@@ -17,11 +17,12 @@ import {
  *   const { toast } = useToast();
  *   toast({ title: "Pago guardado", variant: "success" });
  *   toast({ title: "No se pudo guardar", description: describirError(e), variant: "error" });
+ *   toast({ title: "Se avanzó saltando requisitos", description: "...", variant: "warning" });
  *
  * Fuera del provider `toast` no rompe: no hace nada.
  */
 
-export type ToastVariant = "success" | "error" | "info";
+export type ToastVariant = "success" | "error" | "warning" | "info";
 
 export type ToastInput = {
   title: string;
@@ -61,6 +62,9 @@ export function describirError(caught: unknown, fallback = "Ocurrió un error in
 const STYLES: Record<ToastVariant, { box: string; icon: typeof Info }> = {
   success: { box: "border-emerald-300 bg-emerald-50 text-emerald-900", icon: CheckCircle2 },
   error: { box: "border-rose-300 bg-rose-50 text-rose-900", icon: AlertTriangle },
+  // F6: avisos de "pasó, pero se saltó un requisito" (excepción de ADMIN) —
+  // ni éxito limpio ni error, ámbar como el resto de advertencias de la app.
+  warning: { box: "border-amber-300 bg-amber-50 text-amber-900", icon: AlertTriangle },
   info: { box: "border-slate-300 bg-white text-slate-900", icon: Info },
 };
 
@@ -80,7 +84,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     (input: ToastInput) => {
       const id = nextId.current++;
       const variant = input.variant ?? "info";
-      const duration = input.duration ?? (variant === "error" ? 8000 : 5000);
+      const duration =
+        input.duration ?? (variant === "error" ? 8000 : variant === "warning" ? 7000 : 5000);
       setItems((prev) => [...prev.slice(-4), { ...input, id, variant }]);
       timers.current.set(
         id,

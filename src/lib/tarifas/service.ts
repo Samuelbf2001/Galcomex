@@ -22,6 +22,7 @@ import {
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { tiene } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
+import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import { plantillaPorCodigo } from "@/lib/tarifas/plantillas";
 import {
   calcularLineasTarifa,
@@ -127,6 +128,20 @@ export class EmpresaTarifarioNoEncontradaError extends Error {
   }
 }
 
+/**
+ * B1 (22-sep): un ítem MANUAL (alta o edición directa desde la ficha, no una
+ * plantilla) solo puede usar un concepto ACTIVO del maestro `concepto_venta`.
+ */
+export class ConceptoNoEnCatalogoError extends Error {
+  public readonly status = 422;
+  constructor(codigo: string) {
+    super(
+      `El concepto "${codigo}" no existe en el catálogo de conceptos de venta o está inactivo. Elígelo del catálogo (Configuración → Catálogos).`,
+    );
+    this.name = "ConceptoNoEnCatalogoError";
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
@@ -193,6 +208,22 @@ async function idsConceptoPorCodigo(codigos: readonly string[]): Promise<Map<str
     select: { id: true, codigo: true },
   });
   return new Map(filas.map((f) => [f.codigo, f.id]));
+}
+
+/**
+ * Concepto ACTIVO del maestro por código, para el alta/edición MANUAL de un
+ * ítem (B1). A diferencia de `idsConceptoPorCodigo` (enlace automático y
+ * silencioso que usan las plantillas y la duplicación), aquí un código que no
+ * exista o esté inactivo es un error: el `siigoCodigo` del ítem lo pone el
+ * catálogo, nunca quien llena el formulario.
+ */
+async function conceptoVentaActivoDe(codigo: string): Promise<{ id: string; siigoCodigo: string | null }> {
+  const concepto = await prisma.conceptoVenta.findUnique({
+    where: { codigo },
+    select: { id: true, activo: true, siigoProducto: { select: { codigo: true } } },
+  });
+  if (!concepto || !concepto.activo) throw new ConceptoNoEnCatalogoError(codigo);
+  return { id: concepto.id, siigoCodigo: concepto.siigoProducto?.codigo ?? null };
 }
 
 function itemCreateData(
@@ -274,7 +305,10 @@ export async function getTarifario(id: string): Promise<TarifarioConItems> {
 export async function tarifarioVigenteDe(
   empresaId: string,
   alcance: string,
-  fecha: Date = new Date(),
+  // F5: "hoy" es el día calendario en Bogotá, no el instante UTC — si no, una
+  // tarifa deja de contar 5 horas antes de medianoche en Bogotá (19:00) el
+  // último día de vigencia. Ver `lib/tiempo/bogota.ts`.
+  fecha: Date = fechaCalendarioBogota(),
 ): Promise<TarifarioConItems | null> {
   const vigentes = await prisma.tarifario.findMany({
     where: { empresaId, alcance, estado: EstadoTarifario.VIGENTE },
@@ -461,6 +495,56 @@ export function aplicarIncremento(valor: bigint, incrementoPct: number | undefin
 }
 
 /**
+ * Copia los ítems de un tarifario para crear otro (`duplicarTarifario` y
+ * `crearTarifarioDesde`): todos los campos del ítem salvo los ids, con el
+ * incremento porcentual opcional (IPC) ya aplicado a los valores en COP.
+ * Sin incremento (`incrementoPct` undefined) es una copia exacta.
+ */
+function copiarItemsDeTarifario(
+  items: TarifaItem[],
+  incrementoPct: number | undefined,
+  redondeoA: number,
+): Prisma.TarifaItemCreateWithoutTarifarioInput[] {
+  return items.map((it) => {
+    const minimos = minimosDe(it.minimos);
+    const minimosAjustados = minimos
+      ? Object.fromEntries(
+          Object.entries(minimos).map(([k, v]) => [
+            k,
+            aplicarIncremento(BigInt(v), incrementoPct, redondeoA).toString(),
+          ]),
+        )
+      : null;
+    const tramos = tramosDe(it.tramos);
+    const tramosAjustados = tramos
+      ? tramos.map((t) => ({
+          hasta: t.hasta,
+          valor: aplicarIncremento(BigInt(t.valor), incrementoPct, redondeoA).toString(),
+        }))
+      : null;
+    return {
+      orden: it.orden,
+      concepto: it.concepto,
+      nombrePublico: it.nombrePublico,
+      siigoCodigo: it.siigoCodigo,
+      tipoCalculo: it.tipoCalculo,
+      disparador: it.disparador,
+      unidad: it.unidad,
+      valor: aplicarIncremento(it.valor, incrementoPct, redondeoA),
+      valorAdicional:
+        it.valorAdicional === null ? null : aplicarIncremento(it.valorAdicional, incrementoPct, redondeoA),
+      porcentajeBps: it.porcentajeBps,
+      minimos: minimosAjustados ? normalizeSerializable(minimosAjustados) : undefined,
+      conceptoCosto: it.conceptoCosto,
+      tramos: tramosAjustados ? normalizeSerializable(tramosAjustados) : undefined,
+      aplicaIva: it.aplicaIva,
+      notas: it.notas,
+      ...(it.eventoCodigo ? { evento: { connect: { codigo: it.eventoCodigo } } } : {}),
+    };
+  });
+}
+
+/**
  * Nueva versión BORRADOR a partir de un tarifario (mismo alcance, misma
  * empresa salvo `empresaDestinoId`), con incremento opcional. Es el camino
  * para "renovar el año": duplicar, revisar, publicar.
@@ -474,45 +558,7 @@ export async function duplicarTarifario(
   const empresaId = payload.empresaDestinoId ?? origen.empresaId;
   if (empresaId !== origen.empresaId) await exigirCapacidadTarifario(empresaId);
 
-  const items = origen.items.map<Prisma.TarifaItemCreateWithoutTarifarioInput>((it) => {
-    const minimos = minimosDe(it.minimos);
-    const minimosAjustados = minimos
-      ? Object.fromEntries(
-          Object.entries(minimos).map(([k, v]) => [
-            k,
-            aplicarIncremento(BigInt(v), payload.incrementoPct, payload.redondeoA).toString(),
-          ]),
-        )
-      : null;
-    const tramos = tramosDe(it.tramos);
-    const tramosAjustados = tramos
-      ? tramos.map((t) => ({
-          hasta: t.hasta,
-          valor: aplicarIncremento(BigInt(t.valor), payload.incrementoPct, payload.redondeoA).toString(),
-        }))
-      : null;
-    return {
-      orden: it.orden,
-      concepto: it.concepto,
-      nombrePublico: it.nombrePublico,
-      siigoCodigo: it.siigoCodigo,
-      tipoCalculo: it.tipoCalculo,
-      disparador: it.disparador,
-      unidad: it.unidad,
-      valor: aplicarIncremento(it.valor, payload.incrementoPct, payload.redondeoA),
-      valorAdicional:
-        it.valorAdicional === null
-          ? null
-          : aplicarIncremento(it.valorAdicional, payload.incrementoPct, payload.redondeoA),
-      porcentajeBps: it.porcentajeBps,
-      minimos: minimosAjustados ? normalizeSerializable(minimosAjustados) : undefined,
-      conceptoCosto: it.conceptoCosto,
-      tramos: tramosAjustados ? normalizeSerializable(tramosAjustados) : undefined,
-      aplicaIva: it.aplicaIva,
-      notas: it.notas,
-      ...(it.eventoCodigo ? { evento: { connect: { codigo: it.eventoCodigo } } } : {}),
-    };
-  });
+  const items = copiarItemsDeTarifario(origen.items, payload.incrementoPct, payload.redondeoA);
 
   return prisma.$transaction(async (tx) => {
     const version = await siguienteVersion(tx, empresaId, origen.alcance);
@@ -549,6 +595,117 @@ export async function duplicarTarifario(
   });
 }
 
+export interface CrearTarifarioDesdeInput {
+  /** Tarifario existente (de cualquier empresa) del que se copian los ítems. */
+  origenTarifarioId: string;
+  empresaId: string;
+  /** Si falta, se usa el nombre del tarifario de origen. */
+  nombre?: string;
+  /** Si falta, se usa el `alcance` del tarifario de ORIGEN (F7) — no "TRAMITE" a ciegas. */
+  alcance?: string;
+  vigenteDesde: Date;
+  vigenteHasta: Date;
+  notas?: string | null;
+}
+
+/**
+ * "Arrancar desde" con una tarifa de OTRA empresa (B2, 22-sep): BORRADOR
+ * nuevo con la siguiente versión para (empresa, alcance), copiando todos los
+ * ítems del tarifario de origen tal cual (sin incremento). Reusa el mismo
+ * copiado de ítems que `duplicarTarifario`.
+ */
+export async function crearTarifarioDesde(
+  input: CrearTarifarioDesdeInput,
+  usuarioId: string,
+): Promise<TarifarioConItems> {
+  await exigirCapacidadTarifario(input.empresaId);
+  const origen = await getTarifario(input.origenTarifarioId);
+
+  const items = copiarItemsDeTarifario(origen.items, undefined, 1_000);
+  const nombre = input.nombre ?? origen.nombre;
+  // F7: sin `alcance` en el payload, se hereda el del tarifario de ORIGEN —
+  // copiar una tarifa de CLASIFICACION no puede terminar por defecto en TRAMITE.
+  const alcance = input.alcance ?? origen.alcance;
+  const notas = input.notas ?? `Copiado de ${origen.empresa.nombre} · ${origen.nombre} v${origen.version}`;
+
+  return prisma.$transaction(async (tx) => {
+    const version = await siguienteVersion(tx, input.empresaId, alcance);
+    const creado = await tx.tarifario.create({
+      data: {
+        empresaId: input.empresaId,
+        nombre,
+        alcance,
+        vigenteDesde: input.vigenteDesde,
+        vigenteHasta: input.vigenteHasta,
+        notas,
+        version,
+        creadoPorId: usuarioId,
+        items: { create: items },
+      },
+      include: tarifarioInclude,
+    });
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "Tarifario",
+        entidadId: creado.id,
+        accion: "CREAR_TARIFARIO_DESDE",
+        usuarioId,
+        antes: { origenId: origen.id, origenEmpresa: origen.empresa.nombre, origenVersion: origen.version },
+        despues: normalizeSerializable(creado),
+      },
+    });
+
+    return creado;
+  });
+}
+
+/**
+ * Catálogo LIGERO de tarifarios de TODAS las empresas (id, empresa, nombre,
+ * alcance, versión, estado, cantidad de ítems — sin los ítems completos).
+ * Alimenta "Copiar la tarifa de otra empresa" en Nuevo tarifario (B2).
+ */
+export interface TarifarioLigero {
+  id: string;
+  empresaId: string;
+  empresaNombre: string;
+  nombre: string;
+  alcance: string;
+  version: number;
+  estado: EstadoTarifario;
+  items: number;
+}
+
+export async function listarTarifariosLigero(
+  opciones: { excluirEmpresaId?: string } = {},
+): Promise<TarifarioLigero[]> {
+  const filas = await prisma.tarifario.findMany({
+    where: opciones.excluirEmpresaId ? { empresaId: { not: opciones.excluirEmpresaId } } : undefined,
+    select: {
+      id: true,
+      empresaId: true,
+      nombre: true,
+      alcance: true,
+      version: true,
+      estado: true,
+      empresa: { select: { nombre: true } },
+      _count: { select: { items: true } },
+    },
+    orderBy: [{ empresa: { nombre: "asc" } }, { alcance: "asc" }, { version: "desc" }],
+  });
+
+  return filas.map((f) => ({
+    id: f.id,
+    empresaId: f.empresaId,
+    empresaNombre: f.empresa.nombre,
+    nombre: f.nombre,
+    alcance: f.alcance,
+    version: f.version,
+    estado: f.estado,
+    items: f._count.items,
+  }));
+}
+
 // ─── Ítems ────────────────────────────────────────────────────────────────────
 
 async function exigirBorrador(tarifarioId: string) {
@@ -567,12 +724,15 @@ export async function agregarItemTarifario(
     throw new TarifaItemDuplicadoError(payload.concepto);
   }
 
-  const conceptos = await idsConceptoPorCodigo([payload.concepto]);
+  // Alta MANUAL: el concepto tiene que existir y estar activo en el catálogo;
+  // el siigoCodigo lo pone el catálogo, se ignora el que mande el cliente (B1).
+  const concepto = await conceptoVentaActivoDe(payload.concepto);
+  const payloadConSiigo: TarifaItemPayload = { ...payload, siigoCodigo: concepto.siigoCodigo };
 
   await prisma.$transaction(async (tx) => {
     const item = await tx.tarifaItem.create({
       data: {
-        ...itemCreateData(payload, conceptos.get(payload.concepto)),
+        ...itemCreateData(payloadConSiigo, concepto.id),
         tarifario: { connect: { id: tarifarioId } },
       },
     });
@@ -613,8 +773,19 @@ export async function actualizarItemTarifario(
     throw new TarifaItemDuplicadoError(fusionado.concepto);
   }
 
-  const conceptos = await idsConceptoPorCodigo([fusionado.concepto]);
-  const conceptoId = conceptos.get(fusionado.concepto);
+  // Edición MANUAL: solo cuando el formulario manda `concepto` se exige que
+  // esté activo en el catálogo y se recalcula el siigoCodigo desde ahí (B1).
+  // Un PATCH que no toca `concepto` (p. ej. solo `orden`) conserva el enlace
+  // laxo de siempre, para no romper ítems viejos que aún no están en el maestro.
+  let conceptoId: string | undefined;
+  if (payload.concepto !== undefined) {
+    const concepto = await conceptoVentaActivoDe(fusionado.concepto);
+    conceptoId = concepto.id;
+    fusionado.siigoCodigo = concepto.siigoCodigo;
+  } else {
+    const conceptos = await idsConceptoPorCodigo([fusionado.concepto]);
+    conceptoId = conceptos.get(fusionado.concepto);
+  }
 
   await prisma.$transaction(async (tx) => {
     const despues = await tx.tarifaItem.update({

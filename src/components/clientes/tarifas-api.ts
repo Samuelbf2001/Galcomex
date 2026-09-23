@@ -20,7 +20,7 @@ export const TIPOS_CALCULO: { value: TipoCalculoTarifa; label: string; ayuda: st
   { value: "PORCENTAJE_MIN", label: "% sobre CIF con mínimo", ayuda: "Porcentaje sobre el valor en aduana, con mínimo por tipo de carga (CW: 0,37 %)." },
   { value: "PRIMERO_MAS_ADICIONAL", label: "Primero + adicionales", ayuda: "El primero a un precio y cada adicional a otro (clasificación: 380.000 + 180.000)." },
   { value: "ESPEJO_DE_COSTO", label: "Espejo de un costo", ayuda: "Se cobra lo mismo que costó (pago del registro VUCE)." },
-  { value: "POR_TRAMO", label: "Por tramos", ayuda: "El precio de cada unidad depende de cuántas haya (Polyrec ZF: 1 contenedor 300.000; 2 o más, 250.000 cada uno)." },
+  { value: "POR_TRAMO", label: "Por escalas de volumen", ayuda: "El precio de cada unidad depende de en qué escala caiga la cantidad total (Polyrec ZF: 1 contenedor 300.000; 2 o más, 250.000 cada uno)." },
 ];
 
 export const DISPARADORES: { value: DisparadorTarifa; label: string }[] = [
@@ -106,10 +106,24 @@ export type TarifaItemForm = {
 
 export type PlantillaRow = {
   codigo: string;
+  /** Empresa cuya propuesta es esta plantilla (B2: "Litoplas", "CW Asia"…). */
+  cliente: string;
   nombre: string;
   descripcion: string;
   alcance: string;
   fuente: string;
+  items: number;
+};
+
+/** Fila ligera de `GET /api/tarifarios` — para "Copiar la tarifa de otra empresa" (B2). */
+export type TarifarioLigero = {
+  id: string;
+  empresaId: string;
+  empresaNombre: string;
+  nombre: string;
+  alcance: string;
+  version: number;
+  estado: EstadoTarifario;
   items: number;
 };
 
@@ -261,6 +275,8 @@ export async function fetchTarifarios(clienteId: string, signal?: AbortSignal): 
 
 export type NuevoTarifarioForm = {
   plantilla?: string;
+  /** Tarifario existente (de cualquier empresa) del que copiar los ítems. Mutuamente excluyente con `plantilla`. */
+  origenTarifarioId?: string;
   nombre?: string;
   alcance?: string;
   vigenteDesde: string;
@@ -334,12 +350,38 @@ export async function fetchPlantillas(signal?: AbortSignal): Promise<PlantillaRo
   const lista = isRecord(body) && Array.isArray(body.plantillas) ? body.plantillas : [];
   return lista.filter(isRecord).map((p) => ({
     codigo: str(p.codigo),
+    cliente: str(p.cliente),
     nombre: str(p.nombre),
     descripcion: str(p.descripcion),
     alcance: str(p.alcance, "TRAMITE"),
     fuente: str(p.fuente),
     items: Array.isArray(p.items) ? p.items.length : 0,
   }));
+}
+
+function normalizeTarifarioLigero(row: unknown): TarifarioLigero | null {
+  if (!isRecord(row) || typeof row.id !== "string") return null;
+  return {
+    id: row.id,
+    empresaId: str(row.empresaId),
+    empresaNombre: str(row.empresaNombre),
+    nombre: str(row.nombre),
+    alcance: str(row.alcance, "TRAMITE"),
+    version: typeof row.version === "number" ? row.version : 1,
+    estado: str(row.estado, "BORRADOR") as EstadoTarifario,
+    items: typeof row.items === "number" ? row.items : 0,
+  };
+}
+
+/** Catálogo ligero de tarifarios de TODAS las empresas, para "Copiar la tarifa de otra empresa" (B2). */
+export async function fetchTarifariosLigero(
+  excluirEmpresaId?: string,
+  signal?: AbortSignal,
+): Promise<TarifarioLigero[]> {
+  const query = excluirEmpresaId ? `?excluirEmpresaId=${encodeURIComponent(excluirEmpresaId)}` : "";
+  const body = await request(`/api/tarifarios${query}`, { signal });
+  const lista = isRecord(body) && Array.isArray(body.tarifarios) ? body.tarifarios : [];
+  return lista.map(normalizeTarifarioLigero).filter((t): t is TarifarioLigero => t !== null);
 }
 
 export async function fetchEventosCatalogo(signal?: AbortSignal): Promise<EventoCatalogoRow[]> {

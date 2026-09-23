@@ -248,7 +248,11 @@ export function ArchivosWorkspace() {
           <h1 className="text-2xl font-semibold">Archivos</h1>
           <p className="mt-1 text-sm text-slate-600">
             Explorador del almacenamiento de documentos, carpeta por carpeta. Los archivos de cada DO están en{" "}
-            <span className="font-mono text-xs">tramites/</span>.
+            <span className="font-mono text-xs">tramites/</span>. Para ver un cliente con todos sus DOs,{" "}
+            <Link href="/archivos/clientes" className="text-cyan-700 hover:underline">
+              ver por cliente
+            </Link>
+            .
           </p>
         </div>
         {data ? (

@@ -136,7 +136,24 @@ async function main() {
       requiereAgenciaAduanas: true,
       requiereEta: true,
       usaChecklist: true,
+      usaCamposDo: true,
       etiquetaReferenciaExterna: null,
+      camposBaseCalculo: [
+        "valorCif",
+        "tipoCarga",
+        "numContenedores",
+        "numDeclaraciones",
+        "numDocumentos",
+        "numItems",
+      ],
+      usaEventos: true,
+      fechasClave: [
+        "fechaAceptacionDeclaracion",
+        "fechaLevante",
+        "fechaEnviadoAFacturar",
+        "fechaDocumentosOk",
+        "fechaSalidaCarga",
+      ],
       orden: 10,
     },
     {
@@ -153,7 +170,16 @@ async function main() {
       requiereAgenciaAduanas: false,
       requiereEta: false,
       usaChecklist: false,
+      usaCamposDo: false,
       etiquetaReferenciaExterna: "N° de informe de la clasificadora",
+      // El motor de tarifas de clasificación solo usa ítems clasificados
+      // (unidad ITEM); el panel del DO oculta el resto de la base de cálculo
+      // y no usa la lista de eventos.
+      camposBaseCalculo: ["numItems"],
+      usaEventos: false,
+      // Sin declaración, levante ni salida de carga: esas fechas son de un
+      // trámite de importación real, no de clasificación arancelaria.
+      fechasClave: ["fechaDocumentosOk", "fechaEnviadoAFacturar"],
       orden: 20,
     },
     {
@@ -172,7 +198,24 @@ async function main() {
       requiereAgenciaAduanas: false,
       requiereEta: false,
       usaChecklist: false,
+      usaCamposDo: true,
       etiquetaReferenciaExterna: "Servicio prestado",
+      camposBaseCalculo: [
+        "valorCif",
+        "tipoCarga",
+        "numContenedores",
+        "numDeclaraciones",
+        "numDocumentos",
+        "numItems",
+      ],
+      usaEventos: true,
+      fechasClave: [
+        "fechaAceptacionDeclaracion",
+        "fechaLevante",
+        "fechaEnviadoAFacturar",
+        "fechaDocumentosOk",
+        "fechaSalidaCarga",
+      ],
       orden: 30,
     },
   ];

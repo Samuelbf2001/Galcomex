@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { prisma } from "@/lib/db/prisma";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { createTramite } from "@/lib/tramites/service";
 import { solicitudExternaSchema } from "@/lib/validations/solicitudes";
@@ -62,17 +62,23 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const tramite = await createTramite({
-      ciudad: data.ciudad,
-      clienteId: cliente.id,
-      proveedorCliente: data.proveedorCliente,
-      agenciaAduanas: data.agenciaAduanas,
-      eta: data.eta,
-      comentarios: data.comentarios
-        ? `[SOLICITUD EXTERNA] ${data.comentarios}`
-        : "[SOLICITUD EXTERNA]",
-      creadoPorId: adminUser.id,
-    });
+    // La solicitud externa entra aunque la empresa no tenga tarifa vigente:
+    // queda en SOLICITUD y Galcomex no la puede abrir hasta publicar la tarifa
+    // (capacidad `do_exige_tarifa_vigente`, ver `transitionTramite`).
+    const tramite = await createTramite(
+      {
+        ciudad: data.ciudad,
+        clienteId: cliente.id,
+        proveedorCliente: data.proveedorCliente,
+        agenciaAduanas: data.agenciaAduanas,
+        eta: data.eta,
+        comentarios: data.comentarios
+          ? `[SOLICITUD EXTERNA] ${data.comentarios}`
+          : "[SOLICITUD EXTERNA]",
+        creadoPorId: adminUser.id,
+      },
+      { origen: "SOLICITUD_PUBLICA" },
+    );
 
     return jsonResponse(
       {
@@ -91,6 +97,11 @@ export async function POST(request: NextRequest) {
         { error: "Error al crear el trámite. Intente nuevamente." },
         { status: 400 },
       );
+    }
+    // Reglas de la empresa (agencia fija, tipo no habilitado…): mensaje claro
+    // en vez de un 500.
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }

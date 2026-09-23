@@ -13,6 +13,7 @@ import {
 } from "@/components/clientes/clientes-api";
 import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
 import { ModuleState } from "@/components/layout/module-state";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
@@ -251,6 +252,7 @@ function NuevoClienteModal({
       contactoNombre: optionalText(formData.get("contactoNombre")),
       contactoEmail: optionalText(formData.get("contactoEmail")),
       contactoTel: optionalText(formData.get("contactoTel")),
+      ciudad: optionalText(formData.get("ciudad")),
       manejaAnticipo: formData.get("manejaAnticipo") === "on",
       esCliente: formData.get("esCliente") === "on",
       esProveedor: formData.get("esProveedor") === "on",
@@ -351,7 +353,18 @@ function NuevoClienteModal({
             </select>
             <MensajeCampo id={campo("tipo").errorId} error={errores.tipo} />
           </label>
-          <label className="space-y-1.5 md:col-span-2">
+          <label className="space-y-1.5">
+            <span className="text-sm font-medium text-slate-700">Ciudad</span>
+            <input
+              name="ciudad"
+              maxLength={80}
+              placeholder="Ej.: Barranquilla"
+              aria-invalid={campo("ciudad").invalido || undefined}
+              className={claseCampo(campo("ciudad").invalido)}
+            />
+            <MensajeCampo id={campo("ciudad").errorId} error={errores.ciudad} />
+          </label>
+          <label className="space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Contacto</span>
             <input
               name="contactoNombre"
@@ -416,9 +429,8 @@ function NuevoClienteModal({
             </label>
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Valor (COP)</span>
-              <input
+              <CampoMoneda
                 name="tarifaValor"
-                inputMode="numeric"
                 placeholder="Dejar vacío si no aplica"
                 aria-invalid={campo("tarifas").invalido || undefined}
                 aria-describedby={campo("tarifas").describedBy}

@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 
 import { registrarCompensacion, type CuentaCorriente } from "@/components/clientes/cuenta-api";
 import { claseCampo } from "@/components/clientes/form-campos";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError } from "@/components/ui/toast";
 
@@ -85,7 +86,7 @@ export function CompensacionModal({
       open
       onClose={onClose}
       title="Cruzar saldos"
-      description={`Pendiente: nos debe ${formatCOP(cuenta.pendienteCliente)} y le debemos ${formatCOP(cuenta.pendienteProveedor)}. Se puede cruzar hasta ${formatCOP(cuenta.maximoCompensable)} sin que se mueva plata.`}
+      description={`A cargo de ${cuenta.empresa.nombre} (le debe a Galcomex): ${formatCOP(cuenta.pendienteCliente)}. A favor de ${cuenta.empresa.nombre} (Galcomex le debe): ${formatCOP(cuenta.pendienteProveedor)}. Se puede cruzar hasta ${formatCOP(cuenta.maximoCompensable)} sin que se mueva plata.`}
       size="md"
       dismissible={!guardando}
     >
@@ -93,7 +94,7 @@ export function CompensacionModal({
         <label className="block space-y-1">
           <span className="text-xs font-medium text-slate-600">Contra qué factura de venta (opcional)</span>
           <select value={facturaId} onChange={(e) => setFacturaId(e.target.value)} className={claseCampo(false)}>
-            <option value="">Sin factura: baja el saldo manual que nos debe</option>
+            <option value="">Sin factura: baja el saldo manual a cargo de {cuenta.empresa.nombre}</option>
             {cuenta.compensables.facturasVenta.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.numSiigo}
@@ -106,7 +107,7 @@ export function CompensacionModal({
         <label className="block space-y-1">
           <span className="text-xs font-medium text-slate-600">Contra qué factura de proveedor (opcional, solo las que no se cobran al cliente)</span>
           <select value={facturaProveedorId} onChange={(e) => elegirFacturaProveedor(e.target.value)} className={claseCampo(false)}>
-            <option value="">Sin factura: baja el saldo manual que le debemos</option>
+            <option value="">Sin factura: baja el saldo manual a favor de {cuenta.empresa.nombre}</option>
             {cuenta.compensables.facturasProveedor.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.numFactura} · {f.referencia} · {formatCOP(f.valor)}
@@ -118,10 +119,9 @@ export function CompensacionModal({
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block space-y-1">
             <span className="text-xs font-medium text-slate-600">Valor a cruzar (COP) *</span>
-            <input
+            <CampoMoneda
               value={valorEfectivo}
-              onChange={(e) => setValor(e.target.value.replace(/\D/g, ""))}
-              inputMode="numeric"
+              onValueChange={setValor}
               required
               disabled={Boolean(facturaProveedor)}
               className={claseCampo(false)}

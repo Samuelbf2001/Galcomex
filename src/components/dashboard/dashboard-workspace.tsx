@@ -267,6 +267,7 @@ const ACTIVIDAD_POR_ENTIDAD: Record<string, string> = {
   "TramiteDO:UPDATE_ESTADO": "cambió el estado del DO",
   "TramiteDO:CAMBIO_ESTADO": "cambió el estado del DO",
   "TramiteDO:REAPERTURA": "reabrió el DO",
+  "TramiteDO:OMITIR_REQUISITOS": "avanzó el DO con requisitos pendientes (excepción de ADMIN)",
   // Borradores de factura de venta
   "BorradorFactura:CREATE": "generó un borrador de factura",
   "BorradorFactura:UPDATE": "actualizó un borrador de factura",

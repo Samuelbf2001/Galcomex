@@ -204,6 +204,7 @@ describe("A1-T9 — Permisos por rol", () => {
         contactoNombre: null,
         contactoEmail: null,
         contactoTel: null,
+        ciudad: null,
         manejaAnticipo: true,
         activo: true,
         createdAt: new Date(),
