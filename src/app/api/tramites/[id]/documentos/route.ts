@@ -101,6 +101,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
         mimeType: payload.mimeType,
         tamanoBytes: payload.tamanoBytes,
         subidoPorId: session.user.id,
+        checklistItemId: payload.checklistItemId,
       });
       return jsonResponse({ documento }, { status: 201 });
     }

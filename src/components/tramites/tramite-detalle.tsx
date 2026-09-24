@@ -53,6 +53,7 @@ import {
 import { InlineTramiteField } from "@/components/tramites/inline-tramite-field";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import { SeccionEventosTramite } from "@/components/tramites/seccion-eventos-tramite";
+import { SubirRequisito } from "@/components/tramites/subir-requisito";
 import { cambiarEstadoTramite, mensajeAdvertenciasEstado } from "@/components/tramites/tramites-api";
 import {
   type FacturaProveedorRow,
@@ -583,11 +584,14 @@ function ChecklistItemRow({
   tramiteId,
   editable,
   onChanged,
+  onSubido,
 }: {
   item: ChecklistItem;
   tramiteId: string;
   editable: boolean;
   onChanged: (updated: ChecklistItem) => void;
+  /** Se subieron archivos desde el requisito: recargar el DO. */
+  onSubido: () => void;
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -644,6 +648,14 @@ function ChecklistItemRow({
         {saving ? (
           <Loader2 className="h-3 w-3 animate-spin text-slate-400" aria-hidden="true" />
         ) : null}
+        <span className="ml-auto">
+          <SubirRequisito
+            tramiteId={tramiteId}
+            requisito={{ id: item.id, descripcion: item.descripcion, recibido: item.recibido, archivos: item._count?.documentos }}
+            onSubido={onSubido}
+            compacto
+          />
+        </span>
       </div>
       {error ? (
         <p className="flex items-center gap-1 pl-6 text-xs text-rose-600">
@@ -897,6 +909,7 @@ function TabResumen({
                 tramiteId={tramite.id}
                 editable={checklistEditable}
                 onChanged={onChecklistItemChanged}
+                onSubido={onRefresh}
               />
             ))}
           </ul>
@@ -913,6 +926,7 @@ function TabResumen({
         onRefresh={onRefresh}
         camposBaseCalculo={tramite.tipoTramite?.camposBaseCalculo ?? null}
         usaEventos={tramite.tipoTramite?.usaEventos ?? true}
+        checklistItems={tramite.checklistItems}
       />
 
       {/* Comentarios */}
@@ -1319,8 +1333,9 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       prev
         ? {
             ...prev,
+            // Merge: el PATCH no trae el conteo de archivos del requisito.
             checklistItems: prev.checklistItems.map((it) =>
-              it.id === updatedItem.id ? updatedItem : it,
+              it.id === updatedItem.id ? { ...it, ...updatedItem } : it,
             ),
           }
         : prev,

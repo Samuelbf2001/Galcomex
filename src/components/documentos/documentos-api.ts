@@ -220,6 +220,8 @@ export async function registrarDocumento(
     storageKey: string;
     mimeType: string;
     tamanoBytes: number;
+    /** Requisito del checklist que cubre el archivo; el servidor lo deja recibido. */
+    checklistItemId?: string;
   },
 ): Promise<DocumentoRow> {
   const response = await fetch(`/api/tramites/${tramiteId}/documentos`, {

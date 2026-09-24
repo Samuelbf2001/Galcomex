@@ -519,6 +519,9 @@ model ChecklistItem {
   validadoPor     User?     @relation("ValidadoPor", fields: [validadoPorId], references: [id])
   fechaValidacion DateTime?
 
+  /// Archivos subidos desde el propio requisito (fotos de la revisión, registro VUCE…).
+  documentos Documento[]
+
   @@index([tramiteId])
   @@map("checklist_item")
 }
@@ -564,12 +567,18 @@ model Documento {
   subidoPor     User               @relation("SubidoPor", fields: [subidoPorId], references: [id])
   createdAt     DateTime           @default(now())
 
-  pagosTramite      PagoTramite[]      @relation("SoporteDocumento")
+  /// Requisito del checklist que este archivo cubre (subido desde el propio
+  /// requisito o desde el evento que lo exige). Null = subido suelto.
+  checklistItemId String?
+  checklistItem   ChecklistItem? @relation(fields: [checklistItemId], references: [id], onDelete: SetNull)
+
+  pagosTramite     PagoTramite[]      @relation("SoporteDocumento")
   pagosComercio     PagoTramite[]      @relation("ComprobanteComercio")
   facturasProveedor FacturaProveedor[] @relation("FacturaProveedorDoc")
   enlaces           DocumentoEnlace[]
 
   @@index([tramiteId, eliminado])
+  @@index([checklistItemId])
   @@map("documento")
 }
 

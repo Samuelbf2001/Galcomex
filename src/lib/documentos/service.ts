@@ -51,6 +51,8 @@ export type RegistrarDocumentoInput = {
   mimeType: string;
   tamanoBytes: number;
   subidoPorId: string;
+  /** Requisito del checklist que cubre el archivo; al registrarlo queda recibido. */
+  checklistItemId?: string;
 };
 
 export type ReemplazarDocumentoInput = {
@@ -118,6 +120,16 @@ export class StorageKeyInvalidoError extends Error {
   ) {
     super(message);
     this.name = "StorageKeyInvalidoError";
+  }
+}
+
+/** El requisito indicado no es del checklist de este trámite. */
+export class RequisitoChecklistInvalidoError extends Error {
+  public readonly status = 422;
+
+  constructor() {
+    super("El documento exigido no pertenece a este trámite. Recarga la página e inténtalo de nuevo.");
+    this.name = "RequisitoChecklistInvalidoError";
   }
 }
 
@@ -305,6 +317,16 @@ export async function registrarDocumento(
     // archivo de otro cliente/trámite y luego pedir su enlace de descarga).
     await assertStorageKeyDelTramite(tx, tramite.consecutivo, input.storageKey);
 
+    const requisito = input.checklistItemId
+      ? await tx.checklistItem.findFirst({
+          where: { id: input.checklistItemId, tramiteId: input.tramiteId },
+          select: { id: true, recibido: true },
+        })
+      : null;
+    if (input.checklistItemId && !requisito) {
+      throw new RequisitoChecklistInvalidoError();
+    }
+
     const documento = await tx.documento.create({
       data: {
         tramiteId: input.tramiteId,
@@ -314,6 +336,7 @@ export async function registrarDocumento(
         mimeType: input.mimeType,
         tamanoBytes: input.tamanoBytes,
         subidoPorId: input.subidoPorId,
+        checklistItemId: requisito?.id ?? null,
       },
     });
 
@@ -328,8 +351,17 @@ export async function registrarDocumento(
       },
     });
 
-    // Auto-marcar ítem del checklist que coincida con esta categoría
-    if (input.categoria !== "OTRO") {
+    if (requisito) {
+      // Subido desde el propio requisito: ese requisito queda recibido, y
+      // solo ese (no se adivina por palabras clave).
+      if (!requisito.recibido) {
+        await tx.checklistItem.update({
+          where: { id: requisito.id },
+          data: { recibido: true, validadoPorId: input.subidoPorId, fechaValidacion: new Date() },
+        });
+      }
+    } else if (input.categoria !== "OTRO") {
+      // Auto-marcar ítem del checklist que coincida con esta categoría
       const itemsPendientes = await tx.checklistItem.findMany({
         where: { tramiteId: input.tramiteId, recibido: false },
       });

@@ -18,6 +18,8 @@ export const registrarDocumentoSchema = z.object({
   storageKey: z.string().min(1),
   mimeType: z.string().min(1),
   tamanoBytes: z.number().int().positive(),
+  /** Requisito del checklist que cubre el archivo (subido desde el requisito o su evento). */
+  checklistItemId: z.string().min(1).max(40).optional(),
 });
 
 export const reemplazarDocumentoSchema = z.object({

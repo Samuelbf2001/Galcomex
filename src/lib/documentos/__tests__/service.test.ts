@@ -446,3 +446,62 @@ describe("reemplazarDocumento — storageKey debe pertenecer al trámite (IDOR)"
     expect(persisted?.storageKey).toBe(doc.storageKey);
   });
 });
+
+describe("registrarDocumento — subido desde un requisito del checklist (revisión 24-sep)", () => {
+  it("amarra el archivo al requisito y lo deja recibido, sin tocar otros requisitos", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    const fotos = await prisma.checklistItem.create({
+      data: { tramiteId: db.tramiteId, descripcion: `${runId} Fotos de la revisión de la carga`, requerido: true },
+    });
+    const otraFoto = await prisma.checklistItem.create({
+      data: { tramiteId: db.tramiteId, descripcion: `${runId} Fotos del precinto`, requerido: true },
+    });
+
+    const documento = await registrarDocumento({
+      tramiteId: db.tramiteId,
+      categoria: CategoriaDocumento.FOTO_RECONOCIMIENTO,
+      nombreArchivo: "contenedor-1.jpg",
+      storageKey: `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.FOTO_RECONOCIMIENTO}/${runId}-foto-1.jpg`,
+      mimeType: "image/jpeg",
+      tamanoBytes: 2048,
+      subidoPorId: db.userId,
+      checklistItemId: fotos.id,
+    });
+
+    expect(documento.checklistItemId).toBe(fotos.id);
+    const [fotosDespues, otraDespues] = await Promise.all([
+      prisma.checklistItem.findUniqueOrThrow({ where: { id: fotos.id } }),
+      prisma.checklistItem.findUniqueOrThrow({ where: { id: otraFoto.id } }),
+    ]);
+    expect(fotosDespues.recibido).toBe(true);
+    expect(fotosDespues.validadoPorId).toBe(db.userId);
+    // Con requisito explícito no se adivina por palabras clave ("foto").
+    expect(otraDespues.recibido).toBe(false);
+  });
+
+  it("rechaza un requisito de OTRO trámite", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    const ajeno = await prisma.checklistItem.create({
+      data: { tramiteId: db.otroTramiteId, descripcion: `${runId} Registro VUCE ajeno`, requerido: true },
+    });
+    const storageKey = `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.OTRO}/${runId}-registro.pdf`;
+
+    await expect(
+      registrarDocumento({
+        tramiteId: db.tramiteId,
+        categoria: CategoriaDocumento.OTRO,
+        nombreArchivo: "registro.pdf",
+        storageKey,
+        mimeType: "application/pdf",
+        tamanoBytes: 1024,
+        subidoPorId: db.userId,
+        checklistItemId: ajeno.id,
+      }),
+    ).rejects.toMatchObject({ name: "RequisitoChecklistInvalidoError", status: 422 });
+
+    expect(await prisma.documento.count({ where: { storageKey } })).toBe(0);
+    expect((await prisma.checklistItem.findUniqueOrThrow({ where: { id: ajeno.id } })).recibido).toBe(false);
+  });
+});
