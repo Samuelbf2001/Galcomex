@@ -68,6 +68,8 @@ export type DashboardApiData = {
   alertasCartera: ClienteAlertaCarteraRow[];
   /** Pagos (de todos los DOs) sin comprobante bancario. Solo el número, sin lista. */
   cantidadPagosSinComprobante: number;
+  /** Envíos a SIIGO sin confirmar (INCIERTO o ENVIANDO colgado): hay que revisarlos en SIIGO. */
+  cantidadEnviosSiigoSinConfirmar: number;
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -226,6 +228,10 @@ export async function fetchDashboard(
     cantidadPagosSinComprobante:
       typeof payload.cantidadPagosSinComprobante === "number"
         ? payload.cantidadPagosSinComprobante
+        : 0,
+    cantidadEnviosSiigoSinConfirmar:
+      typeof payload.cantidadEnviosSiigoSinConfirmar === "number"
+        ? payload.cantidadEnviosSiigoSinConfirmar
         : 0,
   };
 }

@@ -9,8 +9,10 @@ import {
   Loader2,
   MessageSquareWarning,
   RefreshCw,
+  Search,
   Send,
   Undo2,
+  Unlock,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -19,9 +21,11 @@ import {
   type BorradorRow,
   type CruceFacturaRow,
   type LineaRevisionRow,
+  type RevisionEnvioSiigo,
   type SiigoFormaPagoRow,
   type TramiteParaFacturacion,
   type ValidacionesCruceResult,
+  EnvioSiigoApiError,
   FacturacionApiError,
   ESTADO_BORRADOR_LABEL,
   OBSERVACION_DEVOLUCION_MAX,
@@ -38,9 +42,18 @@ import {
   fetchValidacionesCruce,
   formatCOP,
   formatDate,
+  liberarEnvioSiigo,
+  revisarEnvioEnSiigo,
   sincronizarFacturaDesdeSiigo,
   transicionarBorrador,
 } from "@/components/facturacion/facturacion-api";
+import {
+  DESCRIPCION_ESTADO_ENVIO,
+  ETIQUETA_ESTADO_ENVIO,
+  estadoEnvioEfectivo,
+  puedeEnviarASiigo,
+  type SiigoEnvioEstadoValor,
+} from "@/lib/siigo/estado-envio";
 import {
   type FacturaProveedorRow,
   fetchFacturasProveedor,
@@ -311,6 +324,15 @@ function DevolverModal({
   );
 }
 
+// ─── Estado del envío a SIIGO ────────────────────────────────────────────────
+
+const COLOR_ESTADO_ENVIO: Record<SiigoEnvioEstadoValor, string> = {
+  ENVIANDO: "text-slate-700 border-slate-300 bg-slate-50",
+  ENVIADO: "text-cyan-700 border-cyan-200 bg-cyan-50",
+  INCIERTO: "text-amber-900 border-amber-300 bg-amber-50 font-semibold",
+  ERROR: "text-rose-700 border-rose-200 bg-rose-50",
+};
+
 // ─── Modal: Confirmar envío a SIIGO ───────────────────────────────────────────
 
 type ConfirmarEnvioSiigoModalProps = {
@@ -318,8 +340,8 @@ type ConfirmarEnvioSiigoModalProps = {
   tramiteConsecutivo: string;
   clienteId: string;
   clienteNombre: string;
-  esReenvio: boolean;
-  enviadoASiigoEn: string | null;
+  /** El envío anterior fue rechazado por SIIGO (ERROR): esto es un reintento. */
+  esReintento: boolean;
   enviando: boolean;
   onConfirm: () => void;
   onClose: () => void;
@@ -330,8 +352,7 @@ function ConfirmarEnvioSiigoModal({
   tramiteConsecutivo,
   clienteId,
   clienteNombre,
-  esReenvio,
-  enviadoASiigoEn,
+  esReintento,
   enviando,
   onConfirm,
   onClose,
@@ -340,7 +361,7 @@ function ConfirmarEnvioSiigoModal({
     <ModalShell
       open
       onClose={onClose}
-      title={esReenvio ? "Reenviar factura a SIIGO" : "Enviar factura a SIIGO"}
+      title="Enviar factura a SIIGO"
       size="sm"
       dismissible={!enviando}
       footer={
@@ -364,7 +385,7 @@ function ConfirmarEnvioSiigoModal({
             ) : (
               <Send className="h-4 w-4" aria-hidden="true" />
             )}
-            {esReenvio ? "Reenviar" : "Enviar a SIIGO"}
+            Enviar a SIIGO
           </button>
         </>
       }
@@ -388,17 +409,19 @@ function ConfirmarEnvioSiigoModal({
             superior debe validarla y estamparla desde el portal de SIIGO.
           </p>
 
-          {esReenvio ? (
+          <p className="text-sm text-slate-700">
+            Se envía una sola vez. Si SIIGO no responde a tiempo, el envío queda
+            «sin confirmar» y no se podrá repetir hasta revisarlo en SIIGO.
+          </p>
+
+          {esReintento ? (
             <div className="flex items-start gap-2 border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               <div>
-                <p className="font-semibold">Ya hay un borrador enviado</p>
+                <p className="font-semibold">Reintento</p>
                 <p className="text-xs">
-                  {enviadoASiigoEn
-                    ? `Último envío: ${formatDate(enviadoASiigoEn)}. `
-                    : null}
-                  Reenviar creará un nuevo borrador en SIIGO. El anterior debe
-                  descartarse manualmente desde el portal si aún no se estampó.
+                  SIIGO rechazó el envío anterior sin crear la factura. Verifica
+                  que corregiste lo que indicó antes de volver a enviarla.
                 </p>
               </div>
             </div>
@@ -557,6 +580,9 @@ export function RevisorBorrador({
   const [guardandoFormaPago, setGuardandoFormaPago] = useState(false);
   const [sincronizandoSiigo, setSincronizandoSiigo] = useState(false);
   const [mensajeSincronizacion, setMensajeSincronizacion] = useState<string | null>(null);
+  const [revisandoSiigo, setRevisandoSiigo] = useState(false);
+  const [liberandoSiigo, setLiberandoSiigo] = useState(false);
+  const [revisionSiigo, setRevisionSiigo] = useState<RevisionEnvioSiigo | null>(null);
   const [recarga, setRecarga] = useState(0);
   const [erroresConsulta, setErroresConsulta] = useState<Record<string, string>>({});
   const [cargandoSoportes, setCargandoSoportes] = useState(true);
@@ -864,17 +890,14 @@ export function RevisorBorrador({
     setEnviandoSiigo(true);
     setErrorTransicion(null);
     try {
-      // Con siigoDraftId es un "Reenviar": el servidor exige saber cuál reemplaza.
-      const { siigoDraftId, enviadoEn } = await enviarBorradorASiigo(
-        borradorActual.id,
-        borradorActual.siigoDraftId,
-      );
+      const { siigoDraftId, enviadoEn } = await enviarBorradorASiigo(borradorActual.id);
       const updated: BorradorRow = {
         ...borradorActual,
         siigoDraftId,
         enviadoASiigoEn: enviadoEn,
         ultimoErrorSiigo: null,
         ultimoIntentoSiigo: enviadoEn,
+        siigoEnvioEstado: "ENVIADO",
       };
       setBorradorActual(updated);
       onBorradorActualizado(updated);
@@ -891,10 +914,24 @@ export function RevisorBorrador({
           : describirError(caught, "Error al enviar a SIIGO.");
       setErrorTransicion(mensaje);
       toast({ title: "No se pudo enviar a SIIGO", description: mensaje, variant: "error" });
+      // El servidor dice en qué estado quedó el envío (ERROR = reintentable;
+      // INCIERTO = bloqueado hasta «Revisar en SIIGO»). Un 409 no trae estado:
+      // otro envío ganó o ya estaba enviado; hay que recargar para verlo.
+      const nuevoEstado: SiigoEnvioEstadoValor | null =
+        caught instanceof EnvioSiigoApiError ? caught.siigoEnvioEstado : null;
+      const draftRecuperado = caught instanceof EnvioSiigoApiError ? caught.siigoDraftId : null;
+      const ahora = new Date().toISOString();
       setBorradorActual((prev) => ({
         ...prev,
         ultimoErrorSiigo: mensaje,
-        ultimoIntentoSiigo: new Date().toISOString(),
+        ultimoIntentoSiigo: ahora,
+        ...(nuevoEstado
+          ? {
+              siigoEnvioEstado: nuevoEstado,
+              siigoEnvioIniciadoAt: prev.siigoEnvioIniciadoAt ?? ahora,
+            }
+          : {}),
+        ...(draftRecuperado ? { siigoDraftId: draftRecuperado } : {}),
       }));
       setMostrarConfirmEnvioSiigo(false);
     } finally {
@@ -902,8 +939,76 @@ export function RevisorBorrador({
     }
   }
 
+  async function handleRevisarSiigo() {
+    if (revisandoSiigo) return;
+    setRevisandoSiigo(true);
+    setErrorTransicion(null);
+    try {
+      const revision = await revisarEnvioEnSiigo(borradorActual.id);
+      setRevisionSiigo(revision);
+      if (revision.encontrada) {
+        const updated: BorradorRow = {
+          ...borradorActual,
+          siigoEnvioEstado: "ENVIADO",
+          ultimoErrorSiigo: null,
+        };
+        setBorradorActual(updated);
+        onBorradorActualizado(updated);
+        toast({ title: "Factura confirmada en SIIGO", description: revision.mensaje, variant: "success" });
+      } else {
+        toast({ title: "Revisión en SIIGO", description: revision.mensaje, variant: "info" });
+      }
+    } catch (caught) {
+      const mensaje =
+        caught instanceof FacturacionApiError
+          ? caught.message
+          : describirError(caught, "Error al revisar en SIIGO.");
+      setErrorTransicion(mensaje);
+      toast({ title: "No se pudo revisar en SIIGO", description: mensaje, variant: "error" });
+    } finally {
+      setRevisandoSiigo(false);
+    }
+  }
+
+  async function handleLiberarSiigo() {
+    if (liberandoSiigo) return;
+    const ok = await confirmar({
+      title: "¿Liberar el envío a SIIGO?",
+      description: `Hazlo SOLO si ya buscaste en el portal de SIIGO la factura de ${tramite.consecutivo} y NO está. Si SIIGO sí la creó y la vuelves a enviar, quedará duplicada y el cliente la recibirá dos veces.`,
+      confirmText: "Sí, no está en SIIGO: liberar",
+      cancelText: "Cancelar",
+      variant: "danger",
+    });
+    if (!ok) return;
+    setLiberandoSiigo(true);
+    setErrorTransicion(null);
+    try {
+      await liberarEnvioSiigo(borradorActual.id);
+      const updated: BorradorRow = { ...borradorActual, siigoEnvioEstado: "ERROR" };
+      setBorradorActual(updated);
+      onBorradorActualizado(updated);
+      setRevisionSiigo(null);
+      toast({
+        title: "Envío liberado",
+        description: "Ya puedes volver a enviar la factura a SIIGO.",
+        variant: "success",
+      });
+    } catch (caught) {
+      const mensaje =
+        caught instanceof FacturacionApiError
+          ? caught.message
+          : describirError(caught, "Error al liberar el envío.");
+      setErrorTransicion(mensaje);
+      toast({ title: "No se pudo liberar el envío", description: mensaje, variant: "error" });
+    } finally {
+      setLiberandoSiigo(false);
+    }
+  }
+
   const estadoLabel = ESTADO_BORRADOR_LABEL[estado];
   const estadoColor = estadoBorradorColorClass(estado);
+  // ENVIANDO de más de 10 minutos se muestra como INCIERTO (estado-envio.ts).
+  const envioEfectivo = estadoEnvioEfectivo(borradorActual);
 
   const todasAprobadas = lineas.length > 0 && lineas.every((l) => l.estadoLocal === "aprobada");
   const hayObservadas = lineas.some((l) => l.estadoLocal === "observada");
@@ -1058,16 +1163,14 @@ export function RevisorBorrador({
 
           {/* Enviar a SIIGO como BORRADOR — solo ADMIN, con borrador APROBADO. La
               factura queda en SIIGO esperando que un superior la valide y la estampe. */}
-          {estado === "APROBADO" && puedeFacturar ? (
+          {/* Una factura, un solo envío: el botón solo existe mientras no haya
+              id de SIIGO y el envío no esté en curso ni sin confirmar. */}
+          {estado === "APROBADO" && puedeFacturar && puedeEnviarASiigo(borradorActual) ? (
             <button
               type="button"
               onClick={() => setMostrarConfirmEnvioSiigo(true)}
               disabled={enviandoSiigo}
-              title={
-                borradorActual.siigoDraftId
-                  ? `Ya enviado a SIIGO${borradorActual.enviadoASiigoEn ? ` (${formatDate(borradorActual.enviadoASiigoEn)})` : ""}. Reenviar lo recreará en SIIGO.`
-                  : "Enviar a SIIGO como borrador (pendiente de validar por un superior)"
-              }
+              title="Enviar a SIIGO como borrador (pendiente de validar por un superior)"
               className="inline-flex h-9 items-center gap-2 border border-cyan-300 bg-cyan-50 px-3 text-sm font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
             >
               {enviandoSiigo ? (
@@ -1075,21 +1178,68 @@ export function RevisorBorrador({
               ) : (
                 <Send className="h-4 w-4" aria-hidden="true" />
               )}
-              {borradorActual.siigoDraftId ? "Reenviar a SIIGO" : "Enviar a SIIGO"}
+              {envioEfectivo === "ERROR" ? "Reintentar envío a SIIGO" : "Enviar a SIIGO"}
             </button>
           ) : null}
 
           {/* Estado del envío a SIIGO (chip informativo) */}
-          {estado === "APROBADO" && borradorActual.siigoDraftId ? (
+          {estado !== "FACTURADO" && envioEfectivo ? (
             <span
-              className="text-xs text-cyan-700 border border-cyan-200 bg-cyan-50 px-2 py-1"
-              title={`Draft Siigo: ${borradorActual.siigoDraftId}`}
+              className={`text-xs border px-2 py-1 ${COLOR_ESTADO_ENVIO[envioEfectivo]}`}
+              title={`${DESCRIPCION_ESTADO_ENVIO[envioEfectivo]}${borradorActual.siigoDraftId ? ` Id en SIIGO: ${borradorActual.siigoDraftId}.` : ""}`}
             >
-              Borrador en SIIGO
-              {borradorActual.enviadoASiigoEn
+              {ETIQUETA_ESTADO_ENVIO[envioEfectivo]}
+              {envioEfectivo === "ENVIADO" && borradorActual.enviadoASiigoEn
                 ? ` · ${formatDate(borradorActual.enviadoASiigoEn)}`
                 : ""}
             </span>
+          ) : null}
+
+          {/* Envío sin confirmar: el ADMIN lo revisa en SIIGO antes de cualquier reenvío. */}
+          {envioEfectivo === "INCIERTO" && puedeFacturar ? (
+            <button
+              type="button"
+              onClick={handleRevisarSiigo}
+              disabled={revisandoSiigo || liberandoSiigo}
+              title="Consultar en SIIGO si la factura se alcanzó a crear"
+              className="inline-flex h-9 items-center gap-2 border border-amber-300 bg-amber-50 px-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 disabled:opacity-60"
+            >
+              {revisandoSiigo ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Search className="h-4 w-4" aria-hidden="true" />
+              )}
+              Revisar en SIIGO
+            </button>
+          ) : null}
+
+          {envioEfectivo === "INCIERTO" && revisionSiigo && !revisionSiigo.encontrada ? (
+            <span
+              className="max-w-md text-xs text-amber-900 border border-amber-200 bg-amber-50 px-2 py-1"
+              role="status"
+            >
+              {revisionSiigo.mensaje}
+            </span>
+          ) : null}
+
+          {envioEfectivo === "INCIERTO" &&
+          puedeFacturar &&
+          revisionSiigo?.puedeLiberar &&
+          !borradorActual.siigoDraftId ? (
+            <button
+              type="button"
+              onClick={handleLiberarSiigo}
+              disabled={liberandoSiigo || revisandoSiigo}
+              title="Solo si ya revisaste el portal de SIIGO y la factura no está"
+              className="inline-flex h-9 items-center gap-2 border border-rose-300 bg-white px-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-50 disabled:opacity-60"
+            >
+              {liberandoSiigo ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Unlock className="h-4 w-4" aria-hidden="true" />
+              )}
+              Liberar para reenviar
+            </button>
           ) : null}
 
           {/* Sincronizar desde SIIGO — consulta el consecutivo definitivo y la
@@ -1122,7 +1272,7 @@ export function RevisorBorrador({
           ) : null}
           {estado === "APROBADO" &&
           borradorActual.ultimoErrorSiigo &&
-          !borradorActual.siigoDraftId ? (
+          (envioEfectivo === "ERROR" || envioEfectivo === "INCIERTO" || envioEfectivo === null) ? (
             <span
               className="max-w-xs text-xs text-rose-700 border border-rose-200 bg-rose-50 px-2 py-1 truncate"
               title={borradorActual.ultimoErrorSiigo}
@@ -1764,8 +1914,7 @@ export function RevisorBorrador({
           tramiteConsecutivo={tramite.consecutivo}
           clienteId={tramite.cliente.id}
           clienteNombre={tramite.cliente.nombre}
-          esReenvio={Boolean(borradorActual.siigoDraftId)}
-          enviadoASiigoEn={borradorActual.enviadoASiigoEn}
+          esReintento={envioEfectivo === "ERROR"}
           enviando={enviandoSiigo}
           onConfirm={handleEnviarSiigo}
           onClose={() => setMostrarConfirmEnvioSiigo(false)}

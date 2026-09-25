@@ -146,26 +146,42 @@ export type TransicionBorradorPayload = z.infer<typeof transicionBorradorPayload
 
 // ── Enviar a SIIGO ────────────────────────────────────────────────────────────
 
+const MENSAJE_SIN_REENVIO =
+  "«Reenviar a SIIGO» ya no existe: una factura que ya está en SIIGO no se vuelve a crear desde Galcomex. Corrígela en el portal de SIIGO.";
+
 /**
- * Cuerpo (opcional) de POST /api/borradores/[id]/siigo-enviar. Sin cuerpo es un
- * primer envío. Reenviar exige nombrar el borrador de Siigo que se reemplaza.
+ * Cuerpo de POST /api/borradores/[id]/siigo-enviar: vacío o `{}`. El antiguo
+ * reenvío (`reenviar`, `siigoDraftIdAnterior`) se rechaza con un mensaje claro;
+ * cualquier otro campo también.
  */
 export const enviarSiigoPayloadSchema = z
-  .object({
-    reenviar: z.boolean().optional(),
-    siigoDraftIdAnterior: z.string().trim().min(1).optional(),
-  })
+  .record(z.string(), z.unknown())
   .superRefine((data, ctx) => {
-    if (data.reenviar && !data.siigoDraftIdAnterior) {
+    for (const clave of Object.keys(data)) {
       ctx.addIssue({
         code: "custom",
-        path: ["siigoDraftIdAnterior"],
-        message: "Para reenviar indica el borrador de SIIGO que se reemplaza (siigoDraftIdAnterior).",
+        path: [clave],
+        message:
+          clave === "reenviar" || clave === "siigoDraftIdAnterior"
+            ? MENSAJE_SIN_REENVIO
+            : "Campo no admitido",
       });
     }
   });
 
-export type EnviarSiigoPayload = z.infer<typeof enviarSiigoPayloadSchema>;
+/**
+ * Cuerpo de POST /api/borradores/[id]/siigo-liberar: el ADMIN confirma
+ * explícitamente que revisó el portal de SIIGO y la factura no está.
+ */
+export const liberarEnvioSiigoPayloadSchema = z
+  .object({
+    confirmo: z.literal(true, {
+      error: "Confirma que revisaste el portal de SIIGO y la factura no está.",
+    }),
+  })
+  .strict();
+
+export type LiberarEnvioSiigoPayload = z.infer<typeof liberarEnvioSiigoPayloadSchema>;
 
 // ── Registrar pago de factura ─────────────────────────────────────────────────
 

@@ -1,104 +1,20 @@
 // @vitest-environment node
 /**
- * Envío a SIIGO sin duplicados (revisión de seguridad, hallazgo MEDIO).
+ * Envío a SIIGO sin duplicados (auditoría 25-sep-2026).
  *
- * Cada POST a Siigo crea un documento que, estampado, es una factura legal.
- * Sin BD ni red: Prisma y el cliente Siigo están mockeados; el advisory lock
- * `pg_try_advisory_xact_lock` se simula con un flag por transacción.
+ * Cada POST a Siigo crea un documento que, estampado, es una factura legal:
+ * un error aquí le factura dos veces al cliente. Sin BD ni red: Prisma es un
+ * fake en memoria (helpers/fake-prisma-envio.ts) cuyo `updateMany` es atómico
+ * como un UPDATE de Postgres, y el cliente Siigo está mockeado.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const h = vi.hoisted(() => {
-  const estado = {
-    estado: "APROBADO",
-    siigoDraftId: null as string | null,
-    ultimoErrorSiigo: null as string | null,
-  };
-  const lock = { ocupado: false };
-  const fallos = { proximoUpdate: false };
-  const auditorias: Array<{ accion: string; despues?: unknown; antes?: unknown }> = [];
+import * as fake from "./helpers/fake-prisma-envio";
 
-  function borradorCompleto() {
-    return {
-      id: "bor-1",
-      estado: estado.estado,
-      siigoDraftId: estado.siigoDraftId,
-      formaPagoSiigoId: 7,
-      formatoFactura: "COMISION",
-      retenciones: 0n,
-      reteIvaPorcentaje: null,
-      comentariosCabecera: null,
-      totalFactura: 1_000_000n,
-      totalAnticipo: 0n,
-      saldoAFavorCliente: 0n,
-      saldoACargoCliente: 1_000_000n,
-      tramite: {
-        id: "tra-1",
-        consecutivo: "DO.BAQ26-0001",
-        cliente: { nit: "900123456", nombre: "Cliente Prueba" },
-        pagos: [],
-      },
-      formaPago: null,
-      lineasRevision: [],
-    };
-  }
-
-  const findUnique = vi.fn(async () => borradorCompleto());
-
-  function crearTx(estadoTx: { tengoLock: boolean }) {
-    return {
-      $executeRaw: vi.fn(async () => 1),
-      $queryRaw: vi.fn(async () => {
-        if (lock.ocupado) return [{ tomado: false }];
-        lock.ocupado = true;
-        estadoTx.tengoLock = true;
-        return [{ tomado: true }];
-      }),
-      borradorFactura: {
-        findUnique,
-        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          if (fallos.proximoUpdate) {
-            fallos.proximoUpdate = false;
-            throw new Error("Transaction already closed");
-          }
-          Object.assign(estado, data);
-          return {};
-        }),
-      },
-      auditLog: {
-        create: vi.fn(async ({ data }: { data: { accion: string } }) => {
-          auditorias.push(data);
-          return {};
-        }),
-      },
-    };
-  }
-
-  const $transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
-    const estadoTx = { tengoLock: false };
-    try {
-      return await fn(crearTx(estadoTx));
-    } finally {
-      if (estadoTx.tengoLock) lock.ocupado = false;
-    }
-  });
-
-  return { estado, lock, fallos, auditorias, findUnique, $transaction, borradorCompleto };
+vi.mock("@/lib/db/prisma", async () => {
+  const m = await import("./helpers/fake-prisma-envio");
+  return { prisma: m.prismaFake };
 });
-
-vi.mock("@/lib/db/prisma", () => ({
-  prisma: {
-    $transaction: h.$transaction,
-    borradorFactura: { findUnique: h.findUnique },
-    parametro: {
-      findMany: vi.fn(async () => [
-        { clave: "SIIGO_TIPO_COMPROBANTE_ID", valor: "101" },
-        { clave: "SIIGO_VENDEDOR_ID", valor: "202" },
-      ]),
-    },
-    siigoImpuesto: { findMany: vi.fn(async () => []) },
-  },
-}));
 
 vi.mock("@/lib/borradores/lineas-fijas", () => ({ ensureLineasFijas: vi.fn(async () => {}) }));
 vi.mock("@/lib/borradores/recalculo", () => ({ recalcularTotalBorrador: vi.fn(async () => {}) }));
@@ -117,183 +33,349 @@ vi.mock("@/lib/siigo/client", async (importOriginal) => ({
   postFactura: siigo.postFactura,
 }));
 
-const {
-  enviarBorradorASiigo,
-  motivoRechazoEnvioSiigo,
-  MENSAJE_ENVIO_EN_CURSO,
-} = await import("../envio-factura-service");
-const { SiigoApiError } = await import("../client");
+const { enviarBorradorASiigo, clasificarFalloEnvioSiigo } = await import(
+  "../envio-factura-service"
+);
+const { SiigoApiError, SiigoConfigError, SiigoRespuestaInvalidaError } = await import("../client");
+const { EnvioSiigoBloqueadoError } = await import("../errores-envio");
+const { MENSAJE_ENVIO_BLOQUEADO } = await import("../estado-envio");
 
 function respuestaSiigo(id: string) {
-  return { id, name: `BAQ-${id}`, date: "2026-09-22" };
+  return { id, name: `FV-2-${id}`, date: "2026-09-25" };
 }
 
+function timeout() {
+  return new DOMException("The operation was aborted due to timeout", "TimeoutError");
+}
+
+async function esperarRechazo409(promesa: Promise<unknown>): Promise<Error> {
+  const err = await promesa.then(
+    () => {
+      throw new Error("se esperaba un 409");
+    },
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(EnvioSiigoBloqueadoError);
+  expect((err as { status: number }).status).toBe(409);
+  expect((err as Error).message).toContain(MENSAJE_ENVIO_BLOQUEADO);
+  return err as Error;
+}
+
+const acciones = () => fake.estado.auditorias.map((a) => a.accion);
+
 beforeEach(() => {
-  h.estado.estado = "APROBADO";
-  h.estado.siigoDraftId = null;
-  h.estado.ultimoErrorSiigo = null;
-  h.lock.ocupado = false;
-  h.fallos.proximoUpdate = false;
-  h.auditorias.length = 0;
-  h.findUnique.mockClear();
-  h.$transaction.mockClear();
-  siigo.getToken.mockClear();
+  fake.reiniciar();
+  siigo.getToken.mockReset();
+  siigo.getToken.mockImplementation(async () => "token-prueba");
   siigo.postFactura.mockReset();
 });
 
-describe("motivoRechazoEnvioSiigo (regla pura)", () => {
-  it("primer envío: permitido sin siigoDraftId", () => {
-    expect(motivoRechazoEnvioSiigo({ siigoDraftId: null })).toBeNull();
+// ─── Regla pura ───────────────────────────────────────────────────────────────
+
+describe("clasificarFalloEnvioSiigo", () => {
+  it.each([400, 401, 403, 404, 422, 429])("HTTP %i del POST → ERROR (Siigo no la creó)", (status) => {
+    expect(clasificarFalloEnvioSiigo(new SiigoApiError("x", status), true)).toBe("ERROR");
   });
 
-  it("ya enviado y sin reenvío explícito: rechazado", () => {
-    expect(motivoRechazoEnvioSiigo({ siigoDraftId: "sg-1" })).toMatch(/ya se envió a SIIGO/);
+  it.each([408, 409, 500, 502, 503, 504])("HTTP %i del POST → INCIERTO", (status) => {
+    expect(clasificarFalloEnvioSiigo(new SiigoApiError("x", status), true)).toBe("INCIERTO");
   });
 
-  it("reenvío que nombra el borrador vigente: permitido", () => {
-    expect(
-      motivoRechazoEnvioSiigo({ siigoDraftId: "sg-1" }, { reenviar: true, siigoDraftIdAnterior: "sg-1" }),
-    ).toBeNull();
-  });
-
-  it("reenvío con un id viejo (alguien reenvió en medio): rechazado", () => {
-    expect(
-      motivoRechazoEnvioSiigo({ siigoDraftId: "sg-2" }, { reenviar: true, siigoDraftIdAnterior: "sg-1" }),
-    ).toMatch(/se volvió a enviar/);
-  });
-
-  it("reenvío sin decir cuál reemplaza: rechazado", () => {
-    expect(motivoRechazoEnvioSiigo({ siigoDraftId: "sg-1" }, { reenviar: true })).toMatch(
-      /indicar cuál borrador/,
+  it("timeout, red y 2xx inválido → INCIERTO", () => {
+    expect(clasificarFalloEnvioSiigo(timeout(), true)).toBe("INCIERTO");
+    expect(clasificarFalloEnvioSiigo(new TypeError("fetch failed"), true)).toBe("INCIERTO");
+    expect(clasificarFalloEnvioSiigo(new SiigoRespuestaInvalidaError("x", null), true)).toBe(
+      "INCIERTO",
     );
+  });
+
+  it("si el POST nunca salió (token, credenciales) → ERROR aunque sea timeout o 5xx", () => {
+    expect(clasificarFalloEnvioSiigo(timeout(), false)).toBe("ERROR");
+    expect(clasificarFalloEnvioSiigo(new SiigoApiError("auth", 500), false)).toBe("ERROR");
+    expect(clasificarFalloEnvioSiigo(new SiigoConfigError("SIIGO_API_USERNAME"), true)).toBe("ERROR");
   });
 });
 
-describe("enviarBorradorASiigo — anti-duplicado", () => {
-  it("primer envío: un POST, guarda el id y audita", async () => {
+// ─── Reclamo atómico ──────────────────────────────────────────────────────────
+
+describe("enviarBorradorASiigo — reclamo antes de tocar Siigo", () => {
+  it("primer envío: reclama (ENVIANDO) antes del token, un POST, queda ENVIADO y audita", async () => {
+    let estadoAlPedirToken: string | null = "sin-llamar";
+    siigo.getToken.mockImplementationOnce(async () => {
+      estadoAlPedirToken = fake.estado.fila.siigoEnvioEstado;
+      return "token-prueba";
+    });
     siigo.postFactura.mockResolvedValueOnce(respuestaSiigo("sg-1"));
 
     const r = await enviarBorradorASiigo("bor-1", "usr-1");
 
-    expect(r).toMatchObject({ ok: true, siigoDraftId: "sg-1" });
+    expect(r).toMatchObject({ ok: true, siigoDraftId: "sg-1", siigoEnvioEstado: "ENVIADO" });
+    expect(estadoAlPedirToken).toBe("ENVIANDO");
     expect(siigo.postFactura).toHaveBeenCalledTimes(1);
-    expect(h.estado.siigoDraftId).toBe("sg-1");
-    expect(h.auditorias.map((a) => a.accion)).toEqual(["SIIGO_ENVIAR_OK"]);
-    expect(h.lock.ocupado).toBe(false);
+    expect(fake.estado.fila).toMatchObject({
+      siigoDraftId: "sg-1",
+      siigoEnvioEstado: "ENVIADO",
+      ultimoErrorSiigo: null,
+    });
+    expect(fake.estado.fila.siigoEnvioIntentoId).toEqual(expect.any(String));
+    expect(acciones()).toEqual(["SIIGO_ENVIAR_OK"]);
   });
 
-  it("segundo envío (doble clic / reintento) sin «Reenviar»: rechazado sin tocar Siigo", async () => {
+  it("dos envíos simultáneos (Promise.all): exactamente un POST; el otro recibe 409", async () => {
+    siigo.postFactura.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return respuestaSiigo("sg-1");
+    });
+
+    const resultados = await Promise.allSettled([
+      enviarBorradorASiigo("bor-1", "usr-1"),
+      enviarBorradorASiigo("bor-1", "usr-2"),
+    ]);
+
+    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
+    const cumplidos = resultados.filter((r) => r.status === "fulfilled");
+    const rechazados = resultados.filter((r) => r.status === "rejected");
+    expect(cumplidos).toHaveLength(1);
+    expect(cumplidos[0]).toMatchObject({ value: { ok: true, siigoDraftId: "sg-1" } });
+    expect(rechazados).toHaveLength(1);
+    await esperarRechazo409(Promise.reject((rechazados[0] as PromiseRejectedResult).reason));
+    expect(acciones()).toEqual(["SIIGO_ENVIAR_OK"]);
+  });
+
+  it("cinco clics simultáneos: un solo POST", async () => {
+    siigo.postFactura.mockImplementation(async () => respuestaSiigo("sg-1"));
+
+    const resultados = await Promise.allSettled(
+      Array.from({ length: 5 }, () => enviarBorradorASiigo("bor-1", "usr-1")),
+    );
+
+    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
+    expect(resultados.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(resultados.filter((r) => r.status === "rejected")).toHaveLength(4);
+  });
+
+  it("segundo envío tras un éxito: 409 sin tocar Siigo", async () => {
     siigo.postFactura.mockResolvedValueOnce(respuestaSiigo("sg-1"));
     await enviarBorradorASiigo("bor-1", "usr-1");
 
+    const err = await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+
+    expect(err.message).toContain("sg-1");
+    expect(siigo.getToken).toHaveBeenCalledTimes(1);
+    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
+    expect(fake.estado.fila.siigoDraftId).toBe("sg-1");
+  });
+
+  it("lo que cuenta es el reclamo: si otro envío reclamó entre la lectura y el UPDATE → 409 sin POST", async () => {
+    // La lectura inicial ve el borrador libre; justo antes del reclamo otro
+    // proceso lo deja en ENVIANDO.
+    const original = fake.prismaFake.borradorFactura.findUnique;
+    const espia = vi
+      .spyOn(fake.prismaFake.borradorFactura, "findUnique")
+      .mockImplementationOnce(async (args) => {
+        const leido = await original(args);
+        fake.estado.fila = {
+          ...fake.estado.fila,
+          siigoEnvioEstado: "ENVIANDO",
+          siigoEnvioIniciadoAt: new Date(),
+          siigoEnvioIntentoId: "otro",
+        };
+        return leido;
+      });
+
+    await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+    expect(siigo.getToken).not.toHaveBeenCalled();
+    expect(siigo.postFactura).not.toHaveBeenCalled();
+    espia.mockRestore();
+  });
+
+  it("borrador que no está APROBADO: rechazado sin reclamar ni llamar a Siigo", async () => {
+    fake.estado.fila.estado = "EN_REVISION";
+
     const r = await enviarBorradorASiigo("bor-1", "usr-1");
 
     expect(r).toMatchObject({ ok: false, tipo: "estado" });
-    expect(r.ok ? "" : r.error).toMatch(/ya se envió a SIIGO \(borrador sg-1\)/);
-    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
-    expect(h.estado.siigoDraftId).toBe("sg-1");
-  });
-
-  it("dos envíos simultáneos: el segundo recibe «en curso» y solo hay un POST", async () => {
-    let responder: (v: ReturnType<typeof respuestaSiigo>) => void = () => {};
-    siigo.postFactura.mockImplementationOnce(
-      () => new Promise((resolve) => (responder = resolve)),
-    );
-
-    const primero = enviarBorradorASiigo("bor-1", "usr-1");
-    await vi.waitFor(() => expect(siigo.postFactura).toHaveBeenCalledTimes(1));
-
-    const segundo = await enviarBorradorASiigo("bor-1", "usr-1");
-    expect(segundo).toEqual({ ok: false, tipo: "estado", error: MENSAJE_ENVIO_EN_CURSO });
-
-    responder(respuestaSiigo("sg-1"));
-    await expect(primero).resolves.toMatchObject({ ok: true, siigoDraftId: "sg-1" });
-    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
-    expect(h.auditorias.filter((a) => a.accion === "SIIGO_ENVIAR_OK")).toHaveLength(1);
-  });
-
-  it("la comprobación que cuenta es la de bajo el lock (id guardado entre la lectura y el lock)", async () => {
-    // Lectura previa: aún sin id. Dentro del lock: otro envío ya lo guardó.
-    h.estado.siigoDraftId = "sg-9";
-    h.findUnique.mockImplementationOnce(async () => ({
-      ...h.borradorCompleto(),
-      siigoDraftId: null,
-    }));
-
-    const r = await enviarBorradorASiigo("bor-1", "usr-1");
-
-    expect(r).toMatchObject({ ok: false, tipo: "estado" });
+    expect(fake.estado.fila.siigoEnvioEstado).toBeNull();
     expect(siigo.postFactura).not.toHaveBeenCalled();
   });
 
-  it("«Reenviar» explícito crea otro borrador; repetirlo con el mismo id viejo se rechaza", async () => {
-    h.estado.siigoDraftId = "sg-1";
-    siigo.postFactura.mockResolvedValueOnce(respuestaSiigo("sg-2"));
+  it("ENVIANDO reciente: 409 «envío en curso»; ENVIANDO de más de 10 min: 409 «sin confirmar», nunca se reintenta solo", async () => {
+    fake.estado.fila.siigoEnvioEstado = "ENVIANDO";
+    fake.estado.fila.siigoEnvioIniciadoAt = new Date(Date.now() - 60_000);
+    const enCurso = await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+    expect(enCurso.message).toMatch(/envío en curso/);
 
-    const reenvio = await enviarBorradorASiigo("bor-1", "usr-1", {
-      reenviar: true,
-      siigoDraftIdAnterior: "sg-1",
-    });
-    expect(reenvio).toMatchObject({ ok: true, siigoDraftId: "sg-2" });
-    expect(h.auditorias[0]).toMatchObject({
-      accion: "SIIGO_ENVIAR_OK",
-      antes: { siigoDraftIdAnterior: "sg-1" },
-      despues: { siigoDraftId: "sg-2", reenvio: true },
-    });
+    fake.estado.fila.siigoEnvioIniciadoAt = new Date(Date.now() - 11 * 60_000);
+    const colgado = await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+    expect(colgado.message).toMatch(/sin confirmar/);
+    expect(colgado.message).toMatch(/Revisar en SIIGO/);
 
-    const repetido = await enviarBorradorASiigo("bor-1", "usr-1", {
-      reenviar: true,
-      siigoDraftIdAnterior: "sg-1",
-    });
-    expect(repetido).toMatchObject({ ok: false, tipo: "estado" });
-    expect(repetido.ok ? "" : repetido.error).toMatch(/borrador actual sg-2/);
+    expect(siigo.postFactura).not.toHaveBeenCalled();
+    expect(fake.estado.fila.siigoEnvioEstado).toBe("ENVIANDO");
+  });
+});
+
+// ─── Clasificación del resultado ─────────────────────────────────────────────
+
+describe("enviarBorradorASiigo — resultado de Siigo", () => {
+  it.each([400, 422, 429])(
+    "rechazo definitivo (HTTP %i): ERROR, se guarda el error y se puede reintentar",
+    async (status) => {
+      siigo.postFactura.mockRejectedValueOnce(
+        new SiigoApiError(`Siigo POST /v1/invoices falló con HTTP ${status}`, status),
+      );
+
+      const fallo = await enviarBorradorASiigo("bor-1", "usr-1");
+      expect(fallo).toMatchObject({ ok: false, tipo: "api", siigoEnvioEstado: "ERROR" });
+      expect(fake.estado.fila).toMatchObject({ siigoEnvioEstado: "ERROR", siigoDraftId: null });
+      expect(fake.estado.fila.ultimoErrorSiigo).toMatch(new RegExp(`HTTP ${status}`));
+      expect(acciones()).toEqual(["SIIGO_ENVIAR_ERROR"]);
+
+      siigo.postFactura.mockResolvedValueOnce(respuestaSiigo("sg-1"));
+      await expect(enviarBorradorASiigo("bor-1", "usr-1")).resolves.toMatchObject({ ok: true });
+      expect(siigo.postFactura).toHaveBeenCalledTimes(2);
+      expect(fake.estado.fila.siigoEnvioEstado).toBe("ENVIADO");
+    },
+  );
+
+  it("falla el token (el POST no salió): ERROR, reintentable", async () => {
+    siigo.getToken.mockRejectedValueOnce(new SiigoApiError("Siigo auth falló con HTTP 500", 500));
+
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+    expect(r).toMatchObject({ ok: false, siigoEnvioEstado: "ERROR" });
+    expect(siigo.postFactura).not.toHaveBeenCalled();
+    expect(fake.estado.fila.siigoEnvioEstado).toBe("ERROR");
+  });
+
+  it("timeout del POST: INCIERTO, mensaje en español y reintento BLOQUEADO", async () => {
+    siigo.postFactura.mockRejectedValueOnce(timeout());
+
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+    expect(r).toMatchObject({ ok: false, tipo: "incierto", siigoEnvioEstado: "INCIERTO" });
+    expect(r.ok ? "" : r.error).toMatch(/no respondió en 20 s/);
+    expect(r.ok ? "" : r.error).toMatch(/Revisar en SIIGO/);
+    expect(fake.estado.fila.siigoEnvioEstado).toBe("INCIERTO");
+    expect(acciones()).toEqual(["SIIGO_ENVIAR_INCIERTO"]);
+
+    await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
     expect(siigo.postFactura).toHaveBeenCalledTimes(1);
   });
 
-  it("si Siigo rechaza: guarda el error, no el id, y libera el lock para reintentar", async () => {
-    siigo.postFactura.mockRejectedValueOnce(new SiigoApiError("Siigo POST falló con HTTP 400", 400));
+  it("error de red en el POST: INCIERTO", async () => {
+    siigo.postFactura.mockRejectedValueOnce(new TypeError("fetch failed"));
 
-    const fallo = await enviarBorradorASiigo("bor-1", "usr-1");
-    expect(fallo).toMatchObject({ ok: false, tipo: "api" });
-    expect(h.estado.siigoDraftId).toBeNull();
-    expect(h.estado.ultimoErrorSiigo).toMatch(/HTTP 400/);
-    expect(h.lock.ocupado).toBe(false);
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
 
-    siigo.postFactura.mockResolvedValueOnce(respuestaSiigo("sg-1"));
-    await expect(enviarBorradorASiigo("bor-1", "usr-1")).resolves.toMatchObject({ ok: true });
+    expect(r).toMatchObject({ ok: false, tipo: "incierto" });
+    expect(fake.estado.fila.siigoEnvioEstado).toBe("INCIERTO");
   });
 
-  it("si Siigo no responde a tiempo: mensaje en español que pide revisar el portal", async () => {
+  it.each([500, 502, 503, 408])("HTTP %i del POST: INCIERTO y bloqueado", async (status) => {
+    siigo.postFactura.mockRejectedValueOnce(new SiigoApiError(`HTTP ${status}`, status));
+
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+    expect(r).toMatchObject({ ok: false, tipo: "incierto", siigoEnvioEstado: "INCIERTO" });
+    await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
+  });
+
+  it("2xx inválido que sí trae id: INCIERTO y el id queda guardado (nunca se pierde)", async () => {
     siigo.postFactura.mockRejectedValueOnce(
-      new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+      new SiigoRespuestaInvalidaError("Siigo aceptó la factura pero no devolvió consecutivo", "sg-7"),
     );
 
     const r = await enviarBorradorASiigo("bor-1", "usr-1");
 
-    expect(r).toMatchObject({ ok: false, tipo: "api" });
-    expect(r.ok ? "" : r.error).toMatch(/no respondió .* revisa en el portal de SIIGO/);
-    expect(siigo.postFactura.mock.calls[0]![2]).toMatchObject({ signal: expect.any(AbortSignal) });
+    expect(r).toMatchObject({ ok: false, tipo: "incierto", siigoDraftId: "sg-7" });
+    expect(fake.estado.fila).toMatchObject({ siigoEnvioEstado: "INCIERTO", siigoDraftId: "sg-7" });
+    await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
   });
 
-  it("si Siigo creó el borrador pero la transacción falla al guardar: se reintenta guardar el id", async () => {
-    siigo.postFactura.mockResolvedValueOnce(respuestaSiigo("sg-1"));
-    h.fallos.proximoUpdate = true;
+  it("2xx ilegible sin id: INCIERTO sin id", async () => {
+    siigo.postFactura.mockRejectedValueOnce(new SiigoRespuestaInvalidaError("JSON roto", null));
+
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+    expect(r).toMatchObject({ ok: false, tipo: "incierto", siigoDraftId: null });
+    expect(fake.estado.fila).toMatchObject({ siigoEnvioEstado: "INCIERTO", siigoDraftId: null });
+  });
+
+  it("2xx y la BD falla una vez al guardar: se reintenta el guardado y queda ENVIADO", async () => {
+    siigo.postFactura.mockImplementationOnce(async () => {
+      fake.estado.transaccionesQueFallan = 1;
+      return respuestaSiigo("sg-1");
+    });
 
     const r = await enviarBorradorASiigo("bor-1", "usr-1");
 
     expect(r).toMatchObject({ ok: true, siigoDraftId: "sg-1" });
-    expect(h.estado.siigoDraftId).toBe("sg-1");
-    // Y un envío posterior ya no duplica.
-    await expect(enviarBorradorASiigo("bor-1", "usr-1")).resolves.toMatchObject({ ok: false });
+    expect(fake.estado.fila).toMatchObject({ siigoEnvioEstado: "ENVIADO", siigoDraftId: "sg-1" });
     expect(siigo.postFactura).toHaveBeenCalledTimes(1);
   });
 
-  it("borrador que ya no está APROBADO: rechazado antes de llamar a Siigo", async () => {
-    h.estado.estado = "EN_REVISION";
+  it("2xx y el AuditLog falla siempre: se guarda el id como INCIERTO y no se reenvía", async () => {
+    siigo.postFactura.mockImplementationOnce(async () => {
+      fake.estado.auditoriasQueFallan = 3;
+      return respuestaSiigo("sg-1");
+    });
 
     const r = await enviarBorradorASiigo("bor-1", "usr-1");
 
-    expect(r).toMatchObject({ ok: false, tipo: "estado" });
-    expect(siigo.postFactura).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ ok: false, tipo: "db", siigoEnvioEstado: "INCIERTO", siigoDraftId: "sg-1" });
+    expect(r.ok ? "" : r.error).toMatch(/No lo reenvíes/);
+    expect(fake.estado.fila).toMatchObject({ siigoEnvioEstado: "INCIERTO", siigoDraftId: "sg-1" });
+    await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
+  });
+
+  it("2xx y la BD cae del todo: la fila sigue reclamada (ENVIANDO) y no se reenvía", async () => {
+    siigo.postFactura.mockImplementationOnce(async () => {
+      fake.estado.transaccionesQueFallan = 2;
+      fake.estado.updatesQueFallan = 1;
+      fake.estado.auditoriasQueFallan = 1;
+      return respuestaSiigo("sg-1");
+    });
+
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+    expect(r).toMatchObject({ ok: false, tipo: "db", siigoDraftId: null });
+    expect(r.ok ? "" : r.error).toMatch(/sg-1/);
+    expect(fake.estado.fila.siigoEnvioEstado).toBe("ENVIANDO");
+    await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+    expect(siigo.postFactura).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechazo definitivo pero la BD no deja registrarlo: queda bloqueado (conservador), no libre", async () => {
+    siigo.postFactura.mockImplementationOnce(async () => {
+      fake.estado.transaccionesQueFallan = 1;
+      throw new SiigoApiError("HTTP 400", 400);
+    });
+
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+    expect(r).toMatchObject({ ok: false, tipo: "db", siigoEnvioEstado: "ENVIANDO" });
+    expect(fake.estado.fila.siigoEnvioEstado).toBe("ENVIANDO");
+    await esperarRechazo409(enviarBorradorASiigo("bor-1", "usr-1"));
+  });
+
+  it("respuesta tardía de un intento ya liberado: no pisa el envío vigente y deja rastro", async () => {
+    siigo.postFactura.mockImplementationOnce(async () => {
+      // Mientras Siigo tarda, un ADMIN liberó y otro envío reclamó el borrador.
+      fake.estado.fila = { ...fake.estado.fila, siigoEnvioIntentoId: "otro-intento" };
+      return respuestaSiigo("sg-tarde");
+    });
+
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+    expect(r).toMatchObject({ ok: false, tipo: "incierto" });
+    expect(fake.estado.fila.siigoDraftId).toBeNull();
+    expect(fake.estado.auditorias[0]).toMatchObject({
+      accion: "SIIGO_ENVIAR_INCIERTO",
+      despues: { siigoDraftIdHuerfano: "sg-tarde" },
+    });
   });
 });

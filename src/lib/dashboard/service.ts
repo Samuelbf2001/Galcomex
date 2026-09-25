@@ -21,11 +21,13 @@ import {
   EstadoBorrador,
   EstadoTramite,
   Prisma,
+  SiigoEnvioEstado,
   TipoPagoFactura,
 } from "@prisma/client";
 
 import { getUmbralAlertaCarteraCliente } from "@/lib/alertas/umbrales";
 import { prisma } from "@/lib/db/prisma";
+import { limiteEnviandoColgado } from "@/lib/siigo/estado-envio";
 
 // ─── Función pura testeable ───────────────────────────────────────────────────
 
@@ -223,7 +225,29 @@ export type DashboardData = {
    * en `lib/pagos/service.ts` (decisión: alertar, no bloquear — caso Karina).
    */
   cantidadPagosSinComprobante: number;
+  /**
+   * Borradores cuyo envío a SIIGO quedó sin confirmar (INCIERTO, o ENVIANDO
+   * colgado > 10 min): SIIGO pudo haber creado la factura y el reenvío está
+   * bloqueado hasta que un ADMIN use «Revisar en SIIGO».
+   */
+  cantidadEnviosSiigoSinConfirmar: number;
 };
+
+/** Filtro de "envío a SIIGO sin confirmar" (misma regla que `estadoEnvioEfectivo`). */
+export function whereEnvioSiigoSinConfirmar(ahora: Date): Prisma.BorradorFacturaWhereInput {
+  return {
+    OR: [
+      { siigoEnvioEstado: SiigoEnvioEstado.INCIERTO },
+      {
+        siigoEnvioEstado: SiigoEnvioEstado.ENVIANDO,
+        OR: [
+          { siigoEnvioIniciadoAt: null },
+          { siigoEnvioIniciadoAt: { lt: limiteEnviandoColgado(ahora) } },
+        ],
+      },
+    ],
+  };
+}
 
 // ─── Estados que cuentan como "activos" ──────────────────────────────────────
 
@@ -465,6 +489,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     auditLogs,
     alertasCartera,
     cantidadPagosSinComprobante,
+    cantidadEnviosSiigoSinConfirmar,
   ] = await Promise.all([
     // 1. Conteo de DOs agrupado por estado
     prisma.tramiteDO.groupBy({
@@ -494,6 +519,8 @@ export async function getDashboardData(): Promise<DashboardData> {
     getClientesConAlertaCartera(),
     // 7. Pagos de todos los DOs sin comprobante bancario (documentoId null)
     prisma.pagoTramite.count({ where: { documentoId: null } }),
+    // 8. Envíos a SIIGO sin confirmar (posible factura duplicada si se reenvía)
+    prisma.borradorFactura.count({ where: whereEnvioSiigoSinConfirmar(hoy) }),
   ]);
 
   const dosPorEstado: DosPorEstado[] = gruposPorEstado.map((g) => ({
@@ -528,5 +555,6 @@ export async function getDashboardData(): Promise<DashboardData> {
     actividadReciente,
     alertasCartera,
     cantidadPagosSinComprobante,
+    cantidadEnviosSiigoSinConfirmar,
   };
 }

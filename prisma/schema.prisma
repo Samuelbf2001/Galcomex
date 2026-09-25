@@ -920,6 +920,15 @@ model BorradorFactura {
   ultimoErrorSiigo   String?
   ultimoIntentoSiigo DateTime?
 
+  // Candado del envío a Siigo (una factura, un solo POST). El envío primero
+  // "reclama" el borrador (null|ERROR → ENVIANDO) con un UPDATE condicional y
+  // solo entonces llama a Siigo. INCIERTO = no sabemos si Siigo creó la
+  // factura: no se reintenta hasta que un ADMIN revise en Siigo. Ver
+  // src/lib/siigo/estado-envio.ts.
+  siigoEnvioEstado     SiigoEnvioEstado?
+  siigoEnvioIniciadoAt DateTime?
+  siigoEnvioIntentoId  String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -928,7 +937,16 @@ model BorradorFactura {
 
   @@index([tramiteId, estado])
   @@index([createdAt])
+  @@index([siigoEnvioEstado])
   @@map("borrador_factura")
+}
+
+/// Estado del envío de un borrador a Siigo (POST /v1/invoices).
+enum SiigoEnvioEstado {
+  ENVIANDO // reclamado; la llamada a Siigo está en curso
+  ENVIADO // Siigo devolvió el id (siigoDraftId guardado)
+  INCIERTO // timeout, red, 5xx o respuesta inválida: Siigo pudo haberla creado
+  ERROR // Siigo la rechazó sin crearla (4xx de validación): se puede reintentar
 }
 
 enum LineaRevisionOrigen {

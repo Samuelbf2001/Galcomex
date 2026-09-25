@@ -31,8 +31,25 @@ Todo ocurre en el revisor de borrador (`src/components/facturacion/revisor-borra
 4. **Enviar a SIIGO** (rol ADMIN) — `POST /api/borradores/[id]/siigo-enviar` →
    `enviarBorradorASiigo`. Valida en cadena (estado APROBADO, NIT cliente, forma de pago,
    parámetros, producto Siigo por línea, NIT de terceros) y crea la factura con `stamp.send=false`
-   → queda como **DRAFT en Siigo**. Persiste `siigoDraftId` + `enviadoASiigoEn`. En fallo guarda
-   `ultimoErrorSiigo` para reintento. El borrador **sigue en APROBADO**.
+   → queda como **DRAFT en Siigo**. Persiste `siigoDraftId` + `enviadoASiigoEn`. El borrador
+   **sigue en APROBADO**.
+
+   **Una factura, un solo POST** (desde 25-sep-2026). Antes de llamar a Siigo el borrador se
+   reclama con un UPDATE condicional (`siigoEnvioEstado` null|ERROR → ENVIANDO); un segundo clic o
+   envío simultáneo recibe 409 «Esta factura ya se envió o se está enviando a SIIGO». El resultado
+   queda en `siigoEnvioEstado`:
+   - `ENVIADO`: Siigo devolvió el id.
+   - `ERROR`: Siigo la rechazó sin crearla (400/401/403/404/422/429) o el POST no llegó a salir
+     (token, credenciales) → se puede reintentar.
+   - `INCIERTO`: timeout (20 s), error de red, 5xx, respuesta 2xx inválida o BD caída tras un 2xx →
+     **reintento bloqueado**. Un ENVIANDO de más de 10 min también se trata como INCIERTO. El ADMIN
+     usa **«Revisar en SIIGO»** (`POST …/siigo-revisar`): con id lo consulta en Siigo y lo deja
+     ENVIADO; sin id indica qué buscar en el portal y habilita **«Liberar para reenviar»**
+     (`POST …/siigo-liberar`, con confirmación) → ERROR.
+   - Ya no existe «Reenviar a SIIGO»: una factura con `siigoDraftId` no se vuelve a crear desde
+     Galcomex; se corrige en el portal de Siigo. El POST nunca se reintenta solo.
+   - AuditLog: `SIIGO_ENVIAR_OK` / `_ERROR` / `_INCIERTO`, `SIIGO_ENVIO_REVISADO`, `SIIGO_ENVIO_LIBERADO`.
+   - El dashboard avisa cuántas facturas tienen el envío sin confirmar.
 5. **Validación manual** — un superior valida y estampa la factura en el portal de Siigo; ahí
    recibe el consecutivo definitivo (ej. `BAQ-18453`).
 6. **Sincronizar desde SIIGO** — `POST /api/borradores/[id]/siigo-sincronizar` →
@@ -90,4 +107,7 @@ Para descubrir los IDs numéricos: `scripts/siigo-config-lookup.ts`.
 1. El envío no distingue PROPIO/SOCIO_LM (manda las líneas tal cual).
 2. El estampado/validación final es manual en el portal Siigo (`stamp.send=false`); no hay webhook
    de Siigo, por lo que la sincronización es por pull manual ("Sincronizar desde SIIGO").
-3. Reenviar recrea la factura en Siigo (genera un nuevo draft).
+3. Sin id de Siigo no hay búsqueda automática: el cliente (`client.ts`) solo consulta facturas por
+   id (`GET /v1/invoices/{id}`), así que un envío INCIERTO sin id se verifica a mano en el portal.
+4. "Sincronizar desde SIIGO" marca FACTURADO en cuanto la factura tiene consecutivo, sin mirar
+   `stamp.status` (los valores reales de ese campo no están verificados en el código).

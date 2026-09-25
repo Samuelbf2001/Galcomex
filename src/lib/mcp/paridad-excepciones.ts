@@ -125,4 +125,18 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/clientes/[param]/cuenta/movimientos/[param]/soporte",
     "Descarga del PDF de soporte de un movimiento de cuenta corriente: falta tool cuenta_soporte_descargar",
   ),
+
+  // Envío a Siigo sin duplicados (fix/siigo-envio-idempotente, 2026-09-25).
+  // Las tools van en galcomex-mcp/server.mjs (y borrador_siigo_enviar debe
+  // dejar de ofrecer `reenviar`, que ahora responde 400).
+  pendiente(
+    "POST",
+    "/api/borradores/[param]/siigo-revisar",
+    "«Revisar en SIIGO» un envío sin confirmar: falta tool borrador_siigo_revisar",
+  ),
+  pendiente(
+    "POST",
+    "/api/borradores/[param]/siigo-liberar",
+    "«Liberar para reenviar» un envío sin confirmar: falta tool borrador_siigo_liberar",
+  ),
 ];

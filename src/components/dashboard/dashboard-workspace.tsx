@@ -527,6 +527,33 @@ export function DashboardWorkspace() {
       {loadState === "loading" && <p role="status" className="text-sm text-cyan-700">Actualizando el resumen. Puedes seguir consultando los datos visibles.</p>}
       {loadState === "error" && <ModuleState type="error" title="No se pudo actualizar el resumen" detail={`${errorMsg ?? "Revisa tu conexión."} Los datos visibles corresponden a la última carga correcta.`} action={{ label: "Reintentar", onClick: handleRefresh }} />}
 
+      {/* Envíos a SIIGO sin confirmar: reenviarlos a ciegas puede duplicar la factura. */}
+      {data.cantidadEnviosSiigoSinConfirmar > 0 ? (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          <p className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>
+              <span className="font-semibold">
+                {data.cantidadEnviosSiigoSinConfirmar === 1
+                  ? "1 factura con envío a SIIGO sin confirmar."
+                  : `${data.cantidadEnviosSiigoSinConfirmar} facturas con envío a SIIGO sin confirmar.`}
+              </span>{" "}
+              SIIGO pudo haberlas creado: no se reenvían hasta que un ADMIN use «Revisar en SIIGO».
+            </span>
+          </p>
+          <Link
+            href="/facturacion"
+            className="inline-flex items-center gap-1 font-semibold text-amber-900 underline-offset-2 hover:underline"
+          >
+            Ir a facturación
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </Link>
+        </div>
+      ) : null}
+
       {/* Tarjetas de métricas */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
