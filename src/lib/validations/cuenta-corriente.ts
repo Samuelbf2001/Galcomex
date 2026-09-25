@@ -5,6 +5,17 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 
+/**
+ * Fecha de un día del calendario. El formulario manda "AAAA-MM-DD"; leído tal
+ * cual queda a medianoche UTC y en Colombia (UTC−5) se ve como el día anterior.
+ * Se ancla al mediodía de Bogotá para que el día no cambie al mostrarlo.
+ */
+const fechaDia = z.preprocess(
+  (valor) =>
+    typeof valor === "string" && /^\d{4}-\d{2}-\d{2}$/.test(valor) ? `${valor}T12:00:00-05:00` : valor,
+  z.coerce.date(),
+);
+
 export const movimientoCuentaSchema = z.object({
   rol: z.nativeEnum(RolCuenta),
   tipo: z.nativeEnum(TipoMovimientoCuenta),
@@ -20,7 +31,7 @@ export const movimientoCuentaSchema = z.object({
   valor: z.coerce
     .bigint()
     .refine((valor) => valor > 0n, { message: "El valor debe ser mayor a 0" }),
-  fecha: z.coerce.date(),
+  fecha: fechaDia,
   tramiteId: z.string().min(1).optional().nullable(),
   /** N° de la factura del proveedor ("Registrar factura de <proveedor>"). */
   numeroFactura: z.string().trim().min(1).max(40).optional(),
@@ -49,7 +60,7 @@ export const compensacionSchema = z
       .bigint()
       .refine((valor) => valor > 0n, { message: "El valor debe ser mayor a 0" })
       .optional(),
-    fecha: z.coerce.date(),
+    fecha: fechaDia,
     concepto: z.string().trim().min(1, "El concepto es obligatorio").max(200),
     lineaServicio: z.string().trim().min(1).max(40).default("TRAMITE"),
     facturaId: z.string().min(1).optional().nullable(),
