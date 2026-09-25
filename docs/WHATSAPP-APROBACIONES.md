@@ -52,7 +52,7 @@ Fuente de verdad: `src/lib/whatsapp/catalogo.ts`. Nada sale por WhatsApp si no e
 
 | # | Clave | Tipo | Cuándo | Texto |
 |---|---|---|---|---|
-| 1 | `PSE_CODIGO` | **Plantilla** `galcomex_codigo_pse` (Utility) | El operario pide el código | "Hola {aprobador}. {operario} necesita el codigo del token para un pago PSE. DO / Beneficiario / Valor. Responde a este mensaje solo con el codigo, o usa el boton Abrir enlace." + botones **No puedo ahora** y **Abrir enlace** |
+| 1 | `PSE_CODIGO` | **Plantilla** `galcomex_aprobar_pago` (Utility) | El operario pide el código | "Hola {aprobador}. {operario} esta haciendo un pago PSE y necesita tu aprobacion. DO / Beneficiario / Valor. Para aprobarlo, responde a este mensaje con los numeros que te da el banco, o usa el boton Abrir enlace." + botones **No puedo ahora** y **Abrir enlace** |
 | 2 | `PSE_RECIBIDO` | Texto libre | Llegó un código válido | "Listo, {nombre}. Recibimos el código del DO {do} y {operario} ya lo tiene en pantalla." |
 | 3 | `PSE_NO_PUEDO_OK` | Texto libre | Tocó "No puedo ahora" | "Entendido. Le avisamos a {operario} que no puedes en este momento." |
 | 4 | `PSE_YA_ATENDIDA` | Texto libre | Otro aprobador respondió primero | "Ese código ya lo envió {quien}. No hace falta nada más." |
@@ -108,8 +108,8 @@ Los nombres son KAPSO_* porque la pasarela imita a Kapso; los valores son de la 
 | `KAPSO_API_KEY` | `GATEWAY_API_KEY` del alta del inquilino `galcomex` |
 | `KAPSO_PHONE_NUMBER_ID` | `1441307479057660` |
 | `KAPSO_WEBHOOK_SECRET` | `GATEWAY_WEBHOOK_SECRET` del alta del inquilino `galcomex` |
-| `KAPSO_PLANTILLA_IDIOMA` | Idioma **real** con que Meta aprobó `galcomex_codigo_pse` (si no es `es`) |
-| `KAPSO_PLANTILLA_PSE` | Opcional (por defecto `galcomex_codigo_pse`) |
+| `KAPSO_PLANTILLA_IDIOMA` | Idioma **real** con que Meta aprobó `galcomex_aprobar_pago` (si no es `es`) |
+| `KAPSO_PLANTILLA_PSE` | Opcional (por defecto `galcomex_aprobar_pago`) |
 
 Sin las obligatorias el canal queda apagado: la solicitud se crea igual y el operario
 ve **Copiar enlace**. `WEBHOOK_PSE_URL` (n8n) ya no se usa.
@@ -126,7 +126,7 @@ inquilino, revocable con `tenant.js rotar-llave`.
 | 1 | Desarrollo | En la pasarela: `kapso.js linea` → confirmar `account_mode=LIVE` de Sixteam.pro. Si es SANDBOX, la línea no sirve para producción. |
 | 2 | Desarrollo | Desplegar la pasarela (`wa.sixteam.pro`) y `kapso.js webhook-crear --si`; `kapso.js webhooks` debe mostrar solo el suyo. |
 | 3 | Desarrollo | Alta del inquilino: `tenant.js alta --id galcomex --nombre Galcomex --webhook https://galcomex.sixteam.pro/api/whatsapp/kapso --plantillas galcomex_ --botones gx_ --palabras galcomex --guardar-en /tmp/galcomex.cred`. |
-| 4 | Desarrollo | Plantilla `galcomex_codigo_pse` en la WABA de Sixteam.pro: `scripts/whatsapp-kapso.ts plantilla --crear` (con la llave de Kapso, no la de inquilino) o en app.kapso.ai → Templates. Esperar APPROVED y anotar el idioma real. |
+| 4 | Desarrollo | Plantilla `galcomex_aprobar_pago` en la WABA de Sixteam.pro: `scripts/whatsapp-kapso.ts plantilla --crear` (con la llave de Kapso, no la de inquilino) o en app.kapso.ai → Templates. Esperar APPROVED y anotar el idioma real. |
 | 5 | Desarrollo | Variables de la tabla de arriba en EasyPanel. Deploy **fuera de horario laboral**, una sola build. La migración `20260921120000_whatsapp_kapso_pse` es aditiva. |
 | 6 | Camila (ADMIN) | Configuración → Parámetros → `WHATSAPP_APROBADORES_PSE` = `María Camila:3001234567; Guillermo:3009876543`. |
 | 7 | Desarrollo | `scripts/whatsapp-kapso.ts probar <celular de Camila> --si-enviar` (sale por la pasarela). |

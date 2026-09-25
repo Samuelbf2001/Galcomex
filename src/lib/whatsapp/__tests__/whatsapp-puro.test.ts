@@ -160,27 +160,29 @@ describe("catálogo", () => {
   it("envío de plantilla: 5 variables, quick reply con id y botón URL con el token", () => {
     const cuerpo = mensajePlantillaPse({
       to: "573001234567",
-      plantilla: "galcomex_codigo_pse",
+      plantilla: "galcomex_aprobar_pago",
       idioma: "es",
       solicitudId: SOLICITUD_ID,
       token: "abc123",
       datos: { nombreAprobador: "María Camila", operador: "Karina", consecutivo: "DO.BAQ26-0142", beneficiario: "Almacarga", valor: 4233902n },
     });
     expect(cuerpo.type).toBe("template");
-    const [body, rapido, url] = cuerpo.template.components;
+    const [body, url, rapido] = cuerpo.template.components;
     expect(body.parameters.map((p) => ("text" in p ? p.text : ""))).toEqual(["María Camila", "Karina", "DO.BAQ26-0142", "Almacarga", "$4.233.902"]);
-    expect(rapido).toEqual({ type: "button", sub_type: "quick_reply", index: "0", parameters: [{ type: "payload", payload: `gx_pse_no_puedo:${SOLICITUD_ID}` }] });
-    expect(url).toEqual({ type: "button", sub_type: "url", index: "1", parameters: [{ type: "text", text: "abc123" }] });
+    expect(rapido).toEqual({ type: "button", sub_type: "quick_reply", index: "1", parameters: [{ type: "payload", payload: `gx_pse_no_puedo:${SOLICITUD_ID}` }] });
+    expect(url).toEqual({ type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: "abc123" }] });
   });
 
   it("la definición de Meta cuadra con el envío: 5 variables y los botones en el mismo orden", () => {
-    const def = definicionPlantillaPse("galcomex_codigo_pse", "es", "https://galcomex.sixteam.pro");
+    const def = definicionPlantillaPse("galcomex_aprobar_pago", "es", "https://galcomex.sixteam.pro");
     const body = def.components[0] as { text: string; example: { body_text: string[][] } };
     expect(body.text.match(/\{\{\d\}\}/g)).toEqual(["{{1}}", "{{2}}", "{{3}}", "{{4}}", "{{5}}"]);
     expect(body.example.body_text[0]).toHaveLength(5);
     const botones = (def.components[1] as { buttons: Array<{ type: string; url?: string }> }).buttons;
-    expect(botones.map((b) => b.type)).toEqual(["QUICK_REPLY", "URL"]);
-    expect(botones[1].url).toBe("https://galcomex.sixteam.pro/pse/{{1}}");
+    expect(botones.map((b) => b.type)).toEqual(["URL", "QUICK_REPLY"]);
+    expect(botones[0].url).toBe("https://galcomex.sixteam.pro/pse/{{1}}");
+    // Nunca pedir la clave del banco en el texto: Meta lo rechaza y no debe pasar por WhatsApp.
+    expect(body.text).not.toMatch(/codigo|token|clave|numeros que te da/i);
   });
 
   it("todas las respuestas tienen texto", () => {
@@ -262,7 +264,7 @@ describe("decidirEntrante", () => {
 describe("enviarWhatsapp", () => {
   const config: KapsoConfig = {
     apiKey: "k", phoneNumberId: "111", webhookSecret: "s", baseUrl: "https://api.kapso.ai/meta/whatsapp/v24.0",
-    plantillaPse: "galcomex_codigo_pse", idiomaPlantilla: "es", webhookToken: null, timeoutMs: 1000,
+    plantillaPse: "galcomex_aprobar_pago", idiomaPlantilla: "es", webhookToken: null, timeoutMs: 1000,
   };
   const cuerpo = { messaging_product: "whatsapp", to: "573001234567", type: "text", text: { body: "hola" } };
 
