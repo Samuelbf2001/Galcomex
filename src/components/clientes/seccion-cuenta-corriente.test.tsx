@@ -25,6 +25,7 @@ function cuentaBase(overrides: Partial<CuentaCorriente> = {}): CuentaCorriente {
     cantidad: 0,
     habilitada: true,
     permiteCargosManuales: true,
+    cuentaCorrienteActiva: true,
     maximoCompensable: "0",
     compensables: { facturasVenta: [], facturasProveedor: [] },
     ...overrides,
@@ -86,6 +87,24 @@ describe("SeccionCuentaCorriente — botón «Registrar factura»", () => {
     expect(otroAjuste?.getAttribute("title")).toBe(
       "Correcciones y comisiones. Para una factura que esta empresa nos cobra usa «Registrar factura».",
     );
+  });
+
+  it("con solo «Registrar facturas» encendida (sin cuenta corriente) no ofrece «Otro ajuste»", async () => {
+    await montar(cuentaBase({ permiteCargosManuales: true, cuentaCorrienteActiva: false }));
+
+    expect(botonPorTexto("Registrar factura")).toBeDefined();
+    expect(botonPorTexto("Otro ajuste")).toBeUndefined();
+    expect(botonPorTexto("Registrar movimiento")).toBeUndefined();
+  });
+
+  it("los recuadros de saldo muestran lo pendiente, no los totales brutos", async () => {
+    await montar(
+      cuentaBase({ totalACargo: "14230187", totalAFavor: "8300000", pendienteCliente: "5930187", pendienteProveedor: "0", neto: "5930187" }),
+    );
+
+    expect(container.textContent).toContain("5.930.187");
+    expect(container.textContent).not.toContain("14.230.187");
+    expect(container.textContent).not.toContain("8.300.000");
   });
 
   it("la sección se muestra (habilitada=true) aunque la empresa no sea proveedora", async () => {

@@ -117,7 +117,9 @@ export function RegistrarFacturaContraparteModal({
         concepto: concepto.trim(),
         numeroFactura: numeroFactura.trim(),
         valor: valor.replace(/\D/g, ""),
-        fecha: new Date(`${fecha}T00:00:00.000Z`).toISOString(),
+        // Día del calendario tal cual (AAAA-MM-DD): el servidor lo ancla al
+        // mediodía de Bogotá para que no se muestre como el día anterior.
+        fecha,
         soporte,
       });
 

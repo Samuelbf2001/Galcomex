@@ -421,6 +421,10 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
   // la función encendida la ve; si no, el único botón sigue siendo "Registrar
   // movimiento" (ajustes/comisiones).
   const puedeRegistrarFactura = Boolean(cuenta?.permiteCargosManuales);
+  // «Otro ajuste» / «Registrar movimiento» (ajustes y comisiones) exigen la
+  // cuenta corriente completa; con solo «Registrar facturas» encendida no se
+  // muestran, porque el servidor los rechazaría.
+  const puedeAjustar = Boolean(cuenta?.cuentaCorrienteActiva);
 
   return (
     <div className="overflow-hidden border border-slate-200 bg-white">
@@ -449,7 +453,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
               <ArrowLeftRight className="h-4 w-4" aria-hidden="true" />
               Cruzar saldos
             </button>
-            {puedeRegistrarFactura ? (
+            {puedeRegistrarFactura && puedeAjustar ? (
               <button
                 type="button"
                 onClick={() => setModalAbierto(true)}
@@ -460,6 +464,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
                 Otro ajuste
               </button>
             ) : null}
+            {puedeRegistrarFactura || puedeAjustar ? (
             <button
               type="button"
               onClick={() => (puedeRegistrarFactura ? setFacturaModalAbierto(true) : setModalAbierto(true))}
@@ -468,6 +473,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
               <Plus className="h-4 w-4" aria-hidden="true" />
               {puedeRegistrarFactura ? "Registrar factura" : "Registrar movimiento"}
             </button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -484,19 +490,19 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
           <div className="grid gap-px border-b border-slate-200 bg-slate-200 sm:grid-cols-3">
             <div className="bg-white px-4 py-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                Saldo a cargo de {cuenta.empresa.nombre}
+                Saldo a cargo de {corto}
               </p>
               <p className="mt-0.5 font-mono text-lg font-bold text-amber-800">
-                {formatCOP(cuenta.totalACargo)}
+                {formatCOP(cuenta.pendienteCliente)}
               </p>
               <p className="mt-0.5 text-xs text-slate-500">le debe a Galcomex</p>
             </div>
             <div className="bg-white px-4 py-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                Saldo a favor de {cuenta.empresa.nombre}
+                Saldo a favor de {corto}
               </p>
               <p className="mt-0.5 font-mono text-lg font-bold text-cyan-800">
-                {formatCOP(cuenta.totalAFavor)}
+                {formatCOP(cuenta.pendienteProveedor)}
               </p>
               <p className="mt-0.5 text-xs text-slate-500">Galcomex le debe</p>
             </div>

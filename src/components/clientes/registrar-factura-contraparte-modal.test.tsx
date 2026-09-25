@@ -54,6 +54,7 @@ const cuenta: CuentaCorriente = {
   cantidad: 1,
   habilitada: true,
   permiteCargosManuales: true,
+  cuentaCorrienteActiva: true,
   maximoCompensable: "0",
   compensables: { facturasVenta: [], facturasProveedor: [] },
 };

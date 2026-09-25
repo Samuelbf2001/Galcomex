@@ -397,6 +397,8 @@ export interface CuentaCorrienteEmpresa extends ResumenCuenta {
   habilitada: boolean;
   /** `true` si la ficha puede registrar cargos manuales (capacidad M1). */
   permiteCargosManuales: boolean;
+  /** `true` si está encendida `cuenta_corriente` (ajustes y comisiones a mano). */
+  cuentaCorrienteActiva: boolean;
   /** Cuánto se puede cruzar hoy (la punta menor). */
   maximoCompensable: bigint;
   compensables: CompensablesEmpresa;
@@ -439,6 +441,7 @@ export async function getCuentaCorriente(
     habilitada:
       tiene(capacidades, "cuenta_corriente") || tiene(capacidades, "cargos_manuales_contraparte"),
     permiteCargosManuales: tiene(capacidades, "cargos_manuales_contraparte"),
+    cuentaCorrienteActiva: tiene(capacidades, "cuenta_corriente"),
     maximoCompensable: maximoCompensable(resumen),
     compensables,
   };
