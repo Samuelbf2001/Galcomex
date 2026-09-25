@@ -416,10 +416,11 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
   const visibles =
     cuenta && !verTodo ? cuenta.movimientos.slice(0, 12) : (cuenta?.movimientos ?? []);
   const corto = cuenta ? nombreCortoEmpresa(cuenta.empresa.nombre) : "";
-  // "Registrar factura de <CORTO>" solo tiene sentido si la empresa además de
-  // deudora es proveedora y puede llevar cargos manuales; si no, el único
-  // botón sigue siendo "Registrar movimiento" (ajustes/comisiones).
-  const puedeRegistrarFactura = Boolean(cuenta?.empresa.esProveedor && cuenta?.permiteCargosManuales);
+  // "Registrar factura" (M1: capacidad `cargos_manuales_contraparte`) ya no
+  // exige que la empresa esté marcada como proveedora — cualquier empresa con
+  // la función encendida la ve; si no, el único botón sigue siendo "Registrar
+  // movimiento" (ajustes/comisiones).
+  const puedeRegistrarFactura = Boolean(cuenta?.permiteCargosManuales);
 
   return (
     <div className="overflow-hidden border border-slate-200 bg-white">
@@ -452,7 +453,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
               <button
                 type="button"
                 onClick={() => setModalAbierto(true)}
-                title={`Correcciones y comisiones. Para una factura que ${corto} nos cobra usa «Registrar factura de ${corto}»`}
+                title="Correcciones y comisiones. Para una factura que esta empresa nos cobra usa «Registrar factura»."
                 className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
@@ -465,7 +466,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
               className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
-              {puedeRegistrarFactura ? `Registrar factura de ${corto}` : "Registrar movimiento"}
+              {puedeRegistrarFactura ? "Registrar factura" : "Registrar movimiento"}
             </button>
           </div>
         ) : null}

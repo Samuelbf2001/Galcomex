@@ -433,7 +433,11 @@ export async function getCuentaCorriente(
   return {
     ...resumen,
     empresa,
-    habilitada: tiene(capacidades, "cuenta_corriente"),
+    // El bloque se muestra con cualquiera de las dos: una empresa que solo
+    // registra facturas por fuera de trámites (Coldex) no necesita encender
+    // la cuenta cruzada completa para ver su sección.
+    habilitada:
+      tiene(capacidades, "cuenta_corriente") || tiene(capacidades, "cargos_manuales_contraparte"),
     permiteCargosManuales: tiene(capacidades, "cargos_manuales_contraparte"),
     maximoCompensable: maximoCompensable(resumen),
     compensables,
@@ -459,14 +463,16 @@ export interface RegistrarMovimientoInput {
 
 /**
  * Registra un movimiento manual (mensualidad de Coldex, comisión de Eltrans,
- * ajuste). Los cargos manuales exigen la capacidad `cargos_manuales_contraparte`
- * — un importe que no nace de un trámite no debería poder aparecer en la cuenta
- * de cualquier empresa por descuido.
+ * ajuste). "Registrar factura" (`CARGO_MANUAL`) exige solo la capacidad
+ * `cargos_manuales_contraparte` — no `cuenta_corriente` — para que una empresa
+ * que nunca es proveedora pueda usarlo sin encender la cuenta cruzada
+ * completa. El resto de orígenes (otro ajuste, comisión) sigue exigiendo
+ * `cuenta_corriente`, igual que "Cruzar saldos".
  *
  * Si trae `numeroFactura`, rechaza (409) un segundo registro de la misma
  * empresa + rol con el mismo N° de factura (normalizado) que no sea una
- * compensación — evita que "Registrar factura de Coldex" se dispare dos veces
- * por descuido con la misma factura.
+ * compensación — evita que "Registrar factura" se dispare dos veces por
+ * descuido con la misma factura.
  */
 export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput) {
   const empresa = await prisma.cliente.findUnique({
@@ -480,14 +486,12 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
 
   const capacidades = await capacidadesDeEmpresa(input.empresaId);
 
-  if (!tiene(capacidades, "cuenta_corriente")) {
-    throw new CuentaCorrienteNoHabilitadaError(empresa.nombre);
-  }
-
   if (input.origen === OrigenMovimientoCuenta.CARGO_MANUAL) {
     if (!tiene(capacidades, "cargos_manuales_contraparte")) {
       throw new CargosManualesNoHabilitadosError(empresa.nombre);
     }
+  } else if (!tiene(capacidades, "cuenta_corriente")) {
+    throw new CuentaCorrienteNoHabilitadaError(empresa.nombre);
   }
 
   const numeroFactura = input.numeroFactura?.trim() || null;
@@ -501,11 +505,18 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
         numeroFacturaNorm,
         origen: { not: OrigenMovimientoCuenta.COMPENSACION },
       },
-      select: { fecha: true },
+      select: { fecha: true, numeroFactura: true },
       orderBy: { fecha: "desc" },
     });
     if (duplicado) {
-      throw new FacturaProveedorDuplicadaError(numeroFactura!, empresa.nombre, duplicado.fecha);
+      // El mensaje muestra el número tal como quedó guardado la primera vez,
+      // no el que tecleó el usuario ahora (puede venir con formato distinto:
+      // "fe.0001" vs "FE-0001", y confunde si se le devuelve tal cual).
+      throw new FacturaProveedorDuplicadaError(
+        duplicado.numeroFactura ?? numeroFactura!,
+        empresa.nombre,
+        duplicado.fecha,
+      );
     }
   }
 

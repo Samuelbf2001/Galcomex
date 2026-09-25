@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { setCapacidadesEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
 import {
+  CuentaCorrienteNoHabilitadaError,
   FacturaProveedorDuplicadaError,
   getCuentaCorriente,
   normalizarNumeroFactura,
@@ -49,6 +50,32 @@ async function crearEmpresaConCargosManuales(nit: string) {
       { codigo: "cuenta_corriente", habilitado: true },
       { codigo: "cargos_manuales_contraparte", habilitado: true },
     ],
+    usuarioId: USUARIO_ID,
+  });
+
+  return cliente;
+}
+
+/**
+ * Empresa que NUNCA es proveedora y no tiene `cuenta_corriente` encendida:
+ * solo `cargos_manuales_contraparte`, para probar que "Registrar factura" ya
+ * no depende de esProveedor ni de la cuenta cruzada completa.
+ */
+async function crearEmpresaSoloCargosManuales(nit: string) {
+  const cliente = await prisma.cliente.create({
+    data: {
+      nombre: `${RUN_ID} ${nit}`,
+      nit,
+      tipo: "PROPIO",
+      esCliente: true,
+      esProveedor: false,
+    },
+  });
+  clienteIds.push(cliente.id);
+
+  await setCapacidadesEmpresa({
+    empresaId: cliente.id,
+    cambios: [{ codigo: "cargos_manuales_contraparte", habilitado: true }],
     usuarioId: USUARIO_ID,
   });
 
@@ -219,5 +246,95 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
         numeroFactura: "FE-9999",
       }),
     ).resolves.toBeDefined();
+  });
+
+  it("el mensaje de duplicado muestra el N° guardado la primera vez, no el que se tecleó de nuevo", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-mensaje-duplicado`);
+
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros agosto",
+      valor: 4_000_000n,
+      fecha: new Date("2026-08-15"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-0002",
+    });
+
+    // Segundo intento con formato distinto ("fe.0002"): el error debe citar
+    // el número guardado ("FE-0002"), no lo que se tecleó ahora.
+    await expect(
+      registrarMovimientoCuenta({
+        empresaId: empresa.id,
+        rol: "PROVEEDOR",
+        tipo: "ABONO",
+        origen: "CARGO_MANUAL",
+        lineaServicio: "TRAMITE",
+        concepto: "Servicios aduaneros agosto (de nuevo)",
+        valor: 4_000_000n,
+        fecha: new Date("2026-09-01"),
+        usuarioId: USUARIO_ID,
+        numeroFactura: "fe.0002",
+      }),
+    ).rejects.toThrow(/factura FE-0002/);
+  });
+});
+
+describe("getCuentaCorriente — visible con solo cargos manuales", () => {
+  it("habilitada=true aunque cuenta_corriente esté apagada, si cargos_manuales_contraparte está encendida", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaSoloCargosManuales(`${RUN_ID}-visible-solo-cargos`);
+
+    const cuenta = await getCuentaCorriente(empresa.id);
+
+    expect(cuenta.habilitada).toBe(true);
+    expect(cuenta.permiteCargosManuales).toBe(true);
+  });
+});
+
+describe("registrarMovimientoCuenta — sin esProveedor y sin cuenta_corriente", () => {
+  it('"Registrar factura" (CARGO_MANUAL + PROVEEDOR) funciona con solo la capacidad encendida, aunque la empresa no sea proveedora', async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaSoloCargosManuales(`${RUN_ID}-no-proveedor`);
+    expect(empresa.esProveedor).toBe(false);
+
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Mensualidad",
+      valor: 2_000_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-7777",
+    });
+
+    const cuenta = await getCuentaCorriente(empresa.id);
+    expect(cuenta.pendienteProveedor).toBe(2_000_000n);
+  });
+
+  it('"Otro ajuste" (AJUSTE) sigue exigiendo cuenta_corriente: se rechaza con solo cargos manuales', async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaSoloCargosManuales(`${RUN_ID}-otro-ajuste-bloqueado`);
+
+    await expect(
+      registrarMovimientoCuenta({
+        empresaId: empresa.id,
+        rol: "PROVEEDOR",
+        tipo: "ABONO",
+        origen: "AJUSTE",
+        lineaServicio: "TRAMITE",
+        concepto: "Ajuste manual",
+        valor: 500_000n,
+        fecha: new Date("2026-09-24"),
+        usuarioId: USUARIO_ID,
+      }),
+    ).rejects.toBeInstanceOf(CuentaCorrienteNoHabilitadaError);
   });
 });

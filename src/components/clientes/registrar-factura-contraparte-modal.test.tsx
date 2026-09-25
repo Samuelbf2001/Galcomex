@@ -102,10 +102,24 @@ async function enviar() {
   });
 }
 
+function botonPorTexto(texto: string): HTMLButtonElement {
+  const boton = [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === texto);
+  return boton!;
+}
+
+async function seleccionarArchivo(file: File) {
+  const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+  await act(async () => {
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 describe("RegistrarFacturaContraparteModal", () => {
-  it('usa el nombre corto ("COLDEX") en el título', async () => {
+  it("título genérico + nombre corto (\"COLDEX\") en la línea de abajo", async () => {
     await montar();
-    expect(container.textContent).toContain("Factura de COLDEX");
+    expect(container.textContent).toContain("Registrar factura");
+    expect(container.textContent).toContain("de COLDEX");
   });
 
   it("envía los valores fijos correctos: ABONO + PROVEEDOR + CARGO_MANUAL + TRAMITE", async () => {
@@ -157,5 +171,39 @@ describe("RegistrarFacturaContraparteModal", () => {
     expect(container.textContent).toContain("Ya registraste la factura FE-9999 de COLDEX el 20/09/2026");
     expect(onClose).not.toHaveBeenCalled();
     expect(onGuardado).not.toHaveBeenCalled();
+  });
+
+  it('sin archivo elegido muestra "Ningún archivo" y no muestra «Quitar»', async () => {
+    await montar();
+    expect(container.textContent).toContain("Ningún archivo");
+    expect(botonPorTexto("Quitar")).toBeUndefined();
+  });
+
+  it("adjuntar un PDF muestra el nombre completo del archivo y el botón «Quitar»", async () => {
+    await montar();
+    const archivo = new File(["contenido"], "factura-servicios-aduaneros-septiembre-2026.pdf", {
+      type: "application/pdf",
+    });
+
+    await seleccionarArchivo(archivo);
+
+    expect(container.textContent).toContain("factura-servicios-aduaneros-septiembre-2026.pdf");
+    expect(container.textContent).not.toContain("Ningún archivo");
+    expect(botonPorTexto("Quitar")).toBeDefined();
+  });
+
+  it("«Quitar» limpia el archivo elegido y vuelve a mostrar «Ningún archivo»", async () => {
+    await montar();
+    const archivo = new File(["contenido"], "factura.pdf", { type: "application/pdf" });
+    await seleccionarArchivo(archivo);
+    expect(container.textContent).toContain("factura.pdf");
+
+    await act(async () => {
+      botonPorTexto("Quitar").click();
+    });
+
+    expect(container.textContent).toContain("Ningún archivo");
+    expect(container.textContent).not.toContain("factura.pdf");
+    expect(botonPorTexto("Quitar")).toBeUndefined();
   });
 });

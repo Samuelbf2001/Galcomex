@@ -151,10 +151,13 @@ export const CAPACIDADES = [
     orden: 80,
   },
   {
+    // El código NO cambia (compatibilidad de datos: EmpresaCapacidad, AuditLog);
+    // solo el nombre/descripción que ve el ADMIN, para que el módulo "Registrar
+    // factura" no suene exclusivo de Coldex (pedido de Ernesto, 24-sep-2026).
     codigo: "cargos_manuales_contraparte",
-    nombre: "Cargos manuales de contraparte",
+    nombre: "Registrar facturas por fuera de trámites",
     descripcion:
-      "Permite cargar a mano los importes variables que la contraparte factura por fuera de los trámites (caso Coldex: mensualidad, quincenas, primas).",
+      "Permite registrar en la ficha las facturas que la empresa le cobra a Galcomex y que no pertenecen a ningún trámite (por ejemplo la mensualidad de Coldex). Se suman a lo que le debemos y se pueden cruzar en la cuenta corriente.",
     grupo: "Cartera",
     ambito: "EMPRESA",
     porDefecto: false,

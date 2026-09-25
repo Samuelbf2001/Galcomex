@@ -1,7 +1,7 @@
 "use client";
 
-import { FileText, Loader2, Receipt } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
+import { FileText, Loader2, Paperclip, Receipt } from "lucide-react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 
 import { subirArchivoDirecto } from "@/components/documentos/documentos-api";
 import { claseCampo } from "@/components/clientes/form-campos";
@@ -36,11 +36,11 @@ function formatCOP(valor: string | bigint): string {
 }
 
 /**
- * "Registrar factura de <proveedor>" (M5, caso Coldex): la factura que la
- * contraparte le cobra a Galcomex por fuera de los trámites (mensualidad,
- * quincenas, primas). Siempre ABONO + PROVEEDOR + CARGO_MANUAL + TRAMITE:
- * suma a lo que le debemos. El botón "Registrar movimiento" (renombrado
- * "Otro ajuste") sigue existiendo para todo lo demás.
+ * "Registrar factura" (M5, capacidad `cargos_manuales_contraparte`; caso
+ * piloto Coldex): la factura que la contraparte le cobra a Galcomex por fuera
+ * de los trámites (mensualidad, quincenas, primas). Siempre ABONO + PROVEEDOR
+ * + CARGO_MANUAL + TRAMITE: suma a lo que le debemos. El botón "Otro ajuste"
+ * (antes "Registrar movimiento") sigue existiendo para todo lo demás.
  */
 export function RegistrarFacturaContraparteModal({
   clienteId,
@@ -63,6 +63,7 @@ export function RegistrarFacturaContraparteModal({
   const [archivo, setArchivo] = useState<File | null>(null);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inputArchivoRef = useRef<HTMLInputElement>(null);
 
   const conceptosUsados = useMemo(() => {
     const usados = cuenta.movimientos
@@ -140,8 +141,16 @@ export function RegistrarFacturaContraparteModal({
     <ModalShell
       open
       onClose={onClose}
-      title={`Factura de ${corto}`}
-      description={`Factura que ${corto} le cobra a Galcomex por fuera de los trámites (por ejemplo mensualidad, quincenas o primas). Suma a lo que le debemos.`}
+      title="Registrar factura"
+      description={
+        <>
+          <span className="block font-medium text-slate-700">de {corto}</span>
+          <span className="mt-0.5 block">
+            Factura que {corto} le cobra a Galcomex y que no pertenece a ningún trámite (por
+            ejemplo una mensualidad). Suma a lo que le debemos.
+          </span>
+        </>
+      }
       size="md"
       dismissible={!guardando}
     >
@@ -182,21 +191,49 @@ export function RegistrarFacturaContraparteModal({
             <span className="text-xs font-medium text-slate-600">Fecha de la factura *</span>
             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} required className={claseCampo(false)} />
           </label>
-          <label className="block space-y-1">
-            <span className="text-xs font-medium text-slate-600">PDF de la factura (opcional)</span>
-            <input
-              type="file"
-              accept=".pdf,.jpg,.jpeg,.png"
-              onChange={(e) => setArchivo(e.target.files?.[0] ?? null)}
-              className="block w-full text-xs text-slate-600 file:mr-3 file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-700 hover:file:bg-slate-200"
-            />
+        </div>
+
+        <div className="block space-y-1">
+          <span className="text-xs font-medium text-slate-600">PDF de la factura (opcional)</span>
+          <input
+            ref={inputArchivoRef}
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png"
+            onChange={(e) => setArchivo(e.target.files?.[0] ?? null)}
+            className="hidden"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => inputArchivoRef.current?.click()}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 border border-slate-300 bg-slate-100 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+            >
+              <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
+              Adjuntar PDF
+            </button>
+            <span className="min-w-0 flex-1 break-words text-xs text-slate-600">
+              {archivo ? (
+                <span className="inline-flex items-center gap-1">
+                  <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  {archivo.name}
+                </span>
+              ) : (
+                "Ningún archivo"
+              )}
+            </span>
             {archivo ? (
-              <span className="inline-flex items-center gap-1 text-xs text-slate-500">
-                <FileText className="h-3.5 w-3.5" aria-hidden="true" />
-                {archivo.name}
-              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setArchivo(null);
+                  if (inputArchivoRef.current) inputArchivoRef.current.value = "";
+                }}
+                className="inline-flex h-7 shrink-0 items-center border border-slate-300 bg-white px-2 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Quitar
+              </button>
             ) : null}
-          </label>
+          </div>
         </div>
 
         {error ? <p className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}

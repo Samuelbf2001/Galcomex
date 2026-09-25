@@ -20,7 +20,7 @@ type ModalShellProps = {
   open: boolean;
   onClose: () => void;
   title: string;
-  description?: string;
+  description?: ReactNode;
   size?: "sm" | "md" | "lg" | "xl" | "full";
   /** Si es false, el botón X se deshabilita (p. ej. mientras se guarda). */
   dismissible?: boolean;
