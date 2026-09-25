@@ -12,16 +12,10 @@ import {
 import { nombreCortoEmpresa } from "@/lib/cuenta-corriente/nombre-corto";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { hoyBogota } from "@/lib/cuenta-corriente/hoy-bogota";
 import { describirError, useToast } from "@/components/ui/toast";
 
 const CONCEPTOS_SUGERIDOS = ["Servicios aduaneros", "Quincenas", "Primas"];
-
-/** "YYYY-MM-DD" de hoy en hora de Colombia — NUNCA `toISOString()` (UTC): con
- * la noche colombiana ya cambió de día en UTC y el input queda un día
- * adelantado/atrasado según la hora. */
-function hoyBogota(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
-}
 
 function formatCOP(valor: string | bigint): string {
   let entero: bigint;

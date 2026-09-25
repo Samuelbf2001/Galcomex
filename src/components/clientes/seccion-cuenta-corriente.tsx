@@ -21,6 +21,7 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
+import { hoyBogota } from "@/lib/cuenta-corriente/hoy-bogota";
 import { nombreCortoEmpresa } from "@/lib/cuenta-corriente/nombre-corto";
 
 function formatCOP(valor: string): string {
@@ -108,7 +109,8 @@ function MovimientoModal({
       lineaServicio: String(datos.get("lineaServicio") ?? "TRAMITE"),
       concepto: String(datos.get("concepto") ?? ""),
       valor: String(datos.get("valor") ?? "0").replace(/\D/g, ""),
-      fecha: new Date(`${String(datos.get("fecha") ?? "")}T00:00:00.000Z`).toISOString(),
+      // Día del calendario tal cual: el servidor lo ancla al mediodía de Bogotá.
+      fecha: String(datos.get("fecha") ?? ""),
     };
 
     try {
@@ -222,7 +224,7 @@ function MovimientoModal({
               name="fecha"
               type="date"
               required
-              defaultValue={new Date().toISOString().slice(0, 10)}
+              defaultValue={hoyBogota()}
               className={claseCampo(false)}
             />
           </label>
