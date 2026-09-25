@@ -53,6 +53,27 @@ export type ClienteAlertaCarteraRow = {
   saldoNeto: string; // BigInt as string; negativo = el cliente debe a Galcomex
 };
 
+export type CarteraHistoricaClienteRow = {
+  clienteId: string;
+  clienteNombre: string;
+  facturas: number;
+  totalACargo: string;
+  totalAFavor: string;
+  /** totalAFavor − totalACargo; negativo = el cliente debe (según Siigo, sin cobros cargados). */
+  saldoNeto: string;
+};
+
+/** Cartera histórica 2026 (cobros aún no cargados): aparte de la vencida y de las alertas. */
+export type CarteraHistoricaResumen = {
+  activa: boolean;
+  titulo: string;
+  cantidadFacturas: number;
+  cantidadACargo: number;
+  totalACargo: string;
+  totalAFavor: string;
+  porCliente: CarteraHistoricaClienteRow[];
+};
+
 export type DashboardApiData = {
   dosActivos: number;
   dosPorEstado: DosPorEstado[];
@@ -68,6 +89,8 @@ export type DashboardApiData = {
   alertasCartera: ClienteAlertaCarteraRow[];
   /** Pagos (de todos los DOs) sin comprobante bancario. Solo el número, sin lista. */
   cantidadPagosSinComprobante: number;
+  /** Facturas de trámites históricos sin cobros. `activa: false` si el API no la trae. */
+  carteraHistorica: CarteraHistoricaResumen;
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -152,6 +175,43 @@ function mapAlertaCarteraRow(r: Record<string, unknown>): ClienteAlertaCarteraRo
   };
 }
 
+function mapCarteraHistoricaCliente(r: Record<string, unknown>): CarteraHistoricaClienteRow {
+  return {
+    clienteId: String(r.clienteId ?? ""),
+    clienteNombre: String(r.clienteNombre ?? ""),
+    facturas: typeof r.facturas === "number" ? r.facturas : 0,
+    totalACargo: String(r.totalACargo ?? "0"),
+    totalAFavor: String(r.totalAFavor ?? "0"),
+    saldoNeto: String(r.saldoNeto ?? "0"),
+  };
+}
+
+/** Sin el campo (API anterior) o mal formado → inactiva: el tablero se ve como antes. */
+function mapCarteraHistorica(raw: unknown): CarteraHistoricaResumen {
+  if (!isRecord(raw)) {
+    return {
+      activa: false,
+      titulo: "",
+      cantidadFacturas: 0,
+      cantidadACargo: 0,
+      totalACargo: "0",
+      totalAFavor: "0",
+      porCliente: [],
+    };
+  }
+  return {
+    activa: raw.activa === true,
+    titulo: String(raw.titulo ?? ""),
+    cantidadFacturas: typeof raw.cantidadFacturas === "number" ? raw.cantidadFacturas : 0,
+    cantidadACargo: typeof raw.cantidadACargo === "number" ? raw.cantidadACargo : 0,
+    totalACargo: String(raw.totalACargo ?? "0"),
+    totalAFavor: String(raw.totalAFavor ?? "0"),
+    porCliente: Array.isArray(raw.porCliente)
+      ? raw.porCliente.filter(isRecord).map(mapCarteraHistoricaCliente)
+      : [],
+  };
+}
+
 // ─── API pública ──────────────────────────────────────────────────────────────
 
 export async function fetchDashboard(
@@ -227,6 +287,7 @@ export async function fetchDashboard(
       typeof payload.cantidadPagosSinComprobante === "number"
         ? payload.cantidadPagosSinComprobante
         : 0,
+    carteraHistorica: mapCarteraHistorica(payload.carteraHistorica),
   };
 }
 

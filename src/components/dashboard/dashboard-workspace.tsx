@@ -23,6 +23,7 @@ import {
   type PendienteFacturarRow,
   type CarteraVencidaRow,
   type ActividadRecienteRow,
+  type CarteraHistoricaResumen,
   type ClienteAlertaCarteraRow,
   DashboardApiError,
   fetchDashboard,
@@ -250,6 +251,58 @@ function TablaAlertasCartera({ rows }: { rows: ClienteAlertaCarteraRow[] }) {
   );
 }
 
+// ─── Cartera histórica 2026 (cobros aún no cargados) ─────────────────────────
+
+/** Monto con signo explícito: −$ 47.468.751 / +$ 5.030.347 / $ 0. */
+function formatCOPConSigno(valor: string): string {
+  const n = BigInt(valor);
+  if (n === 0n) return formatCOP("0");
+  return `${n < 0n ? "−" : "+"}${formatCOP((n < 0n ? -n : n).toString())}`;
+}
+
+function TablaCarteraHistorica({ resumen }: { resumen: CarteraHistoricaResumen }) {
+  const neto = (BigInt(resumen.totalAFavor) - BigInt(resumen.totalACargo)).toString();
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[560px] border-collapse text-left text-sm">
+        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+          <tr>
+            <th className="border-b border-slate-200 px-4 py-2.5">Cliente</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Facturas</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">A cargo</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">A favor</th>
+            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Neto</th>
+          </tr>
+        </thead>
+        <tbody>
+          {resumen.porCliente.map((row) => (
+            <tr key={row.clienteId} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
+              <td className="px-4 py-3 text-xs font-medium text-slate-800 whitespace-nowrap">
+                <EnlaceCliente id={row.clienteId}>{row.clienteNombre}</EnlaceCliente>
+              </td>
+              <td className="px-4 py-3 text-right text-xs text-slate-700 whitespace-nowrap">{row.facturas}</td>
+              <td className="px-4 py-3 text-right text-xs text-slate-700 whitespace-nowrap">{formatCOP(row.totalACargo)}</td>
+              <td className="px-4 py-3 text-right text-xs text-slate-700 whitespace-nowrap">{formatCOP(row.totalAFavor)}</td>
+              <td className="px-4 py-3 text-right text-sm font-semibold text-slate-900 whitespace-nowrap">
+                {formatCOPConSigno(row.saldoNeto)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="bg-slate-50 text-xs font-semibold text-slate-800">
+            <td className="px-4 py-2.5">Total</td>
+            <td className="px-4 py-2.5 text-right">{resumen.cantidadFacturas}</td>
+            <td className="px-4 py-2.5 text-right whitespace-nowrap">{formatCOP(resumen.totalACargo)}</td>
+            <td className="px-4 py-2.5 text-right whitespace-nowrap">{formatCOP(resumen.totalAFavor)}</td>
+            <td className="px-4 py-2.5 text-right whitespace-nowrap">{formatCOPConSigno(neto)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 // ─── Actividad reciente en lenguaje humano ────────────────────────────────────
 
 /**
@@ -314,6 +367,7 @@ const ACTIVIDAD_POR_ENTIDAD: Record<string, string> = {
   "Documento:CREATE": "subió un documento",
   "Documento:DELETE": "eliminó un documento",
   "Documento:REPLACE": "reemplazó un documento",
+  "ChecklistItem:UPDATE_CHECKLIST_ITEM": "marcó o desmarcó un ítem del checklist",
   "DocumentoEnlace:CREATE": "creó un enlace para compartir un documento",
   "DocumentoEnlace:REVOKE": "revocó un enlace de documento",
   // Configuración
@@ -520,6 +574,8 @@ export function DashboardWorkspace() {
   // ── Ready ────────────────────────────────────────────────────────────────
   // Los KPI usan los contadores totales del API; las listas vienen limitadas a 20 filas.
   const alertaPendientes = data.cantidadPendientesConAlerta > 0;
+  const historica = data.carteraHistorica;
+  const muestraHistorica = historica.activa && historica.cantidadFacturas > 0;
 
   return (
     <section className="space-y-6">
@@ -555,11 +611,11 @@ export function DashboardWorkspace() {
               ? formatCOP(data.totalCarteraVencida)
               : "$0"
           }
-          sub={
+          sub={`${
             data.cantidadFacturasVencidas > 0
               ? `${data.cantidadFacturasVencidas} factura${data.cantidadFacturasVencidas !== 1 ? "s" : ""} sin cobrar`
               : "Al día"
-          }
+          }${historica.activa ? " · sin la cartera histórica" : ""}`}
           href="/cartera?pendientes=true"
           icon={<Wallet className="h-4 w-4" aria-hidden="true" />}
           alert={data.cantidadFacturasVencidas > 0}
@@ -591,6 +647,16 @@ export function DashboardWorkspace() {
           icon={<Receipt className="h-4 w-4" aria-hidden="true" />}
           alert={data.cantidadPagosSinComprobante > 0}
         />
+        {muestraHistorica ? (
+          // Sin `alert`: no es deuda confirmada (faltan los cobros históricos).
+          <MetricCard
+            label="Cartera histórica 2026"
+            value={formatCOP(historica.totalACargo)}
+            sub={`${historica.cantidadACargo} factura${historica.cantidadACargo !== 1 ? "s" : ""} · cobros aún no cargados`}
+            href="/cartera?pendientes=true"
+            icon={<Wallet className="h-4 w-4" aria-hidden="true" />}
+          />
+        ) : null}
       </div>
 
       {/* Sección pendientes de facturar */}
@@ -633,6 +699,27 @@ export function DashboardWorkspace() {
         </div>
         <TablaAlertasCartera rows={data.alertasCartera} />
       </div>
+
+      {/* Cartera histórica 2026 — facturas de trámites históricos sin cobros cargados (D0) */}
+      {muestraHistorica ? (
+        <div className="overflow-hidden border border-amber-200 bg-white">
+          <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50/60 px-4 py-2.5">
+            <h2 className="text-sm font-semibold text-amber-900">{historica.titulo}</h2>
+            <Link
+              href="/cartera"
+              className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+            >
+              Ir a cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
+            </Link>
+          </div>
+          <p className="border-b border-amber-100 px-4 py-2.5 text-xs text-amber-900">
+            Facturas de trámites históricos cargadas desde Siigo sin sus cobros. No es deuda confirmada: no gestionar
+            cobros ni devolver o cruzar saldos a favor hasta cargar los cobros. Cada factura sale de aquí sola cuando se
+            le registra un cobro.
+          </p>
+          <TablaCarteraHistorica resumen={historica} />
+        </div>
+      ) : null}
 
       {/* Grid: cartera vencida + actividad reciente */}
       <div className="grid gap-4 lg:grid-cols-2">

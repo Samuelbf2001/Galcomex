@@ -799,6 +799,14 @@ function FilaFactura({
           ) : (
             "—"
           )}
+          {factura.historicaSinCobros ? (
+            <span
+              className="ml-2 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 font-sans text-[11px] font-semibold text-amber-800"
+              title="Cartera histórica 2026: saldo de Siigo sin los cobros cargados. No gestionar cobros ni devolver o cruzar hasta cargar los cobros."
+            >
+              Histórico · cobros sin cargar
+            </span>
+          ) : null}
         </td>
 
         {/* Factura SIIGO */}
@@ -931,17 +939,26 @@ function FilaFactura({
 
 type CruceTarjetasProps = {
   cruceCliente: string;
+  /** Parte de cruceCliente que es cartera histórica 2026 sin cobros (D0). */
+  cruceClienteHistorico?: string;
   cruceLM: string;
   totalFacturas: number;
 };
 
+/** Monto con signo explícito: −$ 1.234 / +$ 1.234. */
+function formatCOPConSigno(valor: bigint): string {
+  return `${valor < 0n ? "−" : "+"}${formatCOP((valor < 0n ? -valor : valor).toString())}`;
+}
+
 function CruceTarjetas({
   cruceCliente,
+  cruceClienteHistorico,
   cruceLM,
   totalFacturas,
 }: CruceTarjetasProps) {
   const clienteN = BigInt(cruceCliente);
   const lmN = BigInt(cruceLM);
+  const historicoN = BigInt(cruceClienteHistorico ?? "0");
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -964,6 +981,11 @@ function CruceTarjetas({
               ? "Cliente le debe a Galcomex"
               : "Sin saldo pendiente"}
         </p>
+        {historicoN !== 0n ? (
+          <p className="mt-1 text-xs text-amber-800">
+            Incluye {formatCOPConSigno(historicoN)} de cartera histórica 2026 (cobros aún no cargados)
+          </p>
+        ) : null}
       </div>
 
       {/* Cruce LM */}
@@ -1574,6 +1596,7 @@ export function CarteraWorkspace() {
             {/* Tarjetas de cruce */}
             <CruceTarjetas
               cruceCliente={cartera.cruceCliente}
+              cruceClienteHistorico={cartera.cruceClienteHistorico}
               cruceLM={cartera.cruceLM}
               totalFacturas={cartera.totalFacturas}
             />

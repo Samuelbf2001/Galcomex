@@ -14,6 +14,7 @@ import "dotenv/config";
 import { DestinoPago, EstadoBorrador, EstadoTramite, TipoPagoFactura } from "@prisma/client";
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { carteraHistoricaAparte, esFacturaHistoricaSinCobros } from "@/lib/cartera/historica";
 import { calcularSaldoNeto } from "@/lib/cartera/service";
 import { prisma } from "@/lib/db/prisma";
 
@@ -21,6 +22,7 @@ import {
   LIMITE_LISTAS_DASHBOARD,
   calcularDiasYAlerta,
   getAnticiposConSaldo,
+  getCarteraHistorica,
   getDashboardData,
   getSaldosNetoPorCliente,
 } from "../service";
@@ -46,9 +48,10 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
     }
   });
 
-  it("saldo neto por cliente: SUM en SQL == Σ calcularSaldoNeto por factura", async (ctx) => {
+  it("saldo neto por cliente: SUM en SQL == Σ calcularSaldoNeto por factura (sin la cartera histórica sin cobros si está aparte)", async (ctx) => {
     requiereDb(ctx);
 
+    const aparte = await carteraHistoricaAparte();
     const clientes = await prisma.cliente.findMany({
       select: {
         id: true,
@@ -57,9 +60,10 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
           select: {
             saldoAFavorCliente: true,
             saldoACargoCliente: true,
+            borrador: { select: { tramite: { select: { esHistorico: true } } } },
             pagos: {
               where: { destino: DestinoPago.CLIENTE },
-              select: { tipo: true, monto: true },
+              select: { tipo: true, monto: true, destino: true },
             },
           },
         },
@@ -68,7 +72,12 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
 
     const referencia = new Map<string, bigint>();
     for (const cliente of clientes) {
-      const saldoNeto = cliente.facturas.reduce((acc, f) => {
+      const facturas = aparte
+        ? cliente.facturas.filter(
+            (f) => !esFacturaHistoricaSinCobros({ esHistorico: f.borrador.tramite.esHistorico, pagos: f.pagos }),
+          )
+        : cliente.facturas;
+      const saldoNeto = facturas.reduce((acc, f) => {
         const abonos = f.pagos
           .filter((p) => p.tipo === TipoPagoFactura.ABONO)
           .reduce((sum, p) => sum + p.monto, 0n);
@@ -156,12 +165,23 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
       );
     }
 
-    // ── Cartera vencida ─────────────────────────────────────────────────────
-    const vencidasRef = await prisma.factura.findMany({
+    // ── Cartera vencida (sin la cartera histórica sin cobros si está aparte) ─
+    const aparte = await carteraHistoricaAparte();
+    const vencidasTodas = await prisma.factura.findMany({
       where: { saldoACargoCliente: { gt: 0n }, fechaPagoCliente: null },
-      select: { id: true, saldoACargoCliente: true },
+      select: {
+        id: true,
+        saldoACargoCliente: true,
+        borrador: { select: { tramite: { select: { esHistorico: true } } } },
+        pagos: { select: { destino: true } },
+      },
       orderBy: [{ fecha: "asc" }, { id: "asc" }],
     });
+    const vencidasRef = aparte
+      ? vencidasTodas.filter(
+          (f) => !esFacturaHistoricaSinCobros({ esHistorico: f.borrador.tramite.esHistorico, pagos: f.pagos }),
+        )
+      : vencidasTodas;
     const totalRef = vencidasRef.reduce((sum, f) => sum + f.saldoACargoCliente, 0n);
 
     expect(data.totalCarteraVencida).toBe(totalRef.toString());
@@ -169,5 +189,53 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
     expect(data.carteraVencida.map((f) => f.id)).toEqual(
       vencidasRef.slice(0, LIMITE_LISTAS_DASHBOARD).map((f) => f.id),
     );
+  });
+
+  it("cartera histórica: agregado SQL por cliente == recorrido en memoria con la misma regla", async (ctx) => {
+    requiereDb(ctx);
+
+    const facturas = await prisma.factura.findMany({
+      select: {
+        clienteId: true,
+        saldoACargoCliente: true,
+        saldoAFavorCliente: true,
+        borrador: { select: { tramite: { select: { esHistorico: true } } } },
+        pagos: { select: { destino: true } },
+      },
+    });
+    const porCliente = new Map<string, { facturas: number; aCargo: bigint; aFavor: bigint }>();
+    let cantidadACargo = 0;
+    for (const f of facturas) {
+      if (!esFacturaHistoricaSinCobros({ esHistorico: f.borrador.tramite.esHistorico, pagos: f.pagos })) continue;
+      if (f.saldoACargoCliente <= 0n && f.saldoAFavorCliente <= 0n) continue;
+      const e = porCliente.get(f.clienteId) ?? { facturas: 0, aCargo: 0n, aFavor: 0n };
+      e.facturas += 1;
+      e.aCargo += f.saldoACargoCliente;
+      e.aFavor += f.saldoAFavorCliente;
+      porCliente.set(f.clienteId, e);
+      if (f.saldoACargoCliente > 0n) cantidadACargo += 1;
+    }
+
+    const r = await getCarteraHistorica(true);
+
+    expect(r.activa).toBe(true);
+    expect(r.porCliente).toHaveLength(porCliente.size);
+    for (const c of r.porCliente) {
+      const ref = porCliente.get(c.clienteId);
+      expect(ref, `cliente ${c.clienteNombre}`).toBeDefined();
+      expect(c.facturas).toBe(ref!.facturas);
+      expect(c.totalACargo).toBe(ref!.aCargo.toString());
+      expect(c.totalAFavor).toBe(ref!.aFavor.toString());
+      expect(c.saldoNeto).toBe((ref!.aFavor - ref!.aCargo).toString());
+    }
+    // Peor saldo neto primero.
+    for (let i = 1; i < r.porCliente.length; i += 1) {
+      expect(BigInt(r.porCliente[i - 1]!.saldoNeto) <= BigInt(r.porCliente[i]!.saldoNeto)).toBe(true);
+    }
+    const refs = [...porCliente.values()];
+    expect(r.cantidadFacturas).toBe(refs.reduce((s, x) => s + x.facturas, 0));
+    expect(r.cantidadACargo).toBe(cantidadACargo);
+    expect(r.totalACargo).toBe(refs.reduce((s, x) => s + x.aCargo, 0n).toString());
+    expect(r.totalAFavor).toBe(refs.reduce((s, x) => s + x.aFavor, 0n).toString());
   });
 });

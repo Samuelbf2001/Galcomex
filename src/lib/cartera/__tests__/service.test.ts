@@ -193,12 +193,15 @@ async function crearFacturaDirecta(
     saldoAFavorLM = 0n,
     saldoACargoLM = 0n,
     fechaPagoCliente = null,
+    esHistorico = false,
   }: {
     saldoAFavorCliente?: bigint;
     saldoACargoCliente?: bigint;
     saldoAFavorLM?: bigint;
     saldoACargoLM?: bigint;
     fechaPagoCliente?: Date | null;
+    /** Trámite histórico (carga 2026): su factura sin cobros es "cartera histórica" (D0). */
+    esHistorico?: boolean;
   } = {},
 ): Promise<string> {
   facturaCounter++;
@@ -215,6 +218,7 @@ async function crearFacturaDirecta(
       agenciaAduanas: AgenciaAduanas.COLDEX,
       creadoPorId: db.userId,
       comentarios: `${TEST_PREFIX}:${runId}`,
+      esHistorico,
     },
   });
 
@@ -665,6 +669,54 @@ describe("cartera service con Postgres local", () => {
     expect(f?.saldoNetoCliente).toBe(-600_000n);
     expect(f?.pendienteCobroCliente).toBe(600_000n);
     expect(f?.abonosCliente).toBe(400_000n);
+  });
+
+  // ─── D0: cartera histórica aparte (etiqueta + cruceClienteHistorico) ─────
+
+  it("getCarteraCliente marca historicaSinCobros y suma cruceClienteHistorico; cruceCliente sigue sumando todas", async (ctx) => {
+    const db = ensureDb(ctx);
+    const clave = "CARTERA_HISTORICA_APARTE";
+    const previo = await prisma.parametro.findUnique({ where: { clave } });
+    await prisma.parametro.upsert({ where: { clave }, update: { valor: "SI" }, create: { clave, valor: "SI" } });
+
+    try {
+      const historica = await crearFacturaDirecta(db, { saldoACargoCliente: 300_000n, esHistorico: true });
+      const historicaAFavor = await crearFacturaDirecta(db, { saldoAFavorCliente: 20_000n, esHistorico: true });
+      const historicaConCobro = await crearFacturaDirecta(db, { saldoACargoCliente: 90_000n, esHistorico: true });
+      await registrarPagoFacturaAbono({
+        facturaId: historicaConCobro,
+        destino: DestinoPago.CLIENTE,
+        tipo: TipoPagoFactura.ABONO,
+        monto: 30_000n,
+        fecha: new Date(`${stateYear}-02-01`),
+        canalPago: CanalPago.PSE,
+        usuarioId: db.userId,
+      });
+      const normal = await crearFacturaDirecta(db, { saldoACargoCliente: 40_000n });
+
+      const cartera = await getCarteraCliente({ clienteId: db.clienteId });
+      const por = (id: string) => cartera.facturas.find((f) => f.id === id)!;
+
+      expect(por(historica).historicaSinCobros).toBe(true);
+      expect(por(historicaAFavor).historicaSinCobros).toBe(true);
+      expect(por(historicaConCobro).historicaSinCobros).toBe(false);
+      expect(por(normal).historicaSinCobros).toBe(false);
+
+      // Solo las dos históricas sin cobros de este test: −300.000 + 20.000.
+      expect(cartera.cruceClienteHistorico).toBe(-280_000n);
+      // cruceCliente no cambia: suma TODAS las facturas del cliente (= Siigo).
+      expect(cartera.cruceCliente).toBe(cartera.facturas.reduce((acc, f) => acc + f.saldoNetoCliente, 0n));
+
+      // Con la separación apagada la etiqueta desaparece y cruceClienteHistorico queda en 0.
+      await prisma.parametro.update({ where: { clave }, data: { valor: "NO" } });
+      const sinSeparar = await getCarteraCliente({ clienteId: db.clienteId });
+      expect(sinSeparar.facturas.every((f) => f.historicaSinCobros === false)).toBe(true);
+      expect(sinSeparar.cruceClienteHistorico).toBe(0n);
+      expect(sinSeparar.cruceCliente).toBe(cartera.cruceCliente);
+    } finally {
+      if (previo) await prisma.parametro.update({ where: { clave }, data: { valor: previo.valor } });
+      else await prisma.parametro.deleteMany({ where: { clave } });
+    }
   });
 
   // ─── LM independiente: solo registrar fechaPagoLM ────────────────────────

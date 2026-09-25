@@ -80,6 +80,13 @@ async function main() {
       descripcion:
         "Quién recibe por WhatsApp la solicitud del código del token PSE. Formato: Nombre:celular separados por ; (ej. María Camila:3001234567; Guillermo:3009876543)",
     },
+    {
+      // Lo lee src/lib/cartera/historica.ts. Fila ausente = SI.
+      clave: "CARTERA_HISTORICA_APARTE",
+      valor: "SI",
+      descripcion:
+        "SI = las facturas de trámites históricos sin cobros cargados se muestran aparte (tablero: «Cartera histórica 2026») y no cuentan en cartera vencida ni en alertas. Poner NO cuando se carguen los cobros históricos.",
+    },
   ];
 
   for (const p of params) {

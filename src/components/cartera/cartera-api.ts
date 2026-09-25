@@ -111,6 +111,8 @@ export type FacturaRow = {
   lineaServicio?: string;
   abonosCliente?: string;      // BigInt as string; Σ PagoFactura tipo=ABONO destino=CLIENTE
   devolucionesCliente?: string; // BigInt as string; Σ PagoFactura tipo=DEVOLUCION destino=CLIENTE
+  /** Cartera histórica 2026 (D0): trámite histórico sin cobros del cliente cargados todavía. */
+  historicaSinCobros?: boolean;
 };
 
 export type CarteraData = {
@@ -118,6 +120,11 @@ export type CarteraData = {
   // Suma de saldoNetoCliente de todas las facturas: misma convención (>0 →
   // Galcomex debe/a favor del cliente; <0 → el cliente debe/a cargo del cliente).
   cruceCliente: string;  // BigInt as string
+  /**
+   * Parte de cruceCliente que viene de la cartera histórica 2026 sin cobros
+   * (ya incluida en cruceCliente). Opcional: la ficha de empresa no la usa.
+   */
+  cruceClienteHistorico?: string; // BigInt as string
   cruceLM: string;       // BigInt as string
   totalFacturas: number;
 };
@@ -270,6 +277,7 @@ function mapFacturaRow(f: Record<string, unknown>): FacturaRow {
     lineaServicio: String(f.lineaServicio ?? ""),
     abonosCliente: String(f.abonosCliente ?? "0"),
     devolucionesCliente: String(f.devolucionesCliente ?? "0"),
+    historicaSinCobros: f.historicaSinCobros === true,
   };
 }
 
@@ -353,6 +361,7 @@ export async function fetchCartera(
   return {
     facturas: rawFacturas.filter(isRecord).map(mapFacturaRow),
     cruceCliente: String(cartera.cruceCliente ?? "0"),
+    cruceClienteHistorico: String(cartera.cruceClienteHistorico ?? "0"),
     cruceLM: String(cartera.cruceLM ?? "0"),
     totalFacturas:
       typeof cartera.totalFacturas === "number" ? cartera.totalFacturas : 0,

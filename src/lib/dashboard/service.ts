@@ -25,6 +25,12 @@ import {
 } from "@prisma/client";
 
 import { getUmbralAlertaCarteraCliente } from "@/lib/alertas/umbrales";
+import {
+  SQL_FACTURA_HISTORICA_SIN_COBROS,
+  TITULO_CARTERA_HISTORICA,
+  carteraHistoricaAparte,
+  whereFacturaHistoricaSinCobros,
+} from "@/lib/cartera/historica";
 import { prisma } from "@/lib/db/prisma";
 
 // ─── Función pura testeable ───────────────────────────────────────────────────
@@ -103,8 +109,15 @@ type SaldoNetoClienteDbRow = {
  *   Σ (saldoAFavorCliente − saldoACargoCliente) + Σ abonos − Σ devoluciones
  * Incluye TODOS los clientes (sin facturas → 0), igual que el findMany
  * original, para que el umbral se evalúe sobre la misma población.
+ *
+ * Con la cartera histórica aparte (`aparte`; si no se pasa, se lee el
+ * parámetro CARTERA_HISTORICA_APARTE) se excluyen las facturas de trámites
+ * históricos sin cobros. La subconsulta de pagos no cambia: por definición,
+ * esas facturas no tienen pagos del CLIENTE.
  */
-export async function getSaldosNetoPorCliente(): Promise<ClienteSaldoNeto[]> {
+export async function getSaldosNetoPorCliente(opts: { aparte?: boolean } = {}): Promise<ClienteSaldoNeto[]> {
+  const aparte = opts.aparte ?? (await carteraHistoricaAparte());
+  const filtroFacturas = aparte ? Prisma.sql`NOT ${SQL_FACTURA_HISTORICA_SIN_COBROS}` : Prisma.sql`TRUE`;
   const rows = await prisma.$queryRaw<SaldoNetoClienteDbRow[]>`
     SELECT
       c.id AS "clienteId",
@@ -116,9 +129,10 @@ export async function getSaldosNetoPorCliente(): Promise<ClienteSaldoNeto[]> {
       )::bigint AS "saldoNeto"
     FROM cliente c
     LEFT JOIN (
-      SELECT "clienteId", SUM("saldoAFavorCliente" - "saldoACargoCliente") AS saldo
-      FROM factura
-      GROUP BY "clienteId"
+      SELECT fa."clienteId", SUM(fa."saldoAFavorCliente" - fa."saldoACargoCliente") AS saldo
+      FROM factura fa
+      WHERE ${filtroFacturas}
+      GROUP BY fa."clienteId"
     ) f ON f."clienteId" = c.id
     LEFT JOIN (
       SELECT
@@ -141,13 +155,14 @@ export async function getSaldosNetoPorCliente(): Promise<ClienteSaldoNeto[]> {
 }
 
 /**
- * Calcula el saldo neto de cartera (Σ saldoNeto de todas las facturas, ledger
- * destino=CLIENTE — misma fórmula que getCarteraCliente().cruceCliente) para
- * todos los clientes, y retorna solo los que están bajo el umbral de alerta.
+ * Calcula el saldo neto de cartera (Σ saldoNeto de las facturas, ledger
+ * destino=CLIENTE — misma fórmula que getCarteraCliente().cruceCliente, sin la
+ * cartera histórica sin cobros cuando está aparte) para todos los clientes, y
+ * retorna solo los que están bajo el umbral de alerta.
  */
-export async function getClientesConAlertaCartera(): Promise<ClienteAlertaCarteraRow[]> {
+export async function getClientesConAlertaCartera(aparte?: boolean): Promise<ClienteAlertaCarteraRow[]> {
   const [clientesConSaldo, umbral] = await Promise.all([
-    getSaldosNetoPorCliente(),
+    getSaldosNetoPorCliente({ aparte }),
     getUmbralAlertaCarteraCliente(),
   ]);
 
@@ -189,6 +204,35 @@ export type AnticiposConSaldoResumen = {
   totalRestante: string;      // BigInt as string
 };
 
+export type CarteraHistoricaClienteRow = {
+  clienteId: string;
+  clienteNombre: string;
+  /** Facturas históricas sin cobros con algún saldo (a cargo o a favor). */
+  facturas: number;
+  totalACargo: string;        // BigInt as string
+  totalAFavor: string;        // BigInt as string
+  /** totalAFavor − totalACargo. Negativo = el cliente debe (según Siigo, sin cobros cargados). */
+  saldoNeto: string;          // BigInt as string
+};
+
+/**
+ * Cartera histórica 2026 (cobros aún no cargados): facturas de trámites
+ * históricos sin ningún pago del CLIENTE, fuera de la cartera vencida y de
+ * las alertas mientras CARTERA_HISTORICA_APARTE ≠ "NO".
+ */
+export type CarteraHistoricaResumen = {
+  /** false con CARTERA_HISTORICA_APARTE = "NO": todo vuelve a la cartera normal. */
+  activa: boolean;
+  titulo: string;
+  /** Facturas con saldo (a cargo o a favor). */
+  cantidadFacturas: number;
+  /** Facturas con saldo a cargo del cliente. */
+  cantidadACargo: number;
+  totalACargo: string;        // BigInt as string
+  totalAFavor: string;        // BigInt as string
+  porCliente: CarteraHistoricaClienteRow[];
+};
+
 export type ActividadRecienteRow = {
   id: string;
   accion: string;
@@ -217,6 +261,8 @@ export type DashboardData = {
   actividadReciente: ActividadRecienteRow[];
   /** Clientes con saldo neto de cartera por debajo de UMBRAL_ALERTA_CARTERA_CLIENTE. */
   alertasCartera: ClienteAlertaCarteraRow[];
+  /** Facturas de trámites históricos sin cobros, aparte de la vencida y de las alertas. */
+  carteraHistorica: CarteraHistoricaResumen;
   /**
    * Pagos del libro (de TODOS los DOs) sin comprobante bancario (`documentoId`
    * null). Solo el número — sin lista — mismo criterio que `faltaComprobante`
@@ -360,8 +406,10 @@ async function getPendientesFacturar(hoy: Date): Promise<{
  * Cartera vencida: facturas con saldoACargoCliente > 0 y sin fecha de pago.
  * La lista se recorta a LIMITE filas (más antiguas primero); el total en COP
  * y el conteo se agregan en BD sobre TODAS las facturas vencidas.
+ * Con la cartera histórica aparte, excluye las facturas de trámites
+ * históricos sin cobros (van en `getCarteraHistorica`).
  */
-async function getCarteraVencida(hoy: Date): Promise<{
+async function getCarteraVencida(hoy: Date, aparte: boolean): Promise<{
   carteraVencida: CarteraVencidaRow[];
   cantidadFacturasVencidas: number;
   totalCarteraVencida: bigint;
@@ -369,6 +417,7 @@ async function getCarteraVencida(hoy: Date): Promise<{
   const whereVencidas: Prisma.FacturaWhereInput = {
     saldoACargoCliente: { gt: 0n },
     fechaPagoCliente: null,
+    ...(aparte ? { NOT: whereFacturaHistoricaSinCobros } : {}),
   };
 
   const [facturasVencidas, agregado] = await Promise.all([
@@ -420,6 +469,84 @@ async function getCarteraVencida(hoy: Date): Promise<{
   };
 }
 
+type CarteraHistoricaDbRow = {
+  clienteId: string;
+  clienteNombre: string;
+  facturas: number;
+  facturasACargo: number;
+  totalACargo: bigint;
+  totalAFavor: bigint;
+};
+
+/**
+ * Cartera histórica 2026 (cobros aún no cargados): facturas de trámites
+ * históricos sin pagos del CLIENTE y con algún saldo, por cliente (peor saldo
+ * neto primero). Sin LIMIT: como mucho, una fila por cliente con históricos.
+ * Los totales se suman en TypeScript con BigInt.
+ */
+export async function getCarteraHistorica(aparte: boolean): Promise<CarteraHistoricaResumen> {
+  if (!aparte) {
+    return {
+      activa: false,
+      titulo: TITULO_CARTERA_HISTORICA,
+      cantidadFacturas: 0,
+      cantidadACargo: 0,
+      totalACargo: "0",
+      totalAFavor: "0",
+      porCliente: [],
+    };
+  }
+
+  const rows = await prisma.$queryRaw<CarteraHistoricaDbRow[]>`
+    SELECT
+      c.id AS "clienteId",
+      c.nombre AS "clienteNombre",
+      COUNT(*)::int AS facturas,
+      COUNT(*) FILTER (WHERE fa."saldoACargoCliente" > 0)::int AS "facturasACargo",
+      COALESCE(SUM(fa."saldoACargoCliente"), 0)::bigint AS "totalACargo",
+      COALESCE(SUM(fa."saldoAFavorCliente"), 0)::bigint AS "totalAFavor"
+    FROM factura fa
+    JOIN cliente c ON c.id = fa."clienteId"
+    WHERE ${SQL_FACTURA_HISTORICA_SIN_COBROS}
+      AND (fa."saldoACargoCliente" > 0 OR fa."saldoAFavorCliente" > 0)
+    GROUP BY c.id, c.nombre
+    ORDER BY
+      (COALESCE(SUM(fa."saldoAFavorCliente"), 0) - COALESCE(SUM(fa."saldoACargoCliente"), 0)) ASC,
+      c.id ASC
+  `;
+
+  let cantidadFacturas = 0;
+  let cantidadACargo = 0;
+  let totalACargo = 0n;
+  let totalAFavor = 0n;
+  const porCliente: CarteraHistoricaClienteRow[] = rows.map((row) => {
+    const aCargo = BigInt(row.totalACargo);
+    const aFavor = BigInt(row.totalAFavor);
+    cantidadFacturas += Number(row.facturas);
+    cantidadACargo += Number(row.facturasACargo);
+    totalACargo += aCargo;
+    totalAFavor += aFavor;
+    return {
+      clienteId: row.clienteId,
+      clienteNombre: row.clienteNombre,
+      facturas: Number(row.facturas),
+      totalACargo: aCargo.toString(),
+      totalAFavor: aFavor.toString(),
+      saldoNeto: (aFavor - aCargo).toString(),
+    };
+  });
+
+  return {
+    activa: true,
+    titulo: TITULO_CARTERA_HISTORICA,
+    cantidadFacturas,
+    cantidadACargo,
+    totalACargo: totalACargo.toString(),
+    totalAFavor: totalAFavor.toString(),
+    porCliente,
+  };
+}
+
 type AnticiposConSaldoDbRow = {
   cantidad: number;
   totalRestante: bigint;
@@ -456,6 +583,8 @@ export async function getAnticiposConSaldo(): Promise<AnticiposConSaldoResumen> 
 
 export async function getDashboardData(): Promise<DashboardData> {
   const hoy = new Date();
+  // Una sola lectura del parámetro: vencida, alertas y sección histórica usan el mismo valor.
+  const aparte = await carteraHistoricaAparte();
 
   const [
     gruposPorEstado,
@@ -465,6 +594,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     auditLogs,
     alertasCartera,
     cantidadPagosSinComprobante,
+    carteraHistorica,
   ] = await Promise.all([
     // 1. Conteo de DOs agrupado por estado
     prisma.tramiteDO.groupBy({
@@ -473,8 +603,8 @@ export async function getDashboardData(): Promise<DashboardData> {
     }),
     // 2. Pendientes de facturar (página + contadores)
     getPendientesFacturar(hoy),
-    // 3. Cartera vencida (página + total + contador)
-    getCarteraVencida(hoy),
+    // 3. Cartera vencida (página + total + contador), sin la histórica sin cobros
+    getCarteraVencida(hoy, aparte),
     // 4. Anticipos con saldo restante > 0
     getAnticiposConSaldo(),
     // 5. Actividad reciente — últimos 10 AuditLog
@@ -491,9 +621,11 @@ export async function getDashboardData(): Promise<DashboardData> {
       },
     }),
     // 6. Alertas de cartera — clientes con saldo neto por debajo del umbral
-    getClientesConAlertaCartera(),
+    getClientesConAlertaCartera(aparte),
     // 7. Pagos de todos los DOs sin comprobante bancario (documentoId null)
     prisma.pagoTramite.count({ where: { documentoId: null } }),
+    // 8. Cartera histórica 2026 (cobros aún no cargados)
+    getCarteraHistorica(aparte),
   ]);
 
   const dosPorEstado: DosPorEstado[] = gruposPorEstado.map((g) => ({
@@ -528,5 +660,6 @@ export async function getDashboardData(): Promise<DashboardData> {
     actividadReciente,
     alertasCartera,
     cantidadPagosSinComprobante,
+    carteraHistorica,
   };
 }

@@ -13,6 +13,7 @@
 
 import { CanalPago, DestinoPago, EstadoMovimiento, Prisma, Rol, TipoPagoFactura, TipoRecaudo } from "@prisma/client";
 
+import { carteraHistoricaAparte, esFacturaHistoricaSinCobros } from "@/lib/cartera/historica";
 import { prisma } from "@/lib/db/prisma";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -428,6 +429,10 @@ export async function eliminarPagoFactura(
  *
  * cruceCliente = Σ saldoNetoCliente de todas las facturas (saldo global de cartera CLIENTE)
  * cruceLM      = Σ saldoNetoLM
+ * cruceClienteHistorico = la parte de cruceCliente que viene de facturas con
+ *   `historicaSinCobros` (trámite histórico sin cobros cargados, mientras
+ *   CARTERA_HISTORICA_APARTE ≠ "NO"; ver lib/cartera/historica.ts). Informativa:
+ *   cruceCliente sigue sumando todas las facturas, igual que Siigo.
  *
  * Campos derivados adicionales por factura (aditivos):
  *   costosBancariosCliente = Σ costoBancario de pagos destino=CLIENTE
@@ -452,23 +457,30 @@ export async function getCarteraCliente(input: GetCarteraClienteInput) {
     ? { borrador: { tramite: { tipoTramite: { lineaServicio } } } }
     : {};
 
-  const facturas = await prisma.factura.findMany({
-    where: { clienteId, ...fechaWhere, ...lineaWhere },
-    include: {
-      borrador: {
-        select: {
-          tramiteId: true,
-          tramite: {
-            select: { consecutivo: true, tipoTramite: { select: { lineaServicio: true } } },
+  const [facturas, aparte] = await Promise.all([
+    prisma.factura.findMany({
+      where: { clienteId, ...fechaWhere, ...lineaWhere },
+      include: {
+        borrador: {
+          select: {
+            tramiteId: true,
+            tramite: {
+              select: {
+                consecutivo: true,
+                esHistorico: true,
+                tipoTramite: { select: { lineaServicio: true } },
+              },
+            },
           },
         },
+        pagos: {
+          orderBy: { fecha: "asc" },
+        },
       },
-      pagos: {
-        orderBy: { fecha: "asc" },
-      },
-    },
-    orderBy: { fecha: "desc" },
-  });
+      orderBy: { fecha: "desc" },
+    }),
+    carteraHistoricaAparte(),
+  ]);
 
   // Enriquecer cada factura con el ledger
   const facturasEnriquecidas = facturas.map((f) => {
@@ -515,9 +527,16 @@ export async function getCarteraCliente(input: GetCarteraClienteInput) {
     // incurridos tanto en el cobro al cliente como en el pago a él.
     const totalRealLM = saldoNetoLM - costosBancariosCliente - costosBancariosLM;
 
+    // Cartera histórica 2026 (D0): trámite histórico sin cobros del cliente cargados.
+    // Solo es una etiqueta: el saldo de la factura cuenta igual en cruceCliente (= Siigo).
+    const historicaSinCobros =
+      aparte &&
+      esFacturaHistoricaSinCobros({ esHistorico: f.borrador.tramite.esHistorico, pagos: f.pagos });
+
     return {
       ...f,
       lineaServicio: f.borrador.tramite.tipoTramite.lineaServicio,
+      historicaSinCobros,
       // Ledger CLIENTE
       abonosCliente,
       devolucionesCliente,
@@ -553,10 +572,16 @@ export async function getCarteraCliente(input: GetCarteraClienteInput) {
     (acc, f) => acc + f.saldoNetoLM,
     0n,
   );
+  // Parte de cruceCliente que es cartera histórica sin cobros (informativa; ya está incluida).
+  const cruceClienteHistorico = facturasEnriquecidas.reduce(
+    (acc, f) => (f.historicaSinCobros ? acc + f.saldoNetoCliente : acc),
+    0n,
+  );
 
   return {
     facturas: facturasFiltradas,
     cruceCliente,
+    cruceClienteHistorico,
     cruceLM,
     totalFacturas: facturasFiltradas.length,
   };
