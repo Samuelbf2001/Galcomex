@@ -6,6 +6,16 @@ import { FormEvent, useState } from "react";
 
 import { describirError, useToast } from "@/components/ui/toast";
 import { authClient } from "@/lib/auth/client";
+import {
+  CODIGO_PASSWORD_REPETIDA,
+  CODIGO_USUARIO_DESACTIVADO,
+  MENSAJE_PASSWORD_CORTA,
+  MENSAJE_PASSWORD_LARGA,
+  MENSAJE_PASSWORD_REPETIDA,
+  MENSAJE_USUARIO_DESACTIVADO,
+  PASSWORD_MAX,
+  PASSWORD_MIN,
+} from "@/lib/auth/estado-cuenta";
 
 /**
  * Traduce el error de Better Auth a un mensaje útil. Antes todo error
@@ -16,9 +26,13 @@ function mensajeDeAuth(error: { code?: string; message?: string; status?: number
     case "INVALID_PASSWORD":
       return "La contraseña actual es incorrecta.";
     case "PASSWORD_TOO_SHORT":
-      return "La nueva contraseña es demasiado corta.";
+      return MENSAJE_PASSWORD_CORTA;
     case "PASSWORD_TOO_LONG":
-      return "La nueva contraseña es demasiado larga.";
+      return MENSAJE_PASSWORD_LARGA;
+    case CODIGO_PASSWORD_REPETIDA:
+      return MENSAJE_PASSWORD_REPETIDA;
+    case CODIGO_USUARIO_DESACTIVADO:
+      return MENSAJE_USUARIO_DESACTIVADO;
     default:
       break;
   }
@@ -29,7 +43,12 @@ function mensajeDeAuth(error: { code?: string; message?: string; status?: number
   return "No fue posible cambiar la contraseña.";
 }
 
-export function ChangePasswordForm() {
+/**
+ * `obligatorio`: el usuario entró con una clave temporal. Al cambiarla, el hook
+ * de auth.ts apaga la marca y reescribe la cookie de sesión, así que se le
+ * lleva directo a su pantalla inicial.
+ */
+export function ChangePasswordForm({ obligatorio = false }: { obligatorio?: boolean }) {
   const router = useRouter();
   const { toast } = useToast();
   const [error, setError] = useState<string | null>(null);
@@ -48,8 +67,18 @@ export function ChangePasswordForm() {
     const newPassword = String(formData.get("newPassword") ?? "");
     const confirmPassword = String(formData.get("confirmPassword") ?? "");
 
-    if (newPassword.length < 8) {
-      setError("La nueva contraseña debe tener al menos 8 caracteres");
+    if (newPassword.length < PASSWORD_MIN) {
+      setError(MENSAJE_PASSWORD_CORTA);
+      return;
+    }
+
+    if (newPassword.length > PASSWORD_MAX) {
+      setError(MENSAJE_PASSWORD_LARGA);
+      return;
+    }
+
+    if (newPassword === currentPassword) {
+      setError(MENSAJE_PASSWORD_REPETIDA);
       return;
     }
 
@@ -76,6 +105,10 @@ export function ChangePasswordForm() {
       setSuccess(true);
       toast({ title: "Contraseña actualizada", variant: "success" });
       form.reset();
+      if (obligatorio) {
+        // "/" envía a cada rol a su pantalla inicial.
+        router.replace("/");
+      }
       router.refresh();
     } catch (caught) {
       // Red caída, servidor sin responder, etc.
@@ -118,7 +151,8 @@ export function ChangePasswordForm() {
           name="newPassword"
           type="password"
           autoComplete="new-password"
-          minLength={8}
+          minLength={PASSWORD_MIN}
+          maxLength={PASSWORD_MAX}
           disabled={isPending}
           className="h-10 w-full border border-slate-300 px-3 text-sm outline-none transition focus:border-cyan-600 disabled:bg-slate-50"
           required
@@ -136,7 +170,8 @@ export function ChangePasswordForm() {
           name="confirmPassword"
           type="password"
           autoComplete="new-password"
-          minLength={8}
+          minLength={PASSWORD_MIN}
+          maxLength={PASSWORD_MAX}
           disabled={isPending}
           className="h-10 w-full border border-slate-300 px-3 text-sm outline-none transition focus:border-cyan-600 disabled:bg-slate-50"
           required

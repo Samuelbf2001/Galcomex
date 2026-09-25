@@ -17,6 +17,10 @@ model User {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   rol           Rol      @default(OPERATIVO)
+  /// false = cuenta desactivada por un ADMIN: no puede iniciar sesión (ver `src/lib/auth/auth.ts`).
+  activo              Boolean @default(true)
+  /// true = entra con una clave temporal y debe cambiarla antes de usar el sistema.
+  debeCambiarPassword Boolean @default(false)
 
   sessions                 Session[]
   accounts                 Account[]
@@ -303,6 +307,7 @@ enum Ciudad {
   CTG
   BUN
   SMR
+  BGT
 }
 
 enum AgenciaAduanas {

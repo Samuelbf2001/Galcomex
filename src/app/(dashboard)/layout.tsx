@@ -5,7 +5,7 @@ import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { ToastProvider } from "@/components/ui/toast";
 import type { Rol } from "@/lib/auth/auth";
 import { RolProvider } from "@/lib/auth/rol-context";
-import { getCurrentSession } from "@/lib/auth/session";
+import { getCurrentSession, getSesionCruda } from "@/lib/auth/session";
 
 /**
  * Layout del dashboard. La sesión se resuelve una vez (React.cache) y el rol
@@ -21,7 +21,9 @@ export default async function DashboardLayout({
   const session = await getCurrentSession();
 
   if (!session) {
-    redirect("/auth/login");
+    // Con sesión pero cuenta desactivada, el login muestra el aviso.
+    const cruda = await getSesionCruda();
+    redirect(cruda ? "/auth/login?error=desactivado" : "/auth/login");
   }
 
   const rol = session.user.rol as Rol;

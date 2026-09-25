@@ -4,6 +4,7 @@ import { Loader2, LogIn } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useState } from "react";
 
+import { MENSAJE_USUARIO_DESACTIVADO } from "@/lib/auth/estado-cuenta";
 import { destinoInternoSeguro } from "@/lib/auth/rutas-roles";
 
 /**
@@ -16,7 +17,13 @@ export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const next = destinoInternoSeguro(searchParams.get("next")) ?? "/";
-  const errorInicial = searchParams.get("error") === "credenciales" ? "Correo o contraseña inválidos." : null;
+  const errorParam = searchParams.get("error");
+  const errorInicial =
+    errorParam === "credenciales"
+      ? "Correo o contraseña inválidos."
+      : errorParam === "desactivado"
+        ? MENSAJE_USUARIO_DESACTIVADO
+        : null;
   const [error, setError] = useState<string | null>(errorInicial);
   const [isPending, setIsPending] = useState(false);
 

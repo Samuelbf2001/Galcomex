@@ -4,7 +4,6 @@
  *   GET  /api/tramites/requisitos          — contrato para la UI, roles y validación
  *   POST /api/tramites                     — 422 con `codigo` y `detalles` sin tarifa
  *   POST /api/tramites/[id]/estado         — 422 por documentos / advertencias del ADMIN
- *   POST /api/solicitudes                  — la solicitud pública entra sin tarifa
  *
  * Se omite solo si no hay BD (mismo patrón que el resto de tests de rutas).
  */
@@ -31,7 +30,6 @@ vi.mock("@/lib/auth/auth", () => {
 
 // ── Importaciones post-mock ───────────────────────────────────────────────────
 
-import { POST as solicitudesPOST } from "@/app/api/solicitudes/route";
 import { POST as estadoPOST } from "@/app/api/tramites/[id]/estado/route";
 import { GET as requisitosGET } from "@/app/api/tramites/requisitos/route";
 import { POST as tramitesPOST } from "@/app/api/tramites/route";
@@ -396,26 +394,5 @@ describe("POST /api/tramites y /estado con los requisitos", () => {
     expect(forzado.status).toBe(200);
     expect(payload.advertencias).toHaveLength(1);
     expect(payload.advertencias[0]).toContain("Pasó por excepción de ADMIN");
-  });
-});
-
-describe("POST /api/solicitudes (público)", () => {
-  it("la solicitud externa entra aunque la empresa no tenga tarifa", async (ctx) => {
-    ensureDb(ctx);
-    const empresa = await crearEmpresa();
-
-    const response = await solicitudesPOST(
-      jsonRequest("http://localhost/api/solicitudes", {
-        nit: empresa.nit,
-        ciudad: "SMR",
-        agenciaAduanas: "COLDEX",
-      }),
-    );
-
-    expect(response.status).toBe(201);
-    const { id } = (await response.json()) as { id: string };
-    const tramite = await prisma.tramiteDO.findUniqueOrThrow({ where: { id } });
-    expect(tramite.estado).toBe(EstadoTramite.SOLICITUD);
-    expect(tramite.clienteId).toBe(empresa.id);
   });
 });

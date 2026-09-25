@@ -215,6 +215,16 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
 | Ver solo sus trámites | | | | ✓ |
 | Editar parámetros del sistema | ✓ | | | |
 
+## Usuarios y acceso
+
+Sin registro público, sin doble factor, sin correos: el ADMIN administra las cuentas en Configuración → Usuarios (`usuarios-config.tsx`; API `GET|POST /api/usuarios`, `PATCH /api/usuarios/[id]`, `POST /api/usuarios/[id]/reset-password`; servicio `src/lib/usuarios/service.ts`, reglas puras en `reglas.ts`).
+- **Alta / restablecer clave:** el sistema genera una clave temporal de 14 caracteres (`clave-temporal.ts`, sin 0/O/1/l) que se muestra UNA vez; nunca se guarda en claro ni va al AuditLog. La cuenta queda con `User.debeCambiarPassword = true`. Restablecer también cierra sus sesiones. El cuerpo `{ nuevaPassword }` (tool MCP) sigue valiendo y también obliga a cambiarla.
+- **Clave temporal:** el API responde 403 `{ codigo: "DEBE_CAMBIAR_PASSWORD" }` (`requireSession`), las páginas redirigen a `/cambiar-password` (`exigirAccesoPagina`) y esa página sí abre. Al cambiarla (`/api/auth/change-password`), el hook `after` de `auth.ts` apaga la marca, deja AuditLog y reescribe la cookie `session_data` para que no quede atascado 5 min. La nueva debe ser distinta de la actual.
+- **Contraseñas:** mínimo 10, máximo 128 (`estado-cuenta.ts`); solo se exige al fijar una nueva, las claves viejas siguen entrando.
+- **Desactivar (`User.activo = false`):** nunca se borran usuarios. Un desactivado no inicia sesión: el hook `databaseHooks.session.create.before` lo frena en `/api/login` ("Usuario desactivado. Habla con el administrador.") y en `/api/auth/sign-in/email`, después de verificar la clave. Desactivar borra sus sesiones, pero la cookie cacheada (cookieCache) puede durar hasta 5 min; lo mismo tarda en verse un cambio de rol.
+- **Reglas:** un ADMIN no se desactiva ni se quita el rol ADMIN a sí mismo, y siempre queda al menos un ADMIN activo (se valida con las filas de los ADMIN bloqueadas `FOR UPDATE`, así dos cambios simultáneos no lo rompen). Violaciones → 422; correo repetido → 409.
+- Los campos `activo`/`debeCambiarPassword` pueden faltar en cookies emitidas antes de la migración `20260924100000_usuarios_admin`: leerlos siempre con `estaDesactivado` / `tieneClaveTemporal`.
+
 ## Consecutivo automático de DO
 
 Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
@@ -227,7 +237,7 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
 `SOLICITUD → APERTURA → EN_TRAMITE → EN_PUERTO → DESPACHADO → ENVIADO_A_FACTURAR → FACTURADO → PAGADO → CERRADO`
 
 - **APERTURA → EN_TRAMITE:** bloqueado si hay `ChecklistItem` requerido sin marcar
-- **Tarifa vigente (`do_exige_tarifa_vigente`, encendida por defecto; la migración `20260923092000` la apaga en las empresas SOCIO_LM):** sin tarifario VIGENTE hoy de la línea de servicio del tipo (config `tiposTramite`) no se crea el DO (`TarifaVigenteRequeridaError`, 422, `codigo` + `detalles`). La solicitud pública (`POST /api/solicitudes`, `origen: "SOLICITUD_PUBLICA"`) sí entra, pero SOLICITUD → APERTURA exige la tarifa. Sin excepción de ADMIN: se apaga la función en la ficha.
+- **Tarifa vigente (`do_exige_tarifa_vigente`, encendida por defecto; la migración `20260923092000` la apaga en las empresas SOCIO_LM):** sin tarifario VIGENTE hoy de la línea de servicio del tipo (config `tiposTramite`) no se crea el DO (`TarifaVigenteRequeridaError`, 422, `codigo` + `detalles`). El formulario público (`POST /api/solicitudes`, `origen: "SOLICITUD_PUBLICA"`) se retiró el 2026-09-24 (dejaba crear DOs a nombre de un cliente solo con su NIT, sin sesión); los DOs con ese origen que ya existían quedan como históricos y SOLICITUD → APERTURA les sigue exigiendo la tarifa. Sin excepción de ADMIN: se apaga la función en la ficha.
 - **BL + factura comercial (`docs_bl_factura_obligatorios`, encendida por defecto, config `tiposTramite`: solo `IMPORTACION`):** pasar de SOLICITUD/APERTURA a EN_TRAMITE o más allá exige documentos `BL` y `FACTURA_COMERCIAL` no eliminados (422 `DOCUMENTOS_OBLIGATORIOS_FALTANTES`). El formulario los pide al crear (se suben justo después del POST). La excepción del ADMIN (`bypassChecklist`) deja pasar con `advertencias` y un `AuditLog` `OMITIR_REQUISITOS` (checklist y documentos pendientes).
 - Lógica pura de ambas reglas en `src/lib/tramites/requisitos.ts`; la UI las consulta antes de crear con `GET /api/tramites/requisitos?clienteId=&tipoTramiteCodigo=` (`fetchRequisitosDo` en `tramites-api.ts`).
 - Toda transición queda en `EstadoLog` con usuario y timestamp

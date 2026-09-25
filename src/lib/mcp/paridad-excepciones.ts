@@ -47,7 +47,6 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
   intencional("GET", "/api/tramites/[param]/pse-codigo", "Flujo PSE con token de 30s, no apto para agentes"),
   intencional("POST", "/api/tramites/[param]/pse-token", "Flujo PSE con token de 30s, no apto para agentes"),
   intencional("GET", "/api/compartir/[param]", "Enlace público de documento, sin sesión"),
-  intencional("POST", "/api/solicitudes", "Formulario público para que un cliente pida apertura de DO"),
   intencional("GET", "/api/storage", "Listado interno de la bodega de archivos; documento_subir usa el POST por debajo"),
   intencional("POST", "/api/storage", "Enlaces firmados internos de subida/descarga"),
   intencional("GET", "/api/storage/objeto", "Enlace firmado de descarga; lo consumen documento_descargar y el navegador"),
@@ -106,5 +105,15 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "GET",
     "/api/archivos/clientes/[param]",
     "Detalle del explorador por cliente: falta tool archivos_cliente_ver",
+  ),
+
+  // Gestión de usuarios por el ADMIN (feat/usuarios-admin, 2026-09-24). Las
+  // tools van en galcomex-mcp/server.mjs; hoy solo existe usuario_reset_password.
+  pendiente("GET", "/api/usuarios", "Usuarios con estado (activo, clave temporal): falta tool usuarios_listar"),
+  pendiente("POST", "/api/usuarios", "Alta de usuario con clave temporal: falta tool usuario_crear"),
+  pendiente(
+    "PATCH",
+    "/api/usuarios/[param]",
+    "Cambiar rol / desactivar / reactivar usuario: falta tool usuario_actualizar",
   ),
 ];

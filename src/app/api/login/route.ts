@@ -1,6 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { auth } from "@/lib/auth/auth";
+import {
+  CODIGO_USUARIO_DESACTIVADO,
+  MENSAJE_USUARIO_DESACTIVADO,
+  tieneClaveTemporal,
+} from "@/lib/auth/estado-cuenta";
 import { destinoInternoSeguro } from "@/lib/auth/rutas-roles";
 import {
   construirClaveLimite,
@@ -8,6 +13,12 @@ import {
   registrarIntentoFallido,
   verificarLimite,
 } from "@/lib/http/rate-limit";
+
+/** Lee el JSON de la respuesta de Better Auth sin consumirla. */
+async function leerCuerpo(response: Response): Promise<Record<string, unknown> | null> {
+  const cuerpo: unknown = await response.clone().json().catch(() => null);
+  return typeof cuerpo === "object" && cuerpo !== null ? (cuerpo as Record<string, unknown>) : null;
+}
 
 /**
  * Resuelve la IP del cliente a partir de los headers de proxy/reverse-proxy
@@ -31,7 +42,17 @@ export function resolverIp(request: NextRequest): string {
 }
 
 export async function POST(request: NextRequest) {
-  const formData = await request.formData();
+  // El formulario de login manda form-data; cualquier otro cuerpo (JSON,
+  // vacío) es una petición mal formada, no un error del servidor.
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return NextResponse.json(
+      { error: "Solicitud inválida: envía el formulario de inicio de sesión." },
+      { status: 400 },
+    );
+  }
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
   const callbackURL = String(formData.get("callbackURL") ?? "/dashboard");
@@ -65,6 +86,24 @@ export async function POST(request: NextRequest) {
   const quiereJson = (request.headers.get("accept") ?? "").includes("application/json");
 
   if (!authResponse.ok) {
+    // Cuenta desactivada: el hook `session.create.before` de auth.ts la frena
+    // DESPUÉS de verificar la contraseña, así que el aviso solo lo ve quien
+    // tiene la clave correcta. No cuenta como intento fallido.
+    if (authResponse.status === 403) {
+      const cuerpo = await leerCuerpo(authResponse);
+      if (cuerpo?.code === CODIGO_USUARIO_DESACTIVADO) {
+        if (quiereJson) {
+          return NextResponse.json(
+            { error: MENSAJE_USUARIO_DESACTIVADO, codigo: CODIGO_USUARIO_DESACTIVADO },
+            { status: 403 },
+          );
+        }
+        const loginUrl = new URL("/auth/login", origin);
+        loginUrl.searchParams.set("error", "desactivado");
+        return NextResponse.redirect(loginUrl);
+      }
+    }
+
     registrarIntentoFallido(claveLimite);
     if (quiereJson) {
       return NextResponse.json({ error: "Correo o contraseña inválidos." }, { status: 401 });
@@ -77,8 +116,16 @@ export async function POST(request: NextRequest) {
 
   limpiarIntentos(claveLimite);
 
-  // "/" delega en la página raíz, que envía a cada rol a su pantalla inicial.
-  const redirectTo = destinoInternoSeguro(callbackURL) ?? "/";
+  // Con clave temporal va directo a cambiarla (el guard de página lo haría
+  // igual, pero así se ahorra un rebote). Si no, "/" delega en la página raíz,
+  // que envía a cada rol a su pantalla inicial.
+  const cuerpo = await leerCuerpo(authResponse);
+  const usuario = cuerpo?.user;
+  const claveTemporal =
+    typeof usuario === "object" && usuario !== null && tieneClaveTemporal(usuario);
+  const redirectTo = claveTemporal
+    ? "/cambiar-password"
+    : (destinoInternoSeguro(callbackURL) ?? "/");
   const response = quiereJson
     ? NextResponse.json({ ok: true, redirectTo })
     : NextResponse.redirect(new URL(redirectTo, origin));

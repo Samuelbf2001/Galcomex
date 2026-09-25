@@ -67,9 +67,11 @@ type CreateTramiteInput = {
 };
 
 /**
- * De dónde viene el DO. `SOLICITUD_PUBLICA` es el formulario externo
- * (`POST /api/solicitudes`, sin sesión): entra aunque la empresa no tenga
- * tarifa vigente, pero no se puede abrir hasta publicarla.
+ * De dónde viene el DO. `SOLICITUD_PUBLICA` era el formulario externo
+ * (`POST /api/solicitudes`, sin sesión, retirado el 2026-09-24): entraba
+ * aunque la empresa no tuviera tarifa vigente, pero no se podía abrir hasta
+ * publicarla. Los DOs creados así siguen existiendo como históricos y
+ * conservan esa regla.
  */
 export type OrigenTramite = "INTERNO" | "SOLICITUD_PUBLICA";
 
