@@ -183,7 +183,8 @@ export async function fetchAnticipos(
 export async function fetchClienteOptions(signal?: AbortSignal): Promise<ClienteOption[]> {
   let response: Response;
   try {
-    response = await fetch("/api/clientes", {
+    // F1: un anticipo es plata cliente→Galcomex — solo empresas CLIENTE.
+    response = await fetch("/api/clientes?rol=cliente", {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal,

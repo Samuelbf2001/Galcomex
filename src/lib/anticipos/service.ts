@@ -33,6 +33,22 @@ export class AnticipoNoEncontradoError extends Error {
 }
 
 /**
+ * F1 (fase 1 del plan "una sola Empresa"): un anticipo es plata
+ * cliente→Galcomex, solo lo puede registrar una empresa marcada como cliente
+ * (`esCliente = true`). Defensa en el servidor aunque la UI ya pida
+ * `rol=cliente` en el selector.
+ */
+export class EmpresaNoEsClienteError extends Error {
+  public readonly status = 422;
+  constructor(nombreEmpresa: string) {
+    super(
+      `${nombreEmpresa} está marcada solo como proveedor. Márcala como cliente en su ficha para registrarle anticipos.`,
+    );
+    this.name = "EmpresaNoEsClienteError";
+  }
+}
+
+/**
  * El soporte (comprobante bancario) es obligatorio para registrar un anticipo
  * NUEVO. Regla de negocio pedida por el cliente (reunión 1-jul): hoy hay
  * anticipos sin soporte adjunto y Guillermo tiene que preguntarle a Camila
@@ -104,6 +120,19 @@ export async function crearAnticipo(
 ) {
   if (!input.soporteKey || input.soporteKey.trim().length === 0) {
     throw new SoporteAnticipoRequeridoError();
+  }
+
+  // F1 — guarda de servidor: una empresa solo-proveedor no puede recibir
+  // anticipos, aunque la UI ya filtra el selector con `rol=cliente`. Si la
+  // empresa no existe, se deja pasar (el create de abajo falla con el P2003
+  // de siempre — sin cambiar ese comportamiento fuera de alcance).
+  const empresa = await prisma.cliente.findUnique({
+    where: { id: input.clienteId },
+    select: { nombre: true, esCliente: true },
+  });
+
+  if (empresa && !empresa.esCliente) {
+    throw new EmpresaNoEsClienteError(empresa.nombre);
   }
 
   // Snapshot del costo de recaudo desde la matriz

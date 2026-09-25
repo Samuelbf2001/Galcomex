@@ -424,7 +424,9 @@ export async function fetchTramites(
 }
 
 export async function fetchClienteOptions(signal?: AbortSignal): Promise<ClienteOption[]> {
-  const response = await fetch("/api/clientes", {
+  // F1: el DO siempre se abre a nombre de una empresa CLIENTE — una
+  // solo-proveedor (ALMACARGA, EXPRESS LOGISTICA) no debe salir aquí.
+  const response = await fetch("/api/clientes?rol=cliente", {
     cache: "no-store",
     headers: { Accept: "application/json" },
     signal,

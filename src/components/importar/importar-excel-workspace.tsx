@@ -88,7 +88,8 @@ export function ImportarExcelWorkspace() {
   useEffect(() => {
     const controller = new AbortController();
     let cancelado = false;
-    fetchClientes(controller.signal)
+    // F1: la importación siempre carga trámites de un CLIENTE.
+    fetchClientes(controller.signal, "cliente")
       .then((rows) => {
         if (cancelado) return;
         setClientes(rows.filter((c) => c.activo !== false));

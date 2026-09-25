@@ -281,7 +281,9 @@ export async function fetchClienteOptions(
 ): Promise<ClienteOption[]> {
   let res: Response;
   try {
-    res = await fetch("/api/clientes", {
+    // F1: la cartera es cuentas por cobrar a CLIENTES — sin empresas
+    // solo-proveedor en el selector.
+    res = await fetch("/api/clientes?rol=cliente", {
       cache: "no-store",
       headers: { Accept: "application/json" },
       signal,

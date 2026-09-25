@@ -77,6 +77,22 @@ export type CreateTramiteOptions = {
   origen?: OrigenTramite;
 };
 
+/**
+ * F1 (fase 1 del plan "una sola Empresa"): un DO solo se abre a nombre de una
+ * empresa marcada como cliente (`esCliente = true`). Defensa en el servidor
+ * aunque la UI ya pida `rol=cliente` en el selector — una empresa
+ * solo-proveedor (ALMACARGA, EXPRESS LOGISTICA) no puede recibir trámites.
+ */
+export class EmpresaNoEsClienteError extends Error {
+  public readonly status = 422;
+  constructor(nombreEmpresa: string) {
+    super(
+      `${nombreEmpresa} está marcada solo como proveedor. Márcala como cliente en su ficha para abrirle trámites.`,
+    );
+    this.name = "EmpresaNoEsClienteError";
+  }
+}
+
 export class TipoTramiteNoEncontradoError extends Error {
   public readonly status = 422;
   constructor(codigo: string) {
@@ -423,9 +439,19 @@ export async function createTramite(
   // EmpresaNoEncontradaError (404) si la empresa no existe.
   const [capacidades, empresa] = await Promise.all([
     capacidadesDeEmpresa(input.clienteId),
-    prisma.cliente.findUnique({ where: { id: input.clienteId }, select: { nombre: true } }),
+    prisma.cliente.findUnique({
+      where: { id: input.clienteId },
+      select: { nombre: true, esCliente: true },
+    }),
   ]);
   const nombreEmpresa = empresa?.nombre ?? "La empresa";
+
+  // F1 — guarda de servidor: sin esto, una empresa solo-proveedor podría
+  // recibir un DO si alguien llama a la API directo (la UI ya filtra el
+  // selector con `rol=cliente`).
+  if (empresa && !empresa.esCliente) {
+    throw new EmpresaNoEsClienteError(nombreEmpresa);
+  }
 
   const tipo = await resolverTipoTramite(
     input.tipoTramiteCodigo ?? TIPO_TRAMITE_POR_DEFECTO,

@@ -158,8 +158,18 @@ function normalizeCliente(row: unknown): ClienteRow | null {
   };
 }
 
-export async function fetchClientes(signal?: AbortSignal): Promise<ClienteRow[]> {
-  const response = await fetch("/api/clientes", {
+/**
+ * `rol` (F1): sin parámetro lista TODAS las empresas (pantalla Empresas, que
+ * ya filtra cliente/proveedor en el propio cliente); `"cliente"` filtra
+ * `esCliente: true` en el servidor — lo usan selectores que solo deben
+ * ofrecer empresas CLIENTE (p. ej. importar Excel de un cliente).
+ */
+export async function fetchClientes(
+  signal?: AbortSignal,
+  rol?: "cliente" | "proveedor",
+): Promise<ClienteRow[]> {
+  const query = rol ? `?rol=${rol}` : "";
+  const response = await fetch(`/api/clientes${query}`, {
     cache: "no-store",
     headers: { Accept: "application/json" },
     signal,

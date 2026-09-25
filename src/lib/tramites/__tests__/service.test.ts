@@ -371,6 +371,38 @@ describe("tramites service con Postgres local", () => {
     expect(bloqueada).toMatchObject({ ok: false, status: 422 });
   });
 
+  it("F1 — rechaza crear un DO para una empresa marcada solo como proveedor", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    // Caso ALMACARGA / EXPRESS LOGISTICA: empresa solo-proveedor, sin rol
+    // cliente. Aunque la UI ya filtre el selector con `rol=cliente`, el
+    // servicio debe rechazarla igual.
+    const soloProveedor = await prisma.cliente.create({
+      data: {
+        nombre: "Empresa Solo Proveedor Vitest",
+        nit: `${runId}-solo-proveedor`,
+        tipo: TipoCliente.PROPIO,
+        esCliente: false,
+        esProveedor: true,
+        capacidades: { create: SIN_REQUISITOS_DO },
+      },
+    });
+
+    await expect(
+      createTramite(
+        createInput({
+          clienteId: soloProveedor.id,
+          creadoPorId: db.userId,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "EmpresaNoEsClienteError",
+      status: 422,
+      message:
+        "Empresa Solo Proveedor Vitest está marcada solo como proveedor. Márcala como cliente en su ficha para abrirle trámites.",
+    });
+  });
+
   it("crea 20 tramites concurrentes sin consecutivos duplicados ni saltos", async (ctx) => {
     const db = ensureDb(ctx);
     const ciudad = Ciudad.SMR;

@@ -83,3 +83,18 @@ export const clienteUpdateSchema = clienteBaseSchema.partial();
  * listado completo con tarifas se mantiene igual.
  */
 export const clienteFieldsQuerySchema = z.enum(["options"]).optional();
+
+/**
+ * `?rol=cliente|proveedor` en GET /api/clientes (F1, fase 1 del plan
+ * "una sola Empresa"): filtra por `esCliente: true` / `esProveedor: true`.
+ * Sin el parámetro no se filtra por rol — así la pantalla Empresas sigue
+ * listando todas (clientes, proveedores y ambos). Selectores de CLIENTE
+ * (trámites, anticipos, cartera, ingresos, pagos) deben pedir `rol=cliente`
+ * para que empresas solo-proveedor (ALMACARGA, EXPRESS LOGISTICA) dejen de
+ * salir donde el usuario elige a quién se le abre un DO o se le factura.
+ */
+export const rolClienteQuerySchema = z
+  .enum(["cliente", "proveedor"], {
+    error: "El rol debe ser \"cliente\" o \"proveedor\"",
+  })
+  .optional();

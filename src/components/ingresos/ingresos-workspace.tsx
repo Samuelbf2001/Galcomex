@@ -105,7 +105,8 @@ function formatFechaCorta(ymd: string): string {
 type ClienteOption = { id: string; nombre: string; nit: string };
 
 async function fetchClienteOptions(): Promise<ClienteOption[]> {
-  const res = await fetch("/api/clientes", {
+  // F1: un ingreso es plata que paga un CLIENTE — sin empresas solo-proveedor.
+  const res = await fetch("/api/clientes?rol=cliente", {
     cache: "no-store",
     headers: { Accept: "application/json" },
   });

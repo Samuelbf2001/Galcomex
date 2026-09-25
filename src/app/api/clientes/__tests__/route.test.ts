@@ -302,6 +302,78 @@ describe("A1-T2 — API /api/clientes (integración BD)", () => {
     });
   });
 
+  // ── F1 — GET ?rol= filtra por esCliente/esProveedor ──────────────────────────
+
+  describe("GET /api/clientes?rol= — F1 (fase 1 del plan una sola Empresa)", () => {
+    it("rol=cliente retorna solo esCliente=true; rol=proveedor solo esProveedor=true; sin rol trae todas; rol inválido → 400", async (ctx) => {
+      ensureDb(ctx);
+
+      // Empresa solo cliente, empresa solo proveedor (caso ALMACARGA/EXPRESS
+      // LOGISTICA) y empresa cliente y proveedor a la vez (caso Coldex).
+      const [soloCliente, soloProveedor, ambos] = await Promise.all([
+        prisma.cliente.create({
+          data: {
+            nombre: "Solo Cliente Vitest",
+            nit: nit("rol-solo-cliente"),
+            esCliente: true,
+            esProveedor: false,
+          },
+        }),
+        prisma.cliente.create({
+          data: {
+            nombre: "Solo Proveedor Vitest",
+            nit: nit("rol-solo-proveedor"),
+            esCliente: false,
+            esProveedor: true,
+          },
+        }),
+        prisma.cliente.create({
+          data: {
+            nombre: "Cliente y Proveedor Vitest",
+            nit: nit("rol-ambos"),
+            esCliente: true,
+            esProveedor: true,
+          },
+        }),
+      ]);
+      createdClienteIds.push(soloCliente.id, soloProveedor.id, ambos.id);
+
+      // rol=cliente
+      const resCliente = await clientesGET(makeRequest("/api/clientes?rol=cliente"));
+      expect(resCliente.status).toBe(200);
+      const bodyCliente = (await resCliente.json()) as { clientes: { id: string }[] };
+      const idsCliente = bodyCliente.clientes.map((c) => c.id);
+      expect(idsCliente).toContain(soloCliente.id);
+      expect(idsCliente).toContain(ambos.id);
+      expect(idsCliente).not.toContain(soloProveedor.id);
+
+      // rol=proveedor
+      const resProveedor = await clientesGET(makeRequest("/api/clientes?rol=proveedor"));
+      expect(resProveedor.status).toBe(200);
+      const bodyProveedor = (await resProveedor.json()) as { clientes: { id: string }[] };
+      const idsProveedor = bodyProveedor.clientes.map((c) => c.id);
+      expect(idsProveedor).toContain(soloProveedor.id);
+      expect(idsProveedor).toContain(ambos.id);
+      expect(idsProveedor).not.toContain(soloCliente.id);
+
+      // Sin `rol` — comportamiento histórico: lista todas (la pantalla Empresas
+      // filtra en el cliente).
+      const resTodas = await clientesGET(makeRequest("/api/clientes"));
+      expect(resTodas.status).toBe(200);
+      const bodyTodas = (await resTodas.json()) as { clientes: { id: string }[] };
+      const idsTodas = bodyTodas.clientes.map((c) => c.id);
+      expect(idsTodas).toContain(soloCliente.id);
+      expect(idsTodas).toContain(soloProveedor.id);
+      expect(idsTodas).toContain(ambos.id);
+
+      // rol inválido → 400 con mensaje en español
+      const resInvalido = await clientesGET(makeRequest("/api/clientes?rol=fabricante"));
+      expect(resInvalido.status).toBe(400);
+      const bodyInvalido = (await resInvalido.json()) as { error: string };
+      expect(bodyInvalido.error).toBe("Payload invalido");
+    });
+  });
+
   // ── POST con NIT duplicado → 409 ─────────────────────────────────────────────
 
   describe("POST — NIT duplicado → 409", () => {

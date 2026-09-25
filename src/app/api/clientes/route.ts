@@ -10,15 +10,21 @@ import { jsonResponse } from "@/lib/http/json";
 import {
   clienteFieldsQuerySchema,
   clientePayloadSchema,
+  rolClienteQuerySchema,
   tipoClienteQuerySchema,
 } from "@/lib/validations/clientes";
 
 /**
- * GET /api/clientes?tipo=&fields=
+ * GET /api/clientes?tipo=&fields=&rol=
  *
  * - Sin `fields`: listado completo con tarifas (comportamiento histórico).
  * - `fields=options`: solo `{ id, nombre, nit, tipo, activo }`, sin tarifas —
  *   para selects/combos que no necesitan el detalle.
+ * - `rol=cliente|proveedor` (F1): filtra por `esCliente`/`esProveedor`. Sin el
+ *   parámetro no se filtra por rol (la pantalla Empresas sigue listando
+ *   todas). Los selectores de CLIENTE (trámites, anticipos, cartera,
+ *   ingresos, pagos) piden `rol=cliente` para que una empresa solo-proveedor
+ *   no aparezca donde se elige a quién se le abre un DO o se le factura.
  */
 export async function GET(request: NextRequest) {
   const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO", "SOCIO"]);
@@ -29,12 +35,16 @@ export async function GET(request: NextRequest) {
 
   let tipo: ReturnType<typeof tipoClienteQuerySchema.parse>;
   let fields: ReturnType<typeof clienteFieldsQuerySchema.parse>;
+  let rol: ReturnType<typeof rolClienteQuerySchema.parse>;
   try {
     tipo = tipoClienteQuerySchema.parse(
       request.nextUrl.searchParams.get("tipo") ?? undefined,
     );
     fields = clienteFieldsQuerySchema.parse(
       request.nextUrl.searchParams.get("fields") ?? undefined,
+    );
+    rol = rolClienteQuerySchema.parse(
+      request.nextUrl.searchParams.get("rol") ?? undefined,
     );
   } catch (error) {
     if (error instanceof ZodError) {
@@ -49,6 +59,12 @@ export async function GET(request: NextRequest) {
     where.tipo = TipoCliente.SOCIO_LM;
   } else if (tipo) {
     where.tipo = tipo;
+  }
+
+  if (rol === "cliente") {
+    where.esCliente = true;
+  } else if (rol === "proveedor") {
+    where.esProveedor = true;
   }
 
   if (fields === "options") {

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { validationError } from "@/lib/http/errors";
+import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import {
   crearAnticipo,
@@ -75,6 +75,12 @@ export async function POST(request: NextRequest) {
 
     if (error instanceof SoporteAnticipoRequeridoError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    // F1: empresa marcada solo-proveedor (`EmpresaNoEsClienteError`, 422) y
+    // cualquier otro error de dominio con `.status` caen aquí.
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
 
     throw error;

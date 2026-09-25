@@ -462,6 +462,41 @@ describe("anticipos service con Postgres local", () => {
     ).rejects.toBeInstanceOf(SoporteAnticipoRequeridoError);
   });
 
+  it("F1 — rechaza crear un anticipo para una empresa marcada solo como proveedor", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    // Caso ALMACARGA / EXPRESS LOGISTICA: empresa solo-proveedor, sin rol
+    // cliente. Aunque la UI ya filtre el selector con `rol=cliente`, el
+    // servicio debe rechazarla igual.
+    const soloProveedor = await prisma.cliente.create({
+      data: {
+        nombre: "Empresa Solo Proveedor Vitest",
+        nit: `${runId}-solo-proveedor`,
+        tipo: TipoCliente.PROPIO,
+        esCliente: false,
+        esProveedor: true,
+      },
+    });
+
+    await expect(
+      crearAnticipo(
+        {
+          clienteId: soloProveedor.id,
+          monto: 1_000_000n,
+          fecha: new Date("3001-05-01"),
+          tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+          soporteKey: "vitest-soporte-dummy.pdf",
+        },
+        db.userId,
+      ),
+    ).rejects.toMatchObject({
+      name: "EmpresaNoEsClienteError",
+      status: 422,
+      message:
+        "Empresa Solo Proveedor Vitest está marcada solo como proveedor. Márcala como cliente en su ficha para registrarle anticipos.",
+    });
+  });
+
   it("crearAnticipoSchema rechaza soporteKey vacio explicito", () => {
     const result = crearAnticipoSchema.safeParse({
       clienteId: "some-id",

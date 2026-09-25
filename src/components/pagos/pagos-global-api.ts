@@ -183,7 +183,9 @@ export async function fetchPagosGlobal(
 }
 
 export async function fetchClienteOptions(signal?: AbortSignal): Promise<ClienteOption[]> {
-  const response = await fetch("/api/clientes", {
+  // F1: este selector filtra el DO (empresa CLIENTE dueña del trámite), no el
+  // proveedor a quien se le paga — ese es el beneficiario, no una empresa.
+  const response = await fetch("/api/clientes?rol=cliente", {
     cache: "no-store",
     headers: { Accept: "application/json" },
     signal,
