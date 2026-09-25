@@ -446,3 +446,47 @@ describe("reemplazarDocumento — storageKey debe pertenecer al trámite (IDOR)"
     expect(persisted?.storageKey).toBe(doc.storageKey);
   });
 });
+
+// ─── D0: el ítem "CUADRE DE PLATA HISTÓRICA" nunca se auto-marca ──────────────
+//
+// registrarDocumento marca solo los ítems del checklist cuya descripción
+// contiene una palabra de la categoría. El cuadre de plata histórica lo cierra
+// una persona (ADMIN/REVISOR) con su AuditLog: aunque su texto contuviera la
+// palabra ("soporte"), subir un documento no lo cierra.
+
+describe("registrarDocumento — no auto-marca el cuadre de plata histórica", () => {
+  it("con 'CUADRE DE PLATA HISTÓRICA · soporte' y 'Soporte X', un SOPORTE_FACTURACION solo marca 'Soporte X'", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    await prisma.tramiteDO.update({ where: { id: db.tramiteId }, data: { esHistorico: true } });
+    const cuadre = await prisma.checklistItem.create({
+      data: { tramiteId: db.tramiteId, descripcion: "CUADRE DE PLATA HISTÓRICA · soporte", requerido: true },
+    });
+    const soporte = await prisma.checklistItem.create({
+      data: { tramiteId: db.tramiteId, descripcion: "Soporte X", requerido: true },
+    });
+
+    try {
+      await registrarDocumento({
+        tramiteId: db.tramiteId,
+        categoria: CategoriaDocumento.SOPORTE_FACTURACION,
+        nombreArchivo: "soporte.pdf",
+        storageKey: `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.SOPORTE_FACTURACION}/${runId}-cuadre.pdf`,
+        mimeType: "application/pdf",
+        tamanoBytes: 2048,
+        subidoPorId: db.userId,
+      });
+
+      const [c, s] = await Promise.all([
+        prisma.checklistItem.findUniqueOrThrow({ where: { id: cuadre.id } }),
+        prisma.checklistItem.findUniqueOrThrow({ where: { id: soporte.id } }),
+      ]);
+      expect(s.recibido).toBe(true);
+      expect(c.recibido).toBe(false);
+      expect(c.validadoPorId).toBeNull();
+    } finally {
+      await prisma.checklistItem.deleteMany({ where: { id: { in: [cuadre.id, soporte.id] } } });
+      await prisma.tramiteDO.update({ where: { id: db.tramiteId }, data: { esHistorico: false } });
+    }
+  });
+});

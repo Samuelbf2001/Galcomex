@@ -102,6 +102,8 @@ function filaTramite(id: string): TramiteRow {
     responsable: "Sin asignar",
     documentosPendientes: null,
     esHistorico: false,
+    cuadrePendiente: false,
+    tieneCuadre: false,
   };
 }
 
@@ -374,5 +376,27 @@ describe("Trámites — A8 columnas ordenables", () => {
       .mocked(fetchTramitesPage)
       .mock.calls.find((llamada) => llamada[2]?.take === TRAMITES_PAGE_SIZE);
     expect(llamadaKanban?.[3] ?? null).toBeNull();
+  });
+});
+
+describe("Trámites — D0: insignia «Histórico» y cuadre pendiente en la lista", () => {
+  it("el título de la insignia dice si la plata se cargó desde Siigo, y el cuadre pendiente sale al lado", async () => {
+    vi.mocked(fetchTramitesPage).mockResolvedValue({
+      rows: [
+        { ...filaTramite("1"), esHistorico: true, tieneCuadre: true, cuadrePendiente: true },
+        { ...filaTramite("2"), esHistorico: true, tieneCuadre: false, cuadrePendiente: false },
+      ],
+      total: 2,
+    });
+
+    await montarWorkspace();
+
+    const insignias = Array.from(container.querySelectorAll("span")).filter((s) => s.textContent?.trim() === "Histórico");
+    expect(insignias.map((s) => s.getAttribute("title"))).toEqual([
+      "Histórico: plata cargada desde Siigo; revisar el cuadre",
+      "Cargado desde el archivo histórico: tiene carpeta y documentos, sin detalle financiero",
+    ]);
+    const chips = Array.from(container.querySelectorAll("span")).filter((s) => s.textContent?.trim() === "Cuadre pendiente");
+    expect(chips).toHaveLength(1);
   });
 });

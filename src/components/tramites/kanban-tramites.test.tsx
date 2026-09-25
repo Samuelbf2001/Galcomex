@@ -40,6 +40,8 @@ function filaTramite(): TramiteRow {
     responsable: "Sin asignar",
     documentosPendientes: null,
     esHistorico: false,
+    cuadrePendiente: false,
+    tieneCuadre: false,
   };
 }
 
@@ -124,5 +126,27 @@ describe("KanbanTramites — F6: avisa cuando el ADMIN se saltó requisitos al m
     expect(toastSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ variant: "warning" }),
     );
+  });
+});
+
+describe("KanbanTramites — D0: cuadre de plata histórica", () => {
+  it("con solo el cuadre pendiente muestra «Cuadre pendiente» y no «1 doc pendiente»", async () => {
+    await montar([{ ...filaTramite(), esHistorico: true, tieneCuadre: true, cuadrePendiente: true, documentosPendientes: 0 }]);
+
+    expect(container.textContent).toContain("Cuadre pendiente");
+    expect(container.textContent).not.toMatch(/doc(s)? pendiente/);
+  });
+
+  it("con cuadre y 2 documentos pendientes muestra los dos chips", async () => {
+    await montar([{ ...filaTramite(), esHistorico: true, tieneCuadre: true, cuadrePendiente: true, documentosPendientes: 2 }]);
+
+    expect(container.textContent).toContain("Cuadre pendiente");
+    expect(container.textContent).toContain("2 docs pendientes");
+  });
+
+  it("con el cuadre cerrado no muestra el chip", async () => {
+    await montar([{ ...filaTramite(), esHistorico: true, tieneCuadre: true, cuadrePendiente: false, documentosPendientes: 0 }]);
+
+    expect(container.textContent).not.toContain("Cuadre pendiente");
   });
 });

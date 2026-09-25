@@ -672,6 +672,9 @@ export async function listTramites(
         { doAgencia: { contains: query.q, mode: "insensitive" } },
         { doCliente: { contains: query.q, mode: "insensitive" } },
         { cliente: { nombre: { contains: query.q, mode: "insensitive" } } },
+        // Buscar "CUADRE · ROJO" filtra los históricos por el color de su marca
+        // (bloque [HIST-PLATA-…] en comentarios). Solo amplía la búsqueda.
+        { comentarios: { contains: query.q, mode: "insensitive" } },
       ],
     });
   }

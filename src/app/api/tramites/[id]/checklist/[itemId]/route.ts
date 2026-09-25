@@ -1,12 +1,10 @@
-import { Prisma } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { prisma } from "@/lib/db/prisma";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import { assertTramiteModificable } from "@/lib/tramites/guard";
+import { actualizarItemChecklist } from "@/lib/tramites/checklist";
 import { checklistUpdateSchema } from "@/lib/validations/tramites";
 
 type RouteContext = {
@@ -16,6 +14,11 @@ type RouteContext = {
   }>;
 };
 
+/**
+ * Marca o desmarca un ítem del checklist. ADMIN, REVISOR y OPERATIVO; el ítem
+ * "CUADRE DE PLATA HISTÓRICA" de un DO histórico solo ADMIN y REVISOR (403).
+ * DO CERRADO → 409. Deja AuditLog `UPDATE_CHECKLIST_ITEM` (ver lib/tramites/checklist.ts).
+ */
 export async function PATCH(request: NextRequest, context: RouteContext) {
   const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO"]);
 
@@ -27,31 +30,18 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const { id, itemId } = await context.params;
     const payload = checklistUpdateSchema.parse(await request.json());
 
-    await assertTramiteModificable(prisma, id);
-
-    const item = await prisma.checklistItem.update({
-      where: { id: itemId, tramiteId: id },
-      data: {
-        recibido: payload.recibido,
-        validadoPorId: payload.recibido ? session.user.id : null,
-        fechaValidacion: payload.recibido ? new Date() : null,
-      },
+    const item = await actualizarItemChecklist({
+      tramiteId: id,
+      itemId,
+      recibido: payload.recibido,
+      usuarioId: session.user.id,
+      rol: session.user.rol,
     });
 
     return jsonResponse({ item });
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);
-    }
-
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2025"
-    ) {
-      return NextResponse.json(
-        { error: "Item de checklist no encontrado" },
-        { status: 404 },
-      );
     }
 
     if (isDomainError(error)) {

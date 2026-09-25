@@ -1440,9 +1440,21 @@ export function TramitesWorkspace() {
                           {tramite.esHistorico ? (
                             <span
                               className="ml-2 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
-                              title="Cargado desde el archivo histórico: tiene carpeta y documentos, sin detalle financiero"
+                              title={
+                                tramite.tieneCuadre
+                                  ? "Histórico: plata cargada desde Siigo; revisar el cuadre"
+                                  : "Cargado desde el archivo histórico: tiene carpeta y documentos, sin detalle financiero"
+                              }
                             >
                               Histórico
+                            </span>
+                          ) : null}
+                          {tramite.cuadrePendiente ? (
+                            <span
+                              className="ml-1 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
+                              title="Falta cerrar el ítem «CUADRE DE PLATA HISTÓRICA» (ADMIN o REVISOR)"
+                            >
+                              Cuadre pendiente
                             </span>
                           ) : null}
                         </td>

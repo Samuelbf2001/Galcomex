@@ -26,6 +26,11 @@ import { describirError, useToast } from "@/components/ui/toast";
 import type { Rol } from "@/lib/auth/auth";
 import { useRol } from "@/lib/auth/rol-context";
 import { fechasClaveVisibles, visibilidadCabeceraDo } from "@/lib/tramites/cabecera-do";
+import {
+  esCuadreHistorico,
+  puedeCerrarCuadre,
+  tieneCuadreHistorico,
+} from "@/lib/tramites/cuadre-historico";
 
 import {
   RegistrarAnticipoTramiteModal,
@@ -243,6 +248,7 @@ function accionLabel(accion: string): string {
     UPDATE: "Datos actualizados",
     UPDATE_ESTADO: "Cambio de estado",
     OMITIR_REQUISITOS: "Avanzó con requisitos pendientes (excepción de ADMIN)",
+    UPDATE_CHECKLIST_ITEM: "Checklist actualizado",
     APPROVE: "Borrador aprobado",
     FACTURAR: "Factura generada",
   };
@@ -582,11 +588,14 @@ function ChecklistItemRow({
   item,
   tramiteId,
   editable,
+  esCuadre = false,
   onChanged,
 }: {
   item: ChecklistItem;
   tramiteId: string;
   editable: boolean;
+  /** Ítem "CUADRE DE PLATA HISTÓRICA" de un DO histórico (lo cierran ADMIN/REVISOR). */
+  esCuadre?: boolean;
   onChanged: (updated: ChecklistItem) => void;
 }) {
   const [saving, setSaving] = useState(false);
@@ -603,7 +612,13 @@ function ChecklistItemRow({
       const updated = await patchChecklistItem(tramiteId, item.id, next);
       onChanged(updated);
       toast({
-        title: next ? "Documento marcado como recibido" : "Documento desmarcado",
+        title: esCuadre
+          ? next
+            ? "Cuadre de plata histórica cerrado"
+            : "Cuadre de plata histórica reabierto"
+          : next
+            ? "Documento marcado como recibido"
+            : "Documento desmarcado",
         description: item.descripcion,
         variant: "success",
       });
@@ -625,8 +640,20 @@ function ChecklistItemRow({
             checked={item.recibido}
             disabled={saving}
             onChange={(e) => void handleToggle(e.target.checked)}
-            aria-label={`Marcar "${item.descripcion}" como recibido`}
-            title={item.recibido ? "Desmarcar como recibido" : "Marcar como recibido"}
+            aria-label={
+              esCuadre
+                ? `Cerrar el cuadre "${item.descripcion}"`
+                : `Marcar "${item.descripcion}" como recibido`
+            }
+            title={
+              esCuadre
+                ? item.recibido
+                  ? "Reabrir el cuadre de plata histórica"
+                  : "Cerrar el cuadre de plata histórica (ADMIN o REVISOR)"
+                : item.recibido
+                  ? "Desmarcar como recibido"
+                  : "Marcar como recibido"
+            }
             className={`h-4 w-4 shrink-0 cursor-pointer appearance-none border ${checklistBoxClass(item)} outline-none focus:ring-2 focus:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60`}
           />
         ) : (
@@ -663,6 +690,7 @@ function TabResumen({
   onFieldSaved,
   onChecklistItemChanged,
   puedeEditar,
+  puedeCerrarCuadre: puedeCerrarCuadreDo,
   onRefresh,
 }: {
   tramite: TramiteDetalleData;
@@ -670,6 +698,8 @@ function TabResumen({
   onFieldSaved: (updated: TramiteDetalleData) => void;
   onChecklistItemChanged: (updated: ChecklistItem) => void;
   puedeEditar: boolean;
+  /** ADMIN/REVISOR y DO no CERRADO: pueden cerrar o reabrir el cuadre de plata histórica. */
+  puedeCerrarCuadre: boolean;
   onRefresh: () => void;
 }) {
   const checklistTotal = tramite.checklistItems.length;
@@ -678,9 +708,15 @@ function TabResumen({
 
   // El checklist solo es marcable por roles con permiso (puedeEditar = ADMIN/REVISOR/OPERATIVO)
   // y mientras el DO no haya avanzado más allá de APERTURA (bloquea APERTURA→EN_TRAMITE).
+  // Excepción: el ítem "CUADRE DE PLATA HISTÓRICA" de un DO histórico lo cierran ADMIN
+  // y REVISOR en cualquier estado salvo CERRADO (el servidor aplica la misma regla).
   const estadoIdx = PIPELINE.indexOf(tramite.estado);
   const checklistEditable =
     puedeEditar && estadoIdx !== -1 && estadoIdx <= PIPELINE.indexOf("APERTURA");
+  const itemEditable = (item: ChecklistItem) =>
+    esCuadreHistorico(tramite, item) ? puedeCerrarCuadreDo : checklistEditable;
+  const algunItemEditable = tramite.checklistItems.some(itemEditable);
+  const conCuadre = tieneCuadreHistorico(tramite);
   const { etiquetaReferenciaExterna, muestraCamposDo, muestraEta } = visibilidadCabeceraDo(
     tramite.tipoTramite,
   );
@@ -696,7 +732,11 @@ function TabResumen({
           {tramite.esHistorico ? (
             <span
               className="mt-1 mr-1 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
-              title="Cargado desde el archivo histórico (Drive 2026): tiene carpeta y documentos, sin detalle financiero"
+              title={
+                conCuadre
+                  ? "Histórico: plata cargada desde Siigo; revisar el cuadre"
+                  : "Cargado desde el archivo histórico (Drive 2026): tiene carpeta y documentos, sin detalle financiero"
+              }
             >
               Histórico
             </span>
@@ -875,7 +915,7 @@ function TabResumen({
             <div className="flex items-center gap-2">
               <CheckSquare className="h-4 w-4 text-slate-400" aria-hidden="true" />
               <h3 className="text-sm font-semibold text-slate-900">Checklist documental</h3>
-              {checklistEditable ? (
+              {algunItemEditable ? (
                 <span className="text-xs text-slate-400">(marca los recibidos)</span>
               ) : null}
             </div>
@@ -895,7 +935,8 @@ function TabResumen({
                 key={item.id}
                 item={item}
                 tramiteId={tramite.id}
-                editable={checklistEditable}
+                editable={itemEditable(item)}
+                esCuadre={esCuadreHistorico(tramite, item)}
                 onChanged={onChecklistItemChanged}
               />
             ))}
@@ -1394,6 +1435,10 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   const puedeEstado =
     userRol === "ADMIN" || userRol === "REVISOR" || userRol === "OPERATIVO";
   const puedeEditarTramite = puedeEstado && tramite.estado !== "CERRADO";
+  // PATCH /api/tramites/[id]/checklist/[itemId] con el ítem "CUADRE DE PLATA
+  // HISTÓRICA" → ADMIN/REVISOR, en cualquier estado salvo CERRADO.
+  const puedeCerrarCuadreDo = puedeCerrarCuadre(userRol, tramite.estado);
+  const conCuadreHistorico = tieneCuadreHistorico(tramite);
   // POST /api/tramites/[id]/solicitar-facturacion → ADMIN/OPERATIVO/SOCIO
   const puedeFacturar =
     userRol === "ADMIN" || userRol === "OPERATIVO" || userRol === "SOCIO";
@@ -1435,11 +1480,19 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
           <span className="inline-flex h-5 shrink-0 items-center border border-amber-300 bg-white px-1.5 text-[11px] font-semibold text-amber-800">
             Histórico
           </span>
-          <p className="min-w-0">
-            Trámite cargado desde el archivo histórico (Drive 2026): tiene su carpeta y sus documentos, pero no
-            anticipos, pagos ni factura en la plataforma. Los archivos que quedaron en <span className="font-semibold">Otro</span> se
-            pueden reordenar desde la pestaña Documentos o desde Archivos.
-          </p>
+          {conCuadreHistorico ? (
+            <p className="min-w-0">
+              Trámite histórico: la plata (anticipos, pagos, facturas de proveedor y factura de venta) se cargó desde
+              Siigo. Revisa el cuadre en Comentarios y ciérralo marcando «CUADRE DE PLATA HISTÓRICA» en el checklist
+              del Resumen (ADMIN o REVISOR). Los cobros del cliente todavía no están cargados.
+            </p>
+          ) : (
+            <p className="min-w-0">
+              Trámite cargado desde el archivo histórico (Drive 2026): tiene su carpeta y sus documentos, pero no
+              anticipos, pagos ni factura en la plataforma. Los archivos que quedaron en <span className="font-semibold">Otro</span> se
+              pueden reordenar desde la pestaña Documentos o desde Archivos.
+            </p>
+          )}
         </div>
       ) : null}
 
@@ -1594,6 +1647,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
               onFieldSaved={handleFieldSaved}
               onChecklistItemChanged={handleChecklistItemChanged}
               puedeEditar={puedeEditarTramite}
+              puedeCerrarCuadre={puedeCerrarCuadreDo}
               onRefresh={reload}
             />
           </div>

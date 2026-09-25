@@ -670,6 +670,30 @@ describe("tramites service con Postgres local", () => {
       void db;
     });
 
+    it("q también busca en los comentarios: 'CUADRE · ROJO' encuentra el DO por el color de su marca (D0)", async (ctx) => {
+      const db = ensureDb(ctx);
+      const rojo = await createTramite(
+        crearListInput({
+          comentarios: `${TEST_PREFIX}:${runId}:list:cuadre\n[HIST-PLATA-2026-09-23] CUADRE · ROJO\nMotivos:\n- ninguno`,
+        }),
+      );
+      const verde = await createTramite(
+        crearListInput({
+          comentarios: `${TEST_PREFIX}:${runId}:list:cuadre\n[HIST-PLATA-2026-09-23] CUADRE · VERDE\nMotivos:\n- ninguno`,
+        }),
+      );
+
+      const result = await listTramites(
+        { q: "cuadre · rojo", clienteId: clientePropioId!, take: 500 },
+        {},
+      );
+      const ids = result.tramites.map((t) => t.id);
+
+      expect(ids).toContain(rojo.id);
+      expect(ids).not.toContain(verde.id);
+      void db;
+    });
+
     it("el scoping SOCIO nunca se debilita: tipoCliente=PROPIO combinado con socioScope da vacio", async (ctx) => {
       const db = ensureDb(ctx);
       const propio = await createTramite(

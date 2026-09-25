@@ -1,3 +1,9 @@
+import {
+  cuadrePendiente,
+  esItemCuadreHistorico,
+  tieneCuadreHistorico,
+} from "@/lib/tramites/cuadre-historico";
+
 export type TramiteRow = {
   id: string;
   doNumber: string;
@@ -11,9 +17,17 @@ export type TramiteRow = {
   fechaApertura: string;
   ultimoMovimiento: string;
   responsable: string;
+  /** Ítems requeridos del checklist sin marcar, SIN contar el cuadre de plata histórica. */
   documentosPendientes: number | null;
-  /** Cargado desde el archivo histórico (Drive): existe por sus documentos, sin detalle financiero. */
+  /**
+   * Cargado desde el archivo histórico (Drive 2026). Los que tienen el ítem
+   * "CUADRE DE PLATA HISTÓRICA" además traen la plata cargada desde Siigo.
+   */
   esHistorico: boolean;
+  /** Histórico con el ítem "CUADRE DE PLATA HISTÓRICA" requerido y sin cerrar. */
+  cuadrePendiente: boolean;
+  /** Histórico con el ítem de cuadre (pendiente o cerrado): su plata se cargó desde Siigo. */
+  tieneCuadre: boolean;
 };
 
 export type ClienteOption = {
@@ -286,13 +300,33 @@ function countChecklistPendientes(record: Record<string, unknown>): number | nul
     return null;
   }
 
+  const esHistorico = record.esHistorico === true;
+
   return checklistItems.filter((item) => {
     if (!isRecord(item)) {
       return false;
     }
 
+    // El cuadre de plata histórica no es un documento: se muestra aparte ("Cuadre pendiente").
+    if (esHistorico && esItemCuadreHistorico(String(item.descripcion ?? ""))) {
+      return false;
+    }
+
     return item.requerido === true && item.recibido !== true;
   }).length;
+}
+
+/** Ítems del checklist como los lee la marca de cuadre (ignora filas mal formadas). */
+function checklistParaCuadre(
+  record: Record<string, unknown>,
+): { descripcion: string; requerido: boolean; recibido: boolean }[] {
+  const checklistItems = record.checklistItems;
+  if (!Array.isArray(checklistItems)) return [];
+  return checklistItems.filter(isRecord).map((item) => ({
+    descripcion: String(item.descripcion ?? ""),
+    requerido: item.requerido === true,
+    recibido: item.recibido === true,
+  }));
 }
 
 function formatDate(value: string): string {
@@ -335,6 +369,7 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
 
   const id = readText(row, ["id", "uuid", "slug"]) || `tramite-${index}`;
   const doNumber = readText(row, textKeys.doNumber) || "Sin DO";
+  const marcaCuadre = { esHistorico: row.esHistorico === true, checklistItems: checklistParaCuadre(row) };
 
   return {
     id,
@@ -357,6 +392,8 @@ function normalizeRow(row: unknown, index: number): TramiteRow | null {
         "documentosFaltantes",
       ]),
     esHistorico: row.esHistorico === true,
+    cuadrePendiente: cuadrePendiente(marcaCuadre),
+    tieneCuadre: tieneCuadreHistorico(marcaCuadre),
   };
 }
 

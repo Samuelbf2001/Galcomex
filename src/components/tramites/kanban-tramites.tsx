@@ -146,9 +146,18 @@ function KanbanCard({
           </p>
         ) : null}
         {tramite.documentosPendientes !== null && tramite.documentosPendientes > 0 ? (
-          <span className="mt-2 inline-flex items-center border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-xs font-medium text-rose-600">
+          <span className="mt-2 mr-1 inline-flex items-center border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-xs font-medium text-rose-600">
             {tramite.documentosPendientes} doc{tramite.documentosPendientes !== 1 ? "s" : ""} pendiente
             {tramite.documentosPendientes !== 1 ? "s" : ""}
+          </span>
+        ) : null}
+        {/* El cuadre de plata histórica no cuenta como documento pendiente. */}
+        {tramite.cuadrePendiente ? (
+          <span
+            className="mt-2 inline-flex items-center border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+            title="Falta cerrar el ítem «CUADRE DE PLATA HISTÓRICA» (ADMIN o REVISOR)"
+          >
+            Cuadre pendiente
           </span>
         ) : null}
       </Link>

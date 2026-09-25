@@ -21,6 +21,7 @@ import {
   softDeleteStorageObject,
   validateStorageFile,
 } from "@/lib/storage/service";
+import { esItemCuadreHistorico } from "@/lib/tramites/cuadre-historico";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
@@ -335,6 +336,9 @@ export async function registrarDocumento(
       });
       const ahora = new Date();
       for (const item of itemsPendientes) {
+        // El cuadre de plata histórica lo cierra una persona (ADMIN/REVISOR) con
+        // su AuditLog, nunca la subida de un documento de una categoría parecida.
+        if (esItemCuadreHistorico(item.descripcion)) continue;
         if (matchesCategoria(item.descripcion, input.categoria)) {
           await tx.checklistItem.update({
             where: { id: item.id },
