@@ -45,15 +45,22 @@ export function extraerCodigo(texto: string): string | null {
 // ─── 1. PLANTILLA: pedir el código del token (PSE_CODIGO) ────────────────────
 
 /**
- * Definición que se registra en Meta (scripts/whatsapp-plantilla-pse.ts). Sin
+ * Definición que se registra en Meta (scripts/whatsapp-kapso.ts plantilla). Sin
  * tildes a propósito, como en Mizar: menos rechazos de revisión y ningún
  * cliente viejo que las pinte mal. El ORDEN de las variables {{1}}..{{5}} es
  * contrato con `parametrosPlantillaPse` más abajo.
+ *
+ * La plantilla NO pide la clave del banco por WhatsApp: Meta rechazó dos versiones
+ * que lo hacían (INCORRECT_CATEGORY, 2026-09-22: galcomex_codigo_pse y
+ * galcomex_aprobacion_pago) porque pedir una clave por chat parece verificación
+ * de identidad o captación de credenciales. Y está bien que no pase por ahí: la
+ * clave quedaría guardada en Meta, Kapso y la pasarela. El botón "Aprobar pago"
+ * abre /pse/{token} y la clave se escribe en la página de Galcomex.
  */
 export const TEXTO_PLANTILLA_PSE =
-  "Hola {{1}}. {{2}} necesita el codigo del token para un pago PSE.\n\n" +
+  "Hola {{1}}. {{2}} esta haciendo un pago PSE que necesita tu aprobacion.\n\n" +
   "DO: {{3}}\nBeneficiario: {{4}}\nValor: {{5}}\n\n" +
-  "Responde a este mensaje solo con el codigo, o usa el boton Abrir enlace.";
+  "Toca Aprobar pago para completarlo. Si no puedes en este momento, toca No puedo ahora.";
 
 export function definicionPlantillaPse(nombre: string, idioma: string, urlApp: string) {
   return {
@@ -69,8 +76,9 @@ export function definicionPlantillaPse(nombre: string, idioma: string, urlApp: s
       {
         type: "BUTTONS",
         buttons: [
+          // Orden = índice del botón al enviar (ver mensajePlantillaPse): 0 URL, 1 respuesta rápida.
+          { type: "URL", text: "Aprobar pago", url: `${urlApp}/pse/{{1}}`, example: [`${urlApp}/pse/3f9a6c21d4e8`] },
           { type: "QUICK_REPLY", text: "No puedo ahora" },
-          { type: "URL", text: "Abrir enlace", url: `${urlApp}/pse/{{1}}`, example: [`${urlApp}/pse/3f9a6c21d4e8`] },
         ],
       },
     ],
@@ -134,15 +142,15 @@ export function mensajePlantillaPse(input: {
         },
         {
           type: "button",
-          sub_type: "quick_reply",
+          sub_type: "url",
           index: "0",
-          parameters: [{ type: "payload", payload: payloadNoPuedo(input.solicitudId) }],
+          parameters: [{ type: "text", text: input.token }],
         },
         {
           type: "button",
-          sub_type: "url",
+          sub_type: "quick_reply",
           index: "1",
-          parameters: [{ type: "text", text: input.token }],
+          parameters: [{ type: "payload", payload: payloadNoPuedo(input.solicitudId) }],
         },
       ],
     },
@@ -180,7 +188,7 @@ export function textoRespuesta(tipo: TipoRespuesta, d: DatosRespuesta = {}): str
     case "PSE_CERRADA":
       return "Esa solicitud ya venció o fue reemplazada por una más nueva. Si hace falta otro código te llegará un mensaje nuevo.";
     case "PSE_FORMATO":
-      return "No reconocí el código. Responde solo con los números del token, por ejemplo 482913.";
+      return "Para aprobar el pago toca el botón Aprobar pago del mensaje. Si no puedes en este momento, toca No puedo ahora.";
     case "PSE_AMBIGUA":
       return `Tienes ${d.consecutivos?.length ?? "varias"} solicitudes abiertas (${(d.consecutivos ?? []).join(", ")}). Responde citando el mensaje del DO al que corresponde el código: mantén presionado el mensaje y toca Responder.`;
     case "PSE_SIN_SOLICITUD":

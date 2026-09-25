@@ -11,13 +11,13 @@
  * - KAPSO_API_KEY           GATEWAY_API_KEY que entrega el alta del inquilino galcomex
  * - KAPSO_PHONE_NUMBER_ID   1441307479057660 (línea Sixteam.pro). El webhook descarta otras líneas.
  * - KAPSO_WEBHOOK_SECRET    GATEWAY_WEBHOOK_SECRET: la pasarela firma sus reenvíos con él (HMAC-SHA256 hex).
- * - KAPSO_PLANTILLA_PSE     Opcional. Nombre de la plantilla aprobada (galcomex_codigo_pse).
+ * - KAPSO_PLANTILLA_PSE     Opcional. Nombre de la plantilla aprobada (galcomex_aprobar_pago).
  * - KAPSO_PLANTILLA_IDIOMA  Opcional. Código de idioma REAL con que Meta registró la plantilla
  *                           (en 2brain quedó "en" aunque el texto es español; verificar con el script).
  * - KAPSO_WEBHOOK_TOKEN     Opcional. Segundo cerrojo: Kapso reenvía headers fijos en cada entrega.
  */
 export const PROXY_POR_DEFECTO = "https://api.kapso.ai/meta/whatsapp/v24.0";
-export const PLANTILLA_PSE_POR_DEFECTO = "galcomex_codigo_pse";
+export const PLANTILLA_PSE_POR_DEFECTO = "galcomex_aprobar_pago";
 export const HEADER_TOKEN_WEBHOOK = "x-galcomex-token";
 
 export interface KapsoConfig {

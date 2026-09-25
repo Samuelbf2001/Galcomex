@@ -259,8 +259,10 @@ CI falla si estos tests no pasan. Tolerancia = 0 pesos.
 
 El operario pide el código del token desde el pago PSE; los aprobadores de
 `WHATSAPP_APROBADORES_PSE` (Parametro, ADMIN) reciben la plantilla
-`galcomex_codigo_pse` por la línea compartida **Sixteam.pro** y contestan en el
-chat. Galcomex no habla con Kapso: habla con la pasarela `sixteam-whatsapp-gateway`
+`galcomex_aprobar_pago` por la línea compartida **Sixteam.pro**; el botón
+"Aprobar pago" abre `/pse/{token}` y la clave del banco se escribe en la página de
+Galcomex, nunca en el chat (Meta rechaza plantillas que la piden y no debe quedar
+en Meta/Kapso). Galcomex no habla con Kapso: habla con la pasarela `sixteam-whatsapp-gateway`
 (`wa.sixteam.pro`, imita al proxy de Kapso) que rutea la línea entre plataformas. Catálogo cerrado de mensajes en `src/lib/whatsapp/catalogo.ts`, reglas
 de aislamiento (solo aprobadores, solo nuestra línea, botones `gx_`, nunca
 adivinar) en `decidir.ts` (puro), webhook firmado en `/api/whatsapp/kapso`.
