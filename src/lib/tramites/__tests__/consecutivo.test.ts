@@ -32,6 +32,11 @@ describe("formatConsecutivo", () => {
     expect(formatConsecutivo(IMPORTACION, "BUN", 2026, 26)).toBe("DO.BUN26-0026");
   });
 
+  it("Bogotá (BGT) sigue el mismo formato: DO.BGT26-NNNN", () => {
+    expect(formatConsecutivo(IMPORTACION, "BGT", 2026, 1)).toBe("DO.BGT26-0001");
+    expect(formatConsecutivo(IMPORTACION, "BGT", 2026, 269)).toBe("DO.BGT26-0269");
+  });
+
   it("numera la clasificación por año y sin ciudad", () => {
     expect(formatConsecutivo(CLASIFICACION, "BAQ", 2026, 1)).toBe("CLAS26-0001");
     expect(formatConsecutivo(CLASIFICACION, "CTG", 2026, 47)).toBe("CLAS26-0047");

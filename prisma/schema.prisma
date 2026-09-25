@@ -318,6 +318,7 @@ enum Ciudad {
   CTG
   BUN
   SMR
+  BGT // Bogotá. Migración 20260921120000_ciudad_bgt (ya aplicada en prod)
 }
 
 enum AgenciaAduanas {
