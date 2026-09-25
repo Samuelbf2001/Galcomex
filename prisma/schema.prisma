@@ -198,11 +198,26 @@ model MovimientoCuenta {
   /// misma compensación (ver `registrarCompensacion`).
   compensacionId String?
 
+  /// N° de la factura del proveedor (p. ej. Coldex: servicios aduaneros,
+  /// quincenas, primas), solo para movimientos que nacen de "Registrar
+  /// factura de <proveedor>". Opcional: los ajustes/comisiones no lo traen.
+  numeroFactura String?
+  /// `numeroFactura` en mayúsculas y sin espacios/puntos/guiones, para
+  /// detectar "ya registraste esta factura" sin que un espacio de más lo deje
+  /// pasar (índice `[empresaId, rol, numeroFacturaNorm]`).
+  numeroFacturaNorm String?
+
+  /// PDF de soporte de la factura, en la bodega S3 (`empresas/<id>/cuenta/…`).
+  soporteKey    String?
+  soporteNombre String?
+  soporteMime   String?
+
   createdAt DateTime @default(now())
 
   @@index([empresaId, rol])
   @@index([tramiteId])
   @@index([compensacionId])
+  @@index([empresaId, rol, numeroFacturaNorm])
   @@map("movimiento_cuenta")
 }
 

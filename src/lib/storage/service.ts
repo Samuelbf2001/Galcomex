@@ -158,6 +158,42 @@ export async function createPresignedUploadUrl(input: {
   };
 }
 
+/**
+ * Como `createPresignedUploadUrl`, pero para una clave que el llamador ya
+ * construyó (no sigue la convención `tramites/<consecutivo>/…`). Ej.: el
+ * soporte de un movimiento de cuenta corriente, `empresas/<id>/cuenta/…`
+ * (ver `lib/cuenta-corriente/soporte.ts`). El llamador valida tipo/tamaño
+ * según sus propias reglas antes de pedir la URL.
+ */
+export async function createPresignedUploadUrlForKey(input: {
+  storageKey: string;
+  contentType: string;
+  sizeBytes: number;
+  expiresInSeconds?: number;
+}) {
+  const storageKey = validateStorageKey(input.storageKey);
+  const expiresInSeconds = normalizeExpiry(input.expiresInSeconds);
+  const { bucket } = getStorageConfig();
+  const url = usarPresignDirecto()
+    ? await getStoragePublicClient().presignedPutObject(bucket, storageKey, expiresInSeconds)
+    : urlFirmada({
+        metodo: "PUT",
+        storageKey,
+        contentType: input.contentType,
+        sizeBytes: input.sizeBytes,
+        exp: vencimientoEpoch(expiresInSeconds),
+      });
+
+  return {
+    storageKey,
+    url,
+    method: "PUT" as const,
+    contentType: input.contentType,
+    maxSizeBytes: MAX_UPLOAD_SIZE_BYTES,
+    expiresInSeconds,
+  };
+}
+
 export async function createPresignedDownloadUrl(input: {
   storageKey: string;
   expiresInSeconds?: number;

@@ -107,4 +107,22 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/archivos/clientes/[param]",
     "Detalle del explorador por cliente: falta tool archivos_cliente_ver",
   ),
+
+  // Enlazar ficha de pago + "Registrar factura de <proveedor>" (M5, caso
+  // Coldex, 2026-09-24). Las tools van en galcomex-mcp/server.mjs.
+  pendiente(
+    "POST",
+    "/api/clientes/[param]/beneficiario/enlazar",
+    "Enlazar con un clic el beneficiario de una empresa: falta tool beneficiario_enlazar_empresa",
+  ),
+  pendiente(
+    "POST",
+    "/api/clientes/[param]/cuenta/soporte",
+    "URL prefirmada del PDF de una factura de proveedor en la cuenta corriente: falta tool cuenta_soporte_subir",
+  ),
+  pendiente(
+    "GET",
+    "/api/clientes/[param]/cuenta/movimientos/[param]/soporte",
+    "Descarga del PDF de soporte de un movimiento de cuenta corriente: falta tool cuenta_soporte_descargar",
+  ),
 ];

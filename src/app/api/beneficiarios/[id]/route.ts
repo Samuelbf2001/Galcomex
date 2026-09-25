@@ -7,6 +7,7 @@ import { jsonResponse } from "@/lib/http/json";
 import {
   actualizarBeneficiario,
   BeneficiarioNoEncontradoError,
+  EmpresaNoEncontradaParaBeneficiarioError,
 } from "@/lib/beneficiarios/service";
 import { actualizarBeneficiarioSchema } from "@/lib/validations/beneficiarios";
 
@@ -32,6 +33,9 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   } catch (error) {
     if (error instanceof BeneficiarioNoEncontradoError) {
       return NextResponse.json({ error: error.message }, { status: 404 });
+    }
+    if (error instanceof EmpresaNoEncontradaParaBeneficiarioError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
     }
     throw error;
   }

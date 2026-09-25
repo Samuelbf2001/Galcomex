@@ -22,6 +22,16 @@ export const movimientoCuentaSchema = z.object({
     .refine((valor) => valor > 0n, { message: "El valor debe ser mayor a 0" }),
   fecha: z.coerce.date(),
   tramiteId: z.string().min(1).optional().nullable(),
+  /** N° de la factura del proveedor ("Registrar factura de <proveedor>"). */
+  numeroFactura: z.string().trim().min(1).max(40).optional(),
+  /** PDF de soporte ya subido a la bodega (`POST …/cuenta/soporte`). */
+  soporte: z
+    .object({
+      key: z.string().trim().min(1),
+      nombre: z.string().trim().min(1),
+      mime: z.string().trim().min(1),
+    })
+    .optional(),
 });
 
 export type MovimientoCuentaPayload = z.infer<typeof movimientoCuentaSchema>;

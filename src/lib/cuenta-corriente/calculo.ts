@@ -60,6 +60,10 @@ export interface AsientoCuenta {
   borradorId?: string | null;
   /** Cruce de saldos al que pertenece el asiento (las dos puntas comparten id). */
   compensacionId?: string | null;
+  /** N° de factura del movimiento manual ("Registrar factura de <proveedor>"). */
+  numeroFactura?: string | null;
+  /** `true` si el movimiento manual tiene un PDF de soporte adjunto. */
+  tieneSoporte?: boolean;
 }
 
 export interface SaldoLinea {

@@ -4,7 +4,11 @@ import { ZodError } from "zod";
 import { requireRole } from "@/lib/auth/session";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import { crearBeneficiario, listarBeneficiarios } from "@/lib/beneficiarios/service";
+import {
+  crearBeneficiario,
+  EmpresaNoEncontradaParaBeneficiarioError,
+  listarBeneficiarios,
+} from "@/lib/beneficiarios/service";
 import { crearBeneficiarioSchema } from "@/lib/validations/beneficiarios";
 
 export async function GET(request: NextRequest) {
@@ -28,6 +32,9 @@ export async function POST(request: NextRequest) {
     return jsonResponse({ beneficiario }, { status: 201 });
   } catch (error) {
     if (error instanceof ZodError) return validationError(error);
+    if (error instanceof EmpresaNoEncontradaParaBeneficiarioError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     throw error;
   }
 }

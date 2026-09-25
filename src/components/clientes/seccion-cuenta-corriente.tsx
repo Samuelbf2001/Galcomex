@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, ArrowLeftRight, Loader2, Plus, Undo2 } from "lucide-react";
+import { AlertCircle, ArrowLeftRight, FileText, Loader2, Plus, Undo2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 
 import { CompensacionModal } from "@/components/clientes/compensacion-modal";
@@ -13,6 +13,7 @@ import {
   type NuevoMovimiento,
 } from "@/components/clientes/cuenta-api";
 import { claseCampo } from "@/components/clientes/form-campos";
+import { RegistrarFacturaContraparteModal } from "@/components/clientes/registrar-factura-contraparte-modal";
 import { ModuleState } from "@/components/layout/module-state";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceFacturaVenta, EnlaceTramite, type TabTramite } from "@/components/ui/enlace-entidad";
@@ -20,6 +21,7 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
+import { nombreCortoEmpresa } from "@/lib/cuenta-corriente/nombre-corto";
 
 function formatCOP(valor: string): string {
   let entero: bigint;
@@ -241,10 +243,12 @@ function MovimientoModal({
 }
 
 function FilaMovimiento({
+  clienteId,
   movimiento,
   onDeshacer,
   deshaciendo,
 }: {
+  clienteId: string;
   movimiento: MovimientoCuentaRow;
   onDeshacer?: (compensacionId: string) => void;
   deshaciendo: boolean;
@@ -253,6 +257,12 @@ function FilaMovimiento({
   // (a su cargo); negativo = le debemos (a su favor). Nunca rojo/verde: son
   // los mismos dos colores que "Saldo a cargo" / "Saldo a favor" arriba.
   const esACargo = !movimiento.valor.startsWith("-");
+  // El id de un asiento manual es "movimiento:<id>" (ver asientosManuales);
+  // solo esos traen numeroFactura/tieneSoporte.
+  const movimientoId = movimiento.id.startsWith("movimiento:") ? movimiento.id.slice("movimiento:".length) : null;
+  const textoConcepto = movimiento.numeroFactura
+    ? `Factura ${movimiento.numeroFactura} · ${movimiento.concepto}`
+    : movimiento.concepto;
 
   return (
     <tr className="border-b border-slate-100 last:border-b-0">
@@ -264,11 +274,22 @@ function FilaMovimiento({
             borradorId={movimiento.borradorId}
             className="font-medium text-slate-900"
           >
-            {movimiento.concepto}
+            {textoConcepto}
           </EnlaceFacturaVenta>
         ) : (
-          <span className="font-medium text-slate-900">{movimiento.concepto}</span>
+          <span className="font-medium text-slate-900">{textoConcepto}</span>
         )}
+        {movimiento.tieneSoporte && movimientoId ? (
+          <a
+            href={`/api/clientes/${clienteId}/cuenta/movimientos/${movimientoId}/soporte`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-2 inline-flex items-center gap-1 text-xs font-semibold text-cyan-700 hover:underline"
+          >
+            <FileText className="h-3 w-3" aria-hidden="true" />
+            Ver PDF
+          </a>
+        ) : null}
         {movimiento.compensacionId ? (
           <span className="ml-2 inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-semibold uppercase text-cyan-700">
             <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />
@@ -327,6 +348,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [modalAbierto, setModalAbierto] = useState(false);
+  const [facturaModalAbierto, setFacturaModalAbierto] = useState(false);
   const [cruceAbierto, setCruceAbierto] = useState(false);
   const [deshaciendo, setDeshaciendo] = useState<string | null>(null);
   const [verTodo, setVerTodo] = useState(false);
@@ -393,6 +415,11 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
   const neto = cuenta ? BigInt(cuenta.neto) : 0n;
   const visibles =
     cuenta && !verTodo ? cuenta.movimientos.slice(0, 12) : (cuenta?.movimientos ?? []);
+  const corto = cuenta ? nombreCortoEmpresa(cuenta.empresa.nombre) : "";
+  // "Registrar factura de <CORTO>" solo tiene sentido si la empresa además de
+  // deudora es proveedora y puede llevar cargos manuales; si no, el único
+  // botón sigue siendo "Registrar movimiento" (ajustes/comisiones).
+  const puedeRegistrarFactura = Boolean(cuenta?.empresa.esProveedor && cuenta?.permiteCargosManuales);
 
   return (
     <div className="overflow-hidden border border-slate-200 bg-white">
@@ -400,8 +427,9 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
         <div>
           <p className="text-sm font-semibold text-slate-900">Cuenta corriente</p>
           <p className="mt-0.5 text-xs text-slate-500">
-            Las dos puntas cruzadas: lo que nos debe como cliente y lo que le debemos como
-            proveedor.
+            {cuenta
+              ? `Lo que ${corto} nos debe y lo que le debemos, en un solo saldo.`
+              : "Las dos puntas cruzadas: lo que nos debe como cliente y lo que le debemos como proveedor."}
           </p>
         </div>
         {puedeRegistrar && loadState === "ready" ? (
@@ -420,13 +448,24 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
               <ArrowLeftRight className="h-4 w-4" aria-hidden="true" />
               Cruzar saldos
             </button>
+            {puedeRegistrarFactura ? (
+              <button
+                type="button"
+                onClick={() => setModalAbierto(true)}
+                title={`Correcciones y comisiones. Para una factura que ${corto} nos cobra usa «Registrar factura de ${corto}»`}
+                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Otro ajuste
+              </button>
+            ) : null}
             <button
               type="button"
-              onClick={() => setModalAbierto(true)}
+              onClick={() => (puedeRegistrarFactura ? setFacturaModalAbierto(true) : setModalAbierto(true))}
               className="inline-flex h-9 items-center gap-2 bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
-              Registrar movimiento
+              {puedeRegistrarFactura ? `Registrar factura de ${corto}` : "Registrar movimiento"}
             </button>
           </div>
         ) : null}
@@ -518,6 +557,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
                   {visibles.map((movimiento) => (
                     <FilaMovimiento
                       key={movimiento.id}
+                      clienteId={clienteId}
                       movimiento={movimiento}
                       onDeshacer={puedeRegistrar ? deshacerCruce : undefined}
                       deshaciendo={deshaciendo === movimiento.compensacionId}
@@ -548,6 +588,15 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
         <MovimientoModal
           clienteId={clienteId}
           onClose={() => setModalAbierto(false)}
+          onGuardado={(actualizada) => setCuenta(actualizada)}
+        />
+      ) : null}
+
+      {facturaModalAbierto && puedeRegistrar && cuenta ? (
+        <RegistrarFacturaContraparteModal
+          clienteId={clienteId}
+          cuenta={cuenta}
+          onClose={() => setFacturaModalAbierto(false)}
           onGuardado={(actualizada) => setCuenta(actualizada)}
         />
       ) : null}

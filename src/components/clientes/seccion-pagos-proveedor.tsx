@@ -14,8 +14,8 @@ import {
 } from "@/components/pagos/pagos-global-api";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { TableSkeleton } from "@/components/ui/skeleton";
-import { describirError } from "@/components/ui/toast";
-import { usePermiso } from "@/lib/auth/rol-context";
+import { describirError, useToast } from "@/components/ui/toast";
+import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -47,12 +47,42 @@ type FacturaConBeneficiario = FacturaElegibleMultiDORow & { beneficiario: Benefi
 export function SeccionPagosProveedor({ empresaId, nombreEmpresa }: { empresaId: string; nombreEmpresa: string }) {
   // POST /api/pagos/multi es ADMIN u OPERATIVO.
   const puedePagar = usePermiso(["ADMIN", "OPERATIVO"]);
+  // POST /api/clientes/[id]/beneficiario/enlazar es solo ADMIN.
+  const esAdmin = useEsAdmin();
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioRow[]>([]);
   const [facturas, setFacturas] = useState<FacturaConBeneficiario[]>([]);
   const [modal, setModal] = useState<BeneficiarioSeleccion | null>(null);
+  const [enlazando, setEnlazando] = useState(false);
+  const { toast } = useToast();
+
+  async function enlazarFichaDePago() {
+    setEnlazando(true);
+    try {
+      const response = await fetch(`/api/clientes/${empresaId}/beneficiario/enlazar`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const mensaje =
+          isRecord(body) && typeof body.error === "string" ? body.error : `Error ${response.status}`;
+        throw new Error(mensaje);
+      }
+      toast({ title: "Ficha de pago enlazada", variant: "success" });
+      recargar();
+    } catch (caught: unknown) {
+      toast({
+        title: "No se pudo enlazar la ficha de pago",
+        description: describirError(caught),
+        variant: "error",
+      });
+    } finally {
+      setEnlazando(false);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -149,7 +179,20 @@ export function SeccionPagosProveedor({ empresaId, nombreEmpresa }: { empresaId:
           <ModuleState
             type="empty"
             title="Sin ficha de pago enlazada"
-            detail="Para ver lo que se le debe a esta empresa, su beneficiario (Configuración → Beneficiarios) debe estar enlazado a esta ficha."
+            detail={
+              esAdmin
+                ? `${nombreEmpresa} todavía no tiene ficha de pago. Enlázala para ver aquí sus facturas de proveedor pendientes.`
+                : "Pídele a un administrador que enlace la ficha de pago."
+            }
+            action={
+              esAdmin
+                ? {
+                    label: enlazando ? "Enlazando…" : "Enlazar ficha de pago",
+                    onClick: enlazarFichaDePago,
+                    icon: false,
+                  }
+                : undefined
+            }
           />
         ) : grupos.length === 0 ? (
           <ModuleState type="empty" title="Nada pendiente" detail="No hay facturas de proveedor en estado REGISTRADA en ningún trámite." />

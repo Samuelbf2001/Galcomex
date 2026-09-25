@@ -78,6 +78,31 @@ export class CompensacionNoEncontradaError extends Error {
   }
 }
 
+export class FacturaProveedorDuplicadaError extends Error {
+  public readonly status = 409;
+  constructor(numeroFactura: string, nombreEmpresa: string, fecha: Date) {
+    super(`Ya registraste la factura ${numeroFactura} de ${nombreEmpresa} el ${formatoFechaCorta(fecha)}`);
+    this.name = "FacturaProveedorDuplicadaError";
+  }
+}
+
+const FORMATO_FECHA_CORTA = new Intl.DateTimeFormat("es-CO", {
+  timeZone: "America/Bogota",
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+});
+
+function formatoFechaCorta(fecha: Date): string {
+  return FORMATO_FECHA_CORTA.format(fecha);
+}
+
+/** Normaliza un N° de factura para detectar duplicados: mayúsculas, sin
+ * espacios, puntos ni guiones ("FE-1234" y "fe 1234" son la misma factura). */
+export function normalizarNumeroFactura(numeroFactura: string): string {
+  return numeroFactura.trim().toUpperCase().replace(/[\s.\-]/g, "");
+}
+
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(
     JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
@@ -266,6 +291,8 @@ async function asientosManuales(
       valor: true,
       fecha: true,
       compensacionId: true,
+      numeroFactura: true,
+      soporteKey: true,
       tramite: { select: { id: true, consecutivo: true } },
     },
   });
@@ -273,6 +300,8 @@ async function asientosManuales(
   return movimientos.map((movimiento) => ({
     id: `movimiento:${movimiento.id}`,
     rol: movimiento.rol,
+    numeroFactura: movimiento.numeroFactura,
+    tieneSoporte: Boolean(movimiento.soporteKey),
     fuente:
       movimiento.origen === OrigenMovimientoCuenta.COMISION
         ? ("COMISION" as const)
@@ -422,6 +451,10 @@ export interface RegistrarMovimientoInput {
   fecha: Date;
   tramiteId?: string | null;
   usuarioId: string;
+  /** N° de la factura del proveedor ("Registrar factura de <proveedor>"). */
+  numeroFactura?: string | null;
+  /** PDF de soporte ya subido a la bodega (`POST …/cuenta/soporte`). */
+  soporte?: { key: string; nombre: string; mime: string } | null;
 }
 
 /**
@@ -429,6 +462,11 @@ export interface RegistrarMovimientoInput {
  * ajuste). Los cargos manuales exigen la capacidad `cargos_manuales_contraparte`
  * — un importe que no nace de un trámite no debería poder aparecer en la cuenta
  * de cualquier empresa por descuido.
+ *
+ * Si trae `numeroFactura`, rechaza (409) un segundo registro de la misma
+ * empresa + rol con el mismo N° de factura (normalizado) que no sea una
+ * compensación — evita que "Registrar factura de Coldex" se dispare dos veces
+ * por descuido con la misma factura.
  */
 export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput) {
   const empresa = await prisma.cliente.findUnique({
@@ -452,6 +490,25 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
     }
   }
 
+  const numeroFactura = input.numeroFactura?.trim() || null;
+  const numeroFacturaNorm = numeroFactura ? normalizarNumeroFactura(numeroFactura) : null;
+
+  if (numeroFacturaNorm) {
+    const duplicado = await prisma.movimientoCuenta.findFirst({
+      where: {
+        empresaId: input.empresaId,
+        rol: input.rol,
+        numeroFacturaNorm,
+        origen: { not: OrigenMovimientoCuenta.COMPENSACION },
+      },
+      select: { fecha: true },
+      orderBy: { fecha: "desc" },
+    });
+    if (duplicado) {
+      throw new FacturaProveedorDuplicadaError(numeroFactura!, empresa.nombre, duplicado.fecha);
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const movimiento = await tx.movimientoCuenta.create({
       data: {
@@ -466,6 +523,11 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
         fecha: input.fecha,
         tramiteId: input.tramiteId ?? null,
         registradoPorId: input.usuarioId,
+        numeroFactura,
+        numeroFacturaNorm,
+        soporteKey: input.soporte?.key ?? null,
+        soporteNombre: input.soporte?.nombre ?? null,
+        soporteMime: input.soporte?.mime ?? null,
       },
     });
 

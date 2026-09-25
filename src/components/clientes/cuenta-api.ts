@@ -18,6 +18,10 @@ export type MovimientoCuentaRow = {
   borradorId: string | null;
   /** Cruce de saldos al que pertenece (las dos puntas comparten id). */
   compensacionId: string | null;
+  /** N° de factura del movimiento manual ("Registrar factura de <proveedor>"). */
+  numeroFactura: string | null;
+  /** `true` si el movimiento manual tiene un PDF de soporte adjunto. */
+  tieneSoporte: boolean;
 };
 
 export type CompensablesRow = {
@@ -68,6 +72,10 @@ export type NuevoMovimiento = {
   concepto: string;
   valor: string;
   fecha: string;
+  /** N° de la factura del proveedor ("Registrar factura de <proveedor>"). */
+  numeroFactura?: string;
+  /** PDF de soporte ya subido a la bodega (`POST …/cuenta/soporte`). */
+  soporte?: { key: string; nombre: string; mime: string };
 };
 
 export class CuentaApiError extends Error {
@@ -142,6 +150,9 @@ function normalizar(payload: unknown): CuentaCorriente | null {
             typeof movimiento.borradorId === "string" ? movimiento.borradorId : null,
           compensacionId:
             typeof movimiento.compensacionId === "string" ? movimiento.compensacionId : null,
+          numeroFactura:
+            typeof movimiento.numeroFactura === "string" ? movimiento.numeroFactura : null,
+          tieneSoporte: movimiento.tieneSoporte === true,
         }))
       : [],
     cantidad: typeof cuenta.cantidad === "number" ? cuenta.cantidad : 0,
