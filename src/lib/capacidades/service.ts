@@ -126,7 +126,8 @@ export async function catalogoCapacidadesUI(): Promise<CapacidadUI[]> {
   }));
 }
 
-function aOverrides(
+/** Filas de `EmpresaCapacidad`/`GrupoEmpresaCapacidad` → overrides del resolver. */
+export function aOverrides(
   filas: { codigo: string; habilitado: boolean; config: Prisma.JsonValue | null }[],
 ): OverrideCapacidad[] {
   return filas.map((fila) => ({

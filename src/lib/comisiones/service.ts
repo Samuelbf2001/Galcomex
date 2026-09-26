@@ -15,8 +15,12 @@ import type { TipoCarga } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { normalizeSerializable } from "@/lib/db/serializable";
-import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
-import { tiene } from "@/lib/capacidades/resolver";
+import {
+  aOverrides,
+  capacidadesDeEmpresa,
+  catalogoCapacidades,
+} from "@/lib/capacidades/service";
+import { resolverCapacidades, tiene } from "@/lib/capacidades/resolver";
 import { getParametrosSistema } from "@/lib/parametros/service";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 import { CAPACIDAD_CONTENEDORES } from "@/lib/tramites/requisitos";
@@ -54,30 +58,44 @@ export interface EmpresaQuePaga {
 
 /**
  * Empresas con `comision_por_evento` encendida (por empresa o por su grupo).
- * Los candidatos salen de las filas de capacidad; la cascada completa la
- * resuelve `capacidadesDeEmpresa` (una empresa puede apagarla aunque su grupo
- * la tenga).
+ * Los candidatos salen de las filas de capacidad y la cascada completa se
+ * resuelve aquí mismo con sus filas (una empresa puede apagarla aunque su grupo
+ * la tenga): una sola consulta, sin releer cada empresa — si una se borra
+ * mientras tanto, simplemente no aparece.
  */
 export async function empresasQuePaganComision(): Promise<EmpresaQuePaga[]> {
-  const candidatas = await prisma.cliente.findMany({
-    where: {
-      activo: true,
-      OR: [
-        { capacidades: { some: { codigo: CAPACIDAD_COMISION, habilitado: true } } },
-        {
-          grupoEmpresa: {
-            capacidades: { some: { codigo: CAPACIDAD_COMISION, habilitado: true } },
+  const filasCapacidad = { select: { codigo: true, habilitado: true, config: true } } as const;
+  const [catalogo, candidatas] = await Promise.all([
+    catalogoCapacidades(),
+    prisma.cliente.findMany({
+      where: {
+        activo: true,
+        OR: [
+          { capacidades: { some: { codigo: CAPACIDAD_COMISION, habilitado: true } } },
+          {
+            grupoEmpresa: {
+              capacidades: { some: { codigo: CAPACIDAD_COMISION, habilitado: true } },
+            },
           },
-        },
-      ],
-    },
-    select: { id: true, nombre: true },
-    orderBy: { nombre: "asc" },
-  });
+        ],
+      },
+      select: {
+        id: true,
+        nombre: true,
+        capacidades: filasCapacidad,
+        grupoEmpresa: { select: { capacidades: filasCapacidad } },
+      },
+      orderBy: { nombre: "asc" },
+    }),
+  ]);
 
   const resultado: EmpresaQuePaga[] = [];
   for (const empresa of candidatas) {
-    const capacidades = await capacidadesDeEmpresa(empresa.id);
+    const capacidades = resolverCapacidades(
+      catalogo,
+      aOverrides(empresa.grupoEmpresa?.capacidades ?? []),
+      aOverrides(empresa.capacidades),
+    );
     if (!tiene(capacidades, CAPACIDAD_COMISION)) continue;
     resultado.push({
       empresaId: empresa.id,
