@@ -21,6 +21,7 @@ import {
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { EMAIL_USUARIO_CARGA_HISTORICA } from "@/lib/cartera/historica";
 import { prisma } from "@/lib/db/prisma";
 import {
   calcularSaldoNeto,
@@ -194,14 +195,20 @@ async function crearFacturaDirecta(
     saldoACargoLM = 0n,
     fechaPagoCliente = null,
     esHistorico = false,
+    facturadoPorId = null,
   }: {
     saldoAFavorCliente?: bigint;
     saldoACargoCliente?: bigint;
     saldoAFavorLM?: bigint;
     saldoACargoLM?: bigint;
     fechaPagoCliente?: Date | null;
-    /** Trámite histórico (carga 2026): su factura sin cobros es "cartera histórica" (D0). */
+    /** Trámite histórico (carga 2026). */
     esHistorico?: boolean;
+    /**
+     * Quién pasó el borrador a FACTURADO. Con el usuario de las cargas del
+     * histórico y `esHistorico`, la factura sin cobros es "cartera histórica" (D0).
+     */
+    facturadoPorId?: string | null;
   } = {},
 ): Promise<string> {
   facturaCounter++;
@@ -242,6 +249,7 @@ async function crearFacturaDirecta(
       estado: EstadoBorrador.FACTURADO,
       aprobadoPorId: db.userId,
       fechaAprobacion: new Date(`${stateYear}-01-10`),
+      facturadoPorId,
     },
   });
 
@@ -679,10 +687,22 @@ describe("cartera service con Postgres local", () => {
     const previo = await prisma.parametro.findUnique({ where: { clave } });
     await prisma.parametro.upsert({ where: { clave }, update: { valor: "SI" }, create: { clave, valor: "SI" } });
 
+    // Usuario de las cargas del histórico: quien facturó las facturas de la carga. Se crea si
+    // falta y no se borra al final (es un usuario fijo del sistema, no un dato de este test).
+    const usuarioCarga = await prisma.user.upsert({
+      where: { email: EMAIL_USUARIO_CARGA_HISTORICA },
+      update: {},
+      create: { email: EMAIL_USUARIO_CARGA_HISTORICA, name: "Importación histórico", rol: Rol.OPERATIVO, emailVerified: true },
+    });
+    const deCarga = { esHistorico: true, facturadoPorId: usuarioCarga.id };
+
     try {
-      const historica = await crearFacturaDirecta(db, { saldoACargoCliente: 300_000n, esHistorico: true });
-      const historicaAFavor = await crearFacturaDirecta(db, { saldoAFavorCliente: 20_000n, esHistorico: true });
-      const historicaConCobro = await crearFacturaDirecta(db, { saldoACargoCliente: 90_000n, esHistorico: true });
+      const historica = await crearFacturaDirecta(db, { saldoACargoCliente: 300_000n, ...deCarga });
+      const historicaAFavor = await crearFacturaDirecta(db, { saldoAFavorCliente: 20_000n, ...deCarga });
+      const historicaConCobro = await crearFacturaDirecta(db, { saldoACargoCliente: 90_000n, ...deCarga });
+      // Factura NUEVA emitida en la plataforma sobre un DO histórico (la facturó una persona):
+      // es deuda real, no cartera histórica.
+      const nuevaSobreHistorico = await crearFacturaDirecta(db, { saldoACargoCliente: 60_000n, esHistorico: true, facturadoPorId: db.userId });
       await registrarPagoFacturaAbono({
         facturaId: historicaConCobro,
         destino: DestinoPago.CLIENTE,
@@ -701,8 +721,9 @@ describe("cartera service con Postgres local", () => {
       expect(por(historicaAFavor).historicaSinCobros).toBe(true);
       expect(por(historicaConCobro).historicaSinCobros).toBe(false);
       expect(por(normal).historicaSinCobros).toBe(false);
+      expect(por(nuevaSobreHistorico).historicaSinCobros).toBe(false);
 
-      // Solo las dos históricas sin cobros de este test: −300.000 + 20.000.
+      // Solo las dos históricas sin cobros de este test: −300.000 + 20.000 (la nueva no suma aquí).
       expect(cartera.cruceClienteHistorico).toBe(-280_000n);
       // cruceCliente no cambia: suma TODAS las facturas del cliente (= Siigo).
       expect(cartera.cruceCliente).toBe(cartera.facturas.reduce((acc, f) => acc + f.saldoNetoCliente, 0n));

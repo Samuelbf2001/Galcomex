@@ -112,8 +112,9 @@ type SaldoNetoClienteDbRow = {
  *
  * Con la cartera histórica aparte (`aparte`; si no se pasa, se lee el
  * parámetro CARTERA_HISTORICA_APARTE) se excluyen las facturas de trámites
- * históricos sin cobros. La subconsulta de pagos no cambia: por definición,
- * esas facturas no tienen pagos del CLIENTE.
+ * históricos emitidas por una carga del histórico y sin cobros (regla en
+ * lib/cartera/historica.ts). La subconsulta de pagos no cambia: por
+ * definición, esas facturas no tienen pagos del CLIENTE.
  */
 export async function getSaldosNetoPorCliente(opts: { aparte?: boolean } = {}): Promise<ClienteSaldoNeto[]> {
   const aparte = opts.aparte ?? (await carteraHistoricaAparte());
@@ -217,8 +218,10 @@ export type CarteraHistoricaClienteRow = {
 
 /**
  * Cartera histórica 2026 (cobros aún no cargados): facturas de trámites
- * históricos sin ningún pago del CLIENTE, fuera de la cartera vencida y de
- * las alertas mientras CARTERA_HISTORICA_APARTE ≠ "NO".
+ * históricos emitidas por una carga del histórico y sin ningún pago del
+ * CLIENTE, fuera de la cartera vencida y de las alertas mientras
+ * CARTERA_HISTORICA_APARTE ≠ "NO". Una factura nueva de la plataforma sobre
+ * un DO histórico no entra: cuenta en la vencida y en las alertas.
  */
 export type CarteraHistoricaResumen = {
   /** false con CARTERA_HISTORICA_APARTE = "NO": todo vuelve a la cartera normal. */
@@ -407,7 +410,8 @@ async function getPendientesFacturar(hoy: Date): Promise<{
  * La lista se recorta a LIMITE filas (más antiguas primero); el total en COP
  * y el conteo se agregan en BD sobre TODAS las facturas vencidas.
  * Con la cartera histórica aparte, excluye las facturas de trámites
- * históricos sin cobros (van en `getCarteraHistorica`).
+ * históricos emitidas por una carga del histórico y sin cobros (van en
+ * `getCarteraHistorica`).
  */
 async function getCarteraVencida(hoy: Date, aparte: boolean): Promise<{
   carteraVencida: CarteraVencidaRow[];
@@ -480,8 +484,8 @@ type CarteraHistoricaDbRow = {
 
 /**
  * Cartera histórica 2026 (cobros aún no cargados): facturas de trámites
- * históricos sin pagos del CLIENTE y con algún saldo, por cliente (peor saldo
- * neto primero). Sin LIMIT: como mucho, una fila por cliente con históricos.
+ * históricos emitidas por una carga del histórico, sin pagos del CLIENTE y
+ * con algún saldo, por cliente (peor saldo neto primero). Sin LIMIT: como mucho, una fila por cliente con históricos.
  * Los totales se suman en TypeScript con BigInt.
  */
 export async function getCarteraHistorica(aparte: boolean): Promise<CarteraHistoricaResumen> {

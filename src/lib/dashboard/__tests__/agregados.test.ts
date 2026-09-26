@@ -14,7 +14,11 @@ import "dotenv/config";
 import { DestinoPago, EstadoBorrador, EstadoTramite, TipoPagoFactura } from "@prisma/client";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { carteraHistoricaAparte, esFacturaHistoricaSinCobros } from "@/lib/cartera/historica";
+import {
+  EMAIL_USUARIO_CARGA_HISTORICA,
+  carteraHistoricaAparte,
+  esFacturaHistoricaSinCobros,
+} from "@/lib/cartera/historica";
 import { calcularSaldoNeto } from "@/lib/cartera/service";
 import { prisma } from "@/lib/db/prisma";
 
@@ -26,6 +30,23 @@ import {
   getDashboardData,
   getSaldosNetoPorCliente,
 } from "../service";
+
+/** Lo que necesita la referencia en memoria de la regla de cartera histórica. */
+const SELECT_BORRADOR_HISTORICA = {
+  select: { facturadoPor: { select: { email: true } }, tramite: { select: { esHistorico: true } } },
+} as const;
+
+/** Referencia en memoria: la misma regla que el SQL y el where de Prisma. */
+function historicaSinCobrosRef(f: {
+  borrador: { facturadoPor: { email: string } | null; tramite: { esHistorico: boolean } };
+  pagos: ReadonlyArray<{ destino: string }>;
+}): boolean {
+  return esFacturaHistoricaSinCobros({
+    esHistorico: f.borrador.tramite.esHistorico,
+    deCargaHistorica: f.borrador.facturadoPor?.email === EMAIL_USUARIO_CARGA_HISTORICA,
+    pagos: f.pagos,
+  });
+}
 
 let dbDisponible = false;
 let motivo = "DATABASE_URL no está definida; se omiten los agregados del dashboard";
@@ -60,7 +81,7 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
           select: {
             saldoAFavorCliente: true,
             saldoACargoCliente: true,
-            borrador: { select: { tramite: { select: { esHistorico: true } } } },
+            borrador: SELECT_BORRADOR_HISTORICA,
             pagos: {
               where: { destino: DestinoPago.CLIENTE },
               select: { tipo: true, monto: true, destino: true },
@@ -74,7 +95,7 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
     for (const cliente of clientes) {
       const facturas = aparte
         ? cliente.facturas.filter(
-            (f) => !esFacturaHistoricaSinCobros({ esHistorico: f.borrador.tramite.esHistorico, pagos: f.pagos }),
+            (f) => !historicaSinCobrosRef(f),
           )
         : cliente.facturas;
       const saldoNeto = facturas.reduce((acc, f) => {
@@ -172,14 +193,14 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
       select: {
         id: true,
         saldoACargoCliente: true,
-        borrador: { select: { tramite: { select: { esHistorico: true } } } },
+        borrador: SELECT_BORRADOR_HISTORICA,
         pagos: { select: { destino: true } },
       },
       orderBy: [{ fecha: "asc" }, { id: "asc" }],
     });
     const vencidasRef = aparte
       ? vencidasTodas.filter(
-          (f) => !esFacturaHistoricaSinCobros({ esHistorico: f.borrador.tramite.esHistorico, pagos: f.pagos }),
+          (f) => !historicaSinCobrosRef(f),
         )
       : vencidasTodas;
     const totalRef = vencidasRef.reduce((sum, f) => sum + f.saldoACargoCliente, 0n);
@@ -199,14 +220,14 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
         clienteId: true,
         saldoACargoCliente: true,
         saldoAFavorCliente: true,
-        borrador: { select: { tramite: { select: { esHistorico: true } } } },
+        borrador: SELECT_BORRADOR_HISTORICA,
         pagos: { select: { destino: true } },
       },
     });
     const porCliente = new Map<string, { facturas: number; aCargo: bigint; aFavor: bigint }>();
     let cantidadACargo = 0;
     for (const f of facturas) {
-      if (!esFacturaHistoricaSinCobros({ esHistorico: f.borrador.tramite.esHistorico, pagos: f.pagos })) continue;
+      if (!historicaSinCobrosRef(f)) continue;
       if (f.saldoACargoCliente <= 0n && f.saldoAFavorCliente <= 0n) continue;
       const e = porCliente.get(f.clienteId) ?? { facturas: 0, aCargo: 0n, aFavor: 0n };
       e.facturas += 1;

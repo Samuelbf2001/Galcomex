@@ -111,7 +111,7 @@ export type FacturaRow = {
   lineaServicio?: string;
   abonosCliente?: string;      // BigInt as string; Σ PagoFactura tipo=ABONO destino=CLIENTE
   devolucionesCliente?: string; // BigInt as string; Σ PagoFactura tipo=DEVOLUCION destino=CLIENTE
-  /** Cartera histórica 2026 (D0): trámite histórico sin cobros del cliente cargados todavía. */
+  /** Cartera histórica 2026 (D0): factura de una carga del histórico sin cobros del cliente cargados todavía. */
   historicaSinCobros?: boolean;
 };
 

@@ -85,7 +85,7 @@ async function main() {
       clave: "CARTERA_HISTORICA_APARTE",
       valor: "SI",
       descripcion:
-        "SI = las facturas de trámites históricos sin cobros cargados se muestran aparte (tablero: «Cartera histórica 2026») y no cuentan en cartera vencida ni en alertas. Poner NO cuando se carguen los cobros históricos.",
+        "SI = las facturas que emitió la carga del histórico 2026 (trámites históricos) y aún no tienen cobros se muestran aparte (tablero: «Cartera histórica 2026») y no cuentan en cartera vencida ni en alertas. Las facturas nuevas de la plataforma cuentan siempre. Poner NO cuando se carguen los cobros históricos.",
     },
   ];
 

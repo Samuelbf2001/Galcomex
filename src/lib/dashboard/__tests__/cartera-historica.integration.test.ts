@@ -1,15 +1,18 @@
 /**
  * Cartera histórica aparte (D0) contra la BD local (Postgres :5433).
  *
- * Datos propios (cliente de prueba, limpieza al final):
+ * Datos propios (cliente de prueba, limpieza al final). F1-F3 las "emitió la
+ * carga del histórico": su borrador lo facturó el usuario de las cargas.
  *   F1 histórica sin cobros, 100.000 a cargo
  *   F2 histórica sin cobros, 5.000 a favor
  *   F3 histórica, 50.000 a cargo con un abono de 10.000 (ya no es "sin cobros")
  *   F4 no histórica, 70.000 a cargo
+ *   F5 NUEVA sobre un DO histórico (la facturó una persona en la plataforma),
+ *      30.000 a cargo, sin cobros: es deuda real, NO cartera histórica
  *
- * Con la separación activa: vencida = F3 + F4 (120.000), saldo neto del
- * cliente = −40.000 − 70.000 = −110.000, histórica = F1 + F2 (2 facturas,
- * 100.000 a cargo, 5.000 a favor, neto −95.000). Tolerancia 0 pesos.
+ * Con la separación activa: vencida = F3 + F4 + F5 (150.000), saldo neto del
+ * cliente = −40.000 − 70.000 − 30.000 = −140.000, histórica = F1 + F2
+ * (2 facturas, 100.000 a cargo, 5.000 a favor, neto −95.000). Tolerancia 0 pesos.
  *
  * Se omite si DATABASE_URL no está definida o la BD no responde.
  */
@@ -20,21 +23,25 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   CLAVE_CARTERA_HISTORICA_APARTE,
+  EMAIL_USUARIO_CARGA_HISTORICA,
   SQL_FACTURA_HISTORICA_SIN_COBROS,
   TITULO_CARTERA_HISTORICA,
   carteraHistoricaAparte,
+  esFacturaHistoricaSinCobros,
   whereFacturaHistoricaSinCobros,
 } from "@/lib/cartera/historica";
 import { eliminarPagoFactura, registrarPagoFacturaAbono } from "@/lib/cartera/service";
 import { prisma } from "@/lib/db/prisma";
 
-import { getCarteraHistorica, getDashboardData, getSaldosNetoPorCliente } from "../service";
+import { getCarteraHistorica, getClientesConAlertaCartera, getDashboardData, getSaldosNetoPorCliente } from "../service";
 
 const TEST_PREFIX = "vitest-cartera-historica";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const stateYear = 3012;
 
-type Fixture = { clienteId: string; userId: string; f1: string; f2: string; f3: string; f4: string };
+type Fixture = { clienteId: string; userId: string; f1: string; f2: string; f3: string; f4: string; f5: string };
+
+const CLAVE_UMBRAL_CARTERA_CLIENTE = "UMBRAL_ALERTA_CARTERA_CLIENTE";
 
 let fixture: Fixture | null = null;
 let dbUnavailableReason: string | null = null;
@@ -43,12 +50,25 @@ let dbConnected = false;
 let parametroOriginal: string | null | undefined;
 let numero = 0;
 
-async function setParametro(valor: string) {
+async function setParametro(valor: string, clave = CLAVE_CARTERA_HISTORICA_APARTE) {
   await prisma.parametro.upsert({
-    where: { clave: CLAVE_CARTERA_HISTORICA_APARTE },
+    where: { clave },
     update: { valor },
-    create: { clave: CLAVE_CARTERA_HISTORICA_APARTE, valor, descripcion: "test" },
+    create: { clave, valor, descripcion: "test" },
   });
+}
+
+/**
+ * Usuario de las cargas del histórico (quien facturó F1-F3). Se crea si falta y
+ * no se borra al final: es un usuario fijo del sistema, no un dato de este test.
+ */
+async function usuarioCargaHistorica(): Promise<string> {
+  const u = await prisma.user.upsert({
+    where: { email: EMAIL_USUARIO_CARGA_HISTORICA },
+    update: {},
+    create: { email: EMAIL_USUARIO_CARGA_HISTORICA, name: "Importación histórico", rol: Rol.OPERATIVO, emailVerified: true },
+  });
+  return u.id;
 }
 
 async function restaurarParametro() {
@@ -81,7 +101,7 @@ async function cleanupTestData() {
 async function crearFactura(
   clienteId: string,
   userId: string,
-  opts: { esHistorico: boolean; saldoACargo?: bigint; saldoAFavor?: bigint },
+  opts: { esHistorico: boolean; facturadoPorId: string; saldoACargo?: bigint; saldoAFavor?: bigint },
 ): Promise<string> {
   numero += 1;
   const saldoACargo = opts.saldoACargo ?? 0n;
@@ -112,6 +132,7 @@ async function crearFactura(
       saldoAFavorCliente: saldoAFavor,
       saldoACargoCliente: saldoACargo,
       estado: EstadoBorrador.FACTURADO,
+      facturadoPorId: opts.facturadoPorId,
     },
   });
   const factura = await prisma.factura.create({
@@ -195,12 +216,15 @@ describe("cartera histórica aparte (Postgres local)", () => {
       const cliente = await prisma.cliente.create({
         data: { nombre: `Cliente Vitest Histórica ${runId}`, nit: `${TEST_PREFIX}-${runId}`, tipo: TipoCliente.PROPIO },
       });
-      const f1 = await crearFactura(cliente.id, user.id, { esHistorico: true, saldoACargo: 100_000n });
-      const f2 = await crearFactura(cliente.id, user.id, { esHistorico: true, saldoAFavor: 5_000n });
-      const f3 = await crearFactura(cliente.id, user.id, { esHistorico: true, saldoACargo: 50_000n });
+      const deCarga = { esHistorico: true, facturadoPorId: await usuarioCargaHistorica() };
+      const f1 = await crearFactura(cliente.id, user.id, { ...deCarga, saldoACargo: 100_000n });
+      const f2 = await crearFactura(cliente.id, user.id, { ...deCarga, saldoAFavor: 5_000n });
+      const f3 = await crearFactura(cliente.id, user.id, { ...deCarga, saldoACargo: 50_000n });
       await abonar(f3, 10_000n, user.id);
-      const f4 = await crearFactura(cliente.id, user.id, { esHistorico: false, saldoACargo: 70_000n });
-      fixture = { clienteId: cliente.id, userId: user.id, f1, f2, f3, f4 };
+      const f4 = await crearFactura(cliente.id, user.id, { esHistorico: false, facturadoPorId: user.id, saldoACargo: 70_000n });
+      // F5: factura NUEVA emitida en la plataforma sobre un DO histórico (la facturó una persona).
+      const f5 = await crearFactura(cliente.id, user.id, { esHistorico: true, facturadoPorId: user.id, saldoACargo: 30_000n });
+      fixture = { clienteId: cliente.id, userId: user.id, f1, f2, f3, f4, f5 };
     } catch (error) {
       dbUnavailableReason = `BD local no disponible: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -223,23 +247,24 @@ describe("cartera histórica aparte (Postgres local)", () => {
     expect(new Set(porPrisma.map((f) => f.id))).toEqual(new Set([db.f1, db.f2]));
     expect(new Set(porSql.map((f) => f.id))).toEqual(new Set([db.f1, db.f2]));
 
-    // NOT: { AND: [A, B] } = ¬(A ∧ B): F3 (histórica con cobro) y F4 (no histórica) son corriente.
+    // NOT: { AND: [A, B, C] } = ¬(A ∧ B ∧ C): F3 (histórica con cobro), F4 (no histórica) y F5 (nueva
+    // sobre un DO histórico) son corriente.
     const corrientePrisma = await prisma.factura.findMany({ where: { clienteId: db.clienteId, NOT: whereFacturaHistoricaSinCobros }, select: { id: true } });
     const corrienteSql = await prisma.$queryRaw<{ id: string }[]>`
       SELECT fa.id FROM factura fa WHERE fa."clienteId" = ${db.clienteId} AND NOT ${SQL_FACTURA_HISTORICA_SIN_COBROS}`;
-    expect(new Set(corrientePrisma.map((f) => f.id))).toEqual(new Set([db.f3, db.f4]));
-    expect(new Set(corrienteSql.map((f) => f.id))).toEqual(new Set([db.f3, db.f4]));
+    expect(new Set(corrientePrisma.map((f) => f.id))).toEqual(new Set([db.f3, db.f4, db.f5]));
+    expect(new Set(corrienteSql.map((f) => f.id))).toEqual(new Set([db.f3, db.f4, db.f5]));
   });
 
-  it("separación activa: vencida 120.000 (F3+F4), neto −110.000, histórica 2 facturas / 100.000 / 5.000 / −95.000", async (ctx) => {
+  it("separación activa: vencida 150.000 (F3+F4+F5), neto −140.000, histórica 2 facturas / 100.000 / 5.000 / −95.000", async (ctx) => {
     const db = ensureDb(ctx);
     expect(await carteraHistoricaAparte()).toBe(true);
 
     const vencidas = await vencidasCliente(db.clienteId, true);
-    expect(vencidas.ids).toEqual(new Set([db.f3, db.f4]));
-    expect(vencidas.total).toBe(120_000n);
+    expect(vencidas.ids).toEqual(new Set([db.f3, db.f4, db.f5]));
+    expect(vencidas.total).toBe(150_000n);
 
-    expect(await saldoNetoCliente(db.clienteId, true)).toBe(-110_000n);
+    expect(await saldoNetoCliente(db.clienteId, true)).toBe(-140_000n);
 
     expect(await historicaCliente(db.clienteId)).toEqual({
       clienteId: db.clienteId,
@@ -251,20 +276,34 @@ describe("cartera histórica aparte (Postgres local)", () => {
     });
   });
 
-  it("el tablero aplica la separación: la vencida global suma F3+F4 y no F1; la sección trae el título", async (ctx) => {
+  it("el tablero aplica la separación: la vencida global suma F3, F4 y F5 y no F1; la sección trae el título", async (ctx) => {
     const db = ensureDb(ctx);
     const data = await getDashboardData();
 
     // Referencia global en memoria con la misma regla.
     const vencidasRef = await prisma.factura.findMany({
       where: { saldoACargoCliente: { gt: 0n }, fechaPagoCliente: null },
-      select: { id: true, saldoACargoCliente: true, pagos: { select: { destino: true } }, borrador: { select: { tramite: { select: { esHistorico: true } } } } },
+      select: {
+        id: true,
+        saldoACargoCliente: true,
+        pagos: { select: { destino: true } },
+        borrador: { select: { facturadoPor: { select: { email: true } }, tramite: { select: { esHistorico: true } } } },
+      },
     });
-    const corrientes = vencidasRef.filter((f) => !(f.borrador.tramite.esHistorico && !f.pagos.some((p) => p.destino === DestinoPago.CLIENTE)));
+    const corrientes = vencidasRef.filter(
+      (f) =>
+        !esFacturaHistoricaSinCobros({
+          esHistorico: f.borrador.tramite.esHistorico,
+          deCargaHistorica: f.borrador.facturadoPor?.email === EMAIL_USUARIO_CARGA_HISTORICA,
+          pagos: f.pagos,
+        }),
+    );
     expect(data.cantidadFacturasVencidas).toBe(corrientes.length);
     expect(data.totalCarteraVencida).toBe(corrientes.reduce((s, f) => s + f.saldoACargoCliente, 0n).toString());
     expect(corrientes.some((f) => f.id === db.f1)).toBe(false);
     expect(corrientes.some((f) => f.id === db.f3)).toBe(true);
+    // La factura nueva sobre un DO histórico cuenta en la vencida del tablero.
+    expect(corrientes.some((f) => f.id === db.f5)).toBe(true);
 
     expect(data.carteraHistorica.activa).toBe(true);
     expect(data.carteraHistorica.titulo).toBe(TITULO_CARTERA_HISTORICA);
@@ -285,9 +324,9 @@ describe("cartera histórica aparte (Postgres local)", () => {
     const pagoId = await abonar(db.f1, 1n, db.userId);
     try {
       const vencidas = await vencidasCliente(db.clienteId, true);
-      expect(vencidas.ids).toEqual(new Set([db.f1, db.f3, db.f4]));
-      expect(vencidas.total).toBe(220_000n);
-      expect(await saldoNetoCliente(db.clienteId, true)).toBe(-209_999n);
+      expect(vencidas.ids).toEqual(new Set([db.f1, db.f3, db.f4, db.f5]));
+      expect(vencidas.total).toBe(250_000n);
+      expect(await saldoNetoCliente(db.clienteId, true)).toBe(-239_999n);
       expect(await historicaCliente(db.clienteId)).toMatchObject({ facturas: 1, totalACargo: "0", totalAFavor: "5000", saldoNeto: "5000" });
     } finally {
       const r = await eliminarPagoFactura(pagoId, db.userId);
@@ -295,23 +334,23 @@ describe("cartera histórica aparte (Postgres local)", () => {
     }
 
     const vencidas = await vencidasCliente(db.clienteId, true);
-    expect(vencidas.ids).toEqual(new Set([db.f3, db.f4]));
-    expect(await saldoNetoCliente(db.clienteId, true)).toBe(-110_000n);
+    expect(vencidas.ids).toEqual(new Set([db.f3, db.f4, db.f5]));
+    expect(await saldoNetoCliente(db.clienteId, true)).toBe(-140_000n);
     expect(await historicaCliente(db.clienteId)).toMatchObject({ facturas: 2, totalACargo: "100000", saldoNeto: "-95000" });
   });
 
-  it("con CARTERA_HISTORICA_APARTE = NO todo vuelve a la cartera normal: vencida 220.000 (3 a cargo), neto −205.000, histórica inactiva", async (ctx) => {
+  it("con CARTERA_HISTORICA_APARTE = NO todo vuelve a la cartera normal: vencida 250.000 (4 a cargo), neto −235.000, histórica inactiva", async (ctx) => {
     const db = ensureDb(ctx);
     await setParametro("NO");
     try {
       expect(await carteraHistoricaAparte()).toBe(false);
 
       const vencidas = await vencidasCliente(db.clienteId, false);
-      expect(vencidas.ids).toEqual(new Set([db.f1, db.f3, db.f4]));
-      expect(vencidas.total).toBe(220_000n);
+      expect(vencidas.ids).toEqual(new Set([db.f1, db.f3, db.f4, db.f5]));
+      expect(vencidas.total).toBe(250_000n);
       // Sin `aparte` explícito, getSaldosNetoPorCliente lee el parámetro.
       const netos = await getSaldosNetoPorCliente();
-      expect(netos.find((f) => f.clienteId === db.clienteId)?.saldoNeto).toBe(-205_000n);
+      expect(netos.find((f) => f.clienteId === db.clienteId)?.saldoNeto).toBe(-235_000n);
 
       const data = await getDashboardData();
       expect(data.carteraHistorica).toMatchObject({ activa: false, cantidadFacturas: 0, totalACargo: "0", totalAFavor: "0", porCliente: [] });
@@ -324,6 +363,22 @@ describe("cartera histórica aparte (Postgres local)", () => {
       expect(data.totalCarteraVencida).toBe((vencidasGlobal._sum.saldoACargoCliente ?? 0n).toString());
     } finally {
       await setParametro("SI");
+    }
+  });
+
+  it("la factura nueva sobre un DO histórico dispara la alerta de cartera (umbral −120.000: el neto −140.000 alerta; sin F5 serían −110.000)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const previo = await prisma.parametro.findUnique({ where: { clave: CLAVE_UMBRAL_CARTERA_CLIENTE } });
+    await setParametro("-120000", CLAVE_UMBRAL_CARTERA_CLIENTE);
+    try {
+      const alertas = await getClientesConAlertaCartera(true);
+      expect(alertas.find((a) => a.clienteId === db.clienteId)?.saldoNeto).toBe("-140000");
+
+      const data = await getDashboardData();
+      expect(data.alertasCartera.find((a) => a.clienteId === db.clienteId)?.saldoNeto).toBe("-140000");
+    } finally {
+      if (previo) await setParametro(previo.valor, CLAVE_UMBRAL_CARTERA_CLIENTE);
+      else await prisma.parametro.deleteMany({ where: { clave: CLAVE_UMBRAL_CARTERA_CLIENTE } });
     }
   });
 
