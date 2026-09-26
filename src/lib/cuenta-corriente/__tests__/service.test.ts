@@ -13,8 +13,11 @@ import { setCapacidadesEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
 import {
   CuentaCorrienteNoHabilitadaError,
+  eliminarMovimientoCuenta,
   FacturaProveedorDuplicadaError,
   getCuentaCorriente,
+  MovimientoCuentaEsCruceError,
+  MovimientoCuentaNoEncontradoError,
   normalizarNumeroFactura,
   registrarMovimientoCuenta,
 } from "@/lib/cuenta-corriente/service";
@@ -281,6 +284,165 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
         numeroFactura: "fe.0002",
       }),
     ).rejects.toThrow(/factura FE-0002/);
+  });
+
+  it("el mensaje de duplicado trae la fecha de la factura y la fecha en que se registró", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-mensaje-fechas`);
+
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros",
+      valor: 2_000_000n,
+      // Mediodía UTC = mañana en Bogotá (UTC-5): evita que el día calendario
+      // se corra al formatear con timeZone America/Bogota.
+      fecha: new Date("2026-09-17T15:00:00.000Z"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-3333",
+    });
+
+    // La fecha de la factura (17/09/2026) es la que se pasó arriba; la fecha
+    // de registro (createdAt) es "ahora" — solo se valida el formato.
+    await expect(
+      registrarMovimientoCuenta({
+        empresaId: empresa.id,
+        rol: "PROVEEDOR",
+        tipo: "ABONO",
+        origen: "CARGO_MANUAL",
+        lineaServicio: "TRAMITE",
+        concepto: "Servicios aduaneros (de nuevo)",
+        valor: 2_000_000n,
+        fecha: new Date("2026-09-20"),
+        usuarioId: USUARIO_ID,
+        numeroFactura: "fe-3333",
+      }),
+    ).rejects.toThrow(
+      /La factura FE-3333 de .+ ya está registrada \(fecha de la factura 17\/09\/2026, registrada el \d{2}\/\d{2}\/\d{4}\)\.$/,
+    );
+  });
+});
+
+describe("eliminarMovimientoCuenta", () => {
+  it("elimina un movimiento manual: ya no aparece en la cuenta y queda el AuditLog", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-eliminar-ok`);
+
+    const movimiento = await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros octubre",
+      valor: 1_000_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-8888",
+      soporte: { key: "empresas/x/cuenta/factura.pdf", nombre: "factura.pdf", mime: "application/pdf" },
+    });
+
+    const eliminado = await eliminarMovimientoCuenta(empresa.id, movimiento.id, USUARIO_ID);
+    expect(eliminado.id).toBe(movimiento.id);
+
+    const cuenta = await getCuentaCorriente(empresa.id);
+    expect(cuenta.movimientos.find((m) => m.numeroFactura === "FE-8888")).toBeUndefined();
+
+    const auditoria = await prisma.auditLog.findFirst({
+      where: { entidad: "MovimientoCuenta", entidadId: movimiento.id, accion: "DELETE_MOVIMIENTO_CUENTA" },
+    });
+    expect(auditoria).not.toBeNull();
+    expect(auditoria?.usuarioId).toBe(USUARIO_ID);
+    // El PDF de soporte no se borra de la bodega: el snapshot "antes" es la
+    // única constancia (el archivo en R2/MinIO se queda huérfano a propósito).
+    expect((auditoria?.antes as Record<string, unknown> | null)?.soporteKey).toBe(
+      "empresas/x/cuenta/factura.pdf",
+    );
+
+    const enBd = await prisma.movimientoCuenta.findUnique({ where: { id: movimiento.id } });
+    expect(enBd).toBeNull();
+  });
+
+  it("404 si el movimiento no pertenece a la empresa de la URL", async (ctx) => {
+    ensureDb(ctx);
+    const empresaA = await crearEmpresaConCargosManuales(`${RUN_ID}-otra-empresa-a`);
+    const empresaB = await crearEmpresaConCargosManuales(`${RUN_ID}-otra-empresa-b`);
+
+    const movimiento = await registrarMovimientoCuenta({
+      empresaId: empresaA.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros",
+      valor: 500_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-1111-A",
+    });
+
+    await expect(
+      eliminarMovimientoCuenta(empresaB.id, movimiento.id, USUARIO_ID),
+    ).rejects.toBeInstanceOf(MovimientoCuentaNoEncontradoError);
+
+    // Sigue existiendo: el intento con la empresa equivocada no lo tocó.
+    const enBd = await prisma.movimientoCuenta.findUnique({ where: { id: movimiento.id } });
+    expect(enBd).not.toBeNull();
+  });
+
+  it("409 si el movimiento es de origen COMPENSACION (es parte de un cruce)", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-cruce-origen`);
+
+    const movimiento = await prisma.movimientoCuenta.create({
+      data: {
+        empresaId: empresa.id,
+        rol: "CLIENTE",
+        tipo: "ABONO",
+        origen: "COMPENSACION",
+        lineaServicio: "TRAMITE",
+        concepto: "Cruce · prueba",
+        valor: 300_000n,
+        fecha: new Date("2026-09-24"),
+        registradoPorId: USUARIO_ID,
+        compensacionId: "comp-test-origen",
+      },
+    });
+
+    await expect(
+      eliminarMovimientoCuenta(empresa.id, movimiento.id, USUARIO_ID),
+    ).rejects.toBeInstanceOf(MovimientoCuentaEsCruceError);
+  });
+
+  it("409 si el movimiento quedó marcado con un cruce aunque su origen no sea COMPENSACION", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-cruce-flag`);
+
+    const movimiento = await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros",
+      valor: 700_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-2222",
+    });
+    // Estado defensivo que no debería darse por la app (siempre pone COMPENSACION
+    // junto con compensacionId), pero el servicio se protege igual.
+    await prisma.movimientoCuenta.update({
+      where: { id: movimiento.id },
+      data: { compensacionId: "comp-test-flag" },
+    });
+
+    await expect(
+      eliminarMovimientoCuenta(empresa.id, movimiento.id, USUARIO_ID),
+    ).rejects.toBeInstanceOf(MovimientoCuentaEsCruceError);
   });
 });
 

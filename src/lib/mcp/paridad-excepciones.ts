@@ -140,4 +140,11 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/clientes/[param]/comisiones",
     "Comisiones por contenedor por facturar de la empresa que paga (LTRANS): falta tool comisiones_empresa_ver",
   ),
+
+  // Eliminar movimiento manual de la cuenta corriente (ajustes M5, 2026-09-26).
+  pendiente(
+    "DELETE",
+    "/api/clientes/[param]/cuenta/movimientos/[param]",
+    "Quitar un movimiento manual registrado por error: falta tool cuenta_movimiento_eliminar",
+  ),
 ];

@@ -34,7 +34,7 @@ import { bloquearTramites } from "@/lib/cxp/bloqueos";
 import { fichasDeEmpresa } from "@/lib/cxp/estado-cuenta";
 import { formatoPesos, saldoDe } from "@/lib/cxp/saldos";
 import { TramiteCerradoError } from "@/lib/tramites/guard";
-import { aFechaCalendario, formatFechaCalendario } from "@/lib/tiempo/bogota";
+import { aFechaCalendario, formatFechaCalendario, formatInstanteBogota } from "@/lib/tiempo/bogota";
 import {
   asientoDesde,
   calcularCuentaCorriente,
@@ -89,10 +89,31 @@ export class CompensacionNoEncontradaError extends Error {
   }
 }
 
+export class MovimientoCuentaNoEncontradoError extends Error {
+  public readonly status = 404;
+  constructor(movimientoId: string) {
+    super(`Movimiento ${movimientoId} no encontrado en esta empresa`);
+    this.name = "MovimientoCuentaNoEncontradoError";
+  }
+}
+
+export class MovimientoCuentaEsCruceError extends Error {
+  public readonly status = 409;
+  constructor() {
+    super("Es parte de un cruce: deshaz el cruce primero.");
+    this.name = "MovimientoCuentaEsCruceError";
+  }
+}
+
 export class FacturaProveedorDuplicadaError extends Error {
   public readonly status = 409;
-  constructor(numeroFactura: string, nombreEmpresa: string, fecha: Date) {
-    super(`Ya registraste la factura ${numeroFactura} de ${nombreEmpresa} el ${formatFechaCalendario(aFechaCalendario(fecha))}`);
+  constructor(numeroFactura: string, nombreEmpresa: string, fecha: Date, registradaEl: Date) {
+    // Dos fechas: la de la factura (fecha-calendario, `formatFechaCalendario`)
+    // y la de cuándo se registró en el sistema (un instante real: `createdAt`,
+    // `formatInstanteBogota`) — no siempre coinciden.
+    super(
+      `La factura ${numeroFactura} de ${nombreEmpresa} ya está registrada (fecha de la factura ${formatFechaCalendario(aFechaCalendario(fecha))}, registrada el ${formatInstanteBogota(registradaEl)}).`,
+    );
     this.name = "FacturaProveedorDuplicadaError";
   }
 }
@@ -592,17 +613,20 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
         numeroFacturaNorm,
         origen: { not: OrigenMovimientoCuenta.COMPENSACION },
       },
-      select: { fecha: true, numeroFactura: true },
+      select: { fecha: true, numeroFactura: true, createdAt: true },
       orderBy: { fecha: "desc" },
     });
     if (duplicado) {
       // El mensaje muestra el número tal como quedó guardado la primera vez,
       // no el que tecleó el usuario ahora (puede venir con formato distinto:
-      // "fe.0001" vs "FE-0001", y confunde si se le devuelve tal cual).
+      // "fe.0001" vs "FE-0001", y confunde si se le devuelve tal cual). Trae
+      // las dos fechas: la de la factura y la de cuándo se registró en el
+      // sistema (no siempre coinciden).
       throw new FacturaProveedorDuplicadaError(
         duplicado.numeroFactura ?? numeroFactura!,
         empresa.nombre,
         duplicado.fecha,
+        duplicado.createdAt,
       );
     }
   }
@@ -644,17 +668,31 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
   });
 }
 
+/**
+ * Elimina un movimiento manual (factura de contraparte, comisión o ajuste)
+ * registrado por error. Exige que sea de esta empresa y que no forme parte de
+ * un cruce — esos se deshacen con `eliminarCompensacion`, porque tienen dos
+ * puntas. Si el movimiento tenía un PDF de soporte, el archivo NO se borra de
+ * la bodega (queda huérfano a propósito): el snapshot `antes` del AuditLog es
+ * la única constancia que se necesita, y así nunca se pierde el soporte de
+ * algo que se pudo eliminar por error.
+ */
 export async function eliminarMovimientoCuenta(
+  empresaId: string,
   movimientoId: string,
   usuarioId: string,
 ) {
   return prisma.$transaction(async (tx) => {
-    const movimiento = await tx.movimientoCuenta.findUnique({
-      where: { id: movimientoId },
+    const movimiento = await tx.movimientoCuenta.findFirst({
+      where: { id: movimientoId, empresaId },
     });
 
     if (!movimiento) {
-      throw new EmpresaCuentaNoEncontradaError(movimientoId);
+      throw new MovimientoCuentaNoEncontradoError(movimientoId);
+    }
+
+    if (movimiento.origen === OrigenMovimientoCuenta.COMPENSACION || movimiento.compensacionId) {
+      throw new MovimientoCuentaEsCruceError();
     }
 
     await tx.movimientoCuenta.delete({ where: { id: movimientoId } });
