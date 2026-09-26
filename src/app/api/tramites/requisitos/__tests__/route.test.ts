@@ -262,7 +262,19 @@ describe("GET /api/tramites/requisitos — contrato", () => {
         mensaje: `${empresa.nombre} no tiene una tarifa vigente de importación. Publica la tarifa de la empresa antes de crear el DO.`,
       },
       documentosObligatorios: { requeridos: ["BL", "FACTURA_COMERCIAL"] },
+      contenedores: { requerido: false },
     });
+  });
+
+  it("D3: con «Número de contenedores obligatorio» avisa que el DO los pide", async (ctx) => {
+    ensureDb(ctx);
+    comoRol(Rol.OPERATIVO);
+    const empresa = await crearEmpresa([{ codigo: "contenedores_obligatorio", habilitado: true }]);
+
+    const response = await requisitosGET(requisitosRequest({ clienteId: empresa.id }));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).contenedores).toEqual({ requerido: true });
   });
 
   it("con tarifa vigente: cumple y devuelve id, nombre, versión y vigencia", async (ctx) => {

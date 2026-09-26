@@ -131,7 +131,7 @@ export function SeccionEventosTramite({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const [aplica, setAplica] = useState<{ tarifario: boolean; eventos: boolean; cif: boolean; oc: boolean }>({ tarifario: false, eventos: false, cif: false, oc: false });
+  const [aplica, setAplica] = useState<{ tarifario: boolean; eventos: boolean; cif: boolean; oc: boolean; contenedores: boolean }>({ tarifario: false, eventos: false, cif: false, oc: false, contenedores: false });
   const [catalogo, setCatalogo] = useState<EventoCatalogoRow[]>([]);
   const [marcados, setMarcados] = useState<EventoTramiteRow[]>([]);
   const [propuesta, setPropuesta] = useState<PropuestaTarifaRow | null>(null);
@@ -150,7 +150,7 @@ export function SeccionEventosTramite({
     ])
       .then(([caps, cat, ev, prop]) => {
         const tiene = (codigo: string) => caps.some((c) => c.codigo === codigo && c.habilitado);
-        setAplica({ tarifario: tiene("tarifario_propio"), eventos: tiene("eventos_facturables"), cif: tiene("base_cif"), oc: tiene("orden_compra_en_revision") });
+        setAplica({ tarifario: tiene("tarifario_propio"), eventos: tiene("eventos_facturables"), cif: tiene("base_cif"), oc: tiene("orden_compra_en_revision"), contenedores: tiene("contenedores_obligatorio") });
         setCatalogo(cat);
         setMarcados(ev);
         setPropuesta(prop);
@@ -181,7 +181,7 @@ export function SeccionEventosTramite({
     }
   }, [tramiteId]);
 
-  if (loadState === "ready" && !aplica.tarifario && !aplica.eventos && !aplica.cif && !aplica.oc) {
+  if (loadState === "ready" && !aplica.tarifario && !aplica.eventos && !aplica.cif && !aplica.oc && !aplica.contenedores) {
     return null;
   }
 
@@ -250,6 +250,13 @@ export function SeccionEventosTramite({
   // capacidades de la empresa siguen gobernando CIF y eventos como siempre.
   const campos = camposBaseCalculoVisibles(camposBaseCalculo, aplica.cif || aplica.tarifario);
   const muestraEventos = muestraListaEventos(usaEventos, aplica.eventos);
+  // D3: la empresa exige contenedores y el DO guardado no los tiene (ni es carga suelta).
+  const guardado = propuesta?.contexto;
+  const faltanContenedores =
+    aplica.contenedores &&
+    campos.has("numContenedores") &&
+    guardado !== undefined &&
+    !((guardado.numContenedores ?? 0) >= 1 || guardado.tipoCarga === "SUELTA");
   const editableEventos = puedeEditar && muestraEventos;
 
   return (
@@ -274,6 +281,11 @@ export function SeccionEventosTramite({
             {/* Atributos */}
             <div>
               <p className="mb-2 text-xs text-slate-500">Lo que el tarifario necesita para calcular. Vacío = todavía no se sabe.</p>
+              {faltanContenedores ? (
+                <p role="alert" className="mb-3 border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  Falta el número de contenedores (sale del BL). Esta empresa lo exige: sin él no se calcula la comisión ni el cobro por contenedor. Si es carga suelta, elige «Carga suelta» en Tipo de carga.
+                </p>
+              ) : null}
               <div className="grid grid-cols-2 gap-3">
                 {campos.has("valorCif") ? (
                   <>

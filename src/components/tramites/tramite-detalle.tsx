@@ -57,6 +57,7 @@ import {
 } from "@/components/tramites/checklist-api";
 import { InlineTramiteField } from "@/components/tramites/inline-tramite-field";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
+import { SeccionComisionTramite } from "@/components/comisiones/seccion-comision-tramite";
 import { SeccionEventosTramite } from "@/components/tramites/seccion-eventos-tramite";
 import { ForzarFacturadoModal } from "@/components/tramites/forzar-facturado-modal";
 import {
@@ -1000,6 +1001,10 @@ function TabResumen({
         camposBaseCalculo={tramite.tipoTramite?.camposBaseCalculo ?? null}
         usaEventos={tramite.tipoTramite?.usaEventos ?? true}
       />
+
+      {/* Comisión por contenedor (caso LTRANS): cuántos contenedores del DO
+          llevan comisión. Se recarga cuando el DO se recarga (contenedores). */}
+      <SeccionComisionTramite tramiteId={tramite.id} puedeEditar={puedeEditar} recargaKey={tramite} />
 
       {/* Comentarios */}
       {puedeEditar ? <div className="rounded-xl border border-slate-200 bg-white p-5"><InlineTextField label="Comentarios" fieldKey="comentarios" value={tramite.comentarios} tramiteId={tramite.id} onSaved={onFieldSaved} /></div> : tramite.comentarios ? (

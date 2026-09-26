@@ -33,6 +33,10 @@ export const tramiteCreateSchema = z.object({
   doCliente: z.string().trim().min(1).optional().nullable(),
   eta: optionalDate,
   comentarios: z.string().trim().min(1).optional().nullable(),
+  /** D3: contenedores del BL, obligatorio si la empresa tiene `contenedores_obligatorio`. */
+  numContenedores: z.number().int().min(0).max(100_000).optional().nullable(),
+  /** `SUELTA` = carga suelta (cumple D3 sin contenedores). */
+  tipoCarga: z.nativeEnum(TipoCarga).optional().nullable(),
 });
 
 const enteroOpcional = z.number().int().min(0).max(100_000).optional().nullable();

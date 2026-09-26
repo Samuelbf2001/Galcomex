@@ -12,12 +12,15 @@ import { resolverCapacidades, type OverrideCapacidad } from "@/lib/capacidades/r
 import {
   abreSolicitud,
   armarRequisitos,
+  cumpleContenedores,
   documentosFaltantes,
   documentosRequeridos,
   entraAOperacion,
+  exigeContenedores,
   exigeTarifaVigente,
   formatearFechaCorta,
   leerTiposTramite,
+  mensajeContenedoresRequeridos,
   mensajeDocumentosFaltantes,
   mensajeTarifaRequerida,
   nombreLineaServicio,
@@ -281,6 +284,7 @@ describe("armarRequisitos (contrato de GET /api/tramites/requisitos)", () => {
           "LITOPLAS SA no tiene una tarifa vigente de importación. Publica la tarifa de la empresa antes de crear el DO.",
       },
       documentosObligatorios: { requeridos: ["BL", "FACTURA_COMERCIAL"] },
+      contenedores: { requerido: false },
     });
   });
 
@@ -312,5 +316,50 @@ describe("armarRequisitos (contrato de GET /api/tramites/requisitos)", () => {
       mensaje: null,
     });
     expect(requisitos.documentosObligatorios.requeridos).toEqual([]);
+  });
+});
+
+describe("D3 · número de contenedores (caso Polyrec / Polyrec ZF)", () => {
+  const CONTENEDORES_ON: OverrideCapacidad = { codigo: "contenedores_obligatorio", habilitado: true };
+
+  it("apagada por defecto: ninguna empresa lo exige sin encenderla", () => {
+    expect(exigeContenedores(empresaCon(), null)).toBe(false);
+  });
+
+  it("encendida: lo exige en los tipos que usan contenedores, no en la clasificación", () => {
+    const polyrec = empresaCon([CONTENEDORES_ON]);
+    // IMPORTACION / OTRO no restringen campos (lista vacía o ausente).
+    expect(exigeContenedores(polyrec, [])).toBe(true);
+    expect(exigeContenedores(polyrec, null)).toBe(true);
+    expect(exigeContenedores(polyrec, ["valorCif", "numContenedores"])).toBe(true);
+    // CLASIFICACION solo usa numItems.
+    expect(exigeContenedores(polyrec, ["numItems"])).toBe(false);
+  });
+
+  it("cumple con al menos un contenedor o con carga suelta", () => {
+    expect(cumpleContenedores({ numContenedores: 2, tipoCarga: null })).toBe(true);
+    expect(cumpleContenedores({ numContenedores: 1, tipoCarga: "CONTENEDOR_40" })).toBe(true);
+    expect(cumpleContenedores({ numContenedores: 0, tipoCarga: "SUELTA" })).toBe(true);
+    expect(cumpleContenedores({ numContenedores: null, tipoCarga: "SUELTA" })).toBe(true);
+    expect(cumpleContenedores({ numContenedores: null, tipoCarga: null })).toBe(false);
+    expect(cumpleContenedores({ numContenedores: 0, tipoCarga: "CONTENEDOR_20" })).toBe(false);
+  });
+
+  it("mensaje en español con la empresa y, al editar, el consecutivo", () => {
+    expect(mensajeContenedoresRequeridos("POLYREC ZONA FRANCA S.A.S")).toBe(
+      "POLYREC ZONA FRANCA S.A.S pide el número de contenedores del DO (viene del BL). Escribe cuántos contenedores trae o marca «Carga suelta».",
+    );
+    expect(mensajeContenedoresRequeridos("POLYREC S.A.S.", "DO.BAQ26-0280")).toContain("del DO.BAQ26-0280");
+  });
+
+  it("armarRequisitos lo informa para que el formulario lo pida", () => {
+    const requisitos = armarRequisitos({
+      capacidades: empresaCon([CONTENEDORES_ON]),
+      empresa: "POLYREC ZONA FRANCA S.A.S",
+      tipoTramite: { codigo: "IMPORTACION", lineaServicio: "TRAMITE", camposBaseCalculo: [] },
+      tarifario: null,
+      fueraDeFecha: null,
+    });
+    expect(requisitos.contenedores).toEqual({ requerido: true });
   });
 });

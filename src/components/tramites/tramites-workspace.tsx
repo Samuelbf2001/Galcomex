@@ -394,6 +394,10 @@ export function CreateTramiteDialog({
   const requisitosLoading = Boolean(clienteId) && !requisitosActual;
   const requisitos = requisitosActual?.data ?? null;
 
+  // D3: número de contenedores (sale del BL) o carga suelta, si la empresa lo exige.
+  const [contenedores, setContenedores] = useState("");
+  const [cargaSuelta, setCargaSuelta] = useState(false);
+
   useEffect(() => {
     if (!open || !clienteId) {
       return;
@@ -515,6 +519,9 @@ export function CreateTramiteDialog({
   const bloqueadoPorTarifa = Boolean(
     requisitos && requisitos.tarifaVigente.requerida && !requisitos.tarifaVigente.cumple,
   );
+  // D3: la empresa exige el número de contenedores al crear el DO.
+  const pideContenedores = requisitos?.contenedores.requerido === true;
+  const numContenedoresForm = contenedores.trim() === "" ? null : Number(contenedores);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -525,6 +532,10 @@ export function CreateTramiteDialog({
     if (bloqueadoPorTarifa) return;
     if (missingRequiredDocs) {
       setError(mensajeDocumentosFaltantes(documentosFaltantes));
+      return;
+    }
+    if (pideContenedores && !cargaSuelta && !(numContenedoresForm !== null && numContenedoresForm >= 1)) {
+      setError("Escribe cuántos contenedores trae el DO (sale del BL) o marca «Carga suelta».");
       return;
     }
 
@@ -553,6 +564,8 @@ export function CreateTramiteDialog({
         pideEta && clienteSeleccionado?.tipo !== "SOCIO_LM"
           ? formatDateInputAsIso(formData.get("eta"))
           : undefined,
+      numContenedores: pideContenedores ? (cargaSuelta ? 0 : numContenedoresForm) : undefined,
+      tipoCarga: pideContenedores && cargaSuelta ? "SUELTA" : undefined,
     };
 
     try {
@@ -588,6 +601,8 @@ export function CreateTramiteDialog({
       setClienteId("");
       setTipoCliente("PROPIO");
       setStagedFiles({});
+      setContenedores("");
+      setCargaSuelta(false);
     } catch (caught) {
       setError(describirError(caught, "No fue posible crear el trámite."));
 
@@ -877,6 +892,40 @@ export function CreateTramiteDialog({
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
+          ) : null}
+
+          {/* D3: número de contenedores — lo exige la empresa (capacidad
+              "Número de contenedores obligatorio"), sale del BL. */}
+          {pideContenedores ? (
+            <div className="space-y-1.5">
+              <span className="text-sm font-medium text-slate-700">
+                Contenedores *{" "}
+                <span className="text-xs font-normal text-rose-600">
+                  (obligatorio para esta empresa; sale del BL)
+                </span>
+              </span>
+              <div className="flex flex-wrap items-center gap-4">
+                <input
+                  aria-label="Número de contenedores"
+                  name="numContenedores"
+                  inputMode="numeric"
+                  placeholder="Ej. 2"
+                  value={cargaSuelta ? "" : contenedores}
+                  disabled={cargaSuelta}
+                  onChange={(event) => setContenedores(event.target.value.replace(/\D/g, ""))}
+                  className="h-10 w-32 border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600 disabled:bg-slate-100"
+                />
+                <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={cargaSuelta}
+                    onChange={(event) => setCargaSuelta(event.target.checked)}
+                    className="h-4 w-4 accent-slate-900"
+                  />
+                  Carga suelta (sin contenedores)
+                </label>
+              </div>
+            </div>
           ) : null}
 
           {/* D2: documentos obligatorios — los exige el trámite (empresa +

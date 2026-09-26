@@ -16,7 +16,7 @@
  * funciones: la pantalla y el servidor dicen exactamente lo mismo.
  */
 
-import type { CategoriaDocumento, EstadoTramite } from "@prisma/client";
+import type { CategoriaDocumento, EstadoTramite, TipoCarga } from "@prisma/client";
 
 import { definicionDe, type CodigoCapacidad } from "@/lib/capacidades/catalogo";
 import { configDe, tiene, type MapaCapacidades } from "@/lib/capacidades/resolver";
@@ -25,6 +25,7 @@ import { vigenteEn } from "@/lib/tarifas/motor";
 export const CAPACIDAD_TARIFA_VIGENTE = "do_exige_tarifa_vigente" as const satisfies CodigoCapacidad;
 export const CAPACIDAD_DOCUMENTOS_OBLIGATORIOS =
   "docs_bl_factura_obligatorios" as const satisfies CodigoCapacidad;
+export const CAPACIDAD_CONTENEDORES = "contenedores_obligatorio" as const satisfies CodigoCapacidad;
 
 type CodigoRegla = typeof CAPACIDAD_TARIFA_VIGENTE | typeof CAPACIDAD_DOCUMENTOS_OBLIGATORIOS;
 
@@ -99,6 +100,41 @@ export function documentosRequeridos(
   return reglaAplica(capacidades, CAPACIDAD_DOCUMENTOS_OBLIGATORIOS, tipoTramiteCodigo)
     ? [...DOCUMENTOS_OBLIGATORIOS]
     : [];
+}
+
+// ─── D3 · Número de contenedores (caso Polyrec / Polyrec ZF) ─────────────────
+//
+// Reunión 31-ago min 88:32: al crear el DO se pide cuántos contenedores trae
+// (sale del BL); es la base de la comisión por contenedor (Eltrans) y del
+// tarifario por tramos de los traslados de zona franca. La carga suelta no
+// trae contenedores y se marca como tal.
+
+/**
+ * D3: ¿el DO de esta empresa y tipo debe traer el número de contenedores?
+ * Solo si la empresa tiene la capacidad Y el tipo de trámite usa ese campo
+ * (una clasificación arancelaria no tiene contenedores). `camposTipo`
+ * vacío/ausente = el tipo no restringe campos (IMPORTACION, OTRO).
+ */
+export function exigeContenedores(
+  capacidades: MapaCapacidades,
+  camposTipo: readonly string[] | null | undefined,
+): boolean {
+  if (!tiene(capacidades, CAPACIDAD_CONTENEDORES)) return false;
+  return !camposTipo || camposTipo.length === 0 || camposTipo.includes("numContenedores");
+}
+
+/** Cumple D3: al menos un contenedor, o marcado como carga suelta. */
+export function cumpleContenedores(datos: {
+  numContenedores: number | null | undefined;
+  tipoCarga: TipoCarga | null | undefined;
+}): boolean {
+  return (datos.numContenedores ?? 0) >= 1 || datos.tipoCarga === "SUELTA";
+}
+
+/** "POLYREC ZONA FRANCA S.A.S pide el número de contenedores del DO (viene del BL)…" */
+export function mensajeContenedoresRequeridos(empresa: string, consecutivo?: string | null): string {
+  const del = consecutivo ? ` del ${referenciaTramite(consecutivo)}` : " del DO";
+  return `${empresa} pide el número de contenedores${del} (viene del BL). Escribe cuántos contenedores trae o marca «Carga suelta».`;
 }
 
 /** Los requeridos que no están entre las categorías de documentos vivos del DO. */
@@ -274,12 +310,16 @@ export interface RequisitosDo {
     /** Categorías que el DO debe tener antes de pasar a EN_TRAMITE (vacío = ninguna). */
     requeridos: DocumentoObligatorio[];
   };
+  contenedores: {
+    /** D3: el DO se crea con el número de contenedores o marcado como carga suelta. */
+    requerido: boolean;
+  };
 }
 
 export function armarRequisitos(input: {
   capacidades: MapaCapacidades;
   empresa: string;
-  tipoTramite: { codigo: string; lineaServicio: string };
+  tipoTramite: { codigo: string; lineaServicio: string; camposBaseCalculo?: readonly string[] | null };
   tarifario: TarifarioResumen | null;
   fueraDeFecha: TarifaFueraDeFecha | null;
 }): RequisitosDo {
@@ -306,6 +346,9 @@ export function armarRequisitos(input: {
     },
     documentosObligatorios: {
       requeridos: documentosRequeridos(input.capacidades, input.tipoTramite.codigo),
+    },
+    contenedores: {
+      requerido: exigeContenedores(input.capacidades, input.tipoTramite.camposBaseCalculo),
     },
   };
 }

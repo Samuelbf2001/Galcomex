@@ -125,4 +125,19 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/clientes/[param]/cuenta/movimientos/[param]/soporte",
     "Descarga del PDF de soporte de un movimiento de cuenta corriente: falta tool cuenta_soporte_descargar",
   ),
+  pendiente(
+    "GET",
+    "/api/tramites/[param]/comisiones",
+    "Comisión por contenedor del DO (caso LTRANS): falta tool tramite_comisiones_ver",
+  ),
+  pendiente(
+    "PUT",
+    "/api/tramites/[param]/comisiones",
+    "Contenedores con comisión de una empresa en el DO (caso LTRANS): falta tool tramite_comision_registrar",
+  ),
+  pendiente(
+    "GET",
+    "/api/clientes/[param]/comisiones",
+    "Comisiones por contenedor por facturar de la empresa que paga (LTRANS): falta tool comisiones_empresa_ver",
+  ),
 ];

@@ -602,6 +602,7 @@ async function ejemplos(ids: Map<string, string>, usuarioId: string) {
         clienteId: polyrecZfId,
         agenciaAduanas: "COLDEX",
         comentarios: `${MARCA_EJEMPLO} Traslado de 2 contenedores en zona franca: 1 contenedor 300.000; 2 o más 250.000 c/u (10-sep, min 83:31).`,
+        numContenedores: 2, // D3: Polyrec ZF exige contenedores al crear
         creadoPorId: usuarioId,
       });
       traslado = { id: creado.id, consecutivo: creado.consecutivo };
@@ -625,6 +626,7 @@ async function ejemplos(ids: Map<string, string>, usuarioId: string) {
         clienteId: polyrecId,
         agenciaAduanas: "CORTES",
         comentarios: `${MARCA_EJEMPLO} Nacionalización con orden de compra: Polyrec devuelve una OC por el valor de la solicitud de fondos; la factura debe dar ese valor sin IVA y llevar el n° de OC (10-sep, min 84:30).`,
+        numContenedores: 1, // D3: Polyrec exige contenedores al crear
         creadoPorId: usuarioId,
       });
       oc = { id: creado.id, consecutivo: creado.consecutivo };

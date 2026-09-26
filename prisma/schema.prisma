@@ -30,6 +30,7 @@ model User {
   pagosFactura             PagoFactura[]      @relation("PagosFacturaRegistrados")
   enlacesDocumento         DocumentoEnlace[]  @relation("EnlaceCreadoPor")
   movimientosCuenta        MovimientoCuenta[] @relation("MovimientosCuentaRegistrados")
+  comisionesRegistradas    ComisionTramite[]  @relation("ComisionesRegistradas")
   tarifariosCreados        Tarifario[]        @relation("TarifarioCreadoPor")
   eventosMarcados          TramiteEvento[]    @relation("EventoMarcadoPor")
 
@@ -126,16 +127,17 @@ model Cliente {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tarifas       TarifaCliente[]
-  tarifarios    Tarifario[]
-  tramites      TramiteDO[]
-  anticipos     Anticipo[]
-  facturas      Factura[]
-  capacidades   EmpresaCapacidad[]
+  tarifas           TarifaCliente[]
+  tarifarios        Tarifario[]
+  tramites          TramiteDO[]
+  anticipos         Anticipo[]
+  facturas          Factura[]
+  capacidades       EmpresaCapacidad[]
   /// Fichas de pago vinculadas a esta empresa (puente hacia el rol proveedor
   /// mientras `Beneficiario` y `Cliente` siguen siendo tablas separadas).
-  beneficiarios Beneficiario[]     @relation("BeneficiarioEmpresa")
-  movimientos   MovimientoCuenta[]
+  beneficiarios     Beneficiario[]     @relation("BeneficiarioEmpresa")
+  movimientos       MovimientoCuenta[]
+  comisionesQuePaga ComisionTramite[]  @relation("ComisionesQuePaga")
 
   @@index([grupoEmpresaId])
   @@map("cliente")
@@ -201,7 +203,7 @@ model MovimientoCuenta {
   /// N° de la factura del proveedor (p. ej. Coldex: servicios aduaneros,
   /// quincenas, primas), solo para movimientos que nacen de "Registrar
   /// factura de <proveedor>". Opcional: los ajustes/comisiones no lo traen.
-  numeroFactura String?
+  numeroFactura     String?
   /// `numeroFactura` en mayúsculas y sin espacios/puntos/guiones, para
   /// detectar "ya registraste esta factura" sin que un espacio de más lo deje
   /// pasar (índice `[empresaId, rol, numeroFacturaNorm]`).
@@ -219,6 +221,42 @@ model MovimientoCuenta {
   @@index([compensacionId])
   @@index([empresaId, rol, numeroFacturaNorm])
   @@map("movimiento_cuenta")
+}
+
+// ─── Comisión por contenedor de un DO (caso LTRANS) ───────────────────────────
+//
+// Un tercero le paga a Galcomex una comisión por contenedor en ciertos DOs de
+// otra empresa: LTRANS, $90.000 por contenedor en los traslados de Polyrec ZF
+// (reunión 31-ago min 84–90; Camila por WhatsApp 25-sep). NO todos los
+// contenedores del DO son del tercero — "de 4 contenedores, 2 de LTRANS" —, así
+// que el número comisionable se escribe a mano en cada DO. El valor por
+// contenedor vive en la capacidad `comision_por_evento` del que paga y se lee
+// al consultar: esta tabla solo guarda cuántas unidades cuentan. La
+// facturación de la comisión (qué ya se le facturó al tercero) es otra fase.
+
+model ComisionTramite {
+  id String @id @default(cuid())
+
+  tramiteId String
+  tramite   TramiteDO @relation(fields: [tramiteId], references: [id], onDelete: Cascade)
+
+  /// Empresa que le paga la comisión a Galcomex (LTRANS). Debe tener la
+  /// capacidad `comision_por_evento` encendida.
+  empresaId String
+  empresa   Cliente @relation("ComisionesQuePaga", fields: [empresaId], references: [id], onDelete: Restrict)
+
+  /// Contenedores del DO que llevan comisión de esta empresa (carga suelta = 1).
+  unidades Int
+
+  registradoPorId String
+  registradoPor   User   @relation("ComisionesRegistradas", fields: [registradoPorId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tramiteId, empresaId])
+  @@index([empresaId])
+  @@map("comision_tramite")
 }
 
 // ─── Grupo económico ──────────────────────────────────────────────────────────
@@ -479,6 +517,7 @@ model TramiteDO {
   facturasProveedor    FacturaProveedor[]
   pseSolicitudes       PseSolicitud[]
   movimientosCuenta    MovimientoCuenta[]
+  comisiones           ComisionTramite[]
 
   // Un número es único por tipo de trámite, ciudad y año. El tipo entra en la
   // clave porque cada uno lleva su propio contador (M4): la clasificación
@@ -1352,7 +1391,7 @@ model TarifaItem {
   tarifarioId String
   tarifario   Tarifario @relation(fields: [tarifarioId], references: [id], onDelete: Cascade)
 
-  orden         Int     @default(0)
+  orden         Int            @default(0)
   /// Concepto del maestro (`concepto_venta`). Nullable: los ítems viejos siguen
   /// funcionando solo con `concepto` + `siigoCodigo`. Aporta el producto Siigo
   /// y el nombre por defecto cuando el ítem no los trae.

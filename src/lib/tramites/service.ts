@@ -6,6 +6,7 @@ import {
   EstadoTramite,
   Prisma,
   Rol,
+  TipoCarga,
   TipoCliente,
   type TramiteDO,
 } from "@prisma/client";
@@ -29,11 +30,14 @@ import {
 import {
   abreSolicitud,
   armarRequisitos,
+  cumpleContenedores,
   documentosFaltantes,
   documentosRequeridos,
   entraAOperacion,
   esEstadoOperativo,
+  exigeContenedores,
   exigeTarifaVigente,
+  mensajeContenedoresRequeridos,
   mensajeDocumentosFaltantes,
   mensajeTarifaRequerida,
   tarifaFueraDeFecha,
@@ -68,6 +72,10 @@ type CreateTramiteInput = {
   doCliente?: string | null;
   eta?: Date | null;
   comentarios?: string | null;
+  /** D3: contenedores del BL (capacidad `contenedores_obligatorio`). */
+  numContenedores?: number | null;
+  /** `SUELTA` = carga suelta, sin contenedores (cumple D3). */
+  tipoCarga?: TipoCarga | null;
   creadoPorId: string;
 };
 
@@ -113,6 +121,19 @@ export class TipoTramiteNoHabilitadoError extends Error {
       `${nombreEmpresa} no tiene habilitada la función "${nombreTipo}". Actívala en la ficha de la empresa, pestaña Funciones.`,
     );
     this.name = "TipoTramiteNoHabilitadoError";
+  }
+}
+
+/**
+ * D3 (capacidad `contenedores_obligatorio`, caso Polyrec / Polyrec ZF): el DO
+ * no trae número de contenedores ni está marcado como carga suelta.
+ */
+export class ContenedoresRequeridosError extends Error {
+  public readonly status = 422;
+  public readonly codigo = "CONTENEDORES_REQUERIDOS" as const;
+  constructor(mensaje: string) {
+    super(mensaje);
+    this.name = "ContenedoresRequeridosError";
   }
 }
 
@@ -405,7 +426,7 @@ export async function requisitosDeDo(input: {
 
   const tipo = await prisma.tipoTramite.findFirst({
     where: { codigo, activo: true },
-    select: { codigo: true, lineaServicio: true },
+    select: { codigo: true, lineaServicio: true, camposBaseCalculo: true },
   });
 
   if (!tipo) {
@@ -423,6 +444,45 @@ export async function requisitosDeDo(input: {
   });
 }
 
+/**
+ * D3 al editar la base de cálculo (`PATCH /api/tramites/[id]`): con la
+ * capacidad `contenedores_obligatorio` no se deja dejar SIN contenedores un DO
+ * que ya los tenía (o estaba marcado como carga suelta). Un DO viejo que nunca
+ * tuvo el dato se puede seguir editando: la ficha le muestra el aviso.
+ */
+export async function verificarContenedoresAlEditar(
+  antes: Pick<
+    TramiteDO,
+    "clienteId" | "tipoTramiteCodigo" | "consecutivo" | "numContenedores" | "tipoCarga"
+  >,
+  cambios: { numContenedores?: number | null; tipoCarga?: TipoCarga | null },
+): Promise<void> {
+  if (cambios.numContenedores === undefined && cambios.tipoCarga === undefined) return;
+  if (!cumpleContenedores(antes)) return;
+
+  const despues = {
+    numContenedores:
+      cambios.numContenedores !== undefined ? cambios.numContenedores : antes.numContenedores,
+    tipoCarga: cambios.tipoCarga !== undefined ? cambios.tipoCarga : antes.tipoCarga,
+  };
+  if (cumpleContenedores(despues)) return;
+
+  const [capacidades, empresa, tipo] = await Promise.all([
+    capacidadesDeEmpresa(antes.clienteId),
+    prisma.cliente.findUnique({ where: { id: antes.clienteId }, select: { nombre: true } }),
+    prisma.tipoTramite.findUnique({
+      where: { codigo: antes.tipoTramiteCodigo },
+      select: { camposBaseCalculo: true },
+    }),
+  ]);
+
+  if (exigeContenedores(capacidades, tipo?.camposBaseCalculo)) {
+    throw new ContenedoresRequeridosError(
+      mensajeContenedoresRequeridos(empresa?.nombre ?? "La empresa", antes.consecutivo),
+    );
+  }
+}
+
 function shouldRetryPrisma(error: unknown) {
   return (
     error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -435,7 +495,9 @@ export async function createTramite(
   input: CreateTramiteInput,
   opciones: CreateTramiteOptions = {},
 ) {
-  const anio = input.anio ?? new Date().getFullYear();
+  // El año del consecutivo es el de Bogotá: la noche del 31-dic (desde las
+  // 19:00, ya 1-ene en UTC) el DO sigue siendo del año que termina.
+  const anio = input.anio ?? fechaCalendarioBogota().getUTCFullYear();
   const attempts = 5;
   const origen: OrigenTramite = opciones.origen ?? "INTERNO";
 
@@ -480,6 +542,21 @@ export async function createTramite(
       throw faltaTarifa;
     }
   }
+
+  // D3 — número de contenedores desde la creación (capacidad
+  // `contenedores_obligatorio`). La solicitud externa no lo trae: se completa
+  // en la ficha del DO.
+  const pideContenedores = exigeContenedores(capacidades, tipo.camposBaseCalculo);
+  if (
+    origen !== "SOLICITUD_PUBLICA" &&
+    pideContenedores &&
+    !cumpleContenedores({ numContenedores: input.numContenedores, tipoCarga: input.tipoCarga })
+  ) {
+    throw new ContenedoresRequeridosError(mensajeContenedoresRequeridos(nombreEmpresa));
+  }
+  // Carga suelta sin número: se guarda 0 contenedores, no "desconocido".
+  const numContenedores =
+    input.numContenedores ?? (input.tipoCarga === "SUELTA" ? 0 : null);
 
   // Cada tipo decide si pide agencia de aduanas. La clasificación arancelaria
   // no la necesita y queda en null, en vez de inventar un valor para llenar la
@@ -543,6 +620,8 @@ export async function createTramite(
               doAgencia: input.doAgencia,
               doCliente: input.doCliente,
               eta: tipo.requiereEta ? input.eta : null,
+              numContenedores,
+              tipoCarga: input.tipoCarga ?? null,
               comentarios: input.comentarios,
               creadoPorId: input.creadoPorId,
               checklistItems: plantilla

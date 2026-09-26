@@ -20,6 +20,7 @@ import {
 import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
 import { ContactoEditor } from "@/components/clientes/contacto-editor";
 import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
+import { SeccionComisionesEmpresa } from "@/components/comisiones/seccion-comisiones-empresa";
 import { SeccionCarteraEmpresa } from "@/components/clientes/seccion-cartera-empresa";
 import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
 import { SeccionPagosProveedor } from "@/components/clientes/seccion-pagos-proveedor";
@@ -762,6 +763,9 @@ export function ClienteDetallePage({
       <SeccionCarteraEmpresa clienteId={cliente.id} nombreEmpresa={cliente.nombre} />
 
       <SeccionCuentaCorriente clienteId={cliente.id} />
+
+      {/* Comisión por contenedor que la empresa le paga a Galcomex (LTRANS). */}
+      <SeccionComisionesEmpresa empresaId={cliente.id} />
 
       {cliente.esProveedor ? <SeccionPagosProveedor empresaId={cliente.id} nombreEmpresa={cliente.nombre} /> : null}
 

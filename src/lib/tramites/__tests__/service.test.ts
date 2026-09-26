@@ -15,7 +15,12 @@ import {
   formatConsecutivo,
   type ConfigConsecutivo,
 } from "@/lib/tramites/consecutivo";
-import { createTramite, listTramites, transitionTramite } from "../service";
+import {
+  createTramite,
+  listTramites,
+  transitionTramite,
+  verificarContenedoresAlEditar,
+} from "../service";
 
 /**
  * Config del tipo IMPORTACION (M4). El formato del consecutivo ya no está
@@ -401,6 +406,64 @@ describe("tramites service con Postgres local", () => {
       message:
         "Empresa Solo Proveedor Vitest está marcada solo como proveedor. Márcala como cliente en su ficha para abrirle trámites.",
     });
+  });
+
+  it("D3 — con «Número de contenedores obligatorio» no crea el DO sin contenedores (caso Polyrec)", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    const polyrec = await prisma.cliente.create({
+      data: {
+        nombre: "Polyrec ZF Vitest",
+        nit: `${runId}-polyrec-zf`,
+        tipo: TipoCliente.PROPIO,
+        capacidades: {
+          create: [...SIN_REQUISITOS_DO, { codigo: "contenedores_obligatorio", habilitado: true }],
+        },
+      },
+    });
+    const base = { clienteId: polyrec.id, creadoPorId: db.userId };
+
+    await expect(createTramite(createInput(base))).rejects.toMatchObject({
+      name: "ContenedoresRequeridosError",
+      status: 422,
+      message:
+        "Polyrec ZF Vitest pide el número de contenedores del DO (viene del BL). Escribe cuántos contenedores trae o marca «Carga suelta».",
+    });
+    // Cero contenedores sin marcar carga suelta tampoco cumple.
+    await expect(createTramite(createInput({ ...base, numContenedores: 0 }))).rejects.toMatchObject({
+      name: "ContenedoresRequeridosError",
+    });
+
+    const conDos = await createTramite(createInput({ ...base, numContenedores: 2 }));
+    expect(conDos).toMatchObject({ numContenedores: 2, tipoCarga: null });
+
+    const suelta = await createTramite(createInput({ ...base, tipoCarga: "SUELTA" }));
+    expect(suelta).toMatchObject({ numContenedores: 0, tipoCarga: "SUELTA" });
+
+    // La solicitud externa entra sin el dato: se completa en la ficha del DO.
+    const solicitud = await createTramite(createInput(base), { origen: "SOLICITUD_PUBLICA" });
+    expect(solicitud.numContenedores).toBeNull();
+
+    // Editar: no se puede dejar sin contenedores un DO que ya los tenía…
+    await expect(
+      verificarContenedoresAlEditar(conDos, { numContenedores: null }),
+    ).rejects.toMatchObject({
+      name: "ContenedoresRequeridosError",
+      message: expect.stringContaining(`del ${conDos.consecutivo}`),
+    });
+    await expect(
+      verificarContenedoresAlEditar(conDos, { numContenedores: 3 }),
+    ).resolves.toBeUndefined();
+    // …pero un DO que nunca lo tuvo se puede seguir editando (la ficha avisa).
+    await expect(
+      verificarContenedoresAlEditar(solicitud, { numContenedores: null }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("D3 — sin la función, el DO se crea sin contenedores como siempre", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramite = await createTramite(createInput({ clienteId: db.clienteId }));
+    expect(tramite.numContenedores).toBeNull();
   });
 
   it("crea 20 tramites concurrentes sin consecutivos duplicados ni saltos", async (ctx) => {

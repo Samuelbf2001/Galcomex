@@ -5,12 +5,17 @@ import { ZodError } from "zod";
 import { getUmbralesAlertaTramite, umbralParaEmpresa } from "@/lib/alertas/umbrales";
 import { requireRole } from "@/lib/auth/session";
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
+import { verificarComisionesAlEditar } from "@/lib/comisiones/service";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeSerializable } from "@/lib/db/serializable";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
-import { tramiteDetalleInclude, tramiteInclude } from "@/lib/tramites/service";
+import {
+  tramiteDetalleInclude,
+  tramiteInclude,
+  verificarContenedoresAlEditar,
+} from "@/lib/tramites/service";
 import { tramiteUpdateSchema } from "@/lib/validations/tramites";
 
 type RouteContext = {
@@ -74,6 +79,11 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     if (!before) {
       return NextResponse.json({ error: "Tramite no encontrado" }, { status: 404 });
     }
+
+    // D3: no dejar sin contenedores un DO de una empresa que los exige, ni con
+    // menos contenedores de los que ya llevan comisión (caso LTRANS).
+    await verificarContenedoresAlEditar(before, payload);
+    await verificarComisionesAlEditar(before, payload);
 
     const tramite = await prisma.$transaction(async (tx) => {
       await assertTramiteModificable(tx, before);

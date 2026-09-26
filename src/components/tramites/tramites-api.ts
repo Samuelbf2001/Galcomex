@@ -174,6 +174,10 @@ export type CreateTramiteInput = {
   doCliente?: string | null;
   eta?: string | null;
   comentarios?: string | null;
+  /** D3: contenedores del BL (la empresa tiene "Número de contenedores obligatorio"). */
+  numContenedores?: number | null;
+  /** "SUELTA" = carga suelta, sin contenedores. */
+  tipoCarga?: string | null;
 };
 
 export class TramitesApiError extends Error {
@@ -704,6 +708,10 @@ export type RequisitosDo = {
     /** Documentos que el DO debe tener (vacío = ninguno). Se suben justo después de crearlo. */
     requeridos: DocumentoObligatorioCodigo[];
   };
+  contenedores: {
+    /** D3: el DO se crea con el número de contenedores o marcado como carga suelta. */
+    requerido: boolean;
+  };
 };
 
 function esDocumentoObligatorio(valor: unknown): valor is DocumentoObligatorioCodigo {
@@ -716,6 +724,8 @@ function normalizarRequisitos(payload: unknown): RequisitosDo {
     isRecord(payload) && isRecord(payload.documentosObligatorios)
       ? payload.documentosObligatorios
       : {};
+  const contenedores =
+    isRecord(payload) && isRecord(payload.contenedores) ? payload.contenedores : {};
   const tarifario = isRecord(tarifa.tarifario) ? tarifa.tarifario : null;
 
   return {
@@ -740,6 +750,9 @@ function normalizarRequisitos(payload: unknown): RequisitosDo {
       requeridos: Array.isArray(documentos.requeridos)
         ? documentos.requeridos.filter(esDocumentoObligatorio)
         : [],
+    },
+    contenedores: {
+      requerido: contenedores.requerido === true,
     },
   };
 }

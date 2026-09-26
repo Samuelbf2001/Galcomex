@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CreateTramiteDialog, TramitesWorkspace } from "./tramites-workspace";
 import {
+  createTramite,
   fetchClienteOptions,
   fetchRequisitosDo,
   fetchTiposTramiteEmpresa,
@@ -72,6 +73,7 @@ const TIPO_IMPORTACION: TipoTramiteOption = {
 function requisitosFixture(
   tarifa: Partial<RequisitosDo["tarifaVigente"]> = {},
   documentosRequeridos: DocumentoObligatorioCodigo[] = [],
+  contenedoresRequerido = false,
 ): RequisitosDo {
   return {
     tarifaVigente: {
@@ -84,6 +86,7 @@ function requisitosFixture(
       ...tarifa,
     },
     documentosObligatorios: { requeridos: documentosRequeridos },
+    contenedores: { requerido: contenedoresRequerido },
   };
 }
 
@@ -285,6 +288,76 @@ describe("Crear DO — D2 documentos obligatorios", () => {
     await esperarRequisitos();
 
     expect(container.textContent).not.toContain("Documentos obligatorios");
+  });
+});
+
+describe("Crear DO — D3 número de contenedores", () => {
+  function campoContenedores() {
+    return container.querySelector<HTMLInputElement>('input[name="numContenedores"]');
+  }
+
+  async function escribirContenedores(valor: string) {
+    const input = campoContenedores()!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, valor);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  async function enviarFormulario() {
+    const form = container.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+  }
+
+  async function abrirConContenedores(requerido: boolean) {
+    vi.mocked(fetchRequisitosDo).mockResolvedValue(
+      requisitosFixture({ requerida: false, cumple: true }, [], requerido),
+    );
+    vi.mocked(createTramite).mockResolvedValue(filaTramite("9"));
+    await montarDialogo();
+    await elegirClienteLitoplas();
+    await esperarRequisitos();
+  }
+
+  it("sin la exigencia de la empresa no aparece el campo", async () => {
+    await abrirConContenedores(false);
+    expect(campoContenedores()).toBeNull();
+  });
+
+  it("con la exigencia, no crea el DO sin número ni carga suelta", async () => {
+    await abrirConContenedores(true);
+    expect(campoContenedores()).not.toBeNull();
+
+    await enviarFormulario();
+
+    expect(createTramite).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Escribe cuántos contenedores trae el DO");
+  });
+
+  it("manda el número de contenedores escrito", async () => {
+    await abrirConContenedores(true);
+    await escribirContenedores("2");
+    await enviarFormulario();
+
+    expect(createTramite).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createTramite).mock.calls[0][0]).toMatchObject({ numContenedores: 2 });
+    expect(vi.mocked(createTramite).mock.calls[0][0].tipoCarga).toBeUndefined();
+  });
+
+  it("«Carga suelta» manda tipo de carga SUELTA y 0 contenedores", async () => {
+    await abrirConContenedores(true);
+    const casilla = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((c) =>
+      c.parentElement?.textContent?.includes("Carga suelta"),
+    )!;
+    await act(async () => casilla.click());
+    await enviarFormulario();
+
+    expect(vi.mocked(createTramite).mock.calls[0][0]).toMatchObject({
+      numContenedores: 0,
+      tipoCarga: "SUELTA",
+    });
   });
 });
 
