@@ -139,6 +139,11 @@ export type RegistrarPagoInput = {
   canalPago?: CanalPago;
   comprobanteKey?: string | null;
   verificadoBanco?: boolean;
+  /**
+   * Tope del abono (25-sep-2026): el cliente pagó de más y quien registra
+   * confirma que el sobrante quede como anticipo del cliente.
+   */
+  excedenteComoAnticipo?: boolean;
 };
 
 // ─── Conciliación batch (lote de facturas) ───────────────────────────────────
@@ -372,7 +377,12 @@ export async function fetchCartera(
 export async function registrarAbonoDevolucion(
   facturaId: string,
   input: RegistrarPagoInput,
-): Promise<{ pagoId: string; saldoNeto: string }> {
+): Promise<{
+  pagoId: string;
+  saldoNeto: string;
+  /** Anticipo creado con el sobrante del abono (tope), o null. */
+  anticipoExcedente: { id: string; monto: string } | null;
+}> {
   const res = await fetch(`/api/facturas/${facturaId}/pagos`, {
     method: "POST",
     headers: {
@@ -388,6 +398,7 @@ export async function registrarAbonoDevolucion(
       canalPago: input.canalPago ?? undefined,
       comprobanteKey: input.comprobanteKey ?? null,
       verificadoBanco: input.verificadoBanco ?? false,
+      excedenteComoAnticipo: input.excedenteComoAnticipo ?? false,
     }),
   });
 
@@ -405,9 +416,14 @@ export async function registrarAbonoDevolucion(
     throw new CarteraApiError("Respuesta de registro de pago no válida.");
   }
 
+  const anticipo = isRecord(payload.anticipoExcedente) ? payload.anticipoExcedente : null;
+
   return {
     pagoId: String(payload.pago.id ?? ""),
     saldoNeto: String(payload.saldoNeto ?? "0"),
+    anticipoExcedente: anticipo
+      ? { id: String(anticipo.id ?? ""), monto: String(anticipo.monto ?? "0") }
+      : null,
   };
 }
 

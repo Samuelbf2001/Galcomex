@@ -19,6 +19,9 @@ export const registrarPagoFacturaSchema = z
     canalPago: z.nativeEnum(CanalPago).optional(),
     comprobanteKey: z.string().min(1).optional().nullable(),
     verificadoBanco: z.boolean().default(false),
+    // Tope del abono (25-sep-2026): confirma que lo que sobre de un abono del
+    // cliente quede como anticipo. Sin él, un abono de más se rechaza (422).
+    excedenteComoAnticipo: z.boolean().default(false),
   })
   .refine(
     (data) => {

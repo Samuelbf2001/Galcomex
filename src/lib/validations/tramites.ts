@@ -78,6 +78,11 @@ export const tramiteUpdateSchema = atributosTramiteSchema.extend({
 
 export const estadoTransitionSchema = z.object({
   estado: z.nativeEnum(EstadoTramite),
+  /**
+   * Solo ADMIN: motivo para pasar a Facturado sin factura emitida (decisión
+   * 25-sep-2026). El guard exige el largo mínimo; a otros roles no les sirve.
+   */
+  motivoExcepcion: z.string().trim().max(500).optional(),
 });
 
 /**

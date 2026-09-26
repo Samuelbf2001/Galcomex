@@ -11,13 +11,24 @@
  * - registrarPagoFactura (DEPRECADO): escribe fechaPagoCliente/LM directamente (compat)
  */
 
-import { CanalPago, DestinoPago, EstadoMovimiento, Prisma, Rol, TipoPagoFactura, TipoRecaudo } from "@prisma/client";
+import {
+  CanalPago,
+  DestinoPago,
+  EstadoMovimiento,
+  Prisma,
+  Rol,
+  TipoPagoFactura,
+  TipoRecaudo,
+  type Factura,
+  type PagoFactura,
+} from "@prisma/client";
 
 import {
   carteraHistoricaAparte,
   esFacturaHistoricaSinCobros,
   idUsuarioCargaHistorica,
 } from "@/lib/cartera/historica";
+import { CODIGO_ABONO_EXCEDE_SALDO, repartirAbono } from "@/lib/cartera/tope-abono";
 import { prisma } from "@/lib/db/prisma";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -43,10 +54,37 @@ type RegistrarPagoFacturaInput = {
   verificadoBanco?: boolean;
   /** Abono por cruce de saldos (M5): sin canal ni costo bancario. */
   compensacionId?: string | null;
+  /**
+   * Tope del abono (decisión 25-sep-2026): si un ABONO del cliente supera lo
+   * que debe la factura, con `true` la factura recibe solo su pendiente y el
+   * sobrante se guarda como anticipo del cliente (mismo recaudo y comprobante).
+   * Sin él, el abono de más se rechaza con 422 `ABONO_EXCEDE_SALDO`.
+   */
+  excedenteComoAnticipo?: boolean;
   /** Cliente de transacción cuando el abono es una punta de una operación mayor. */
   tx?: Prisma.TransactionClient;
   usuarioId: string;
 };
+
+/** Rechazo de un abono/devolución; `codigo` y `detalles` solo en reglas con guía para la UI. */
+type RechazoPagoFactura = {
+  ok: false;
+  status: number;
+  message: string;
+  codigo?: string;
+  detalles?: Record<string, unknown>;
+};
+
+type ResultadoPagoFactura =
+  | RechazoPagoFactura
+  | {
+      ok: true;
+      pago: PagoFactura;
+      factura: Factura;
+      saldoNeto: bigint;
+      /** Anticipo creado con el sobrante del abono (tope), o null. */
+      anticipoExcedente: { id: string; monto: bigint } | null;
+    };
 
 // ─── Conciliación batch (lote de facturas) ───────────────────────────────────
 
@@ -94,6 +132,81 @@ function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
   ) as Prisma.InputJsonValue;
 }
 
+/** "$1.200.000" — para los mensajes que lee el usuario. */
+function pesos(valor: bigint): string {
+  return `$${valor.toLocaleString("es-CO")}`;
+}
+
+/**
+ * Por qué un abono que se pasa de lo que se debe no puede entrar tal cual, o
+ * `null` si puede entrar partido (factura + anticipo del sobrante).
+ */
+function rechazoAbonoDeMas(args: {
+  numSiigo: string;
+  destino: DestinoPago;
+  monto: bigint;
+  pendiente: bigint;
+  excedente: bigint;
+  esCompensacion: boolean;
+  excedenteComoAnticipo: boolean;
+  tieneRecaudo: boolean;
+  tieneComprobante: boolean;
+  esCliente: boolean;
+  nombreEmpresa: string;
+}): RechazoPagoFactura | null {
+  const permiteAnticipo =
+    args.pendiente > 0n && args.destino === DestinoPago.CLIENTE && !args.esCompensacion;
+  const rechazo = (message: string): RechazoPagoFactura => ({
+    ok: false,
+    status: 422,
+    message,
+    codigo: CODIGO_ABONO_EXCEDE_SALDO,
+    // BigInt: la ruta responde con `jsonResponse`, que serializa el dinero.
+    detalles: { pendiente: args.pendiente, excedente: args.excedente, permiteAnticipo },
+  });
+
+  if (args.pendiente === 0n) {
+    return rechazo(
+      `La factura ${args.numSiigo} no tiene saldo por cobrar${args.destino === DestinoPago.LM ? " a LM" : ""}. ` +
+        "Si entró plata del cliente, regístrala en el módulo Anticipos.",
+    );
+  }
+  if (!permiteAnticipo) {
+    return rechazo(
+      `El abono de ${pesos(args.monto)} supera lo que se debe de la factura ${args.numSiigo} (${pesos(args.pendiente)}). ` +
+        `El abono puede ser de hasta ${pesos(args.pendiente)}.`,
+    );
+  }
+  if (!args.excedenteComoAnticipo) {
+    return rechazo(
+      `El abono de ${pesos(args.monto)} supera lo que debe la factura ${args.numSiigo} (${pesos(args.pendiente)}). ` +
+        `Si el cliente pagó de más, confirma que los ${pesos(args.excedente)} que sobran queden como anticipo; si no, corrige el valor.`,
+    );
+  }
+  if (!args.tieneRecaudo) {
+    return {
+      ok: false,
+      status: 422,
+      message: "Para guardar el sobrante como anticipo, el abono debe ser un recaudo (entra plata), no un pago.",
+    };
+  }
+  if (!args.tieneComprobante) {
+    return {
+      ok: false,
+      status: 422,
+      message: "Para guardar el sobrante como anticipo adjunta el comprobante del pago: todo anticipo nuevo lleva su soporte.",
+    };
+  }
+  if (!args.esCliente) {
+    return {
+      ok: false,
+      status: 422,
+      message: `${args.nombreEmpresa} está marcada solo como proveedor: no puede recibir el sobrante como anticipo.`,
+    };
+  }
+  return null;
+}
+
 /**
  * Ledger unificado por (factura, destino).
  *
@@ -127,13 +240,21 @@ export function calcularSaldoNeto({
  * - monto siempre > 0 (validado en Zod antes de llegar aquí, pero se re-verifica).
  * - Exactamente uno de (tipoRecaudo, canalPago) debe estar seteado; si no → 400.
  * - costoBancario se toma como snapshot desde matriz_recaudo o matriz_pago.
- * - ABONO: siempre permitido; si sobrepasa el cargo genera pendiente de devolución.
+ * - ABONO (tope, decisión de Ernesto 25-sep-2026): nunca pasa de lo que se debe
+ *   (pendiente de cobro). Si se pasa → 422 `ABONO_EXCEDE_SALDO`, salvo un abono
+ *   del CLIENTE con `excedenteComoAnticipo`, recaudo y comprobante: la factura
+ *   recibe su pendiente y el sobrante se crea, en la misma transacción, como
+ *   anticipo del cliente enlazado al abono (costo de recaudo 0: el de la
+ *   transferencia ya quedó en el abono). LM y cruce de saldos: tope sin anticipo.
+ *   Ya no se genera «pendiente de devolución» por un abono.
  * - DEVOLUCION: solo si hay saldo a favor disponible (saldoNeto > 0); si excede → 422.
  * - Cuando saldoNeto llega a 0, setea fechaPago{Cliente|LM}; si se aleja de 0, la limpia.
  * - Advisory lock por (facturaId + destino) para evitar condición de carrera.
  * - AuditLog por cada operación.
  */
-export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput) {
+export async function registrarPagoFacturaAbono(
+  input: RegistrarPagoFacturaInput,
+): Promise<ResultadoPagoFactura> {
   const {
     facturaId,
     destino,
@@ -189,7 +310,7 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
 
   const lockKey = `pago_factura:${facturaId}:${destino}`;
 
-  const ejecutar = async (tx: Prisma.TransactionClient) => {
+  const ejecutar = async (tx: Prisma.TransactionClient): Promise<ResultadoPagoFactura> => {
     // Advisory lock para evitar carreras bajo concurrencia
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
@@ -200,6 +321,7 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
           where: { destino },
           select: { tipo: true, monto: true },
         },
+        cliente: { select: { nombre: true, esCliente: true } },
       },
     });
 
@@ -247,13 +369,41 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
       }
     }
 
+    // Tope del abono: la factura nunca recibe más de lo que se debe. El
+    // sobrante solo sigue adelante como anticipo del cliente (ver arriba).
+    let montoFactura = monto;
+    let excedente = 0n;
+    if (tipo === TipoPagoFactura.ABONO) {
+      const reparto = repartirAbono(saldoNetoActual, monto);
+      if (reparto.excedente > 0n) {
+        const rechazo = rechazoAbonoDeMas({
+          numSiigo: factura.numSiigo,
+          destino,
+          monto,
+          pendiente: reparto.pendiente,
+          excedente: reparto.excedente,
+          esCompensacion,
+          excedenteComoAnticipo: input.excedenteComoAnticipo === true,
+          tieneRecaudo: tipoRecaudo !== undefined,
+          tieneComprobante: Boolean(comprobanteKey?.trim()),
+          esCliente: factura.cliente.esCliente,
+          nombreEmpresa: factura.cliente.nombre,
+        });
+        if (rechazo) {
+          return rechazo;
+        }
+        montoFactura = reparto.aLaFactura;
+        excedente = reparto.excedente;
+      }
+    }
+
     // Crear el PagoFactura con tipoRecaudo/canalPago y costoBancario
     const pago = await tx.pagoFactura.create({
       data: {
         facturaId,
         destino,
         tipo,
-        monto,
+        monto: montoFactura,
         fecha,
         tipoRecaudo: tipoRecaudo ?? null,
         canalPago: canalPago ?? null,
@@ -267,7 +417,7 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
 
     // Recalcular saldoNeto nuevo
     const nuevosAbonos = tipo === TipoPagoFactura.ABONO
-      ? abonosActuales + monto
+      ? abonosActuales + montoFactura
       : abonosActuales;
     const nuevasDevoluciones = tipo === TipoPagoFactura.DEVOLUCION
       ? devolucionesActuales + monto
@@ -293,6 +443,26 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
       data: facturaUpdateData,
     });
 
+    // Sobrante confirmado → anticipo del cliente para su próximo DO, en la
+    // misma transacción que el abono. costoRecaudo 0: una transferencia, un
+    // costo bancario, y ya quedó en el abono (si no, el borrador del DO donde
+    // se aplique lo cobraría otra vez).
+    const anticipoExcedente =
+      excedente > 0n && tipoRecaudo !== undefined
+        ? await tx.anticipo.create({
+            data: {
+              clienteId: factura.clienteId,
+              monto: excedente,
+              fecha,
+              tipoRecaudo,
+              costoRecaudo: 0n,
+              soporteKey: comprobanteKey ?? null,
+              verificadoBanco: verificadoBanco ?? false,
+              pagoFacturaOrigenId: pago.id,
+            },
+          })
+        : null;
+
     // Audit log — incluye tipoRecaudo/canalPago/costoBancario en el snapshot
     await tx.auditLog.create({
       data: {
@@ -306,7 +476,7 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
           facturaId,
           destino,
           tipo,
-          monto: monto.toString(),
+          monto: montoFactura.toString(),
           fecha,
           tipoRecaudo: tipoRecaudo ?? null,
           canalPago: canalPago ?? null,
@@ -314,15 +484,40 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
           compensacionId: input.compensacionId ?? null,
           saldoNetoAntes: saldoNetoActual.toString(),
           saldoNetoNuevo: saldoNetoNuevo.toString(),
+          ...(anticipoExcedente
+            ? {
+                montoRecibido: monto.toString(),
+                excedenteComoAnticipo: excedente.toString(),
+                anticipoExcedenteId: anticipoExcedente.id,
+              }
+            : {}),
         }),
       },
     });
+
+    if (anticipoExcedente) {
+      await tx.auditLog.create({
+        data: {
+          entidad: "Anticipo",
+          entidadId: anticipoExcedente.id,
+          accion: "CREATE_ANTICIPO",
+          usuarioId,
+          despues: normalizeSerializable({
+            ...anticipoExcedente,
+            origen: { pagoFacturaId: pago.id, facturaId, numSiigo: factura.numSiigo },
+          }),
+        },
+      });
+    }
 
     return {
       ok: true as const,
       pago,
       factura: facturaActualizada,
       saldoNeto: saldoNetoNuevo,
+      anticipoExcedente: anticipoExcedente
+        ? { id: anticipoExcedente.id, monto: anticipoExcedente.monto }
+        : null,
     };
   };
 
@@ -364,6 +559,45 @@ export async function eliminarPagoFactura(
       canalPago: pago.canalPago ?? null,
       costoBancario: pago.costoBancario.toString(),
     });
+
+    // Si el sobrante de este abono quedó como anticipo (tope del abono), se
+    // retira con él, salvo que ya se haya aplicado a un DO. Toma el mismo lock
+    // que `aplicarAnticipo` para que nadie lo aplique entre la revisión y el borrado.
+    let anticipoEliminadoId: string | null = null;
+    const anticipoExcedente = await tx.anticipo.findUnique({
+      where: { pagoFacturaOrigenId: pagoId },
+      select: { id: true },
+    });
+    if (anticipoExcedente) {
+      const lockAnticipo = `anticipo:${anticipoExcedente.id}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockAnticipo}))`;
+      const anticipo = await tx.anticipo.findUniqueOrThrow({
+        where: { id: anticipoExcedente.id },
+        include: { aplicaciones: { select: { tramite: { select: { consecutivo: true } } } } },
+      });
+      if (anticipo.aplicaciones.length > 0) {
+        const dos = [...new Set(anticipo.aplicaciones.map((a) => a.tramite.consecutivo))].join(", ");
+        return {
+          ok: false as const,
+          status: 422,
+          message: `El sobrante de este abono (${pesos(anticipo.monto)}) ya se usó como anticipo en ${dos}. Quita esa aplicación antes de anular el abono.`,
+        };
+      }
+      const { aplicaciones: _aplicaciones, ...anticipoAntes } = anticipo;
+      void _aplicaciones;
+      await tx.anticipo.delete({ where: { id: anticipo.id } });
+      await tx.auditLog.create({
+        data: {
+          entidad: "Anticipo",
+          entidadId: anticipo.id,
+          accion: "ELIMINAR_ANTICIPO_EXCEDENTE",
+          usuarioId,
+          antes: normalizeSerializable(anticipoAntes),
+          despues: normalizeSerializable({ motivo: "Se anuló el abono que lo originó", pagoFacturaId: pagoId }),
+        },
+      });
+      anticipoEliminadoId = anticipo.id;
+    }
 
     await tx.pagoFactura.delete({ where: { id: pagoId } });
 
@@ -410,7 +644,7 @@ export async function eliminarPagoFactura(
         accion: "DELETE",
         usuarioId,
         antes: snapshotAntes,
-        despues: normalizeSerializable({ saldoNetoNuevo: saldoNetoNuevo.toString() }),
+        despues: normalizeSerializable({ saldoNetoNuevo: saldoNetoNuevo.toString(), anticipoEliminadoId }),
       },
     });
 
@@ -418,6 +652,8 @@ export async function eliminarPagoFactura(
       ok: true as const,
       factura: facturaActualizada,
       saldoNeto: saldoNetoNuevo,
+      /** Anticipo del sobrante que se retiró junto con el abono, o null. */
+      anticipoEliminadoId,
     };
   };
 
@@ -826,12 +1062,19 @@ export async function conciliarLoteFacturas(input: {
           saldoNeto: r.saldoNeto.toString(),
         });
       } else {
+        // Tope del abono: en el lote no se confirma el sobrante como anticipo;
+        // ese pago se registra desde la factura, donde sí se puede.
+        const detallesTope = r.codigo === CODIGO_ABONO_EXCEDE_SALDO ? r.detalles : undefined;
         results.push({
           facturaId: item.facturaId,
           destino: item.destino,
           ok: false,
           status: r.status,
-          error: r.message,
+          error:
+            detallesTope?.permiteAnticipo === true && typeof detallesTope.pendiente === "bigint"
+              ? `El abono de ${pesos(item.monto)} supera lo que debe la factura (${pesos(detallesTope.pendiente)}). ` +
+                "En el lote el abono llega hasta lo que se debe; si el cliente pagó de más, registra ese pago desde la factura para guardar el sobrante como anticipo."
+              : r.message,
         });
       }
     } catch (err) {

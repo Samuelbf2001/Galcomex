@@ -17,6 +17,11 @@ import { normalizeSerializable } from "@/lib/db/serializable";
 import { tarifarioVigenteDe } from "@/lib/tarifas/service";
 import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import {
+  FacturaNoEmitidaError,
+  exigeFacturaEmitida,
+  motivoValido,
+} from "@/lib/tramites/factura-emitida";
+import {
   aplicarReglaAgenciaAlCrear,
   validateReglaAgenciaFija,
   type ConfigReglaAgencia,
@@ -193,7 +198,7 @@ type TransitionResult =
     };
 
 function falloDeRegla(
-  error: TarifaVigenteRequeridaError | DocumentosObligatoriosFaltantesError,
+  error: TarifaVigenteRequeridaError | DocumentosObligatoriosFaltantesError | FacturaNoEmitidaError,
 ): TransitionResult {
   return {
     ok: false,
@@ -802,6 +807,13 @@ export async function transitionTramite(
    * solicitarFacturacion), se trata como "no ADMIN" — deniega por defecto.
    */
   usuarioRol?: Rol,
+  opciones: {
+    /**
+     * Solo ADMIN: motivo escrito para entrar a Facturado sin factura emitida
+     * (decisión 25-sep-2026). `bypassChecklist` NO alcanza para eso.
+     */
+    motivoExcepcion?: string | null;
+  } = {},
 ): Promise<TransitionResult> {
   return prisma.$transaction(async (tx) => {
     const actual = await tx.tramiteDO.findUnique({
@@ -1027,6 +1039,39 @@ export async function transitionTramite(
       }
     }
 
+    // «Facturado» solo con factura emitida (decisión de Ernesto, 25-sep-2026):
+    // entrar a FACTURADO (o saltar a PAGADO sin pasar por él) exige un borrador
+    // FACTURADO. La excepción de checklist del ADMIN no alcanza: forzarlo pide
+    // motivo escrito y deja su propio AuditLog. «Pagado» desde Facturado sigue
+    // libre y cerrar (descartar) no la pide.
+    let facturadoForzado: { motivo: string; borradores: EstadoBorrador[] } | null = null;
+    if (exigeFacturaEmitida(actual.estado, estadoDes)) {
+      const borradores = await tx.borradorFactura.findMany({
+        where: { tramiteId },
+        select: { estado: true },
+      });
+      if (!borradores.some((b) => b.estado === EstadoBorrador.FACTURADO)) {
+        const esAdmin = usuarioRol === Rol.ADMIN;
+        const motivo = esAdmin ? motivoValido(opciones.motivoExcepcion) : null;
+        const estados = borradores.map((b) => b.estado);
+        if (!motivo) {
+          return falloDeRegla(
+            new FacturaNoEmitidaError({
+              tramiteId,
+              consecutivo: actual.consecutivo,
+              estadoDestino: estadoDes,
+              borradores: estados,
+              puedeForzar: esAdmin,
+            }),
+          );
+        }
+        facturadoForzado = { motivo, borradores: estados };
+        advertencias.push(
+          `${actual.consecutivo} pasó a ${estadoDes.replace(/_/g, " ")} sin factura emitida, por excepción de ADMIN. Motivo: ${motivo}`,
+        );
+      }
+    }
+
     const updated = await tx.tramiteDO.update({
       where: { id: tramiteId },
       data: { estado: estadoDes },
@@ -1070,6 +1115,23 @@ export async function transitionTramite(
             documentosFaltantes: documentosOmitidos,
           }),
           despues: normalizeSerializable({ estado: estadoDes }),
+        },
+      });
+    }
+
+    if (facturadoForzado) {
+      await tx.auditLog.create({
+        data: {
+          entidad: "TramiteDO",
+          entidadId: tramiteId,
+          accion: "FORZAR_FACTURADO",
+          usuarioId,
+          tramiteId,
+          antes: normalizeSerializable({
+            estado: actual.estado,
+            borradores: facturadoForzado.borradores,
+          }),
+          despues: normalizeSerializable({ estado: estadoDes, motivo: facturadoForzado.motivo }),
         },
       });
     }

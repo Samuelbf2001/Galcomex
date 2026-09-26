@@ -1,6 +1,8 @@
 /**
  * GET  /api/facturas/[id]/pagos  — Lista de PagoFactura de una factura (ADMIN/REVISOR)
  * POST /api/facturas/[id]/pagos  — Registrar abono o devolución (ADMIN)
+ *   El abono tiene tope (lo que se debe); el sobrante solo entra como anticipo
+ *   del cliente con `excedenteComoAnticipo: true` (ver cartera/service.ts).
  */
 
 import { NextResponse, type NextRequest } from "next/server";
@@ -57,15 +59,26 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       canalPago: payload.canalPago,
       comprobanteKey: payload.comprobanteKey,
       verificadoBanco: payload.verificadoBanco,
+      excedenteComoAnticipo: payload.excedenteComoAnticipo,
       usuarioId: session.user.id,
     });
 
     if (!result.ok) {
-      return NextResponse.json({ error: result.message }, { status: result.status });
+      // `codigo`/`detalles`: el abono de más (`ABONO_EXCEDE_SALDO`) trae el
+      // pendiente y el sobrante para que la pantalla ofrezca el anticipo.
+      return jsonResponse(
+        { error: result.message, codigo: result.codigo, detalles: result.detalles },
+        { status: result.status },
+      );
     }
 
     return jsonResponse(
-      { pago: result.pago, factura: result.factura, saldoNeto: result.saldoNeto },
+      {
+        pago: result.pago,
+        factura: result.factura,
+        saldoNeto: result.saldoNeto,
+        anticipoExcedente: result.anticipoExcedente,
+      },
       { status: 201 },
     );
   } catch (error) {

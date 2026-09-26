@@ -230,7 +230,12 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
 - **Tarifa vigente (`do_exige_tarifa_vigente`, encendida por defecto; la migración `20260923092000` la apaga en las empresas SOCIO_LM):** sin tarifario VIGENTE hoy de la línea de servicio del tipo (config `tiposTramite`) no se crea el DO (`TarifaVigenteRequeridaError`, 422, `codigo` + `detalles`). La solicitud pública (`POST /api/solicitudes`, `origen: "SOLICITUD_PUBLICA"`) sí entra, pero SOLICITUD → APERTURA exige la tarifa. Sin excepción de ADMIN: se apaga la función en la ficha.
 - **BL + factura comercial (`docs_bl_factura_obligatorios`, encendida por defecto, config `tiposTramite`: solo `IMPORTACION`):** pasar de SOLICITUD/APERTURA a EN_TRAMITE o más allá exige documentos `BL` y `FACTURA_COMERCIAL` no eliminados (422 `DOCUMENTOS_OBLIGATORIOS_FALTANTES`). El formulario los pide al crear (se suben justo después del POST). La excepción del ADMIN (`bypassChecklist`) deja pasar con `advertencias` y un `AuditLog` `OMITIR_REQUISITOS` (checklist y documentos pendientes).
 - Lógica pura de ambas reglas en `src/lib/tramites/requisitos.ts`; la UI las consulta antes de crear con `GET /api/tramites/requisitos?clienteId=&tipoTramiteCodigo=` (`fetchRequisitosDo` en `tramites-api.ts`).
+- **Facturado solo con factura emitida (decisión de Ernesto, 25-sep-2026):** entrar a FACTURADO (o saltar a PAGADO sin pasar por él) exige un borrador FACTURADO del DO; si no, 422 `FACTURA_NO_EMITIDA`. El `bypassChecklist` del ADMIN NO alcanza: forzarlo pide `motivoExcepcion` (≥ 10 caracteres) y deja un `AuditLog` `FORZAR_FACTURADO` (la UI abre `forzar-facturado-modal.tsx`). FACTURADO → PAGADO sigue libre (no revisa saldo) y cerrar/descartar no la pide. Lógica pura en `src/lib/tramites/factura-emitida.ts`.
 - Toda transición queda en `EstadoLog` con usuario y timestamp
+
+## Cartera — tope del abono (decisión de Ernesto, 25-sep-2026)
+
+Un abono nunca pasa de lo que se debe de la factura (`repartirAbono` en `src/lib/cartera/tope-abono.ts`). Si el cliente pagó de más: 422 `ABONO_EXCEDE_SALDO`, salvo que quien registra confirme `excedenteComoAnticipo` con recaudo y comprobante; entonces la factura recibe su pendiente y el sobrante se crea, en la misma transacción, como `Anticipo` del cliente enlazado al abono (`pagoFacturaOrigenId`, costo de recaudo 0). LM, cruce de saldos y conciliar lote: tope sin anticipo. Anular el abono retira su anticipo si todavía no se aplicó a un DO. Un abono ya no genera «pendiente de devolución».
 
 ## Storage (bodega S3: MinIO local / Cloudflare R2)
 

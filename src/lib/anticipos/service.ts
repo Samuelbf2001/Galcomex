@@ -103,7 +103,24 @@ type AnticipoConSaldo = {
   aplicado: bigint;
   restante: bigint;
   aplicaciones: DesgloseDO[];
+  /**
+   * Factura de cuyo abono salió este anticipo (sobrante del tope del abono,
+   * decisión 25-sep-2026); null si se registró directamente.
+   */
+  origenAbono: { facturaId: string; numSiigo: string } | null;
 };
+
+/** Include del abono que originó el anticipo (tope del abono). */
+const origenAbonoInclude = {
+  pagoFacturaOrigen: { select: { factura: { select: { id: true, numSiigo: true } } } },
+} satisfies Prisma.AnticipoInclude;
+
+function origenAbonoDe(anticipo: {
+  pagoFacturaOrigen: { factura: { id: string; numSiigo: string } } | null;
+}): AnticipoConSaldo["origenAbono"] {
+  const factura = anticipo.pagoFacturaOrigen?.factura;
+  return factura ? { facturaId: factura.id, numSiigo: factura.numSiigo } : null;
+}
 
 /**
  * Crea un anticipo. Regla de permiso: ADMIN y OPERATIVO pueden registrar
@@ -303,6 +320,7 @@ export async function getAnticipoConSaldo(
         },
         orderBy: { createdAt: "asc" },
       },
+      ...origenAbonoInclude,
     },
   });
 
@@ -323,14 +341,16 @@ export async function getAnticipoConSaldo(
     montoAplicado: ap.montoAplicado,
   }));
 
-  const { aplicaciones: _raw, ...base } = anticipo;
+  const { aplicaciones: _raw, pagoFacturaOrigen: _origen, ...base } = anticipo;
   void _raw;
+  void _origen;
 
   return {
     ...base,
     aplicado,
     restante,
     aplicaciones,
+    origenAbono: origenAbonoDe(anticipo),
   };
 }
 
@@ -353,6 +373,7 @@ export async function listarAnticipos(
         },
         orderBy: { createdAt: "asc" },
       },
+      ...origenAbonoInclude,
     },
     orderBy: { fecha: "desc" },
   });
@@ -371,14 +392,16 @@ export async function listarAnticipos(
       montoAplicado: ap.montoAplicado,
     }));
 
-    const { aplicaciones: _raw, ...base } = anticipo;
+    const { aplicaciones: _raw, pagoFacturaOrigen: _origen, ...base } = anticipo;
     void _raw;
+    void _origen;
 
     return {
       ...base,
       aplicado,
       restante,
       aplicaciones,
+      origenAbono: origenAbonoDe(anticipo),
     };
   });
 

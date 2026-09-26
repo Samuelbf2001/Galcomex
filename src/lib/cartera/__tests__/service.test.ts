@@ -494,7 +494,7 @@ describe("cartera service con Postgres local", () => {
 
   // ─── Sobrepago → pendiente de devolución ─────────────────────────────────
 
-  it("sobrepago genera pendiente de devolución (no es error)", async (ctx) => {
+  it("sobrepago ya NO genera pendiente de devolución: tope → 422 (decisión 25-sep-2026)", async (ctx) => {
     const db = ensureDb(ctx);
 
     const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 500_000n });
@@ -509,18 +509,17 @@ describe("cartera service con Postgres local", () => {
       usuarioId: db.userId,
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      // saldoNeto = (0 - 500.000) + 700.000 = 200.000 > 0 → Galcomex debe devolver
-      expect(result.saldoNeto).toBe(200_000n);
-      // Se marca como "saldada" en fecha del abono (saldo a favor = 200.000, no 0)
-      // En realidad saldoNeto != 0, entonces fechaPago no se setea
-      expect(result.factura.fechaPagoCliente).toBeNull();
+    // Antes quedaba "Galcomex debe devolver 200.000"; ahora el abono tiene tope
+    // y el sobrante solo entra como anticipo confirmado (ver tope-abono.integration).
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).toBe(422);
+      expect(result.codigo).toBe("ABONO_EXCEDE_SALDO");
     }
 
     const detalle = await getFacturaConPagos(facturaId);
-    expect(detalle?.pendienteDevolucionCliente).toBe(200_000n);
-    expect(detalle?.pendienteCobroCliente).toBe(0n);
+    expect(detalle?.pendienteDevolucionCliente).toBe(0n);
+    expect(detalle?.pendienteCobroCliente).toBe(500_000n);
   });
 
   // ─── Golden case: saldo a favor 3.357.958 → devolución lo salda ──────────

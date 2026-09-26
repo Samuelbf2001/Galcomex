@@ -58,7 +58,12 @@ import {
 import { InlineTramiteField } from "@/components/tramites/inline-tramite-field";
 import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import { SeccionEventosTramite } from "@/components/tramites/seccion-eventos-tramite";
-import { cambiarEstadoTramite, mensajeAdvertenciasEstado } from "@/components/tramites/tramites-api";
+import { ForzarFacturadoModal } from "@/components/tramites/forzar-facturado-modal";
+import {
+  TramitesApiError,
+  cambiarEstadoTramite,
+  mensajeAdvertenciasEstado,
+} from "@/components/tramites/tramites-api";
 import {
   type FacturaProveedorRow,
   solicitarFacturacion,
@@ -386,9 +391,27 @@ function CambioEstadoButton({
   const [selected, setSelected] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [faltantes, setFaltantes] = useState<string[]>([]);
+  // Facturado sin factura emitida: el ADMIN puede forzarlo con motivo.
+  const [forzar, setForzar] = useState<{ estado: string; mensaje: string } | null>(null);
   const { toast } = useToast();
 
   const otrosEstados = PIPELINE.filter((s) => s !== tramite.estado);
+
+  function alCambiar(updated: TramiteDetalleData, advertencias: string[], estado: string) {
+    toast({
+      title: "Estado actualizado",
+      description: `${tramite.consecutivo} → ${estado.replace(/_/g, " ")}`,
+      variant: "success",
+    });
+    // F6: el ADMIN pudo haber saltado requisitos (checklist, BL, factura
+    // comercial, factura emitida) con su excepción — se avisa aparte.
+    const advertencia = mensajeAdvertenciasEstado(advertencias);
+    if (advertencia) {
+      toast({ ...advertencia, variant: "warning" });
+    }
+    setSelected("");
+    onChanged(updated);
+  }
 
   async function handleCambiar() {
     if (!selected || saving) return;
@@ -400,26 +423,33 @@ function CambioEstadoButton({
         tramite.id,
         selected,
       );
-      toast({
-        title: "Estado actualizado",
-        description: `${tramite.consecutivo} → ${selected.replace(/_/g, " ")}`,
-        variant: "success",
-      });
-      // F6: el ADMIN pudo haber saltado requisitos (checklist, BL, factura
-      // comercial) con su excepción — se avisa aparte para que no pase inadvertido.
-      const advertencia = mensajeAdvertenciasEstado(advertencias);
-      if (advertencia) {
-        toast({ ...advertencia, variant: "warning" });
-      }
-      setSelected("");
-      onChanged(updated);
+      alCambiar(updated, advertencias, selected);
     } catch (caught) {
+      if (
+        caught instanceof TramitesApiError &&
+        caught.codigo === "FACTURA_NO_EMITIDA" &&
+        caught.detalles?.puedeForzar === true
+      ) {
+        setForzar({ estado: selected, mensaje: caught.message });
+        return;
+      }
       const typed = caught as { faltantes?: string[] };
       setError(describirError(caught, "Error desconocido"));
       setFaltantes(Array.isArray(typed?.faltantes) ? typed.faltantes : []);
     } finally {
       setSaving(false);
     }
+  }
+
+  async function handleForzar(motivo: string) {
+    if (!forzar) return;
+    const { tramite: updated, advertencias } = await cambiarEstadoTramite<TramiteDetalleData>(
+      tramite.id,
+      forzar.estado,
+      { motivoExcepcion: motivo },
+    );
+    setForzar(null);
+    alCambiar(updated, advertencias, forzar.estado);
   }
 
   return (
@@ -456,6 +486,15 @@ function CambioEstadoButton({
             {faltantes.length > 0 ? `: ${faltantes.join(", ")}` : ""}
           </span>
         </p>
+      ) : null}
+      {forzar ? (
+        <ForzarFacturadoModal
+          consecutivo={tramite.consecutivo}
+          estadoDestino={forzar.estado}
+          mensaje={forzar.mensaje}
+          onCancelar={() => setForzar(null)}
+          onForzar={handleForzar}
+        />
       ) : null}
     </div>
   );

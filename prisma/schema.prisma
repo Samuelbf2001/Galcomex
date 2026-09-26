@@ -661,6 +661,13 @@ model Anticipo {
 
   aplicaciones AplicacionAnticipo[]
 
+  /// Abono de cartera cuyo sobrante originó este anticipo (tope del abono,
+  /// decisión de Ernesto 25-sep-2026). null = anticipo registrado directamente.
+  /// Restrict: el abono no se borra sin retirar antes este anticipo
+  /// (`eliminarPagoFactura` lo hace si todavía no se aplicó a un DO).
+  pagoFacturaOrigenId String?      @unique
+  pagoFacturaOrigen   PagoFactura? @relation(fields: [pagoFacturaOrigenId], references: [id], onDelete: Restrict)
+
   @@index([clienteId])
   @@index([fecha])
   @@map("anticipo")
@@ -1056,6 +1063,9 @@ model PagoFactura {
   /// y el costo bancario es 0. Agrupa con la otra punta del cruce.
   compensacionId  String?
   createdAt       DateTime         @default(now())
+
+  /// Anticipo que se creó con el sobrante de este abono (ver Anticipo.pagoFacturaOrigenId).
+  anticipoExcedente Anticipo?
 
   @@index([facturaId])
   @@index([fecha])

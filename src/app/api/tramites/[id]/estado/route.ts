@@ -29,6 +29,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
       session.user.id,
       session.user.rol === "ADMIN",
       session.user.rol,
+      // Facturado sin factura emitida: solo el ADMIN lo fuerza, con motivo.
+      { motivoExcepcion: payload.motivoExcepcion },
     );
 
     if (!result.ok) {
@@ -36,8 +38,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
         {
           error: result.message,
           faltantes: result.faltantes,
-          // Bloqueos por reglas de la empresa (tarifa vigente, BL y factura
-          // comercial): código estable + datos para que la UI guíe al usuario.
+          // Bloqueos por reglas (tarifa vigente, BL y factura comercial,
+          // factura emitida): código estable + datos para que la UI guíe al usuario.
           codigo: result.codigo,
           detalles: result.detalles,
         },

@@ -174,6 +174,8 @@ function RegistrarPagoModal({
   // Selector combinado: "RECAUDO:BANCOLOMBIA" | "PAGO:TRANSF_BANCOLOMBIA", etc.
   const [opcionSeleccionada, setOpcionSeleccionada] = useState<string>("RECAUDO:BANCOLOMBIA");
   const [verificadoBanco, setVerificadoBanco] = useState(false);
+  // Tope del abono: quien registra confirma que el sobrante quede como anticipo.
+  const [confirmarAnticipo, setConfirmarAnticipo] = useState(false);
 
   // Derivar tipoRecaudo / canalPago y costo del selector combinado
   const opcionActual = OPCIONES_RECAUDO_PAGO.find(
@@ -201,9 +203,23 @@ function RegistrarPagoModal({
   const pendienteCobroN = BigInt(pendienteCobro);
   const pendienteDevolucionN = BigInt(pendienteDevolucion);
 
-  // Aviso de sobrepago (abono > pendiente de cobro → generará devolución)
-  const esSobrepago =
-    tipo === "ABONO" && montoN > 0n && pendienteCobroN > 0n && montoN > pendienteCobroN;
+  // Tope del abono (decisión 25-sep-2026): el abono llega hasta lo que se debe.
+  // El sobrante no queda «por devolver»: solo entra como anticipo del cliente,
+  // confirmado, con recaudo y comprobante. En LM no hay anticipo: tope y listo.
+  const sinPendiente = tipo === "ABONO" && montoN > 0n && pendienteCobroN === 0n;
+  const excedenteN =
+    tipo === "ABONO" && pendienteCobroN > 0n && montoN > pendienteCobroN ? montoN - pendienteCobroN : 0n;
+  const permiteAnticipo = excedenteN > 0n && destino === "CLIENTE";
+  const anticipoConfirmado = permiteAnticipo && confirmarAnticipo;
+  const faltaParaAnticipo = !anticipoConfirmado
+    ? null
+    : opcionActual.grupo !== "RECAUDO"
+      ? "Elige un tipo de recaudo (entra plata): el sobrante queda como anticipo del cliente."
+      : !archivoComprobante
+        ? "Adjunta el comprobante: todo anticipo nuevo lleva su soporte."
+        : null;
+  const bloqueaTope =
+    sinPendiente || (excedenteN > 0n && !anticipoConfirmado) || faltaParaAnticipo !== null;
   // Error si devolución excede disponible
   const excedeDev =
     tipo === "DEVOLUCION" && montoN > 0n && montoN > pendienteDevolucionN;
@@ -257,6 +273,16 @@ function RegistrarPagoModal({
       return;
     }
 
+    if (bloqueaTope) {
+      setError(
+        faltaParaAnticipo ??
+          (sinPendiente
+            ? "Esta factura no tiene saldo por cobrar."
+            : `El abono no puede pasar de lo que se debe (${formatCOP(pendienteCobro)}).`),
+      );
+      return;
+    }
+
     // Subir comprobante si hay archivo
     let comprobanteKey: string | null = null;
     if (archivoComprobante) {
@@ -278,14 +304,17 @@ function RegistrarPagoModal({
         : { canalPago: opcionActual.value as CanalPago }),
       comprobanteKey,
       verificadoBanco,
+      excedenteComoAnticipo: anticipoConfirmado,
     };
 
     setSubmitting(true);
     try {
-      await registrarAbonoDevolucion(factura.id, input);
+      const { anticipoExcedente } = await registrarAbonoDevolucion(factura.id, input);
       toast({
         title: tipo === "ABONO" ? "Abono registrado" : "Devolución registrada",
-        description: `${formatCOP(montoValido)} · ${factura.numSiigo}`,
+        description: anticipoExcedente
+          ? `${formatCOP(pendienteCobro)} · ${factura.numSiigo} (pagada). Los ${formatCOP(anticipoExcedente.monto)} que sobraron quedaron como anticipo del cliente.`
+          : `${formatCOP(montoValido)} · ${factura.numSiigo}`,
         variant: "success",
       });
       onRegistrado();
@@ -343,7 +372,11 @@ function RegistrarPagoModal({
             </span>
             <CampoMoneda
               value={montoRaw}
-              onValueChange={setMontoRaw}
+              onValueChange={(valor) => {
+                setMontoRaw(valor);
+                // Otro valor, otro sobrante: se vuelve a confirmar.
+                setConfirmarAnticipo(false);
+              }}
               placeholder="1.500.000"
               className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
             />
@@ -352,16 +385,48 @@ function RegistrarPagoModal({
             )}
           </label>
 
-          {/* Aviso sobrepago */}
-          {esSobrepago && (
-            <div className="flex items-start gap-2 border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-800">
+          {/* Tope del abono */}
+          {sinPendiente ? (
+            <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-              El monto supera el pendiente de cobro ({formatCOP(pendienteCobro)}). Si
-              continúas, se generará un saldo a favor de{" "}
-              {formatCOP((montoN - pendienteCobroN).toString())} que quedará pendiente
-              de devolución.
+              Esta factura no tiene saldo por cobrar. Si entró plata del cliente, regístrala en el
+              módulo Anticipos.
             </div>
-          )}
+          ) : null}
+          {excedenteN > 0n && !permiteAnticipo ? (
+            <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              El abono no puede pasar de lo que se debe ({formatCOP(pendienteCobro)}).
+            </div>
+          ) : null}
+          {permiteAnticipo ? (
+            <div className="space-y-2 border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <p className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>
+                  El pago ({formatCOP(montoN.toString())}) supera lo que debe la factura (
+                  {formatCOP(pendienteCobro)}). La factura queda pagada con{" "}
+                  {formatCOP(pendienteCobro)} y sobran {formatCOP(excedenteN.toString())}.
+                </span>
+              </p>
+              <label className="flex items-start gap-2 text-sm font-medium text-amber-950">
+                <input
+                  type="checkbox"
+                  checked={confirmarAnticipo}
+                  onChange={(e) => setConfirmarAnticipo(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-amber-600"
+                />
+                Sí, el cliente pagó de más: guardar {formatCOP(excedenteN.toString())} como
+                anticipo para su próximo DO.
+              </label>
+              {!confirmarAnticipo ? (
+                <p>Si fue un error al escribir el valor, corrígelo arriba.</p>
+              ) : null}
+              {faltaParaAnticipo ? (
+                <p className="font-medium text-rose-700">{faltaParaAnticipo}</p>
+              ) : null}
+            </div>
+          ) : null}
 
           {/* Fecha */}
           <label className="block space-y-1.5">
@@ -414,7 +479,9 @@ function RegistrarPagoModal({
           {/* Comprobante */}
           <div className="space-y-1.5">
             <span className="text-sm font-medium text-slate-700 block">
-              Comprobante (opcional)
+              {anticipoConfirmado
+                ? "Comprobante * (el sobrante queda como anticipo y todo anticipo lleva soporte)"
+                : "Comprobante (opcional)"}
             </span>
             <div className="flex items-center gap-2">
               <button
@@ -477,7 +544,7 @@ function RegistrarPagoModal({
             </button>
             <button
               type="submit"
-              disabled={submitting || uploadState === "uploading" || excedeDev}
+              disabled={submitting || uploadState === "uploading" || excedeDev || bloqueaTope}
               className={`inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold text-white transition disabled:opacity-60 ${
                 tipo === "DEVOLUCION"
                   ? "bg-violet-700 hover:bg-violet-800"

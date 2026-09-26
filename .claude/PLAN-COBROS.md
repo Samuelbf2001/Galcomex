@@ -48,7 +48,9 @@ NO tocar: motor, borradores, anticipos service, componentes.
    - `registrarPagoFactura({ facturaId, destino, tipo, monto, fecha, canalPago, comprobanteKey?, verificadoBanco?, usuarioId })`:
      crea `PagoFactura`, recalcula saldoNeto del destino, si llega a 0 setea la `fechaPago{Cliente|LM}`
      (si se reabre por una devolución posterior, la limpia), audita. Validaciones: monto>0; ABONO solo si
-     hay saldo a cobrar o se permite sobrepago (permitir, pero el resultado marca pendiente de devolución);
+     hay saldo a cobrar o se permite sobrepago (permitir, pero el resultado marca pendiente de devolución —
+     **superado el 25-sep-2026:** el abono tiene tope y el sobrante solo entra como anticipo confirmado, ver
+     "Cartera — tope del abono" en CLAUDE.md);
      DEVOLUCION no puede exceder el saldo a favor disponible (saldoNeto>0) → 422 si excede.
    - `eliminarPagoFactura(id, usuarioId)`: revierte (recalcula, reabre fechaPago si aplica), audita.
    - `getCarteraCliente`: enriquecer cada factura con `abonosCliente`, `devolucionesCliente`,

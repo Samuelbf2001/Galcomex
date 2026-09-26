@@ -4,7 +4,9 @@ import { AlertTriangle, ChevronRight, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
+import { ForzarFacturadoModal } from "@/components/tramites/forzar-facturado-modal";
 import {
+  TramitesApiError,
   cambiarEstadoTramite,
   mensajeAdvertenciasEstado,
   type TramiteRow,
@@ -103,9 +105,27 @@ function KanbanCard({
   const [moving, setMoving] = useState(false);
   const [selected, setSelected] = useState("");
   const [advError, setAdvError] = useState<string | null>(null);
+  // Facturado sin factura emitida: el ADMIN puede forzarlo con motivo.
+  const [forzar, setForzar] = useState<{ estado: string; mensaje: string } | null>(null);
   const { toast } = useToast();
 
   const otrosEstados = PIPELINE.filter((s) => s !== tramite.estado);
+
+  function alMover(advertencias: string[], estado: string) {
+    toast({
+      title: "Estado actualizado",
+      description: `${tramite.doNumber} → ${estado.replace(/_/g, " ")}`,
+      variant: "success",
+    });
+    // F6: el ADMIN pudo haber saltado requisitos (checklist, BL, factura
+    // comercial, factura emitida) con su excepción — se avisa aparte.
+    const advertencia = mensajeAdvertenciasEstado(advertencias);
+    if (advertencia) {
+      toast({ ...advertencia, variant: "warning" });
+    }
+    setSelected("");
+    onEstadoChanged?.();
+  }
 
   async function handleMover(e: React.MouseEvent) {
     e.preventDefault();
@@ -115,24 +135,29 @@ function KanbanCard({
     setAdvError(null);
     try {
       const { advertencias } = await cambiarEstadoTramite(tramite.id, selected);
-      toast({
-        title: "Estado actualizado",
-        description: `${tramite.doNumber} → ${selected.replace(/_/g, " ")}`,
-        variant: "success",
-      });
-      // F6: el ADMIN pudo haber saltado requisitos (checklist, BL, factura
-      // comercial) con su excepción — se avisa aparte para que no pase inadvertido.
-      const advertencia = mensajeAdvertenciasEstado(advertencias);
-      if (advertencia) {
-        toast({ ...advertencia, variant: "warning" });
-      }
-      setSelected("");
-      onEstadoChanged?.();
+      alMover(advertencias, selected);
     } catch (caught) {
+      if (
+        caught instanceof TramitesApiError &&
+        caught.codigo === "FACTURA_NO_EMITIDA" &&
+        caught.detalles?.puedeForzar === true
+      ) {
+        setForzar({ estado: selected, mensaje: caught.message });
+        return;
+      }
       setAdvError(describirError(caught, "Sin conexión"));
     } finally {
       setMoving(false);
     }
+  }
+
+  async function handleForzar(motivo: string) {
+    if (!forzar) return;
+    const { advertencias } = await cambiarEstadoTramite(tramite.id, forzar.estado, {
+      motivoExcepcion: motivo,
+    });
+    setForzar(null);
+    alMover(advertencias, forzar.estado);
   }
 
   return (
@@ -195,6 +220,15 @@ function KanbanCard({
             </p>
           ) : null}
         </div>
+      ) : null}
+      {forzar ? (
+        <ForzarFacturadoModal
+          consecutivo={tramite.doNumber}
+          estadoDestino={forzar.estado}
+          mensaje={forzar.mensaje}
+          onCancelar={() => setForzar(null)}
+          onForzar={handleForzar}
+        />
       ) : null}
     </div>
   );

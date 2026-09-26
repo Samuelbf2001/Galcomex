@@ -561,6 +561,11 @@ function AnticipoFila({
         {/* Recaudo */}
         <td className="px-3 py-2.5 text-sm text-slate-600">
           {TIPOS_RECAUDO.find((t) => t.value === anticipo.tipoRecaudo)?.label ?? anticipo.tipoRecaudo}
+          {anticipo.origenAbono ? (
+            <span className="block text-xs text-slate-500">
+              Sobrante del abono a {anticipo.origenAbono.numSiigo}
+            </span>
+          ) : null}
         </td>
 
         {/* Verificado */}

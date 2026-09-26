@@ -3,7 +3,19 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { KanbanTramites } from "./kanban-tramites";
-import { cambiarEstadoTramite, type TramiteRow } from "./tramites-api";
+import { TramitesApiError, cambiarEstadoTramite, type TramiteRow } from "./tramites-api";
+
+// jsdom no implementa <dialog>.showModal()/close() (ver modal-shell.test.tsx).
+if (typeof HTMLDialogElement.prototype.showModal !== "function") {
+  HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+  };
+}
+if (typeof HTMLDialogElement.prototype.close !== "function") {
+  HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+    this.removeAttribute("open");
+  };
+}
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -65,15 +77,15 @@ async function montar(rows: TramiteRow[]) {
   await act(async () => root.render(<KanbanTramites rows={rows} />));
 }
 
-/** Elige "EN_TRAMITE" en el select de la tarjeta y confirma el cambio. */
-async function moverTarjeta() {
+/** Elige el estado (EN_TRAMITE por defecto) en el select de la tarjeta y confirma el cambio. */
+async function moverTarjeta(estado = "EN_TRAMITE") {
   const select = container.querySelector<HTMLSelectElement>(
     'select[aria-label="Mover DO.BAQ26-0001 a otro estado"]',
   )!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(
       select,
-      "EN_TRAMITE",
+      estado,
     );
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
@@ -148,5 +160,63 @@ describe("KanbanTramites — D0: cuadre de plata histórica", () => {
     await montar([{ ...filaTramite(), esHistorico: true, tieneCuadre: true, cuadrePendiente: false, documentosPendientes: 0 }]);
 
     expect(container.textContent).not.toContain("Cuadre pendiente");
+  });
+});
+
+describe("KanbanTramites — Facturado solo con factura emitida (decisión 25-sep-2026)", () => {
+  const rechazo = (puedeForzar: boolean) =>
+    new TramitesApiError(
+      "El DO.BAQ26-0001 no tiene factura emitida: su borrador está aprobado, sin enviar a Siigo. Pasa a Facturado cuando su factura salga (borrador en Facturado).",
+      422,
+      { codigo: "FACTURA_NO_EMITIDA", detalles: { puedeForzar } },
+    );
+
+  it("a quien no es ADMIN le muestra el motivo del bloqueo, sin opción de forzar", async () => {
+    vi.mocked(cambiarEstadoTramite).mockRejectedValue(rechazo(false));
+
+    await montar([{ ...filaTramite(), estado: "ENVIADO_A_FACTURAR" }]);
+    await moverTarjeta("FACTURADO");
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("no tiene factura emitida");
+    expect(document.querySelector("dialog")).toBeNull();
+  });
+
+  it("al ADMIN le abre «forzar con motivo» y reintenta el cambio con ese motivo", async () => {
+    vi.mocked(cambiarEstadoTramite)
+      .mockRejectedValueOnce(rechazo(true))
+      .mockResolvedValueOnce({
+        tramite: { id: "tramite-1", estado: "FACTURADO" },
+        advertencias: ["DO.BAQ26-0001 pasó a FACTURADO sin factura emitida, por excepción de ADMIN. Motivo: va en la BAQ-18701"],
+      });
+
+    await montar([{ ...filaTramite(), estado: "ENVIADO_A_FACTURAR" }]);
+    await moverTarjeta("FACTURADO");
+
+    const dialog = document.querySelector("dialog")!;
+    expect(dialog.textContent).toContain("sin factura");
+    const enviar = Array.from(dialog.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Forzar con este motivo"),
+    )!;
+    expect(enviar.disabled).toBe(true);
+
+    const textarea = dialog.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        textarea,
+        "va en la BAQ-18701",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(enviar.disabled).toBe(false);
+    await act(async () => enviar.click());
+
+    expect(cambiarEstadoTramite).toHaveBeenLastCalledWith("tramite-1", "FACTURADO", {
+      motivoExcepcion: "va en la BAQ-18701",
+    });
+    expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({ title: "Estado actualizado" }));
+    expect(toastSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: "warning", description: expect.stringContaining("Motivo: va en la BAQ-18701") }),
+    );
+    expect(document.querySelector("dialog")).toBeNull();
   });
 });

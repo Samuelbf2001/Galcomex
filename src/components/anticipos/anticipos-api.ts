@@ -45,6 +45,8 @@ export type AnticipoRow = {
   aplicado: string; // BigInt serializado
   restante: string; // BigInt serializado
   aplicaciones: DesgloseDO[];
+  /** Factura de cuyo abono salió este anticipo (sobrante del tope del abono). */
+  origenAbono?: { facturaId: string; numSiigo: string } | null;
 };
 
 export type ClienteOption = {
@@ -142,6 +144,12 @@ function normalizeAnticipo(raw: unknown, clientes: ClienteOption[]): AnticipoRow
     aplicado: String(raw.aplicado ?? "0"),
     restante: String(raw.restante ?? "0"),
     aplicaciones,
+    origenAbono: isRecord(raw.origenAbono)
+      ? {
+          facturaId: String(raw.origenAbono.facturaId ?? ""),
+          numSiigo: String(raw.origenAbono.numSiigo ?? ""),
+        }
+      : null,
   };
 }
 

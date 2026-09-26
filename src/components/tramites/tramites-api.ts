@@ -611,11 +611,15 @@ export type CambioEstadoResultado<T = Record<string, unknown>> = {
 export async function cambiarEstadoTramite<T = Record<string, unknown>>(
   tramiteId: string,
   estado: string,
+  /** Solo ADMIN: motivo para forzar Facturado sin factura emitida (`FACTURA_NO_EMITIDA`). */
+  opciones: { motivoExcepcion?: string } = {},
 ): Promise<CambioEstadoResultado<T>> {
   const response = await fetch(`/api/tramites/${tramiteId}/estado`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ estado }),
+    body: JSON.stringify(
+      opciones.motivoExcepcion ? { estado, motivoExcepcion: opciones.motivoExcepcion } : { estado },
+    ),
   });
 
   const payload: unknown = await response.json().catch(() => null);
