@@ -47,6 +47,7 @@ import {
   StorageKeyInvalidoError,
 } from "../service";
 import { StorageValidationError } from "@/lib/storage/service";
+import { assertCuadreSigueAbierto, cuadresHistoricosAbiertos } from "@/lib/tramites/checklist";
 
 // ─── Constantes del test ──────────────────────────────────────────────────────
 
@@ -487,6 +488,147 @@ describe("registrarDocumento — no auto-marca el cuadre de plata histórica", (
     } finally {
       await prisma.checklistItem.deleteMany({ where: { id: { in: [cuadre.id, soporte.id] } } });
       await prisma.tramiteDO.update({ where: { id: db.tramiteId }, data: { esHistorico: false } });
+    }
+  });
+
+  // Vigila la integración con feat/eventos-subir-archivos (934bbdf): esa rama
+  // agrega `checklistItemId` a registrarDocumento y marca ese ítem como
+  // recibido sin mirar rol ni cuadre, y se mezcla con D0 sin conflicto. En D0 el
+  // campo no existe y se ignora (va en una variable para que compile en las dos
+  // ramas); mezclada con eventos, el candado del cuadre debe deshacer la subida.
+  it("subir un archivo con el checklistItemId del cuadre como OPERATIVO no lo cierra ni escribe en el ítem", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    const operativo = await prisma.user.create({
+      data: {
+        email: `${runId}-operativo@example.test`,
+        emailVerified: true,
+        name: "Vitest Operativo",
+        rol: Rol.OPERATIVO,
+      },
+    });
+    await prisma.tramiteDO.update({ where: { id: db.tramiteId }, data: { esHistorico: true } });
+    const cuadre = await prisma.checklistItem.create({
+      data: { tramiteId: db.tramiteId, descripcion: "CUADRE DE PLATA HISTÓRICA · ROJO", requerido: true },
+    });
+    const storageKey = `${prefijoTramite(db.consecutivo)}${CategoriaDocumento.OTRO}/${runId}-desde-cuadre.pdf`;
+    const subidaDesdeLaFilaDelCuadre = {
+      tramiteId: db.tramiteId,
+      categoria: CategoriaDocumento.OTRO,
+      nombreArchivo: "cuadre.pdf",
+      storageKey,
+      mimeType: "application/pdf",
+      tamanoBytes: 2048,
+      subidoPorId: operativo.id,
+      checklistItemId: cuadre.id,
+    };
+
+    try {
+      let error: unknown = null;
+      try {
+        await registrarDocumento(subidaDesdeLaFilaDelCuadre);
+      } catch (caught) {
+        error = caught;
+      }
+
+      const [c, auditoriaDelItem, documento] = await Promise.all([
+        prisma.checklistItem.findUniqueOrThrow({ where: { id: cuadre.id } }),
+        prisma.auditLog.count({ where: { entidadId: cuadre.id } }),
+        prisma.documento.findFirst({ where: { storageKey } }),
+      ]);
+      expect(c.recibido).toBe(false);
+      expect(c.validadoPorId).toBeNull();
+      expect(c.fechaValidacion).toBeNull();
+      expect(auditoriaDelItem).toBe(0);
+      if (error !== null) {
+        // Con el camino de eventos: el candado responde 403 y deshace todo.
+        expect(error).toMatchObject({ name: "CuadreHistoricoDocumentoError", status: 403 });
+        expect(documento).toBeNull();
+      }
+    } finally {
+      await prisma.documento.deleteMany({ where: { storageKey } });
+      await prisma.checklistItem.deleteMany({ where: { id: cuadre.id } });
+      await prisma.tramiteDO.update({ where: { id: db.tramiteId }, data: { esHistorico: false } });
+    }
+  });
+});
+
+// ─── D0: candado del cuadre (lib/tramites/checklist.ts) ───────────────────────
+//
+// registrarDocumento toma los cuadres abiertos al empezar y, antes del commit,
+// falla con 403 si alguno quedó cerrado a nombre de quien sube. Aquí se prueba
+// el mecanismo sin depender de qué camino lo cierra.
+
+describe("candado del cuadre de plata histórica en escrituras del checklist", () => {
+  it("si el cuadre se cierra a nombre de quien sube dentro de la transacción → 403 y se deshace", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    await prisma.tramiteDO.update({ where: { id: db.tramiteId }, data: { esHistorico: true } });
+    const cuadre = await prisma.checklistItem.create({
+      data: { tramiteId: db.tramiteId, descripcion: "CUADRE DE PLATA HISTÓRICA · AMARILLO", requerido: true },
+    });
+    const otro = await prisma.checklistItem.create({
+      data: { tramiteId: db.tramiteId, descripcion: "Factura comercial", requerido: true },
+    });
+
+    try {
+      await expect(
+        prisma.$transaction(async (tx) => {
+          const abiertos = await cuadresHistoricosAbiertos(tx, { id: db.tramiteId, esHistorico: true });
+          expect(abiertos).toEqual([cuadre.id]);
+          await tx.checklistItem.update({
+            where: { id: cuadre.id },
+            data: { recibido: true, validadoPorId: db.userId, fechaValidacion: new Date() },
+          });
+          await assertCuadreSigueAbierto(tx, abiertos, db.userId);
+        }),
+      ).rejects.toMatchObject({ name: "CuadreHistoricoDocumentoError", status: 403 });
+
+      const c = await prisma.checklistItem.findUniqueOrThrow({ where: { id: cuadre.id } });
+      expect(c.recibido).toBe(false);
+      expect(c.validadoPorId).toBeNull();
+    } finally {
+      await prisma.checklistItem.deleteMany({ where: { id: { in: [cuadre.id, otro.id] } } });
+      await prisma.tramiteDO.update({ where: { id: db.tramiteId }, data: { esHistorico: false } });
+    }
+  });
+
+  it("no bloquea si lo cerró otra persona (casilla de ADMIN/REVISOR) ni en DOs que no son históricos", async (ctx) => {
+    const db = ensureDb(ctx);
+
+    const cuadre = await prisma.checklistItem.create({
+      data: { tramiteId: db.tramiteId, descripcion: "CUADRE DE PLATA HISTÓRICA · VERDE", requerido: true },
+    });
+    const revisor = await prisma.user.create({
+      data: {
+        email: `${runId}-revisor@example.test`,
+        emailVerified: true,
+        name: "Vitest Revisor",
+        rol: Rol.REVISOR,
+      },
+    });
+
+    try {
+      // DO no histórico: el texto no basta para ser cuadre.
+      const noHistorico = await prisma.$transaction((tx) =>
+        cuadresHistoricosAbiertos(tx, { id: db.tramiteId, esHistorico: false }),
+      );
+      expect(noHistorico).toEqual([]);
+
+      // Lo cerró el REVISOR, no quien sube: la subida sigue.
+      await prisma.$transaction(async (tx) => {
+        const abiertos = await cuadresHistoricosAbiertos(tx, { id: db.tramiteId, esHistorico: true });
+        expect(abiertos).toEqual([cuadre.id]);
+        await tx.checklistItem.update({
+          where: { id: cuadre.id },
+          data: { recibido: true, validadoPorId: revisor.id, fechaValidacion: new Date() },
+        });
+        await assertCuadreSigueAbierto(tx, abiertos, db.userId);
+      });
+      const c = await prisma.checklistItem.findUniqueOrThrow({ where: { id: cuadre.id } });
+      expect(c.recibido).toBe(true);
+    } finally {
+      await prisma.checklistItem.deleteMany({ where: { id: cuadre.id } });
     }
   });
 });

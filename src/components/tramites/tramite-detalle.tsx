@@ -584,7 +584,13 @@ function checklistBoxClass(item: ChecklistItem): string {
   return "border-slate-300 bg-white";
 }
 
-function ChecklistItemRow({
+/**
+ * Fila del checklist en la ficha del DO. La del cuadre de plata histórica
+ * (`esCuadre`) solo tiene su casilla: nada de subir archivos ni otras acciones
+ * que la cierren sin el PATCH con AuditLog. Se exporta para su prueba
+ * (checklist-item-row.test.tsx), que vigila justo eso.
+ */
+export function ChecklistItemRow({
   item,
   tramiteId,
   editable,

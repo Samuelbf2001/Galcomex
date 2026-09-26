@@ -21,6 +21,7 @@ import {
   softDeleteStorageObject,
   validateStorageFile,
 } from "@/lib/storage/service";
+import { assertCuadreSigueAbierto, cuadresHistoricosAbiertos } from "@/lib/tramites/checklist";
 import { esItemCuadreHistorico } from "@/lib/tramites/cuadre-historico";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 
@@ -283,7 +284,7 @@ export async function registrarDocumento(
   return prisma.$transaction(async (tx) => {
     const tramite = await tx.tramiteDO.findUnique({
       where: { id: input.tramiteId },
-      select: { id: true, consecutivo: true, estado: true },
+      select: { id: true, consecutivo: true, estado: true, esHistorico: true },
     });
 
     if (!tramite) {
@@ -291,6 +292,10 @@ export async function registrarDocumento(
     }
 
     await assertTramiteModificable(tx, tramite);
+
+    // Candado del cuadre de plata histórica: se comprueba al final, antes del
+    // commit (ver lib/tramites/checklist.ts). Ninguna subida lo cierra.
+    const cuadresAbiertos = await cuadresHistoricosAbiertos(tx, tramite);
 
     // Tipo/tamaño del archivo (mismas reglas que al pedir la URL de subida):
     // sin esto se podía registrar cualquier storageKey con un mimeType/tamaño
@@ -347,6 +352,9 @@ export async function registrarDocumento(
         }
       }
     }
+
+    // Si algo de lo anterior cerró el cuadre, 403 y no queda nada escrito.
+    await assertCuadreSigueAbierto(tx, cuadresAbiertos, input.subidoPorId);
 
     return documento;
   });
