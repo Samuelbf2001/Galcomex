@@ -19,6 +19,7 @@ import {
   MovimientoCuentaEsCruceError,
   MovimientoCuentaNoEncontradoError,
   normalizarNumeroFactura,
+  registrarCompensacion,
   registrarMovimientoCuenta,
 } from "@/lib/cuenta-corriente/service";
 
@@ -306,7 +307,19 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
     });
 
     // La fecha de la factura (17/09/2026) es la que se pasó arriba; la fecha
-    // de registro (createdAt) es "ahora" — solo se valida el formato.
+    // de registro (createdAt) es "ahora": se exige que sea la de hoy en
+    // Bogotá y, sobre todo, que sea DISTINTA de la de la factura — así una
+    // regresión que use `duplicado.fecha` dos veces (en vez de `createdAt`)
+    // hace fallar la prueba en vez de colarse (el regex viejo aceptaba
+    // cualquier fecha en ese lugar).
+    const hoyBogotaCorto = new Intl.DateTimeFormat("es-CO", {
+      timeZone: "America/Bogota",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    }).format(new Date());
+    expect(hoyBogotaCorto).not.toBe("17/09/2026");
+
     await expect(
       registrarMovimientoCuenta({
         empresaId: empresa.id,
@@ -321,7 +334,9 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
         numeroFactura: "fe-3333",
       }),
     ).rejects.toThrow(
-      /La factura FE-3333 de .+ ya está registrada \(fecha de la factura 17\/09\/2026, registrada el \d{2}\/\d{2}\/\d{4}\)\.$/,
+      new RegExp(
+        `La factura FE-3333 de .+ ya está registrada \\(fecha de la factura 17/09/2026, registrada el ${hoyBogotaCorto}\\)\\.$`,
+      ),
     );
   });
 });
@@ -443,6 +458,103 @@ describe("eliminarMovimientoCuenta", () => {
     await expect(
       eliminarMovimientoCuenta(empresa.id, movimiento.id, USUARIO_ID),
     ).rejects.toBeInstanceOf(MovimientoCuentaEsCruceError);
+  });
+
+  it("409 si la factura ya se cruzó: el cruce no marca el movimiento manual, pero borrarlo dejaría el saldo del proveedor en negativo", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-cruce-huerfano`);
+
+    // Lado cliente: la empresa nos debe 1.000.000 (para poder cruzar).
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "CLIENTE",
+      tipo: "CARGO",
+      origen: "AJUSTE",
+      lineaServicio: "TRAMITE",
+      concepto: "Ajuste de prueba",
+      valor: 1_000_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+    });
+
+    // Lado proveedor: "Registrar factura" por el mismo importe.
+    const factura = await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros",
+      valor: 1_000_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-CRUCE-1",
+    });
+
+    // "Cruzar saldos" sin factura de venta ni de proveedor concretas: crea sus
+    // propias puntas COMPENSACION y NO toca `factura` (compensacionId sigue
+    // en null en la factura manual — así lo reprodujo la revisión).
+    await registrarCompensacion({
+      empresaId: empresa.id,
+      valor: 1_000_000n,
+      fecha: new Date("2026-09-24"),
+      concepto: "Cruce de prueba",
+      usuarioId: USUARIO_ID,
+    });
+
+    const cuentaCruzada = await getCuentaCorriente(empresa.id);
+    expect(cuentaCruzada.pendienteCliente).toBe(0n);
+    expect(cuentaCruzada.pendienteProveedor).toBe(0n);
+
+    // Antes del arreglo esto respondía 200 y dejaba pendienteProveedor en
+    // -1.000.000 (el cruce quedó descontando una deuda que ya no existe).
+    await expect(
+      eliminarMovimientoCuenta(empresa.id, factura.id, USUARIO_ID),
+    ).rejects.toBeInstanceOf(MovimientoCuentaEsCruceError);
+    await expect(
+      eliminarMovimientoCuenta(empresa.id, factura.id, USUARIO_ID),
+    ).rejects.toThrow(/deshaz el cruce primero/);
+
+    // Sigue existiendo y los saldos no cambiaron.
+    const enBd = await prisma.movimientoCuenta.findUnique({ where: { id: factura.id } });
+    expect(enBd).not.toBeNull();
+    const cuentaFinal = await getCuentaCorriente(empresa.id);
+    expect(cuentaFinal.pendienteCliente).toBe(0n);
+    expect(cuentaFinal.pendienteProveedor).toBe(0n);
+  });
+
+  it("dos borrados simultáneos del mismo movimiento: uno gana y el otro recibe 404 (no un error genérico)", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-carrera-borrado`);
+
+    const movimiento = await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros",
+      valor: 250_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-7777",
+    });
+
+    const resultados = await Promise.allSettled([
+      eliminarMovimientoCuenta(empresa.id, movimiento.id, USUARIO_ID),
+      eliminarMovimientoCuenta(empresa.id, movimiento.id, USUARIO_ID),
+    ]);
+
+    const cumplidas = resultados.filter((r) => r.status === "fulfilled");
+    const rechazadas = resultados.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    expect(cumplidas).toHaveLength(1);
+    expect(rechazadas).toHaveLength(1);
+    expect(rechazadas[0]?.reason).toBeInstanceOf(MovimientoCuentaNoEncontradoError);
+
+    const enBd = await prisma.movimientoCuenta.findUnique({ where: { id: movimiento.id } });
+    expect(enBd).toBeNull();
   });
 });
 

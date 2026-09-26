@@ -5,6 +5,7 @@ import { useEffect, useId, useState } from "react";
 
 import { CompensacionModal } from "@/components/clientes/compensacion-modal";
 import {
+  CuentaApiError,
   eliminarCompensacion,
   eliminarMovimiento,
   fetchCuentaCorriente,
@@ -234,7 +235,7 @@ function MovimientoModal({
             <select name="lineaServicio" defaultValue="TRAMITE" className={claseCampo(false, "bg-white")}>
               {LINEAS_SERVICIO.map((linea) => (
                 <option key={linea} value={linea}>
-                  {linea}
+                  {etiquetaLineaServicio(linea)}
                 </option>
               ))}
             </select>
@@ -291,6 +292,16 @@ function FilaMovimiento({
   const textoConcepto = movimiento.numeroFactura
     ? `Factura ${movimiento.numeroFactura} · ${movimiento.concepto}`
     : movimiento.concepto;
+  // «Registrar factura» siempre guarda lineaServicio = TRAMITE aunque la
+  // factura no pertenezca a ningún trámite (así lo dice el propio modal): acá
+  // se distingue en pantalla para no decir «Trámites» de algo que no lo es.
+  // Los chips por línea (resumen) siguen agrupando esto bajo TRAMITE a
+  // propósito: es la línea contable real que usa un cruce contra esta fila.
+  const esFacturaFueraDeTramite =
+    movimiento.fuente === "CARGO_MANUAL" && Boolean(movimiento.numeroFactura) && !movimiento.tramiteId;
+  const textoLinea = esFacturaFueraDeTramite
+    ? "Fuera de trámites"
+    : etiquetaLineaServicio(movimiento.lineaServicio);
 
   return (
     <tr className="border-b border-slate-100 last:border-b-0">
@@ -359,7 +370,7 @@ function FilaMovimiento({
           ) : null}
         </span>
       </td>
-      <td className="px-4 py-2.5 text-xs text-slate-500">{etiquetaLineaServicio(movimiento.lineaServicio)}</td>
+      <td className="px-4 py-2.5 text-xs text-slate-500">{textoLinea}</td>
       <td
         className={`px-4 py-2.5 text-right font-mono font-semibold ${
           esACargo ? "text-amber-800" : "text-cyan-800"
@@ -455,6 +466,11 @@ export function SeccionCuentaCorriente({
       toast({ title: "Movimiento eliminado", variant: "success" });
     } catch (caught) {
       toast({ title: "No se pudo eliminar", description: describirError(caught), variant: "error" });
+      // Si alguien más ya lo había eliminado (404), la fila en pantalla quedó
+      // vieja: se recarga la cuenta para que desaparezca sola.
+      if (caught instanceof CuentaApiError && caught.status === 404) {
+        recargar();
+      }
     } finally {
       setEliminandoId(null);
     }

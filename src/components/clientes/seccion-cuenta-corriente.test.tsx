@@ -3,11 +3,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  CuentaApiError,
   eliminarMovimiento,
   fetchCuentaCorriente,
   type CuentaCorriente,
   type MovimientoCuentaRow,
 } from "@/components/clientes/cuenta-api";
+import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { RolProvider } from "@/lib/auth/rol-context";
 
 import { SeccionCuentaCorriente } from "./seccion-cuenta-corriente";
@@ -67,6 +69,28 @@ async function montar(
       <RolProvider rol={rol}>
         <SeccionCuentaCorriente clienteId="cliente-1" proveedorPuro={opciones.proveedorPuro} />
       </RolProvider>,
+    ),
+  );
+}
+
+/**
+ * Igual que `montar`, pero con `ConfirmProvider` de verdad: sin él, `useConfirm`
+ * cae a `window.confirm` y no se puede ver el texto ni la variante `danger`
+ * del aviso (ver `confirm-dialog.tsx`).
+ */
+async function montarConConfirm(cuenta: CuentaCorriente) {
+  vi.mocked(fetchCuentaCorriente).mockResolvedValue(cuenta);
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root.render(
+      <ConfirmProvider>
+        <RolProvider rol="ADMIN">
+          <SeccionCuentaCorriente clienteId="cliente-1" />
+        </RolProvider>
+      </ConfirmProvider>,
     ),
   );
 }
@@ -195,7 +219,8 @@ describe("SeccionCuentaCorriente — columna «Línea»", () => {
     await montar(
       cuentaBase({
         movimientos: [
-          movimientoManual({ id: "movimiento:mov-tramite", lineaServicio: "TRAMITE" }),
+          // Con tramiteId: es de un trámite de verdad, no «fuera de trámites».
+          movimientoManual({ id: "movimiento:mov-tramite", lineaServicio: "TRAMITE", tramiteId: "tramite-1" }),
           movimientoManual({ id: "movimiento:mov-comision", lineaServicio: "COMISION", numeroFactura: null }),
         ],
       }),
@@ -210,9 +235,36 @@ describe("SeccionCuentaCorriente — columna «Línea»", () => {
   });
 
   it("un código sin etiqueta conocida se muestra tal cual (no revienta)", async () => {
-    await montar(cuentaBase({ movimientos: [movimientoManual({ lineaServicio: "CODIGO_NUEVO" })] }));
+    await montar(
+      cuentaBase({
+        movimientos: [movimientoManual({ lineaServicio: "CODIGO_NUEVO", tramiteId: "tramite-1" })],
+      }),
+    );
 
     expect(container.textContent).toContain("CODIGO_NUEVO");
+  });
+
+  it("una factura registrada por fuera de trámites dice «Fuera de trámites», no «Trámites»", async () => {
+    // Escenario real (COLDEX, FE-2026-0917): «Registrar factura» siempre
+    // guarda lineaServicio TRAMITE aunque la factura no venga de un trámite;
+    // sin tramiteId, la columna ya no debe repetir esa confusión.
+    await montar(
+      cuentaBase({
+        movimientos: [
+          movimientoManual({
+            id: "movimiento:mov-fuera-tramite",
+            fuente: "CARGO_MANUAL",
+            lineaServicio: "TRAMITE",
+            numeroFactura: "FE-2026-0917",
+            tramiteId: null,
+          }),
+        ],
+      }),
+    );
+
+    const celdas = [...container.querySelectorAll("td")].map((td) => td.textContent?.trim());
+    expect(celdas).toContain("Fuera de trámites");
+    expect(container.textContent).not.toContain("Trámites");
   });
 });
 
@@ -262,6 +314,55 @@ describe("SeccionCuentaCorriente — eliminar movimiento manual", () => {
     });
 
     expect(eliminarMovimiento).toHaveBeenCalledWith("cliente-1", "mov-1");
+    expect(container.textContent).toContain("Sin movimientos en la cuenta.");
+  });
+
+  it("el aviso de confirmación es de peligro y muestra la factura, la empresa corta y el valor sin signo", async () => {
+    vi.mocked(eliminarMovimiento).mockResolvedValue(cuentaBase({ movimientos: [] }));
+
+    await montarConConfirm(cuentaBase({ movimientos: [movimientoManual()] }));
+
+    await act(async () => {
+      botonPorTexto("Eliminar")!.click();
+    });
+
+    const dialogo = container.ownerDocument.querySelector("dialog");
+    expect(dialogo?.textContent).toContain("Eliminar movimiento");
+    expect(dialogo?.textContent).toContain("FE-0001");
+    expect(dialogo?.textContent).toContain("COLDEX");
+    expect(dialogo?.textContent).toContain("$ 4.000.000");
+    expect(dialogo?.textContent).not.toContain("undefined");
+
+    const botonConfirmar = [...(dialogo?.querySelectorAll("button") ?? [])].find(
+      (b) => b.textContent?.trim() === "Eliminar",
+    );
+    expect(botonConfirmar?.className).toContain("rose");
+
+    await act(async () => {
+      botonConfirmar!.click();
+    });
+
+    expect(eliminarMovimiento).toHaveBeenCalledWith("cliente-1", "mov-1");
+  });
+
+  it("404 al eliminar (ya lo había borrado otra persona): recarga la cuenta en vez de dejar la fila vieja", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(fetchCuentaCorriente)
+      .mockResolvedValueOnce(cuentaBase({ movimientos: [movimientoManual()] }))
+      .mockResolvedValueOnce(cuentaBase({ movimientos: [] }));
+    vi.mocked(eliminarMovimiento).mockRejectedValue(
+      new CuentaApiError("Ese movimiento ya no existe en la cuenta de esta empresa. Recarga la página.", 404),
+    );
+
+    await montar(cuentaBase({ movimientos: [movimientoManual()] }));
+
+    await act(async () => {
+      botonPorTexto("Eliminar")!.click();
+    });
+
+    // Se recargó: fetchCuentaCorriente se volvió a llamar y la fila vieja
+    // desapareció sola, sin que el usuario tenga que darle a "Reintentar".
+    expect(fetchCuentaCorriente).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain("Sin movimientos en la cuenta.");
   });
 

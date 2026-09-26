@@ -91,8 +91,11 @@ export class CompensacionNoEncontradaError extends Error {
 
 export class MovimientoCuentaNoEncontradoError extends Error {
   public readonly status = 404;
-  constructor(movimientoId: string) {
-    super(`Movimiento ${movimientoId} no encontrado en esta empresa`);
+  constructor(public readonly movimientoId: string) {
+    // Sin el id técnico en el mensaje: lo ve el usuario en un toast. Pasa
+    // sobre todo cuando dos personas eliminan el mismo movimiento casi a la
+    // vez (la segunda ya no lo encuentra).
+    super("Ese movimiento ya no existe en la cuenta de esta empresa. Recarga la página.");
     this.name = "MovimientoCuentaNoEncontradoError";
   }
 }
@@ -676,39 +679,94 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
  * la bodega (queda huérfano a propósito): el snapshot `antes` del AuditLog es
  * la única constancia que se necesita, y así nunca se pierde el soporte de
  * algo que se pudo eliminar por error.
+ *
+ * Un cruce (`registrarCompensacion`) nunca marca el movimiento manual que
+ * consume: crea sus propias puntas con origen COMPENSACION (o un abono a la
+ * factura de venta elegida) y deja este movimiento con `compensacionId` en
+ * null. Por eso, además del chequeo directo de arriba, se recalcula la cuenta
+ * SIN este movimiento y se rechaza si la punta que le corresponde (la que
+ * baja al borrarlo: `pendienteProveedor` para un ABONO de PROVEEDOR,
+ * `pendienteCliente` para un CARGO de CLIENTE) quedaría en negativo — señal de
+ * que un cruce ya se apoyó en este saldo.
+ *
+ * Todo bajo el mismo advisory lock `cuenta_corriente:<empresaId>` que usa
+ * `registrarCompensacion`, para que un cruce y un borrado simultáneos no se
+ * validen contra un saldo que el otro está cambiando a la vez, y para que dos
+ * borrados del mismo movimiento a la vez no terminen en un error genérico: el
+ * segundo espera, y su propio `findFirst` ya no encuentra el movimiento.
  */
 export async function eliminarMovimientoCuenta(
   empresaId: string,
   movimientoId: string,
   usuarioId: string,
 ) {
-  return prisma.$transaction(async (tx) => {
-    const movimiento = await tx.movimientoCuenta.findFirst({
-      where: { id: movimientoId, empresaId },
-    });
+  const lockCuenta = `cuenta_corriente:${empresaId}`;
 
-    if (!movimiento) {
-      throw new MovimientoCuentaNoEncontradoError(movimientoId);
-    }
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockCuenta}))`;
 
-    if (movimiento.origen === OrigenMovimientoCuenta.COMPENSACION || movimiento.compensacionId) {
-      throw new MovimientoCuentaEsCruceError();
-    }
+      const movimiento = await tx.movimientoCuenta.findFirst({
+        where: { id: movimientoId, empresaId },
+      });
 
-    await tx.movimientoCuenta.delete({ where: { id: movimientoId } });
+      if (!movimiento) {
+        throw new MovimientoCuentaNoEncontradoError(movimientoId);
+      }
 
-    await tx.auditLog.create({
-      data: {
-        entidad: "MovimientoCuenta",
-        entidadId: movimientoId,
-        accion: "DELETE_MOVIMIENTO_CUENTA",
-        usuarioId,
-        antes: normalizeSerializable(movimiento),
-      },
-    });
+      if (movimiento.origen === OrigenMovimientoCuenta.COMPENSACION || movimiento.compensacionId) {
+        throw new MovimientoCuentaEsCruceError();
+      }
 
-    return movimiento;
-  });
+      const cuenta = await getCuentaCorriente(empresaId, tx);
+      // Mismo signo que `asientosManuales`: en BD el valor siempre es
+      // positivo, `tipo` decide hacia dónde suma.
+      const valorConSigno =
+        movimiento.tipo === TipoMovimientoCuenta.CARGO ? movimiento.valor : -movimiento.valor;
+      const pendienteClienteSinMovimiento =
+        movimiento.rol === RolCuenta.CLIENTE
+          ? cuenta.pendienteCliente - valorConSigno
+          : cuenta.pendienteCliente;
+      const pendienteProveedorSinMovimiento =
+        movimiento.rol === RolCuenta.PROVEEDOR
+          ? cuenta.pendienteProveedor + valorConSigno
+          : cuenta.pendienteProveedor;
+
+      if (pendienteClienteSinMovimiento < 0n || pendienteProveedorSinMovimiento < 0n) {
+        throw new MovimientoCuentaEsCruceError();
+      }
+
+      // Coherente con `maximoSinFacturaProveedor` (CxP v2): ese tope es la
+      // punta proveedor reducida a SOLO lo registrado a mano
+      // (`pendienteManualProveedor`), sin las facturas de proveedor de CxP.
+      // Puede quedar en negativo aunque la punta completa de arriba no lo
+      // haga —las facturas de CxP la sostienen—, y eso significa lo mismo: un
+      // cruce "sin factura" ya se apoyó en esta factura manual.
+      if (movimiento.rol === RolCuenta.PROVEEDOR) {
+        const manuales = await asientosManuales(empresaId, tx);
+        const pendienteManualProveedorSinMovimiento =
+          pendienteManualProveedor(manuales) + valorConSigno;
+        if (pendienteManualProveedorSinMovimiento < 0n) {
+          throw new MovimientoCuentaEsCruceError();
+        }
+      }
+
+      await tx.movimientoCuenta.delete({ where: { id: movimientoId } });
+
+      await tx.auditLog.create({
+        data: {
+          entidad: "MovimientoCuenta",
+          entidadId: movimientoId,
+          accion: "DELETE_MOVIMIENTO_CUENTA",
+          usuarioId,
+          antes: normalizeSerializable(movimiento),
+        },
+      });
+
+      return movimiento;
+    },
+    { maxWait: 10_000, timeout: 20_000 },
+  );
 }
 
 // ─── Cruce de saldos (compensación) ───────────────────────────────────────────
