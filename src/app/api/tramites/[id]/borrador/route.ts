@@ -5,6 +5,8 @@
  * El GET delega en `cargarBorradoresDeTramite` (src/lib/borradores/consulta.ts),
  * la misma función que usa el endpoint por lote GET /api/facturacion/borradores:
  * permiso/scope del trámite → ensureBorrador → listarBorradores.
+ * El POST devuelve el borrador con `pagosPorRevisar` (como el GET) para que
+ * el aviso del revisor salga desde que se genera.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
@@ -14,6 +16,7 @@ import { requireRole } from "@/lib/auth/session";
 import {
   ROLES_CONSULTA_BORRADORES,
   cargarBorradoresDeTramite,
+  conPagosPorRevisarDeBorrador,
 } from "@/lib/borradores/consulta";
 import {
   ConceptosOperacionalesInvalidosError,
@@ -69,10 +72,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       montoLM: payload.montoLM,
       retenciones: payload.retenciones,
       conceptosOperacionales: payload.conceptosOperacionales,
+      // Modal "Generar borrador": con el tarifario, o 409 si ya no aplica
+      // (TarifarioNoAplicableError sale por isDomainError).
+      usarTarifario: payload.usarTarifario,
+      tarifarioIdEsperado: payload.tarifarioId,
+      totalTarifarioEsperado: payload.totalTarifario,
       usuarioId: session.user.id,
     });
 
-    return jsonResponse({ borrador }, { status: 201 });
+    // Con sus pagos por revisar (mismo rastro que lee el GET): el revisor se
+    // abre con este borrador y debe mostrar el aviso desde el primer momento.
+    return jsonResponse(
+      { borrador: await conPagosPorRevisarDeBorrador(borrador, session.user.rol) },
+      { status: 201 },
+    );
   } catch (error) {
     if (error instanceof ZodError) {
       return validationError(error);

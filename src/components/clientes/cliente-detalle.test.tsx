@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClienteCabecera } from "./cliente-detalle";
+import { ClienteCabecera, seccionesDeFicha } from "./cliente-detalle";
 import type { ClienteDetalle } from "./clientes-api";
 
 const cliente: ClienteDetalle = {
@@ -46,6 +46,42 @@ function boton(etiqueta: string): HTMLButtonElement | null {
 function tieneEditarEmpresa(): boolean {
   return [...container.querySelectorAll("button")].some((b) => b.textContent?.includes("Editar empresa"));
 }
+
+describe("seccionesDeFicha (§D.1: qué sección se ve según el rol de la empresa)", () => {
+  it("cliente puro (esCliente, no esProveedor): cartera y anticipos sí; estado de cuenta del proveedor no; trámites siempre", () => {
+    const s = seccionesDeFicha({ esCliente: true, esProveedor: false });
+    expect(s.cartera).toBe(true);
+    expect(s.anticipos).toBe(true);
+    expect(s.estadoCuentaProveedor).toBe(false);
+    expect(s.cuentaCorrienteRequiereCargosManuales).toBe(false);
+    expect(s.tramitesSoloSiTiene).toBe(false);
+  });
+
+  it("proveedor puro (esProveedor, no esCliente, como Almacarga): sin cartera ni anticipos; sí estado de cuenta; trámites solo si tiene y cuenta corriente exige cargos manuales", () => {
+    const s = seccionesDeFicha({ esCliente: false, esProveedor: true });
+    expect(s.cartera).toBe(false);
+    expect(s.anticipos).toBe(false);
+    expect(s.estadoCuentaProveedor).toBe(true);
+    expect(s.cuentaCorrienteRequiereCargosManuales).toBe(true);
+    expect(s.tramitesSoloSiTiene).toBe(true);
+  });
+
+  it("cliente y proveedor a la vez: se ve todo, cuenta corriente no exige nada extra", () => {
+    const s = seccionesDeFicha({ esCliente: true, esProveedor: true });
+    expect(s.cartera).toBe(true);
+    expect(s.anticipos).toBe(true);
+    expect(s.estadoCuentaProveedor).toBe(true);
+    expect(s.cuentaCorrienteRequiereCargosManuales).toBe(false);
+    expect(s.tramitesSoloSiTiene).toBe(false);
+  });
+
+  it("ni cliente ni proveedor (dato raro): se trata como no-proveedor-puro, con cartera y anticipos visibles", () => {
+    const s = seccionesDeFicha({ esCliente: false, esProveedor: false });
+    expect(s.cartera).toBe(true);
+    expect(s.anticipos).toBe(true);
+    expect(s.estadoCuentaProveedor).toBe(false);
+  });
+});
 
 describe("ClienteCabecera", () => {
   it("muestra los botones Funciones, Contacto y Tarifas, además de Editar empresa y la Ciudad", async () => {

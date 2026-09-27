@@ -3,6 +3,8 @@
  * Todos los montos llegan como string (BigInt serializado desde Prisma).
  */
 
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
+
 export type LiquidacionTramiteRow = {
   facturaId: string;
   borradorId: string;
@@ -130,16 +132,8 @@ export function formatCOP(value: string): string {
   }
 }
 
+/** Fecha-calendario (fechaFactura): día guardado a 00:00 UTC, se muestra en UTC. */
 export function formatDate(isoString: string | null): string {
   if (!isoString) return "—";
-  try {
-    return new Date(isoString).toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      timeZone: "America/Bogota",
-    });
-  } catch {
-    return isoString;
-  }
+  return formatFechaCalendario(isoString) || isoString;
 }

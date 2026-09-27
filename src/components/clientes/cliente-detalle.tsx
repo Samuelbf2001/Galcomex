@@ -23,7 +23,7 @@ import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
 import { SeccionComisionesEmpresa } from "@/components/comisiones/seccion-comisiones-empresa";
 import { SeccionCarteraEmpresa } from "@/components/clientes/seccion-cartera-empresa";
 import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
-import { SeccionPagosProveedor } from "@/components/clientes/seccion-pagos-proveedor";
+import { SeccionCxpProveedor } from "@/components/clientes/seccion-cxp-proveedor";
 import { SeccionTarifario } from "@/components/clientes/seccion-tarifario";
 import { fetchTarifarios, type TarifarioRow } from "@/components/clientes/tarifas-api";
 import { ModuleState } from "@/components/layout/module-state";
@@ -33,6 +33,7 @@ import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, Skeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin } from "@/lib/auth/rol-context";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 // ---------------------------------------------------------------------------
 // Helpers de formato
@@ -51,15 +52,48 @@ function formatCOP(bigStr: string): string {
   }
 }
 
-function formatDate(iso: string | null): string {
+/**
+ * Fecha del anticipo (fecha-calendario, 00:00 UTC): se muestra el día guardado
+ * en cualquier navegador. Antes usaba la zona del navegador y en Bogotá salía
+ * un día antes (un anticipo del 10-sep se veía 09/09). Un instante viejo con
+ * hora se muestra con su día en Bogotá.
+ */
+export function formatDate(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso) || iso;
+}
+
+// ---------------------------------------------------------------------------
+// Qué sección se ve según el rol de la empresa (§D.1). Puro, probado en
+// cliente-detalle.test.tsx. "Proveedor puro" = esProveedor && !esCliente
+// (Almacarga, Express, Tampa): no consigna anticipos ni tiene cartera de
+// venta, así que esas dos secciones repetirían el estado de cuenta.
+// ---------------------------------------------------------------------------
+
+export type EmpresaParaSecciones = { esCliente: boolean; esProveedor: boolean };
+
+export interface SeccionesDeFicha {
+  /** Cartera (facturas de venta): lo que la empresa le debe a Galcomex como cliente. */
+  cartera: boolean;
+  /** Estado de cuenta con el proveedor + "Pagos realizados" (CxP v2, nuevo). */
+  estadoCuentaProveedor: boolean;
+  /** Cuenta corriente: para un proveedor puro, solo si además tiene cargos manuales. */
+  cuentaCorrienteRequiereCargosManuales: boolean;
+  /** Anticipos: un proveedor puro no consigna anticipos. */
+  anticipos: boolean;
+  /** Trámites: para un proveedor puro se muestra solo si de hecho tiene alguno (dato raro), con aviso. */
+  tramitesSoloSiTiene: boolean;
+}
+
+export function seccionesDeFicha(empresa: EmpresaParaSecciones): SeccionesDeFicha {
+  const proveedorPuro = empresa.esProveedor && !empresa.esCliente;
+  return {
+    cartera: !proveedorPuro,
+    estadoCuentaProveedor: empresa.esProveedor,
+    cuentaCorrienteRequiereCargosManuales: proveedorPuro,
+    anticipos: !proveedorPuro,
+    tramitesSoloSiTiene: proveedorPuro,
+  };
 }
 
 function estadoBadgeClass(estado: string): string {
@@ -283,11 +317,16 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
 // Sub-componente: sección de trámites
 // ---------------------------------------------------------------------------
 
-function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
+function SeccionTramites({ tramites, aviso }: { tramites: TramiteResumen[]; aviso?: string }) {
   const { visibles, pagina, porPagina, total, setPagina, setPorPagina } = usePaginacionLocal(tramites, 25);
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      {aviso ? (
+        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+          {aviso}
+        </div>
+      ) : null}
       <div className="border-b border-slate-200 px-4 py-3">
         <p className="text-sm font-semibold text-slate-900">Trámites ({tramites.length})</p>
       </div>
@@ -669,6 +708,13 @@ export function ClienteDetallePage({
   const [tarifarios, setTarifarios] = useState<TarifarioRow[]>([]);
   const [tarifariosReloadKey, setTarifariosReloadKey] = useState(0);
 
+  // Un solo token para "algo movió el saldo con el proveedor": lo bump-ean
+  // tanto un pago/anulación en el estado de cuenta como un cruce en la cuenta
+  // corriente, y las dos secciones lo escuchan — así las dos cifras siempre
+  // quedan al día sin que haya que recargar la ficha entera (arregla N3).
+  const [cxpRefreshToken, setCxpRefreshToken] = useState(0);
+  const bumpCxpRefresh = () => setCxpRefreshToken((k) => k + 1);
+
   useEffect(() => {
     const controller = new AbortController();
 
@@ -734,6 +780,7 @@ export function ClienteDetallePage({
 
   const contactoVacio = !cliente.contactoNombre && !cliente.contactoEmail && !cliente.contactoTel;
   const sinTarifaVigente = !tieneTarifarioVigenteHoy(tarifarios);
+  const secciones = seccionesDeFicha(cliente);
 
   return (
     <section className="space-y-4">
@@ -760,18 +807,39 @@ export function ClienteDetallePage({
         </button>
       </div>
 
-      <SeccionCarteraEmpresa clienteId={cliente.id} nombreEmpresa={cliente.nombre} />
+      {secciones.cartera ? <SeccionCarteraEmpresa clienteId={cliente.id} nombreEmpresa={cliente.nombre} /> : null}
 
-      <SeccionCuentaCorriente clienteId={cliente.id} />
+      <SeccionCuentaCorriente
+        clienteId={cliente.id}
+        proveedorPuro={secciones.cuentaCorrienteRequiereCargosManuales}
+        refreshToken={cxpRefreshToken}
+        onCambio={bumpCxpRefresh}
+      />
 
       {/* Comisión por contenedor que la empresa le paga a Galcomex (LTRANS). */}
       <SeccionComisionesEmpresa empresaId={cliente.id} />
 
-      {cliente.esProveedor ? <SeccionPagosProveedor empresaId={cliente.id} nombreEmpresa={cliente.nombre} /> : null}
+      {secciones.estadoCuentaProveedor ? (
+        <SeccionCxpProveedor
+          empresaId={cliente.id}
+          nombreEmpresa={cliente.nombre}
+          refreshToken={cxpRefreshToken}
+          onCambio={bumpCxpRefresh}
+        />
+      ) : null}
 
-      <SeccionTramites tramites={cliente.tramites} />
+      {secciones.tramitesSoloSiTiene && cliente.tramites.length === 0 ? null : (
+        <SeccionTramites
+          tramites={cliente.tramites}
+          aviso={
+            secciones.tramitesSoloSiTiene && cliente.tramites.length > 0
+              ? `Esta empresa está marcada solo como proveedor pero aparece como cliente en ${cliente.tramites.length} trámite${cliente.tramites.length === 1 ? "" : "s"}. Revisa.`
+              : undefined
+          }
+        />
+      )}
 
-      <SeccionAnticipos anticipos={cliente.anticipos} />
+      {secciones.anticipos ? <SeccionAnticipos anticipos={cliente.anticipos} /> : null}
 
       {popup === "funciones" ? (
         <ModalShell

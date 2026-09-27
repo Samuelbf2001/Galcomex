@@ -3,6 +3,8 @@
  * Todos los montos llegan como string (BigInt serializado).
  */
 
+import { formatFechaCalendario, formatInstanteBogota } from "@/lib/tiempo/bogota";
+
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 export type DosPorEstado = {
@@ -308,20 +310,16 @@ export function formatCOP(value: string): string {
   }
 }
 
-/** Formatea una fecha ISO como dd/mm/aaaa */
+/** Fecha-calendario (fechaRef, fechaFactura): día guardado a 00:00 UTC, se muestra en UTC. */
 export function formatDate(isoString: string | null): string {
   if (!isoString) return "—";
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      timeZone: "America/Bogota",
-    });
-  } catch {
-    return isoString;
-  }
+  return formatFechaCalendario(isoString) || isoString;
+}
+
+/** Instante real (createdAt de auditoría): se muestra en el día de Bogotá. */
+export function formatDateTime(isoString: string | null): string {
+  if (!isoString) return "—";
+  return formatInstanteBogota(isoString) || isoString;
 }
 
 /** Etiqueta legible del estado del DO */

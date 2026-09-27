@@ -3,11 +3,14 @@
 import { Check, Loader2, Plus, Search, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { describirError, useToast } from "@/components/ui/toast";
-import { usePermiso } from "@/lib/auth/rol-context";
+import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
 
 import {
+  BeneficiarioApiError,
   createBeneficiario,
+  existenteDeDetalles,
   fetchBeneficiarios,
 } from "./beneficiario-api";
 
@@ -46,17 +49,20 @@ function isMulti(props: Props): props is PropsMulti {
 export function BeneficiarioCombobox(props: Props) {
   const { placeholder = "Buscar o crear beneficiario…", disabled = false } = props;
   const puedeCrear = usePermiso(ROLES_CREAR_BENEFICIARIO);
+  const esAdmin = useEsAdmin();
   const { toast } = useToast();
+  const confirmar = useConfirm();
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [todos, setTodos] = useState<BeneficiarioSeleccion[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
 
-  // Estado del mini-formulario de creación inline
+  // Estado del mini-formulario de creación inline (D.6: NIT y DV en campos separados)
   const [creatingForm, setCreatingForm] = useState(false);
   const [createNombre, setCreateNombre] = useState("");
   const [createNit, setCreateNit] = useState("");
+  const [createDv, setCreateDv] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -165,11 +171,24 @@ export function BeneficiarioCombobox(props: Props) {
   function handleInitCreate() {
     setCreateNombre(queryTrimmed);
     setCreateNit("");
+    setCreateDv("");
     setCreateError(null);
     setCreatingForm(true);
   }
 
-  async function handleConfirmCreate() {
+  function seleccionarExistente(b: BeneficiarioSeleccion) {
+    if (isMulti(props)) {
+      if (!props.value.some((v) => v.id === b.id)) props.onChange([...props.value, b]);
+    } else {
+      props.onChange(b);
+      setOpen(false);
+      setQuery("");
+    }
+    setCreatingForm(false);
+    setQuery("");
+  }
+
+  async function handleConfirmCreate(opts?: { confirmarOtraFicha?: boolean; otraCuentaMismoProveedor?: boolean }) {
     if (!createNombre.trim() || creating || !puedeCrear) return;
     setCreating(true);
     setCreateError(null);
@@ -177,21 +196,66 @@ export function BeneficiarioCombobox(props: Props) {
       const nuevo = await createBeneficiario({
         nombre: createNombre.trim(),
         nit: createNit.trim() || null,
+        dv: createDv.trim() || null,
+        confirmarOtraFicha: opts?.confirmarOtraFicha,
+        otraCuentaMismoProveedor: opts?.otraCuentaMismoProveedor,
       });
       setTodos((prev) =>
         [...prev, nuevo].sort((a, b) => a.nombre.localeCompare(b.nombre)),
       );
-      if (isMulti(props)) {
-        props.onChange([...props.value, nuevo]);
-      } else {
-        props.onChange(nuevo);
-        setOpen(false);
-        setQuery("");
-      }
-      setCreatingForm(false);
-      setQuery("");
+      seleccionarExistente(nuevo);
       toast({ title: "Beneficiario creado", description: nuevo.nombre, variant: "success" });
     } catch (e) {
+      // CA-19: ya existe una ficha con ese NIT base → se usa directamente.
+      if (e instanceof BeneficiarioApiError && e.codigo === "BENEFICIARIO_EXISTE") {
+        const existente = existenteDeDetalles(e.detalles);
+        if (existente) {
+          if (esAdmin) {
+            // Crear otra ficha es la acción EXPLÍCITA (botón de confirmar):
+            // cerrar el aviso (Escape, la X o "Usar esa ficha") nunca crea un duplicado.
+            const crearOtra = await confirmar({
+              title: "Ya existe esa ficha",
+              description: `${e.message} Si es la misma empresa, se usa esa ficha. ¿Es otra cuenta del mismo proveedor?`,
+              confirmText: "Sí, crear otra ficha",
+              cancelText: "No, usar esa ficha",
+            });
+            if (crearOtra) {
+              setCreating(false);
+              await handleConfirmCreate({ otraCuentaMismoProveedor: true });
+            } else {
+              seleccionarExistente(existente);
+              toast({ title: "Se usó la ficha existente", description: existente.nombre, variant: "info" });
+            }
+            return;
+          }
+          seleccionarExistente(existente);
+          toast({ title: "Se usó la ficha existente", description: existente.nombre, variant: "info" });
+          return;
+        }
+      }
+      // CA-41: NIT parecido (sin el último dígito, o número + DV) → confirmar si es la misma empresa.
+      if (e instanceof BeneficiarioApiError && e.codigo === "POSIBLE_BENEFICIARIO_DUPLICADO") {
+        const existente = existenteDeDetalles(e.detalles);
+        // Crear es la acción EXPLÍCITA: cerrar el aviso (Escape o la X) no crea nada.
+        const crearOtra = await confirmar({
+          title: "¿Es la misma empresa?",
+          description: existente
+            ? `${e.message} Si es la misma, se usa esa ficha.`
+            : e.message,
+          confirmText: "Es otra, crear la ficha",
+          cancelText: existente ? "Es la misma, usar esa ficha" : "No crear",
+        });
+        if (crearOtra) {
+          setCreating(false);
+          await handleConfirmCreate({ confirmarOtraFicha: true });
+        } else if (existente) {
+          seleccionarExistente(existente);
+          toast({ title: "Se usó la ficha existente", description: existente.nombre, variant: "info" });
+        } else {
+          setCreateError("No se creó la ficha. Revisa el NIT o busca la empresa en la lista.");
+        }
+        return;
+      }
       setCreateError(describirError(e, "Error al crear."));
     } finally {
       setCreating(false);
@@ -281,13 +345,22 @@ export function BeneficiarioCombobox(props: Props) {
                 aria-label="Nombre del nuevo beneficiario"
                 className="h-8 w-full border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
               />
-              <input
-                value={createNit}
-                onChange={(e) => setCreateNit(e.target.value)}
-                placeholder="NIT (opcional)"
-                aria-label="NIT del nuevo beneficiario (opcional)"
-                className="h-8 w-full border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
-              />
+              <div className="flex gap-2">
+                <input
+                  value={createNit}
+                  onChange={(e) => setCreateNit(e.target.value)}
+                  placeholder="NIT sin DV (opcional)"
+                  aria-label="NIT del nuevo beneficiario, sin dígito de verificación (opcional)"
+                  className="h-8 flex-1 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
+                />
+                <input
+                  value={createDv}
+                  onChange={(e) => setCreateDv(e.target.value.replace(/[^0-9]/g, "").slice(0, 1))}
+                  placeholder="DV"
+                  aria-label="Dígito de verificación (opcional)"
+                  className="h-8 w-14 border border-slate-300 bg-white px-2 text-center text-sm outline-none focus:border-cyan-600"
+                />
+              </div>
               {createError ? (
                 <p className="text-xs text-rose-600">{createError}</p>
               ) : null}

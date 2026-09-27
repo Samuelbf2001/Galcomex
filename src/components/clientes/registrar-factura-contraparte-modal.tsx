@@ -12,8 +12,8 @@ import {
 import { nombreCortoEmpresa } from "@/lib/cuenta-corriente/nombre-corto";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { ModalShell } from "@/components/ui/modal-shell";
-import { hoyBogota } from "@/lib/cuenta-corriente/hoy-bogota";
 import { describirError, useToast } from "@/components/ui/toast";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 const CONCEPTOS_SUGERIDOS = ["Servicios aduaneros", "Quincenas", "Primas"];
 
@@ -53,7 +53,7 @@ export function RegistrarFacturaContraparteModal({
   const [concepto, setConcepto] = useState("");
   const [numeroFactura, setNumeroFactura] = useState("");
   const [valor, setValor] = useState("");
-  const [fecha, setFecha] = useState(hoyBogota());
+  const [fecha, setFecha] = useState(hoyBogotaISO());
   const [archivo, setArchivo] = useState<File | null>(null);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -111,8 +111,8 @@ export function RegistrarFacturaContraparteModal({
         concepto: concepto.trim(),
         numeroFactura: numeroFactura.trim(),
         valor: valor.replace(/\D/g, ""),
-        // Día del calendario tal cual (AAAA-MM-DD): el servidor lo ancla al
-        // mediodía de Bogotá para que no se muestre como el día anterior.
+        // Día del calendario tal cual (AAAA-MM-DD): el servidor lo guarda como
+        // fecha-calendario (00:00 UTC, §D.7) y se muestra en UTC.
         fecha,
         soporte,
       });

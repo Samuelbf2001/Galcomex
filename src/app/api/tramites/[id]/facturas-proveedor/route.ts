@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
+import { CxpError, cuerpoErrorCxp } from "@/lib/cxp/errores";
 import {
   FacturaProveedorDuplicadaError,
   crearFacturaProveedor,
@@ -56,6 +57,12 @@ export async function GET(_request: NextRequest, context: RouteContext) {
   return jsonResponse({ facturas });
 }
 
+/**
+ * Alta de factura de proveedor (CxP v2). Errores con `{ error, codigo, detalles? }`:
+ * 422 `PROVEEDOR_OBLIGATORIO`; 409 `FACTURA_DUPLICADA`; 409 `POSIBLE_DUPLICADO`
+ * (reenviar con `confirmarPosibleDuplicado: true`); 409 `USD_VALOR_LEJOS_DE_TRM`
+ * (reenviar con `confirmarValorUsd: true`).
+ */
 export async function POST(request: NextRequest, context: RouteContext) {
   const session = await requireRole(["ADMIN", "OPERATIVO", "SOCIO"]);
 
@@ -79,6 +86,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const factura = await crearFacturaProveedor({
       tramiteId: id,
       ...payload,
+      // Sin ficha → el servicio responde PROVEEDOR_OBLIGATORIO (422, R7).
+      beneficiarioId: payload.beneficiarioId ?? "",
       subidaPorId: session.user.id,
     });
 
@@ -87,11 +96,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (error instanceof ZodError) {
       return validationError(error);
     }
+    if (error instanceof CxpError) {
+      return jsonResponse(cuerpoErrorCxp(error), { status: error.status });
+    }
     if (error instanceof FacturaProveedorDuplicadaError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
+      return NextResponse.json({ error: error.message, codigo: "FACTURA_DUPLICADA" }, { status: 409 });
     }
     if (isDomainError(error)) {
-      return domainErrorResponse(error);
+      const codigo = (error as { codigo?: unknown }).codigo;
+      return typeof codigo === "string"
+        ? NextResponse.json({ error: error.message, codigo }, { status: error.status })
+        : domainErrorResponse(error);
     }
     throw error;
   }

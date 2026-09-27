@@ -160,11 +160,14 @@ describe("catálogo", () => {
     // Encendidas por defecto: los anticipos (equivale al viejo
     // Cliente.manejaAnticipo, que venía con default true) y los dos requisitos
     // del DO que Ernesto pidió para todas las empresas (22-sep-2026): tarifa
-    // vigente (D1) y BL + factura comercial (D2).
+    // vigente (D1) y BL + factura comercial (D2). CxP v2 (decisión 9,
+    // 23-sep-2026): "Sin anticipo no hay pago" también nace encendida; la
+    // migración 20260925100300 la apaga donde anticipos_cliente ya era false.
     expect(capacidadesActivas(mapa)).toEqual([
       "anticipos_cliente",
       "do_exige_tarifa_vigente",
       "docs_bl_factura_obligatorios",
+      "pago_exige_anticipo",
     ]);
   });
 

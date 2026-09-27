@@ -28,10 +28,8 @@ export default async function ClienteDetallePage({ params, searchParams }: Props
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
         </Link>
         <div>
-          <h1 className="text-2xl font-semibold tracking-normal">Ficha del cliente</h1>
-          <p className="mt-0.5 text-sm text-slate-600">
-            Datos, tarifas, tramites, anticipos y facturas relacionados.
-          </p>
+          <h1 className="text-2xl font-semibold tracking-normal">Ficha de la empresa</h1>
+          <p className="mt-0.5 text-sm text-slate-600">Datos, operación y cuenta de la empresa.</p>
         </div>
       </div>
 

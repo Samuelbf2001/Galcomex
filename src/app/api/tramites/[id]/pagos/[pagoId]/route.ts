@@ -1,23 +1,20 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import {
-  DocumentoDeOtroTramiteError,
-  DocumentoNoEncontradoParaPagoError,
-  MatrizCanalNoEncontradoError,
-  actualizarPago,
-  eliminarPago,
-  getPagoConBeneficiario,
-} from "@/lib/pagos/service";
+import { respuestaErrorPagos } from "@/lib/pagos/respuesta-error";
+import { actualizarPago, eliminarPago, getPagoConBeneficiario } from "@/lib/pagos/service";
 import { actualizarPagoSchema } from "@/lib/validations/pagos";
 
 type RouteContext = {
   params: Promise<{ id: string; pagoId: string }>;
 };
 
+/**
+ * PATCH — edita un pago. Valor y canal de un pago con facturas o de un bloque
+ * no se cambian (409 PAGO_NO_EDITABLE); en un bloque, concepto/fecha/
+ * comprobantes se propagan a todo el bloque.
+ */
 export async function PATCH(request: NextRequest, context: RouteContext) {
   const session = await requireRole(["ADMIN", "OPERATIVO"]);
 
@@ -34,29 +31,13 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     return jsonResponse({ pago });
   } catch (error) {
-    if (error instanceof ZodError) {
-      return validationError(error);
-    }
-
-    if (error instanceof MatrizCanalNoEncontradoError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-
-    if (
-      error instanceof DocumentoNoEncontradoParaPagoError ||
-      error instanceof DocumentoDeOtroTramiteError
-    ) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
-    }
-
-    if (isDomainError(error)) {
-      return domainErrorResponse(error);
-    }
-
+    const respuesta = respuestaErrorPagos(error);
+    if (respuesta) return respuesta;
     throw error;
   }
 }
 
+/** DELETE — borra un pago suelto (devuelve el saldo a sus facturas). Un pago de bloque: 409 PAGO_DE_BLOQUE. */
 export async function DELETE(_request: NextRequest, context: RouteContext) {
   const session = await requireRole(["ADMIN", "OPERATIVO"]);
 
@@ -71,10 +52,8 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {
-    if (isDomainError(error)) {
-      return domainErrorResponse(error);
-    }
-
+    const respuesta = respuestaErrorPagos(error);
+    if (respuesta) return respuesta;
     throw error;
   }
 }

@@ -2,6 +2,7 @@ import {
   AgenciaAduanas,
   Ciudad,
   EstadoBorrador,
+  EstadoFacturaProveedor,
   EstadoTarifario,
   EstadoTramite,
   Prisma,
@@ -13,6 +14,9 @@ import {
 
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { configDe, tiene, type MapaCapacidades } from "@/lib/capacidades/resolver";
+import { bloquearTramites } from "@/lib/cxp/bloqueos";
+import { DoConFacturasPendientesError } from "@/lib/cxp/errores";
+import { numeroFacturaVisible } from "@/lib/cxp/saldos";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeSerializable } from "@/lib/db/serializable";
 import { tarifarioVigenteDe } from "@/lib/tarifas/service";
@@ -1042,6 +1046,55 @@ export const tramiteDetalleInclude = {
   },
 } satisfies Prisma.TramiteDOInclude;
 
+/**
+ * Facturas de proveedor del DO que aún deben plata (CxP v2, R10): saldo > 0
+ * (valor − Σ pagos aplicados − ajustes − cruce) o estado Pendiente/Abonada.
+ * Se toma la unión de ambas lecturas para que un estado desalineado nunca
+ * deje cerrar un DO con deuda. Número en formato visible ("FE 12481").
+ */
+async function facturasProveedorConSaldo(
+  tx: Prisma.TransactionClient,
+  tramiteId: string,
+): Promise<{ numFactura: string; saldo: bigint }[]> {
+  const facturas = await tx.facturaProveedor.findMany({
+    where: { tramiteId },
+    select: {
+      numFactura: true,
+      valor: true,
+      estado: true,
+      montoCompensado: true,
+      beneficiario: { select: { numFacturaConEspacio: true } },
+      pagos: { select: { monto: true } },
+      ajustes: { select: { monto: true } },
+    },
+    orderBy: [{ fecha: "asc" }, { createdAt: "asc" }],
+  });
+  return facturas.flatMap((f) => {
+    const saldado =
+      f.pagos.reduce((s, p) => s + p.monto, 0n) + f.ajustes.reduce((s, a) => s + a.monto, 0n) + f.montoCompensado;
+    const bruto = f.valor - saldado;
+    const saldo = bruto < 0n ? 0n : bruto;
+    const pendientePorEstado =
+      f.estado === EstadoFacturaProveedor.REGISTRADA || f.estado === EstadoFacturaProveedor.PARCIAL;
+    if (saldo === 0n && !pendientePorEstado) return [];
+    return [
+      {
+        numFactura: numeroFacturaVisible(f.numFactura, f.beneficiario?.numFacturaConEspacio ?? false),
+        saldo,
+      },
+    ];
+  });
+}
+
+/**
+ * Opciones de la transacción de `transitionTramite`. Cerrar el DO espera su
+ * candado (`bloquearTramites`), que un pago en bloque o la anulación de un
+ * bloque retienen hasta 30 s (su propio timeout); con los 5 s por defecto de
+ * Prisma el cierre vencía en esa espera (P2028) y la ruta respondía 500. El
+ * timeout queda por encima de ese presupuesto de 30 s.
+ */
+const TX_TRANSICION = { maxWait: 10_000, timeout: 35_000 } as const;
+
 export async function transitionTramite(
   tramiteId: string,
   estadoDes: EstadoTramite,
@@ -1065,6 +1118,14 @@ export async function transitionTramite(
   } = {},
 ): Promise<TransitionResult> {
   return prisma.$transaction(async (tx) => {
+    // CxP v2 (R10, §B.5): cerrar el DO bloquea su fila ANTES de leerla, en el
+    // mismo orden (DO → facturas) que pagos, anulación de bloques y borrado de
+    // pagos; así el conteo de facturas pendientes no se cruza con una
+    // operación que reabra una factura.
+    if (estadoDes === EstadoTramite.CERRADO) {
+      await bloquearTramites(tx, [tramiteId]);
+    }
+
     const actual = await tx.tramiteDO.findUnique({
       where: { id: tramiteId },
       include: {
@@ -1118,7 +1179,7 @@ export async function transitionTramite(
       if (resuelto && !resuelto.ok) {
         return falloDeRegla(resuelto.error);
       }
-      fechaEnviadoAFacturarFlujoCorto = new Date();
+      fechaEnviadoAFacturarFlujoCorto = fechaCalendarioBogota();
     }
 
     // Reapertura de emergencia: el trámite YA está CERRADO (estado terminal).
@@ -1241,6 +1302,27 @@ export async function transitionTramite(
         status: 422,
         message: `Transicion invalida: ${actual.estado} -> ${estadoDes}`,
       };
+    }
+
+    // CxP v2 (R10): no se cierra un DO con facturas de proveedor Pendientes o
+    // Abonadas (tampoco con la excepción de ADMIN): después ya no admitiría el
+    // pago y la deuda quedaría colgada.
+    if (estadoDes === EstadoTramite.CERRADO && actual.estado !== EstadoTramite.CERRADO) {
+      const pendientes = await facturasProveedorConSaldo(tx, tramiteId);
+      if (pendientes.length > 0) {
+        const error = new DoConFacturasPendientesError(actual.consecutivo, pendientes);
+        return {
+          ok: false,
+          status: error.status,
+          message: error.message,
+          codigo: error.codigo,
+          // BigInt → string: la ruta responde con NextResponse.json.
+          detalles: {
+            consecutivo: actual.consecutivo,
+            facturas: pendientes.map((f) => ({ numFactura: f.numFactura, saldo: f.saldo.toString() })),
+          },
+        };
+      }
     }
 
     // D1 — Abrir una solicitud exige tarifa vigente, igual que crear el DO:
@@ -1433,7 +1515,7 @@ export async function transitionTramite(
     }
 
     return { ok: true, tramite: updated, advertencias };
-  });
+  }, TX_TRANSICION);
 }
 
 export { formatConsecutivo };

@@ -221,6 +221,60 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   cálculo y eventos" en el Resumen del DO (`seccion-eventos-tramite.tsx`),
   PDF en `GET /api/tarifarios/[id]/pdf`. Demo: `npx tsx scripts/demo-tarifario.ts`.
 
+## Cuentas por pagar a proveedores (CxP v2)
+
+Lo que Galcomex le debe a cada proveedor, factura por factura, sin pagar dos
+veces. Detalle completo (reglas R1–R20, migraciones M1–M5 y M3b, runbook, reversa):
+`docs/CXP-PROVEEDORES.md`.
+
+- **Saldo** = `valor − Σ PagoTramiteFactura.monto − Σ ajustes − montoCompensado`,
+  siempre `0 ≤ saldo ≤ valor`. **Estado = función del saldo** (`estadoDe` en
+  `src/lib/cxp/saldos.ts`): `REGISTRADA` (saldo = valor) · `PARCIAL` (0 < saldo
+  < valor) · `PAGADA` (saldo 0). En pantalla: **Pendiente / Abonada / Pagada**
+  (+ "Cruzada" y "Pagada con ajuste"). `FACTURADA_CLIENTE` está deprecado: pagada
+  al proveedor y cobrada al cliente son cosas independientes.
+- **Única puerta:** `aplicarSaldo` (`src/lib/cxp/aplicar.ts`) es lo ÚNICO que baja
+  el saldo; `revertirSaldo` lo único que lo devuelve; `recalcularEstadoFactura`
+  lo único que escribe el estado. Los 4 caminos pasan por ahí: pago suelto
+  (`crearPago` con `aplicaciones`), "Generar pago" (`generarPagoDesdeFactura`),
+  pago en bloque (`crearPagoMultiDO`) y cruce de cuenta corriente
+  (`registrarCompensacion`); la conciliación usa `enlazarPagoExistente` o un
+  bloque histórico. Nunca escribas `pago_tramite_factura` ni `estado` a mano.
+- **Orden de bloqueo** en toda mutación de CxP y al cerrar un DO: cabecera de
+  idempotencia → `bloquearTramites` → `bloquearFacturas` (ambos por id,
+  `FOR UPDATE`). Así dos pagos simultáneos no pagan la misma factura y no hay
+  deadlocks (probado en `src/lib/pagos/__tests__/concurrencia-cxp.test.ts`).
+- **Reglas:** nunca más que el saldo (abono = queda Abonada); un pago va a un
+  solo proveedor (clave `NIT:<nitBase>` de la ficha o `BEN:<id>`); ficha de pago
+  obligatoria al registrar la factura; una factura por proveedor + número
+  normalizado (índice único) y aviso si coinciden los dígitos; pago en bloque =
+  un `PagoGrupo` con comprobante obligatorio (salvo histórico), costo bancario
+  una sola vez (`PRIMER_DO` / `GALCOMEX` / `PRORRATEADO`); un pago de bloque no se
+  borra ni se le cambia valor/canal: se anula el bloque completo (solo ADMIN,
+  motivo); un DO `CERRADO` no admite pagos ni anulaciones, y no se cierra con
+  facturas Pendientes o Abonadas; USD: manda el valor en pesos, la re-expresión
+  es solo ADMIN; `claveIdempotencia` (UUID de la pantalla) evita el doble clic.
+- **Base de datos** (triggers, primera vez en el proyecto; Prisma no los ve):
+  llaves (`nitBase`, `numFacturaNormalizado`, `proveedorClave`) y **guardianes
+  de saldo** (M5): cualquier escritura que deje aplicado + ajustes + compensado
+  > valor falla con `CXP_SOBREAPLICACION` (el dominio lo traduce a 409). El NIT
+  **no adivina el DV**: `800154017` y `8001540178` son llaves distintas; el DV solo
+  se separa si viene con guion. Probado en `src/lib/cxp/__tests__/triggers.integration.test.ts`.
+- **Roles:** ADMIN y REVISOR ven el estado de cuenta completo (REVISOR nunca ve
+  botones de acción); OPERATIVO ve solo lo pendiente y puede pagar; anular
+  bloque, quitar ajuste LEGADO, re-expresar USD, histórico y conciliación: solo ADMIN.
+- **Fechas-calendario** (factura, pago, TRM, cruce): 00:00 UTC del día; "hoy" =
+  día en Bogotá (`hoyBogotaISO`, `src/lib/tiempo/bogota.ts`).
+- **Excel de Camila = maestro.** `scripts/cxp/conciliar-excel.ts` (simulacro por
+  defecto; escribe solo con `--modo aplicar --aplicar`, usuario ADMIN) y
+  `scripts/cxp/verificar-invariantes.ts` (I1–I7, sale con código 1 si hay
+  violaciones). Corre el verificador antes y después de desplegar o conciliar,
+  y tras desplegar también `scripts/cxp/comparar-cuenta-vs-cxp.ts` (cuenta
+  corriente vs estado de cuenta por empresa; sale con 1 si difieren).
+- **«Generar pago» exige anticipo** (R9, cambio de v2): en un cliente con
+  anticipos, un DO sin anticipo no se paga desde la factura; se aplica el
+  anticipo o se apaga `pago_exige_anticipo` para ese cliente.
+
 ## Invariantes de código — NUNCA violar
 
 1. **Dinero SIEMPRE como `BigInt` (COP enteros).** Cero flotantes en cálculos financieros.

@@ -7,6 +7,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 import {
   CarteraApiError,
@@ -76,14 +77,6 @@ function filaDesdeFactura(
   };
 }
 
-function todayISO(): string {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 type UploadState = "idle" | "uploading" | "done" | "error";
 
 // ─── Componente ──────────────────────────────────────────────────────────────
@@ -101,7 +94,7 @@ export function ConciliarLoteModal({
   );
 
   // Formulario único del lote
-  const [fecha, setFecha] = useState<string>(todayISO);
+  const [fecha, setFecha] = useState<string>(hoyBogotaISO);
   const [opcionRecaudoPago, setOpcionRecaudoPago] = useState<string>(
     "RECAUDO:BANCOLOMBIA",
   );

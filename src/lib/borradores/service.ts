@@ -14,8 +14,13 @@ import { COMISION_INTERNA_LM_MINIMO } from "@/lib/validations/borradores";
 
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { calcularSaldoLMInterno } from "@/lib/calculations/cruce-lm";
+import { motivoRevisionPago, parteCobrableDePago } from "@/lib/calculations/pagos-cobrables";
+import { tiene } from "@/lib/capacidades/resolver";
+import { formatoPesos } from "@/lib/cxp/saldos";
+import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
 import { propuestaParaTramite, TarifaIncompletaError, type PropuestaTarifa } from "@/lib/tarifas/service";
+import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import { getParametrosSistema } from "@/lib/parametros/service";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 import { resolverFacturableFlujoCorto } from "@/lib/tramites/flujo-corto";
@@ -34,6 +39,12 @@ import {
   ensureLineasFijas,
   resolverProductosLineasFijas,
 } from "./lineas-fijas";
+import {
+  asesoriaDePagos,
+  cargarAsesoriasDelTramite,
+  cargarPagosParaCobro,
+} from "./pagos-para-cobro";
+import type { PagoPorRevisar } from "./pagos-por-revisar";
 import { recalcularTotalBorrador } from "./recalculo";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -71,6 +82,31 @@ type GenerarBorradorInput = {
    * Ej: [{concepto: "REVISIÓN DOCUMENTOS", valor: 20000n}, ...]
    */
   conceptosOperacionales?: ConceptoOperacional[];
+  /**
+   * Generar con el tarifario vigente (lo que manda el modal "Generar
+   * borrador"). Si no se puede aplicar, `TarifarioNoAplicableError` (409):
+   * NUNCA se cae a la comisión por defecto. Excluye `comision` y
+   * `conceptosOperacionales`. Sin este flag, el comportamiento de siempre:
+   * sin comisión ni conceptos se intenta el tarifario y, si no hay, la
+   * comisión por defecto (scripts; `ensureBorrador` manda el flag si la
+   * empresa tiene `tarifario_propio`). Excepción: si hay tarifario vigente
+   * pero no propone líneas para el DO, también 409 (nunca la comisión por
+   * defecto).
+   */
+  usarTarifario?: boolean;
+  /** Tarifario que el revisor vio en la propuesta; si ya no es el vigente → 409. */
+  tarifarioIdEsperado?: string;
+  /**
+   * Total del tarifario que vio el revisor. Si el tarifario, recalculado al
+   * generar, da otro total (cambió la base del DO o un costo que refleja un
+   * ítem ESPEJO_DE_COSTO) → 409: nunca se genera con un total que nadie vio.
+   */
+  totalTarifarioEsperado?: bigint;
+  /**
+   * Día con el que se busca el tarifario vigente. Por defecto, el día
+   * calendario en Bogotá (`fechaCalendarioBogota()`), no el instante UTC.
+   */
+  fecha?: Date;
   usuarioId: string;
 };
 
@@ -134,6 +170,24 @@ export class ConceptosOperacionalesInvalidosError extends Error {
 // archivo — evita el ciclo borradores → flujo-corto → borradores). Se
 // re-exporta aquí para no romper a quien la importaba desde este módulo.
 export { TarifaIncompletaError };
+
+/**
+ * Se pidió generar CON el tarifario (`usarTarifario`) y el servidor no puede
+ * aplicar el que el revisor vio: ya no hay tarifario vigente, rige otra
+ * versión, la empresa ya no tiene la función o el tarifario no propone
+ * líneas. 409: el estado cambió desde la propuesta; nunca se factura la
+ * comisión por defecto en su lugar (hallazgo 1 del 24-sep). "No propone
+ * líneas" da 409 aunque no venga `usarTarifario` (MCP, scripts).
+ */
+export class TarifarioNoAplicableError extends Error {
+  public readonly status: number;
+  constructor(message: string, status = 409) {
+    super(message);
+    this.name = "TarifarioNoAplicableError";
+    this.status = status;
+  }
+}
+
 
 export class TramiteNoFacturableError extends Error {
   public readonly status = 422;
@@ -223,8 +277,9 @@ export async function getBorradorCompleto(borradorId: string) {
 
 /**
  * Genera un BorradorFactura para un trámite:
- * 1. Lee anticipos aplicados, pagos y parámetros desde BD.
- * 2. Llama al motor puro calcularBorrador().
+ * 1. Lee anticipos aplicados, pagos (con sus facturas enlazadas) y parámetros desde BD.
+ * 2. Llama al motor puro calcularBorrador() solo con la parte cobrable de cada
+ *    pago (`pagos-cobrables`: fuera lo pagado por facturas no repercutibles).
  * 3. Persiste el borrador con estado BORRADOR y sus líneas de revisión.
  * 4. Genera AuditLog.
  */
@@ -268,7 +323,7 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   const esConceptosIva = formato.formato === FORMATO_CONCEPTOS_IVA;
 
   // ── Leer datos del trámite en paralelo ────────────────────────────────────
-  const [aplicaciones, pagos, params, formaPagoDefault, productosFijos] =
+  const [aplicaciones, pagos, params, formaPagoDefault, productosFijos, asesorias] =
     await Promise.all([
       prisma.aplicacionAnticipo.findMany({
         where: { tramiteId },
@@ -282,19 +337,13 @@ export async function generarBorrador(input: GenerarBorradorInput) {
           },
         },
       }),
-      prisma.pagoTramite.findMany({
-        where: { tramiteId },
-        orderBy: { orden: "asc" },
-        select: {
-          valor: true,
-          costoBancario: true,
-          concepto: true,
-          numSoporte: true,
-        },
-      }),
+      cargarPagosParaCobro(prisma, tramiteId),
       getParametrosSistema(),
       resolveFormaPagoDefault(),
       resolverProductosLineasFijas(),
+      // Facturas NO SE COBRA del trámite (enlazadas o no). Solo marcan pagos
+      // por revisar, que en CONCEPTOS_IVA no se calculan.
+      esConceptosIva ? Promise.resolve([]) : cargarAsesoriasDelTramite(prisma, tramiteId),
     ]);
 
   // ── Armar DTO para el motor ───────────────────────────────────────────────
@@ -316,13 +365,15 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   //   - un tipo `flujoCorto` SIEMPRE resuelve por `resolverFacturableFlujoCorto`
   //     (formato CONCEPTOS_IVA + valor/concepto a mano, o tarifa vigente sin
   //     pendientes) — nunca cae al valor por defecto ni al concepto genérico.
-  //     IGNORA `comision`/`conceptosOperacionales` si llegan (p. ej. desde el
-  //     modal manual "Generar borrador" de Facturación, que precarga 150.000):
-  //     ese modal no puede facturar un servicio suelto por su cuenta (B-N1).
-  //   - el resto de los tipos sigue igual: si nadie pasó comisión ni
-  //     desglose, tarifario vigente si lo hay (con datos de base incompletos
-  //     se corta con `TarifaIncompletaError`); sin tarifario, nada cambia
-  //     (casos dorados intactos).
+  //     IGNORA `comision`/`conceptosOperacionales`/`usarTarifario` si llegan
+  //     (p. ej. desde el modal manual "Generar borrador" de Facturación): ese
+  //     modal no puede facturar un servicio suelto por su cuenta (B-N1).
+  //   - el resto de los tipos: si nadie pasó comisión ni desglose, el desglose
+  //     sale del tarifario vigente (con datos de base incompletos se corta con
+  //     `TarifaIncompletaError`; si no propone líneas, 409). Con
+  //     `usarTarifario` (modal) el tarifario es obligatorio: si no se puede
+  //     aplicar el que el revisor vio, 409 — nunca la comisión por defecto.
+  //     Sin tarifario, nada cambia (casos dorados intactos).
   const conceptosDesdeTarifa = (propuesta: PropuestaTarifa): ConceptoOperacional[] =>
     propuesta.resultado!.lineas.map((l) => ({
       concepto: l.nombrePublico,
@@ -371,13 +422,51 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       comisionTarifa = facturableFlujoCorto.propuesta.resultado!.total;
       conceptosOperacionales = conceptosDesdeTarifa(facturableFlujoCorto.propuesta);
     }
-  } else if (input.comision === undefined && !conceptosOperacionales) {
-    const propuesta = await propuestaParaTramite(tramiteId);
-    if (propuesta.tarifario && propuesta.resultado) {
-      if (propuesta.resultado.pendientes.length > 0) {
-        throw new TarifaIncompletaError(propuesta.resultado.pendientes);
+  } else {
+    if (input.usarTarifario && (input.comision !== undefined || conceptosOperacionales)) {
+      throw new TarifarioNoAplicableError(
+        "Con el tarifario no se manda comisión ni conceptos a mano: elige una de las dos formas.",
+        422,
+      );
+    }
+    if (input.usarTarifario || (input.comision === undefined && !conceptosOperacionales)) {
+      const propuesta = await propuestaParaTramite(tramiteId, input.fecha ?? fechaCalendarioBogota());
+      if (input.usarTarifario) {
+        if (!propuesta.tarifario || !propuesta.resultado) {
+          throw new TarifarioNoAplicableError(
+            `No se generó el borrador con el tarifario: ${propuesta.motivo ?? "la empresa no tiene un tarifario vigente"}. Vuelve a consultar el tarifario o escribe la comisión a mano.`,
+          );
+        }
+        if (input.tarifarioIdEsperado && propuesta.tarifario.id !== input.tarifarioIdEsperado) {
+          throw new TarifarioNoAplicableError(
+            `No se generó el borrador: el tarifario cambió mientras revisabas; ahora rige ${propuesta.tarifario.nombre} v${propuesta.tarifario.version}. Vuelve a consultar el tarifario y revisa los valores antes de generar.`,
+          );
+        }
       }
-      if (propuesta.resultado.lineas.length > 0) {
+      if (propuesta.tarifario && propuesta.resultado) {
+        if (propuesta.resultado.pendientes.length > 0) {
+          throw new TarifaIncompletaError(propuesta.resultado.pendientes);
+        }
+        // Tarifario vigente que no propone líneas para este DO (p. ej. Polyrec ZF
+        // con carga suelta: su ítem POR_TRAMO por CONTENEDOR da 0 con
+        // numContenedores = 0). Con o sin `usarTarifario`: la factura real no es
+        // la comisión por defecto, así que se corta aquí (MCP, scripts) en vez de
+        // facturar 150.000 en silencio. Sin tarifario vigente o sin la función
+        // (`propuesta.tarifario` null: Lucho/SOCIO_LM) no se entra a este bloque.
+        if (propuesta.resultado.lineas.length === 0) {
+          throw new TarifarioNoAplicableError(
+            `No se generó el borrador: el tarifario ${propuesta.tarifario.nombre} v${propuesta.tarifario.version} no propone líneas para este trámite. Escribe la comisión a mano o revisa el tarifario de la empresa.`,
+          );
+        }
+        if (
+          input.usarTarifario &&
+          input.totalTarifarioEsperado !== undefined &&
+          propuesta.resultado.total !== input.totalTarifarioEsperado
+        ) {
+          throw new TarifarioNoAplicableError(
+            `No se generó el borrador: los valores del tarifario cambiaron mientras revisabas (viste ${formatoPesos(input.totalTarifarioEsperado)}, ahora da ${formatoPesos(propuesta.resultado.total)}), por ejemplo porque cambió la base de cálculo del DO o se registró un pago. Vuelve a consultar el tarifario y revisa los valores antes de generar.`,
+          );
+        }
         tarifarioId = propuesta.tarifario.id;
         comisionTarifa = propuesta.resultado.total;
         conceptosOperacionales = conceptosDesdeTarifa(propuesta);
@@ -400,10 +489,17 @@ export async function generarBorrador(input: GenerarBorradorInput) {
     }
   }
 
+  // Solo la parte cobrable de cada pago entra al motor: lo pagado por facturas
+  // que NO se le cobran al cliente (asesoría Ascinter) queda fuera del total de
+  // pagos, de los costos bancarios y de la base del 4x1000. Los pagos sueltos y
+  // los 100 % repercutibles pasan intactos (casos dorados sin cambio).
+  const desgloses = pagos.map((p) => p.desglose);
+  const pagosCobrables = desgloses.map((d) => d.cobrable);
+
   const dto = {
     totalAnticipoAplicado,
     costoRecaudoAnticipo,
-    pagos: pagos.map((p) => ({ valor: p.valor, costoBancario: p.costoBancario })),
+    pagos: pagosCobrables,
     comision,
     ivaComision: input.ivaComision,
     tasaIva: params.tasaIva,
@@ -414,6 +510,54 @@ export async function generarBorrador(input: GenerarBorradorInput) {
 
   // ── Calcular ──────────────────────────────────────────────────────────────
   const resultado = calcularBorrador(dto);
+
+  // Rastro en la auditoría de creación: lo que se pagó pero no se le cobra al
+  // cliente, y los pagos cuyo reparto con la asesoría no es seguro (abono
+  // parcial mixto, sobrante, bloque con auditoría ambigua; en un trámite con
+  // asesoría, pagos cuya parte cobrable, sola o sumada con otros pagos, cobra
+  // de más facturas que se cobran; y pagos sueltos si queda asesoría que sus
+  // pagos enlazados no cubren; ver `motivoRevisionPago`,
+  // `sobranteCobradoPorGrupo` y `asesoriasSinCubrir`): hay que revisarlos a
+  // mano hasta que CxP v2 guarde el monto por factura. Solo marcan: ningún
+  // total cambia. El revisor los ve en GET /api/tramites/[id]/borrador
+  // (`leerPagosPorRevisar`); NUNCA van a comentariosCabecera, que viaja a
+  // SIIGO y la ve el cliente.
+  const pagosNoCobrables = {
+    valor: desgloses.reduce((s, d) => s + d.noCobrable, 0n),
+    costoBancario: pagos.reduce(
+      (s, p, i) => s + (p.pago.costoBancario - desgloses[i].cobrable.costoBancario),
+      0n,
+    ),
+  };
+  const { tramiteConAsesoria, asesoriaSinCubrir } = asesoriaDePagos(asesorias, pagos);
+  // En CONCEPTOS_IVA lo que se le cobra al cliente sale de las facturas de
+  // proveedor repercutibles (líneas TERCEROS), no de los pagos: los avisos de
+  // «cobrado de menos / de más» por pago no aplican y la lista va vacía.
+  const pagosPorRevisar: PagoPorRevisar[] = esConceptosIva
+    ? []
+    : pagos.flatMap(({ pago, paraCobro, bloqueSinMontos, sobranteCobradoEnGrupo }, i) => {
+        const d = desgloses[i];
+        const motivo = motivoRevisionPago(paraCobro, d, {
+          bloqueSinMontos,
+          tramiteConAsesoria,
+          asesoriaSinCubrir,
+          sobranteCobradoEnGrupo,
+        });
+        return motivo === null
+          ? []
+          : [
+              {
+                pagoId: pago.id,
+                concepto: pago.concepto,
+                numSoporte: pago.numSoporte,
+                valor: pago.valor,
+                sumaFacturas: d.sumaFacturas,
+                cobrable: d.cobrable.valor,
+                noCobrable: d.noCobrable,
+                motivo,
+              },
+            ];
+      });
 
   // ── Cruce interno con Lucho (solo SOCIO_LM) ───────────────────────────────
   // La comisión interna (mínima, ej. 150.000) es DISTINTA de la comisión de
@@ -607,7 +751,12 @@ export async function generarBorrador(input: GenerarBorradorInput) {
         accion: "CREATE",
         usuarioId,
         tramiteId,
-        despues: normalizeSerializable({ ...borrador, resultado }),
+        despues: normalizeSerializable({
+          ...borrador,
+          resultado,
+          pagosNoCobrables,
+          pagosPorRevisar,
+        }),
       },
     });
 
@@ -1099,12 +1248,12 @@ export async function actualizarComisionInternaLM(
     }
 
     // Costos bancarios reales: Σ costos de pagos + Σ costoRecaudo de anticipos
-    // distintos + costo del tipo de pago de la comisión interna LM.
+    // distintos + costo del tipo de pago de la comisión interna LM. De cada pago
+    // solo cuenta su parte cobrable (igual que en generarBorrador, de donde viene
+    // `actual.totalPagos`): la transferencia de un pago de solo asesoría la
+    // asume Galcomex.
     const [pagos, aplicaciones, params] = await Promise.all([
-      tx.pagoTramite.findMany({
-        where: { tramiteId: actual.tramiteId },
-        select: { costoBancario: true },
-      }),
+      cargarPagosParaCobro(tx, actual.tramiteId),
       tx.aplicacionAnticipo.findMany({
         where: { tramiteId: actual.tramiteId },
         select: { anticipo: { select: { id: true, costoRecaudo: true } } },
@@ -1112,7 +1261,10 @@ export async function actualizarComisionInternaLM(
       getParametrosSistema(),
     ]);
 
-    const costosPagos = pagos.reduce((sum, p) => sum + p.costoBancario, 0n);
+    const costosPagos = pagos.reduce(
+      (sum, p) => sum + parteCobrableDePago(p.paraCobro).costoBancario,
+      0n,
+    );
     const costoRecaudoAnticipo = aplicaciones
       .filter(
         (a, idx, arr) =>
@@ -1197,10 +1349,19 @@ export async function listarBorradores(tramiteId: string) {
  * trámite no cumple las condiciones (estado previo o posterior, etc.).
  * Sirve como red de seguridad para trámites que pasaron a ENVIADO_A_FACTURAR
  * sin haber generado borrador todavía — aplica a PROPIO y SOCIO_LM por igual.
+ *
+ * Empresa con `tarifario_propio`: se genera SOLO con el tarifario
+ * (`usarTarifario`). Si no hay uno vigente o no propone líneas, el 409 se
+ * traga aquí y el trámite queda sin borrador para que el revisor lo genere
+ * desde el modal; nunca con la comisión por defecto (150.000) en silencio.
  */
 export async function ensureBorrador(
   tramiteId: string,
   usuarioId: string,
+  // Día calendario en Bogotá (hallazgo 2 del 24-sep): con el instante UTC,
+  // desde las 19:00 del último día de vigencia no encontraba el tarifario y
+  // facturaba la comisión por defecto.
+  fecha: Date = fechaCalendarioBogota(),
 ): Promise<void> {
   const existente = await prisma.borradorFactura.findFirst({
     where: { tramiteId },
@@ -1210,7 +1371,7 @@ export async function ensureBorrador(
 
   const tramite = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
-    select: { estado: true },
+    select: { estado: true, clienteId: true },
   });
   if (!tramite) return;
   // Solo creamos borrador en ENVIADO_A_FACTURAR. Para estados posteriores
@@ -1218,7 +1379,8 @@ export async function ensureBorrador(
   if (tramite.estado !== "ENVIADO_A_FACTURAR") return;
 
   try {
-    await generarBorrador({ tramiteId, usuarioId });
+    const usarTarifario = tiene(await capacidadesDeEmpresa(tramite.clienteId), "tarifario_propio");
+    await generarBorrador({ tramiteId, usuarioId, fecha, ...(usarTarifario ? { usarTarifario: true } : {}) });
   } catch {
     // Falla silenciosa: si el motor o la BD rechazan, la UI seguirá mostrando
     // el estado "sin borrador" y el ADMIN podrá generarlo manualmente.

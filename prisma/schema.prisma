@@ -21,18 +21,22 @@ model User {
   sessions                 Session[]
   accounts                 Account[]
   auditLogs                AuditLog[]
-  doCreados                TramiteDO[]        @relation("CreadoPor")
-  checklistChecks          ChecklistItem[]    @relation("ValidadoPor")
-  documentos               Documento[]        @relation("SubidoPor")
-  borradoresAprobados      BorradorFactura[]  @relation("AprobadoPor")
-  borradoresFact           BorradorFactura[]  @relation("FacturadoPor")
-  facturasProveedorSubidas FacturaProveedor[] @relation("FacturasProveedorSubidas")
-  pagosFactura             PagoFactura[]      @relation("PagosFacturaRegistrados")
-  enlacesDocumento         DocumentoEnlace[]  @relation("EnlaceCreadoPor")
-  movimientosCuenta        MovimientoCuenta[] @relation("MovimientosCuentaRegistrados")
-  comisionesRegistradas    ComisionTramite[]  @relation("ComisionesRegistradas")
-  tarifariosCreados        Tarifario[]        @relation("TarifarioCreadoPor")
-  eventosMarcados          TramiteEvento[]    @relation("EventoMarcadoPor")
+  doCreados                TramiteDO[]              @relation("CreadoPor")
+  checklistChecks          ChecklistItem[]          @relation("ValidadoPor")
+  documentos               Documento[]              @relation("SubidoPor")
+  borradoresAprobados      BorradorFactura[]        @relation("AprobadoPor")
+  borradoresFact           BorradorFactura[]        @relation("FacturadoPor")
+  facturasProveedorSubidas FacturaProveedor[]       @relation("FacturasProveedorSubidas")
+  pagosFactura             PagoFactura[]            @relation("PagosFacturaRegistrados")
+  enlacesDocumento         DocumentoEnlace[]        @relation("EnlaceCreadoPor")
+  movimientosCuenta        MovimientoCuenta[]       @relation("MovimientosCuentaRegistrados")
+  comisionesRegistradas    ComisionTramite[]        @relation("ComisionesRegistradas")
+  tarifariosCreados        Tarifario[]              @relation("TarifarioCreadoPor")
+  eventosMarcados          TramiteEvento[]          @relation("EventoMarcadoPor")
+  /// CxP v2: ajustes de factura de proveedor (hoy solo LEGADO de la migración, D-8).
+  ajustesFacturaProveedor  AjusteFacturaProveedor[] @relation("AjustesFacturaProveedor")
+  pagoGruposCreados        PagoGrupo[]              @relation("PagoGrupoCreadoPor")
+  pagoGruposAnulados       PagoGrupo[]              @relation("PagoGrupoAnuladoPor")
 
   @@map("user")
 }
@@ -647,10 +651,13 @@ model Documento {
   subidoPor     User               @relation("SubidoPor", fields: [subidoPorId], references: [id])
   createdAt     DateTime           @default(now())
 
-  pagosTramite      PagoTramite[]      @relation("SoporteDocumento")
-  pagosComercio     PagoTramite[]      @relation("ComprobanteComercio")
-  facturasProveedor FacturaProveedor[] @relation("FacturaProveedorDoc")
-  enlaces           DocumentoEnlace[]
+  pagosTramite          PagoTramite[]      @relation("SoporteDocumento")
+  pagosComercio         PagoTramite[]      @relation("ComprobanteComercio")
+  facturasProveedor     FacturaProveedor[] @relation("FacturaProveedorDoc")
+  enlaces               DocumentoEnlace[]
+  /// CxP v2: comprobantes del pago en bloque (cabecera PagoGrupo).
+  pagoGruposComprobante PagoGrupo[]        @relation("PagoGrupoComprobante")
+  pagoGruposComercio    PagoGrupo[]        @relation("PagoGrupoComercio")
 
   @@index([tramiteId, eliminado])
   @@map("documento")
@@ -755,10 +762,50 @@ model AplicacionAnticipo {
 }
 
 // ─── Facturas de proveedor ────────────────────────────────────────────────────
+/// CxP v2 (docs/CXP-PROVEEDORES.md). El estado es una FUNCIÓN del saldo
+/// (`estadoDe` en src/lib/cxp/saldos.ts); solo lo escribe
+/// `recalcularEstadoFactura`. En pantalla: Pendiente / Abonada / Pagada.
 enum EstadoFacturaProveedor {
+  /// Pendiente: saldo = valor
   REGISTRADA
+  /// Pagada, cruzada o cerrada con ajuste: saldo = 0
   PAGADA
+  /// @deprecated Nunca se escribe (0 filas en prod). "Facturada al cliente" se
+  /// deriva de LineaRevisionFactura en un borrador APROBADO/FACTURADO.
   FACTURADA_CLIENTE
+  /// Abonada: 0 < saldo < valor (CxP v2)
+  PARCIAL
+}
+
+/// Moneda de la factura de proveedor. El valor en pesos (`valor`) es el que
+/// manda y el que se paga; USD guarda además el valor de origen y la TRM.
+enum Moneda {
+  COP
+  USD
+}
+
+/// v2: solo existe LEGADO (lo crea la migración; ADMIN solo puede eliminarlo).
+/// REDONDEO queda reservado para la fase de centavos (D-10); los demás están
+/// declarados pero sin camino de creación (D-8, D-4).
+enum TipoAjusteFacturaProveedor {
+  NOTA_CREDITO
+  RETENCION
+  DESCUENTO
+  DIFERENCIA_CAMBIO
+  REDONDEO
+  LEGADO
+}
+
+enum EstadoPagoGrupo {
+  ACTIVO
+  ANULADO
+}
+
+/// Quién asume el costo bancario de un pago en bloque (D-1, regla R8).
+enum CostoBancarioAsumidoPor {
+  GALCOMEX
+  PRIMER_DO
+  PRORRATEADO
 }
 
 model FacturaProveedor {
@@ -796,13 +843,57 @@ model FacturaProveedor {
   createdAt       DateTime               @default(now())
   updatedAt       DateTime               @updatedAt
 
+  // ── CxP v2 (docs/CXP-PROVEEDORES.md) ──────────────────────────────────────
+  /// Llave de comparación del N°: mayúsculas y solo A-Z0-9 ("FE- 12481" → "FE12481").
+  /// La llena el trigger `trg_factura_proveedor_claves` (función SQL
+  /// cxp_normalizar_num, espejo TS `normalizarNumeroFactura`). No escribir a mano.
+  numFacturaNormalizado String?
+  /// "NIT:<nitBase de la ficha>" o "BEN:<beneficiarioId>" si la ficha no tiene NIT
+  /// colombiano. La llena el mismo trigger. NULL = factura sin proveedor o
+  /// "duplicado heredado" pendiente de revisión (lo dejó así la migración).
+  proveedorClave        String?
+  moneda                Moneda    @default(COP)
+  /// Solo USD: valor en centavos de dólar (USD 131,00 → 13100).
+  valorOrigenCentavos   BigInt?
+  /// Solo USD: TRM en centavos de peso por dólar (3.710,50 → 371050).
+  trmCentavos           BigInt?
+  /// Solo USD: fecha-calendario de la TRM (00:00 UTC del día).
+  fechaTrm              DateTime?
+  /// Parte del valor saldada por cruce de cuenta corriente (0 = sin cruce).
+  montoCompensado       BigInt    @default(0)
+
   pagos          PagoTramiteFactura[]
   lineasRevision LineaRevisionFactura[]
+  ajustes        AjusteFacturaProveedor[]
 
   @@unique([tramiteId, numFactura])
+  /// Una factura por proveedor en todo el sistema (los NULL no chocan).
+  @@unique([proveedorClave, numFacturaNormalizado])
   @@index([beneficiarioId])
+  @@index([beneficiarioId, estado])
   @@index([tramiteId, estado])
   @@map("factura_proveedor")
+}
+
+/// Ajuste que baja el saldo de una factura de proveedor sin que salga plata.
+/// v2: solo LEGADO (migración CxP v2: factura que estaba PAGADA con pagos que
+/// no alcanzaban su valor). CHECK SQL `monto > 0`. El guardián de saldo
+/// (`trg_ajuste_saldo`) impide que aplicado + ajustes + compensado > valor.
+model AjusteFacturaProveedor {
+  id        String                     @id @default(cuid())
+  facturaId String
+  factura   FacturaProveedor           @relation(fields: [facturaId], references: [id], onDelete: Restrict)
+  tipo      TipoAjusteFacturaProveedor
+  /// > 0 (CHECK en SQL).
+  monto     BigInt
+  motivo    String
+  /// null = creado por la migración.
+  usuarioId String?
+  usuario   User?                      @relation("AjustesFacturaProveedor", fields: [usuarioId], references: [id], onDelete: SetNull)
+  createdAt DateTime                   @default(now())
+
+  @@index([facturaId])
+  @@map("ajuste_factura_proveedor")
 }
 
 // ─── Beneficiarios (proveedores y terceros a quienes se paga) ─────────────────
@@ -821,13 +912,31 @@ model Beneficiario {
   empresaId String?
   empresa   Cliente? @relation("BeneficiarioEmpresa", fields: [empresaId], references: [id], onDelete: SetNull)
 
+  // ── CxP v2 ────────────────────────────────────────────────────────────────
+  /// Nombre como sale en la línea de terceros de la factura de venta
+  /// ("ALMACARGA", "EXPRESS", "TAMPA CARGO").
+  nombreCorto           String?
+  /// NIT sin DV (solo si venía separado con guion), puntos ni espacios. Lo llena
+  /// el trigger `trg_beneficiario_nit_base` (función SQL cxp_nit_base, espejo TS
+  /// `nitBaseDe`), SIN adivinar el DV. NULL si no es NIT colombiano. No escribir a mano.
+  nitBase               String?
+  /// Formato visible del N° de factura en la línea de terceros: true → "FE 11298"
+  /// (Almacarga, Express); false → tal cual se digitó ("REG-50151039").
+  numFacturaConEspacio  Boolean   @default(false)
+  /// true = su cartera aún no se ha cruzado contra el Excel de Camila (RF-23):
+  /// aviso ámbar, sin preselección en "Pagar en bloque" y confirmación extra.
+  conciliacionPendiente Boolean   @default(false)
+  carteraConciliadaEn   DateTime?
+
   pagos             PagoTramiteBeneficiario[]
   facturasProveedor FacturaProveedor[]
   // Banco asociado a pagos cuando el canal es OTROS_BANCOS / PSE.
   // Se usa como tercero del 4x1000 en la factura de venta.
   pagosBanco        PagoTramite[]             @relation("PagoTramiteBancoBeneficiario")
+  pagoGrupos        PagoGrupo[]
 
   @@index([empresaId])
+  @@index([nitBase])
   @@map("beneficiario")
 }
 
@@ -843,9 +952,10 @@ model PagoTramite {
   // Comprobante de la página del comercio (puerto/PSE) — opcional; el bancario es el obligatorio.
   comprobanteComercioId String?
   comprobanteComercio   Documento?       @relation("ComprobanteComercio", fields: [comprobanteComercioId], references: [id])
-  // Correlaciona los N pagos (uno por DO) creados desde un solo pago multi-trámite
-  // (caso Karina/Occidente: un comprobante cubre facturas de varios DOs).
+  // Correlaciona los N pagos (uno por DO) creados desde un solo pago en bloque.
+  // CxP v2: FK a la cabecera PagoGrupo (la transferencia).
   grupoPagoId           String?
+  grupo                 PagoGrupo?       @relation(fields: [grupoPagoId], references: [id], onDelete: Restrict)
   valor                 BigInt // COP sin decimales
   canalPago             CanalPago
   costoBancario         BigInt           @default(0) // Tomado de MatrizRecaudoPago
@@ -858,6 +968,10 @@ model PagoTramite {
   fechaRealPago         DateTime?
   viaSocio              Boolean          @default(false)
   estado                EstadoMovimiento @default(REALIZADO)
+  /// CxP v2: idempotencia del pago simple (UUID que genera la pantalla).
+  claveIdempotencia     String?          @unique
+  /// sha256 del contenido de la solicitud: misma clave con otro contenido → 409.
+  hashSolicitud         String?
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
@@ -889,9 +1003,63 @@ model PagoTramiteFactura {
   pago      PagoTramite      @relation(fields: [pagoId], references: [id], onDelete: Cascade)
   facturaId String
   factura   FacturaProveedor @relation(fields: [facturaId], references: [id], onDelete: Restrict)
+  /// CxP v2: cuánto de este pago se aplica a esta factura (COP). Nunca > saldo
+  /// de la factura: lo valida el dominio y lo garantiza el trigger
+  /// `trg_pago_factura_saldo`. CHECK SQL `monto >= 0` (0 solo en datos heredados).
+  monto     BigInt
+  createdAt DateTime         @default(now())
 
   @@id([pagoId, facturaId])
+  @@index([facturaId])
   @@map("pago_tramite_factura")
+}
+
+/// Cabecera del pago en bloque (la transferencia): un comprobante, un canal, una
+/// fecha y el costo bancario UNA sola vez. `id` = PagoTramite.grupoPagoId.
+model PagoGrupo {
+  /// = PagoTramite.grupoPagoId (UUID). Los grupos existentes los creó la migración.
+  id                    String                  @id
+  beneficiarioId        String?
+  beneficiario          Beneficiario?           @relation(fields: [beneficiarioId], references: [id], onDelete: SetNull)
+  concepto              String
+  canalPago             CanalPago
+  fechaRealPago         DateTime?
+  documentoId           String?
+  documento             Documento?              @relation("PagoGrupoComprobante", fields: [documentoId], references: [id])
+  comprobanteComercioId String?
+  comprobanteComercio   Documento?              @relation("PagoGrupoComercio", fields: [comprobanteComercioId], references: [id])
+  /// Lo que Camila dice que salió del banco (informativo; se compara con totalAplicado).
+  valorTransferido      BigInt?
+  /// Σ valor de los PagoTramite del bloque al crearlo (se conserva al anular).
+  totalAplicado         BigInt
+  /// Costo real de la transferencia, UNA vez (matriz del canal; 0 en histórico).
+  costoBancario         BigInt                  @default(0)
+  /// Valor YA RESUELTO por la regla D-1. Los bloques creados por la migración
+  /// quedan PRIMER_DO (comportamiento de e5cd35b).
+  costoAsumidoPor       CostoBancarioAsumidoPor @default(PRIMER_DO)
+  estado                EstadoPagoGrupo         @default(ACTIVO)
+  /// Registro de conciliación con el Excel (sin costo, sin comprobante obligatorio).
+  esHistorico           Boolean                 @default(false)
+  /// Evita el doble registro por doble clic o reintento de red. Se inserta ANTES
+  /// de bloquear facturas (la unicidad serializa el doble clic).
+  claveIdempotencia     String?                 @unique
+  /// sha256 de (facturas+montos ordenados, canal, fecha, beneficiario).
+  hashSolicitud         String?
+  motivoAnulacion       String?
+  anuladoPorId          String?
+  anuladoPor            User?                   @relation("PagoGrupoAnuladoPor", fields: [anuladoPorId], references: [id], onDelete: SetNull)
+  anuladoEn             DateTime?
+  /// Foto de DOs, facturas y montos al anular, para seguir mostrándolo en el historial.
+  snapshotAnulacion     Json?
+  creadoPorId           String?
+  creadoPor             User?                   @relation("PagoGrupoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+
+  pagos PagoTramite[]
+
+  @@index([beneficiarioId, estado])
+  @@map("pago_grupo")
 }
 
 // ─── Borradores y Facturas ────────────────────────────────────────────────────

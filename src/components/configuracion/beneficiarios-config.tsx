@@ -16,10 +16,14 @@ import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
 
+type Campo = "nit" | "nombre" | "nombreCorto";
+
 type EditState = {
   id: string;
-  field: "nit" | "nombre";
+  field: Campo;
   value: string;
+  /** Solo cuando field === "nit": dígito de verificación (opcional). */
+  dv: string;
 };
 
 type LoadState = "loading" | "ready" | "error";
@@ -69,9 +73,11 @@ export function BeneficiariosConfig() {
     setReloadKey((k) => k + 1);
   }
 
-  function iniciarEdicion(id: string, field: "nit" | "nombre", valorActual: string | null) {
+  function iniciarEdicion(b: BeneficiarioRow, field: Campo) {
     if (!puedeEditar || edit || guardando) return;
-    setEdit({ id, field, value: valorActual ?? "" });
+    const valorActual = field === "nit" ? (b.nitBase ?? b.nit) : field === "nombreCorto" ? b.nombreCorto : b.nombre;
+    const dvActual = field === "nit" && b.nit?.includes("-") ? b.nit.split("-")[1] ?? "" : "";
+    setEdit({ id: b.id, field, value: valorActual ?? "", dv: dvActual });
     setErrorGuardado(null);
   }
 
@@ -85,16 +91,19 @@ export function BeneficiariosConfig() {
     setGuardando(edit.id);
     setErrorGuardado(null);
     try {
-      const updated = await updateBeneficiario(edit.id, {
-        [edit.field]: edit.value.trim() || null,
-      });
+      const input =
+        edit.field === "nit"
+          ? { nit: edit.value.trim() || null, dv: edit.dv.trim() || null }
+          : { [edit.field]: edit.value.trim() || null };
+      const updated = await updateBeneficiario(edit.id, input);
       setBeneficiarios((prev) =>
         prev.map((b) => (b.id === updated.id ? updated : b)),
       );
       // La otra sección (selects Siigo) debe ver el nombre/NIT nuevo.
       invalidarCatalogos("beneficiarios");
       toast({
-        title: edit.field === "nit" ? "NIT actualizado" : "Nombre actualizado",
+        title:
+          edit.field === "nit" ? "NIT actualizado" : edit.field === "nombreCorto" ? "Nombre corto actualizado" : "Nombre actualizado",
         description: updated.nombre,
         variant: "success",
       });
@@ -108,9 +117,24 @@ export function BeneficiariosConfig() {
     }
   }
 
+  async function toggleNumFacturaConEspacio(b: BeneficiarioRow) {
+    if (!puedeEditar || guardando) return;
+    setGuardando(b.id);
+    setErrorGuardado(null);
+    try {
+      const updated = await updateBeneficiario(b.id, { numFacturaConEspacio: !b.numFacturaConEspacio });
+      setBeneficiarios((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
+      invalidarCatalogos("beneficiarios");
+    } catch (caught) {
+      toast({ title: "No se pudo guardar", description: describirError(caught, "Error al guardar."), variant: "error" });
+    } finally {
+      setGuardando(null);
+    }
+  }
+
   const sinNit = beneficiarios.filter((b) => !b.nit).length;
 
-  function renderEditor(b: BeneficiarioRow, field: "nit" | "nombre") {
+  function renderEditor(b: BeneficiarioRow, field: Campo) {
     if (!edit || edit.id !== b.id || edit.field !== field) return null;
     const enGuardado = guardando === b.id;
     return (
@@ -124,13 +148,33 @@ export function BeneficiariosConfig() {
             if (e.key === "Escape") cancelarEdicion();
           }}
           disabled={enGuardado}
-          placeholder={field === "nit" ? "900123456-7" : undefined}
-          aria-label={field === "nit" ? `NIT de ${b.nombre}` : `Nombre del beneficiario ${b.nombre}`}
+          placeholder={field === "nit" ? "900123456" : field === "nombreCorto" ? "ALMACARGA" : undefined}
+          aria-label={
+            field === "nit"
+              ? `NIT (sin DV) de ${b.nombre}`
+              : field === "nombreCorto"
+                ? `Nombre corto de ${b.nombre}`
+                : `Nombre del beneficiario ${b.nombre}`
+          }
           aria-invalid={errorGuardado ? true : undefined}
           className={`rounded border px-2 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 ${
-            field === "nit" ? "w-36 font-mono" : "w-48"
+            field === "nit" ? "w-32 font-mono" : "w-40"
           } ${errorGuardado ? "border-rose-500" : "border-slate-300"}`}
         />
+        {field === "nit" ? (
+          <input
+            value={edit.dv}
+            onChange={(e) => setEdit({ ...edit, dv: e.target.value.replace(/[^0-9]/g, "").slice(0, 1) })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void guardar();
+              if (e.key === "Escape") cancelarEdicion();
+            }}
+            disabled={enGuardado}
+            placeholder="DV"
+            aria-label={`Dígito de verificación de ${b.nombre}`}
+            className="w-12 rounded border border-slate-300 px-2 py-0.5 text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+        ) : null}
         <button
           type="button"
           onClick={() => void guardar()}
@@ -176,7 +220,7 @@ export function BeneficiariosConfig() {
       ) : null}
 
       {loadState === "loading" ? (
-        <TableSkeleton rows={6} cols={3} rowHeight={37} />
+        <TableSkeleton rows={6} cols={5} rowHeight={37} />
       ) : loadState === "error" ? (
         <ModuleState
           type="error"
@@ -192,12 +236,14 @@ export function BeneficiariosConfig() {
                 <th className="border-b border-slate-200 px-4 py-2">Nombre</th>
                 <th className="border-b border-slate-200 px-4 py-2">NIT</th>
                 <th className="border-b border-slate-200 px-4 py-2">Banco</th>
+                <th className="border-b border-slate-200 px-4 py-2">Nombre corto (factura de venta)</th>
+                <th className="border-b border-slate-200 px-4 py-2">Numerar &quot;FE 11298&quot;</th>
               </tr>
             </thead>
             <tbody>
               {beneficiarios.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="px-4 py-4 text-center text-slate-400">
+                  <td colSpan={5} className="px-4 py-4 text-center text-slate-400">
                     <ModuleState type="empty" title="No hay beneficiarios registrados" detail="Los proveedores y beneficiarios que registres aparecerán aquí para completar sus datos." />
                   </td>
                 </tr>
@@ -211,7 +257,7 @@ export function BeneficiariosConfig() {
                         <button
                           type="button"
                           disabled={edit !== null}
-                          onClick={() => iniciarEdicion(b.id, "nombre", b.nombre)}
+                          onClick={() => iniciarEdicion(b, "nombre")}
                           className="text-left hover:underline"
                           title="Editar nombre"
                           aria-label={`Editar nombre de ${b.nombre}`}
@@ -223,20 +269,20 @@ export function BeneficiariosConfig() {
                       ))}
                   </td>
 
-                  {/* NIT */}
+                  {/* NIT (sin DV) + DV */}
                   <td className="px-4 py-2">
                     {renderEditor(b, "nit") ??
                       (puedeEditar ? (
                         <button
                           type="button"
                           disabled={edit !== null}
-                          onClick={() => iniciarEdicion(b.id, "nit", b.nit)}
+                          onClick={() => iniciarEdicion(b, "nit")}
                           className={`font-mono text-sm ${
                             b.nit
                               ? "text-slate-700 hover:underline"
                               : "text-amber-600 hover:underline"
                           }`}
-                          title="Editar NIT"
+                          title="Editar NIT y dígito de verificación"
                           aria-label={`Editar NIT de ${b.nombre}`}
                         >
                           {b.nit ?? "— Sin NIT —"}
@@ -252,6 +298,40 @@ export function BeneficiariosConfig() {
                   <td className="px-4 py-2 text-xs text-slate-500">
                     {b.banco ?? "—"}
                     {b.numCuenta ? ` · ${b.numCuenta}` : ""}
+                  </td>
+
+                  {/* Nombre corto */}
+                  <td className="px-4 py-2">
+                    {renderEditor(b, "nombreCorto") ??
+                      (puedeEditar ? (
+                        <button
+                          type="button"
+                          disabled={edit !== null}
+                          onClick={() => iniciarEdicion(b, "nombreCorto")}
+                          className="text-left text-xs text-slate-600 hover:underline"
+                          title='Nombre como sale en la línea de terceros ("ALMACARGA")'
+                          aria-label={`Editar nombre corto de ${b.nombre}`}
+                        >
+                          {b.nombreCorto ?? <span className="text-slate-300">—</span>}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-600">{b.nombreCorto ?? "—"}</span>
+                      ))}
+                  </td>
+
+                  {/* Numerar "FE 11298" */}
+                  <td className="px-4 py-2">
+                    <label className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={b.numFacturaConEspacio}
+                        disabled={!puedeEditar || guardando === b.id}
+                        onChange={() => void toggleNumFacturaConEspacio(b)}
+                        className="h-3.5 w-3.5"
+                        aria-label={`Numerar las facturas de ${b.nombre} como "FE 11298"`}
+                      />
+                      {guardando === b.id ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
+                    </label>
                   </td>
                 </tr>
               ))}

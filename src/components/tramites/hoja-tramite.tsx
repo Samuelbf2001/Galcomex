@@ -9,6 +9,7 @@ import {
   calcularSaldosCliente,
   fetchLibroPagos,
   formatCOP,
+  valorParaSaldoCliente,
 } from "@/components/pagos/pagos-api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
@@ -17,6 +18,7 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useRol } from "@/lib/auth/rol-context";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 /**
  * Hoja del trámite — espejo de la hoja de Excel de Camila (GRUPO E PAPIS).
@@ -102,15 +104,9 @@ function str(value: unknown, fallback = "0"): string {
   return String(value);
 }
 
+/** Fecha-calendario (factura, anticipo): día guardado a 00:00 UTC, nunca la zona del navegador. */
 function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso) || "—";
 }
 
 const CANAL_LABEL: Record<string, string> = {
@@ -336,18 +332,23 @@ export function HojaTramite({
     );
   }
 
-  // Saldo corriente por fila de pago (mismo cálculo que el libro de pagos).
+  // Saldo corriente del CLIENTE por fila de pago (mismo cálculo que el libro
+  // de pagos y el borrador): lo pagado por facturas NO SE COBRA (asesoría) lo
+  // asume Galcomex y no baja el saldo del cliente.
   const saldosPagos = calcularSaldosCliente(
     libro.totalAnticipoAplicado,
-    libro.pagos.map((p) => p.valor),
+    libro.pagos.map((p) => valorParaSaldoCliente(p.valor, p.noCobrable)),
   );
+  const totalNoCobrable = bigOrZero(libro.totalNoCobrable);
   const saldoTrasPagos =
     saldosPagos.length > 0 ? saldosPagos[saldosPagos.length - 1]! : libro.totalAnticipoAplicado;
 
   // Costos bancarios en vivo (anticipo + pagos actuales, incluyendo pagos añadidos
   // después de crear el borrador que aún no están en borrador.costosBancarios).
+  // Solo lo que se le cobra al cliente: la transferencia de un pago de solo
+  // asesoría la asume Galcomex (igual que el borrador).
   const costosBancariosTotalLive = (
-    bigOrZero(libro.costosBancarios) + bigOrZero(libro.costosBancariosAnticipo)
+    bigOrZero(libro.costosBancariosCobrables) + bigOrZero(libro.costosBancariosAnticipo)
   ).toString();
 
   // Totales del cliente: autoritativos de la FACTURA (mismo origen que cartera).
@@ -388,8 +389,12 @@ export function HojaTramite({
     // persistido en la BD — ver service.ts:actualizarComisionInternaLM).
     const costoComisionLM = bigOrZero(b.costoComisionInternaLM);
     const costos = bigOrZero(costosBancariosTotalLive) + costoComisionLM;
-    const saldoLMInterno =
+    // El saldo interno que manda es el GUARDADO en el borrador (lo calculó el
+    // servidor con la parte cobrable de cada pago). El de hoy solo se compara:
+    // si difiere, hubo pagos después de generar el borrador.
+    const saldoLMInternoVivo =
       bigOrZero(saldoTrasPagos) - comisionInternaLM - iva - cuatroXMilInterno - costos;
+    const saldoLMInterno = bigOrZero(b.saldoLMInterno);
     // Lado cliente: autoritativo de la FACTURA (igual que cartera). `b.saldoAFavorCliente`
     // y `b.totalFactura` ya vienen del factura cuando existe (ver fetchHojaData).
     // NO usar el recálculo live (totalesDinamicos): difiere del facturado.
@@ -406,6 +411,7 @@ export function HojaTramite({
       cuatroXMil: cuatroXMilInterno.toString(),
       costos: costos.toString(),
       saldoLMInterno: saldoLMInterno.toString(),
+      saldoLMInternoVivo: saldoLMInternoVivo.toString(),
       saldoAFavorCliente: b.saldoAFavorCliente,
       totalFactura: b.totalFactura,
       saldoLM: saldoLM.toString(),
@@ -594,6 +600,7 @@ export function HojaTramite({
 
               {libro.pagos.map((p, idx) => {
                 const saldo = saldosPagos[idx] ?? "0";
+                const noCobrable = bigOrZero(p.noCobrable ?? "0");
                 return (
                   <tr key={p.id} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
                     <td className="px-3 py-2 text-xs text-slate-400">{idx + 1}</td>
@@ -602,6 +609,11 @@ export function HojaTramite({
                       {p.beneficiarios && p.beneficiarios.length > 0 ? (
                         <span className="block text-xs text-slate-400">
                           {p.beneficiarios.map((b) => b.nombre).join(", ")}
+                        </span>
+                      ) : null}
+                      {noCobrable > 0n ? (
+                        <span className="block text-xs font-medium text-slate-500">
+                          No se cobra al cliente: {formatCOP(noCobrable.toString())} (asesoría, la asume Galcomex)
                         </span>
                       ) : null}
                     </td>
@@ -615,10 +627,32 @@ export function HojaTramite({
                     <td className="px-3 py-2 text-xs text-slate-600">{canalLabel(p.canalPago)}</td>
                     <td className="px-3 py-2 text-right font-mono text-xs text-slate-500">
                       {bigOrZero(p.costoBancario) > 0n ? formatCOP(p.costoBancario) : "—"}
+                      {bigOrZero(p.costoBancario) > 0n &&
+                      p.costoBancarioCobrable !== undefined &&
+                      bigOrZero(p.costoBancarioCobrable ?? "0") === 0n ? (
+                        <span className="block font-sans text-[10px] text-slate-400">lo asume Galcomex</span>
+                      ) : null}
                     </td>
                   </tr>
                 );
               })}
+
+              {/* Asesoría (facturas NO SE COBRA): se pagó, pero no baja el saldo del cliente */}
+              {totalNoCobrable > 0n ? (
+                <tr className="border-b border-slate-100 bg-slate-50">
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-600">
+                    Asesoría NO SE COBRA: la asume Galcomex
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-500">No entra en la factura del cliente</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-500">
+                    {formatCOP(totalNoCobrable.toString())}
+                  </td>
+                  <td className="px-3 py-2 text-right text-xs text-slate-400">sin efecto en el saldo</td>
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2" />
+                </tr>
+              ) : null}
 
               {/* ── Cola de factura: descuentos sobre el saldo corriente ── */}
               {hoja.borrador ? (
@@ -822,7 +856,10 @@ type CruceData = {
   iva: string;
   cuatroXMil: string;
   costos: string;
+  /** Guardado en el borrador (manda). */
   saldoLMInterno: string;
+  /** Recalculado con los pagos de hoy, solo para avisar si difiere. */
+  saldoLMInternoVivo: string;
   saldoAFavorCliente: string;
   totalFactura: string;
   saldoLM: string;
@@ -910,6 +947,13 @@ function CruceLM({
           <CruceRow label="Impuesto 4x1000 (interno)" valor={cruce.cuatroXMil} sign="minus" />
           <CruceRow label="Costos bancarios" valor={cruce.costos} sign="minus" />
           <CruceRow label="Saldo interno LM" valor={cruce.saldoLMInterno} emphasis />
+          {cruce.saldoLMInternoVivo !== cruce.saldoLMInterno ? (
+            <p className="px-3 py-1.5 text-xs text-amber-700">
+              Es el saldo guardado al generar el borrador. Con los pagos de hoy daría{" "}
+              {formatCOP(cruce.saldoLMInternoVivo)}: si se registraron pagos después,
+              vuelve a generar el borrador.
+            </p>
+          ) : null}
         </div>
         {/* Cruce final */}
         <div className="bg-white">

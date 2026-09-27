@@ -44,7 +44,7 @@ import {
   type LineaTercero,
 } from "../src/lib/excel/borrador-lucho";
 import { crearFacturaProveedor } from "../src/lib/facturas-proveedor/service";
-import { crearPago } from "../src/lib/pagos/service";
+import { crearPago, enlazarPagoExistente } from "../src/lib/pagos/service";
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -337,6 +337,8 @@ async function main() {
       fp = await crearFacturaProveedor({
         tramiteId,
         proveedorNombre: provNombre,
+        // CxP v2 (R7): toda factura nueva lleva ficha de pago.
+        beneficiarioId: await fichaPorNombre(provNombre),
         numFactura,
         valor: t.valor,
         fecha: new Date(p.fecha),
@@ -360,11 +362,8 @@ async function main() {
       usuarioId: admin.id,
     });
 
-    // La factura tiene su pago registrado → estado PAGADA (ciclo REGISTRADA→PAGADA)
-    await prisma.facturaProveedor.update({
-      where: { id: fp.id },
-      data: { estado: "PAGADA" },
-    });
+    // CxP v2: el estado (PAGADA) lo deja `aplicarSaldo` al enlazar el pago por
+    // su monto; ya no se escribe a mano.
   }
 
   // ── 9. Generar borrador (idempotente: si ya existe uno para el DO, no duplica) ──
@@ -490,7 +489,30 @@ async function main() {
   await prisma.$disconnect();
 }
 
+// ─── Helper: ficha de pago por nombre (CxP v2, R7) ─────────────────────────────
+
+/**
+ * Ficha de pago (Beneficiario) del proveedor por nombre exacto; si no existe se
+ * crea sin NIT (su llave de proveedor queda "BEN:<id>"). Solo para esta
+ * importación histórica: la pantalla exige escoger la ficha.
+ */
+async function fichaPorNombre(nombre: string): Promise<string> {
+  const limpio = nombre.trim() || "PROVEEDOR SIN NOMBRE";
+  const existente = await prisma.beneficiario.findFirst({
+    where: { nombre: limpio },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  if (existente) return existente.id;
+  const creada = await prisma.beneficiario.create({ data: { nombre: limpio }, select: { id: true } });
+  return creada.id;
+}
+
 // ─── Helper: upsert PagoTramite por (tramiteId, concepto, valor) ─────────────
+//
+// CxP v2: el pago se enlaza a su factura por MONTO a través del dominio
+// (`crearPago({ aplicaciones })` o `enlazarPagoExistente`), nunca escribiendo el
+// puente ni el estado a mano. Idempotente: un pago ya enlazado no se toca.
 
 async function upsertPagoTramite(input: {
   tramiteId: string;
@@ -512,15 +534,19 @@ async function upsertPagoTramite(input: {
   });
 
   if (existing) {
-    // Already exists — link to factura via pivot if needed (idempotent)
+    // Ya existe: enlazarlo a su factura si todavía no lo está (idempotente).
     if (input.facturaProveedorId) {
-      await prisma.pagoTramiteFactura.upsert({
-        where: {
-          pagoId_facturaId: { pagoId: existing.id, facturaId: input.facturaProveedorId },
-        },
-        create: { pagoId: existing.id, facturaId: input.facturaProveedorId },
-        update: {},
+      const enlazado = await prisma.pagoTramiteFactura.findUnique({
+        where: { pagoId_facturaId: { pagoId: existing.id, facturaId: input.facturaProveedorId } },
+        select: { pagoId: true },
       });
+      if (!enlazado) {
+        await enlazarPagoExistente({
+          pagoId: existing.id,
+          aplicaciones: [{ facturaProveedorId: input.facturaProveedorId, monto: input.valor }],
+          usuarioId: input.usuarioId,
+        });
+      }
     }
     return;
   }
@@ -531,51 +557,12 @@ async function upsertPagoTramite(input: {
     valor: input.valor,
     canalPago: input.canalPago,
     numSoporte: input.numSoporte,
+    viaSocio: input.viaSocio,
+    ...(input.facturaProveedorId
+      ? { aplicaciones: [{ facturaProveedorId: input.facturaProveedorId, monto: input.valor }] }
+      : {}),
     usuarioId: input.usuarioId,
   });
-
-  // Link to FacturaProveedor if provided (crearPago doesn't set this)
-  if (input.facturaProveedorId) {
-    const pago = await prisma.pagoTramite.findFirst({
-      where: {
-        tramiteId: input.tramiteId,
-        concepto: input.concepto,
-        valor: input.valor,
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    });
-    if (pago) {
-      await prisma.pagoTramite.update({
-        where: { id: pago.id },
-        data: { viaSocio: input.viaSocio },
-      });
-      await prisma.pagoTramiteFactura.upsert({
-        where: {
-          pagoId_facturaId: { pagoId: pago.id, facturaId: input.facturaProveedorId },
-        },
-        create: { pagoId: pago.id, facturaId: input.facturaProveedorId },
-        update: {},
-      });
-    }
-  } else {
-    // Set viaSocio on the newly created pago
-    const pago = await prisma.pagoTramite.findFirst({
-      where: {
-        tramiteId: input.tramiteId,
-        concepto: input.concepto,
-        valor: input.valor,
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    });
-    if (pago && input.viaSocio) {
-      await prisma.pagoTramite.update({
-        where: { id: pago.id },
-        data: { viaSocio: input.viaSocio },
-      });
-    }
-  }
 }
 
 main().catch(async (err) => {

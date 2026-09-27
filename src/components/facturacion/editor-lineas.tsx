@@ -24,6 +24,14 @@ import { describirError, useToast } from "@/components/ui/toast";
 import { ModuleState } from "@/components/layout/module-state";
 
 import {
+  contarLineasSinProducto,
+  lineaSinProductoSiigo,
+  lineaVaASiigo,
+  mensajeSinProductoSiigo,
+  ocultarAvisoPorLinea,
+} from "./linea-producto-siigo";
+
+import {
   actualizarComentariosCabecera as apiActualizarComentarios,
   actualizarComisionBorrador as apiActualizarComision,
   actualizarLinea as apiActualizarLinea,
@@ -32,6 +40,7 @@ import {
   formatCOP,
   parseBigIntInput,
   type BorradorRow,
+  type EstadoBorrador,
   type LineaRevisionRow,
   type SeccionLinea,
 } from "./facturacion-api";
@@ -227,6 +236,29 @@ type SiigoProductoSelectProps = {
   onSelect: (producto: SiigoProductoRow | null) => void;
   disabled?: boolean;
   placeholder?: string;
+  /**
+   * Prefijo del `aria-label` del botón (p. ej. "Producto Siigo de la línea
+   * 3"). El componente le agrega ": <texto visible>" — el mismo texto que
+   * ya se ve en el botón (código y nombre del producto, la etiqueta de
+   * respaldo, o `placeholder` si no hay nada elegido) — para que un lector
+   * de pantalla anuncie el valor actual, no solo qué es el control.
+   */
+  ariaLabel?: string;
+  /**
+   * Abre el menú dentro del flujo (`relative`) en vez de superpuesto
+   * (`absolute`). Usar dentro de una tabla con `overflow-x-auto`: ese
+   * contenedor también vuelve `auto` el eje vertical, así que un menú
+   * `absolute` queda recortado (mismo patrón que `FacturasMultiSelect`, que
+   * ya se abre en el flujo).
+   */
+  enLinea?: boolean;
+  /**
+   * Etiqueta de respaldo cuando `value` no está en `productos` (catálogo
+   * aún cargando, catálogo vacío por falta de permiso del rol, o el producto
+   * ya no está activo en Siigo). Sin esto el botón muestra "Sin producto
+   * SIIGO" aunque la línea sí tenga uno asignado.
+   */
+  etiquetaActual?: string;
 };
 
 function SiigoProductoSelect({
@@ -235,6 +267,9 @@ function SiigoProductoSelect({
   onSelect,
   disabled = false,
   placeholder = "— Seleccionar —",
+  ariaLabel,
+  enLinea = false,
+  etiquetaActual,
 }: SiigoProductoSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -267,6 +302,16 @@ function SiigoProductoSelect({
   }, [open]);
 
   const seleccionado = productos.find((p) => p.id === value) ?? null;
+  // Si `value` no está vacío pero el catálogo no trae ese producto, usamos la
+  // etiqueta de respaldo en vez de mostrar "Sin producto SIIGO" sobre una
+  // línea que sí lo tiene.
+  const etiquetaRespaldo = value !== "" && !seleccionado ? etiquetaActual : undefined;
+  const hayEtiqueta = Boolean(seleccionado) || Boolean(etiquetaRespaldo);
+  // Mismo texto que se ve en el botón (ver el `<span>` de abajo) — se reusa
+  // también en el aria-label para que ambos nunca se desalineen.
+  const textoVisible = seleccionado
+    ? `${seleccionado.codigo} — ${seleccionado.nombre}`
+    : (etiquetaRespaldo ?? placeholder);
 
   const filtrados = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -284,17 +329,16 @@ function SiigoProductoSelect({
         type="button"
         disabled={disabled}
         aria-expanded={open}
+        aria-label={ariaLabel ? `${ariaLabel}: ${textoVisible}` : undefined}
         onClick={() => setOpen((o) => !o)}
         className={`mt-1 flex h-[34px] w-full items-center justify-between gap-2 border border-slate-300 bg-white px-2 py-1 text-left text-sm transition ${
           disabled ? "cursor-default opacity-70" : "hover:border-slate-400"
         }`}
       >
         <span
-          className={`truncate ${seleccionado ? "text-slate-700" : "text-slate-400"}`}
+          className={`truncate ${hayEtiqueta ? "text-slate-700" : "text-slate-400"}`}
         >
-          {seleccionado
-            ? `${seleccionado.codigo} — ${seleccionado.nombre}`
-            : placeholder}
+          {textoVisible}
         </span>
         <ChevronDown
           className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`}
@@ -303,7 +347,9 @@ function SiigoProductoSelect({
       </button>
 
       {open && !disabled ? (
-        <div className="absolute z-30 mt-1 max-h-96 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+        <div
+          className={`${enLinea ? "relative z-20" : "absolute z-30"} mt-1 max-h-96 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg`}
+        >
           <div className="border-b border-slate-200 p-2">
             <input
               ref={searchRef}
@@ -726,6 +772,9 @@ type SubseccionProps = {
   subtotal: bigint;
   facturas: FacturaProveedorRow[];
   productos: SiigoProductoRow[];
+  /** `!catalogos.cargando && productos.length > 0` — ver `SiigoProductoSelect`. */
+  catalogoDisponible: boolean;
+  estadoBorrador: EstadoBorrador;
   puedeEditar: boolean;
   guardando: boolean;
   borradorId: string;
@@ -741,6 +790,8 @@ function SubseccionLineas({
   subtotal,
   facturas,
   productos,
+  catalogoDisponible,
+  estadoBorrador,
   puedeEditar,
   guardando,
   borradorId,
@@ -824,6 +875,17 @@ function SubseccionLineas({
     );
   }
 
+  // Solo toca siigoProductoId: el concepto es la descripción que Siigo manda
+  // como `description` del ítem y nunca se pisa al elegir el producto.
+  async function cambiarProductoLinea(linea: LineaRevisionRow, p: SiigoProductoRow | null) {
+    const nuevo = p?.id ?? null;
+    if (nuevo === (linea.siigoProductoId ?? null)) return;
+    await ejecutar(
+      () => apiActualizarLinea(borradorId, linea.id, { siigoProductoId: nuevo }),
+      nuevo ? "Producto SIIGO asignado" : "Producto SIIGO quitado",
+    );
+  }
+
   function toggleNuevaFactura(id: string) {
     setNuevasFacturas((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
@@ -899,16 +961,81 @@ function SubseccionLineas({
                     <span className="ml-2 text-[11px] text-slate-500">{linea.aplicaIva ? "IVA 19 %" : "Sin IVA"}</span>
                   )
                 ) : null}
-                {linea.siigoProductoId ? (
-                  <span className="ml-1 text-[10px] text-slate-400">
-                    {linea.siigoProductoCodigo}
-                    {" · "}
-                    {
-                      badgeImpuestoProducto(
-                        productos.find((p) => p.id === linea.siigoProductoId) ?? null,
-                      ).label
-                    }
-                  </span>
+                {(() => {
+                  // Rescate: si la línea es fija pero le falta producto (p. ej.
+                  // falta el parámetro SIIGO_PRODUCTO_*), también se puede
+                  // asignar aquí. Y si YA tiene producto pero se eligió mal, se
+                  // deja corregir igual — antes quedaba en solo lectura apenas
+                  // tenía uno, sin forma de arreglar un error de asignación.
+                  // La condición de fondo sigue siendo "esta línea de verdad
+                  // viaja a Siigo con este formato" (`lineaVaASiigo`): una fija
+                  // que nunca se envía (p. ej. IVA_COMISION en CONCEPTOS_IVA)
+                  // no necesita selector, tenga o no producto.
+                  // El selector solo se ofrece con catálogo disponible: vacío
+                  // (cargando, o 403 — el catálogo exige rol ADMIN) es una
+                  // lista sin nada que elegir, y "Quitar selección" borraría
+                  // el producto de la línea sin forma de volver a ponerlo.
+                  const puedeElegirProducto =
+                    puedeEditar &&
+                    catalogoDisponible &&
+                    (!linea.tipoFija || lineaVaASiigo(linea, formato));
+                  if (puedeElegirProducto) {
+                    return (
+                      <div className="mt-1">
+                        <SiigoProductoSelect
+                          productos={productos}
+                          value={linea.siigoProductoId ?? ""}
+                          placeholder="Sin producto SIIGO"
+                          ariaLabel={`Producto Siigo de la línea ${linea.orden}`}
+                          // Respaldo por si el producto de la línea no está en
+                          // el catálogo cargado (p. ej. ya no está activo en Siigo).
+                          etiquetaActual={
+                            linea.siigoProductoId
+                              ? `${linea.siigoProductoCodigo ?? ""}${
+                                  linea.siigoProductoNombre ? ` — ${linea.siigoProductoNombre}` : ""
+                                }`
+                              : undefined
+                          }
+                          enLinea
+                          disabled={guardando}
+                          onSelect={(p) => void cambiarProductoLinea(linea, p)}
+                        />
+                        {linea.tipoFija && linea.siigoProductoId ? (
+                          <span className="mt-1 block text-[10px] text-slate-500">
+                            Producto por defecto del sistema; cámbialo solo si está mal.
+                          </span>
+                        ) : null}
+                        {linea.siigoProductoId ? (
+                          <span className="mt-1 block text-[10px] text-slate-400">
+                            {
+                              badgeImpuestoProducto(
+                                productos.find((p) => p.id === linea.siigoProductoId) ?? null,
+                              ).label
+                            }
+                          </span>
+                        ) : null}
+                      </div>
+                    );
+                  }
+                  if (linea.siigoProductoId) {
+                    return (
+                      <span className="ml-1 text-[10px] text-slate-400">
+                        {linea.siigoProductoCodigo}
+                        {" · "}
+                        {
+                          badgeImpuestoProducto(
+                            productos.find((p) => p.id === linea.siigoProductoId) ?? null,
+                          ).label
+                        }
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
+                {lineaSinProductoSiigo(linea, formato) && !ocultarAvisoPorLinea(estadoBorrador) ? (
+                  <p className="mt-1 text-xs font-medium text-rose-700">
+                    Sin producto SIIGO: no se podrá enviar.
+                  </p>
                 ) : null}
               </td>
               {!compacto ? (
@@ -1245,6 +1372,29 @@ export function EditorLineas({
 
   const desviacion = totalLineasVivo - totalMotor;
 
+  const lineasSinProducto = useMemo(
+    () => contarLineasSinProducto(borrador.lineasRevision, borrador.formatoFactura),
+    [borrador.lineasRevision, borrador.formatoFactura],
+  );
+  // Catálogo listo para elegir de él (ver `SiigoProductoSelect.etiquetaActual`
+  // y el gate de `puedeElegirProducto` en `SubseccionLineas`).
+  const catalogoDisponible = !catalogos.cargando && productos.length > 0;
+  // El aviso solo puede prometer "elige el producto aquí mismo" cuando ambas
+  // cosas son ciertas: el rol puede editar Y el catálogo de verdad está
+  // disponible. Con `puedeEditar=true` pero catálogo caído/sin permiso (p.
+  // ej. SOCIO: `/api/configuracion/siigo/productos` exige ADMIN) no hay
+  // ningún selector en pantalla, así que `mensajeSinProductoSiigo` recibe
+  // `false` y cae en el texto "pide a un ADMIN" (o "devuelve a BORRADOR"),
+  // nunca en "elige el producto en cada línea marcada".
+  const puedeAsignarProducto = puedeEditar && catalogoDisponible;
+  // Mientras el catálogo carga no se sabe todavía si va a estar disponible:
+  // se oculta el aviso general en vez de arriesgar un texto que un instante
+  // después puede quedar equivocado (el aviso por línea ya cubre lo esencial).
+  const mensajeAvisoProducto =
+    lineasSinProducto > 0 && !catalogos.cargando
+      ? mensajeSinProductoSiigo(borrador.estado, puedeAsignarProducto)
+      : null;
+
   const ejecutar: Ejecutar = async (accion, exito) => {
     if (guardandoRef.current) { setError("Hay otro cambio guardándose. Reintenta el nuevo cambio cuando termine."); return false; }
     guardandoRef.current = true;
@@ -1278,6 +1428,15 @@ export function EditorLineas({
           </span>
         </div>
       ) : null}
+      {mensajeAvisoProducto ? (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+        >
+          <p className="font-medium">{lineasSinProducto} línea(s) sin producto SIIGO</p>
+          <p className="mt-1 text-amber-700">{mensajeAvisoProducto}</p>
+        </div>
+      ) : null}
       {catalogos.cargando ? (
         <ModuleState type="loading" title="Cargando facturas y productos…" detail="Preparando las opciones para vincular cada línea." />
       ) : catalogos.errores.length > 0 ? (
@@ -1302,6 +1461,8 @@ export function EditorLineas({
         subtotal={subtotalTerceros}
         facturas={facturas}
         productos={productos}
+        catalogoDisponible={catalogoDisponible}
+        estadoBorrador={borrador.estado}
         puedeEditar={puedeEditar}
         guardando={guardando}
         borradorId={borrador.id}
@@ -1317,6 +1478,8 @@ export function EditorLineas({
         subtotal={subtotalOperacional}
         facturas={facturas}
         productos={productos}
+        catalogoDisponible={catalogoDisponible}
+        estadoBorrador={borrador.estado}
         puedeEditar={puedeEditar}
         guardando={guardando}
         borradorId={borrador.id}

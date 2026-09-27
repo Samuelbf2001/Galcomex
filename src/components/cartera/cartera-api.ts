@@ -6,6 +6,7 @@
 import type { CanalPago } from "@/components/pagos/pagos-api";
 export type { CanalPago } from "@/components/pagos/pagos-api";
 export { CANALES_PAGO } from "@/components/pagos/pagos-api";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 // ─── Tipos de recaudo/pago combinados para el selector UI ────────────────────
 
@@ -574,20 +575,11 @@ export function formatCOP(value: string): string {
   }
 }
 
-/** Formatea una fecha ISO como dd/mm/aaaa */
+/** Fecha-calendario (factura, pago) como dd/mm/aaaa. Día guardado a 00:00 UTC: nunca reinterpretar en otra zona. */
 export function formatDate(isoString: string | null): string {
   if (!isoString) return "—";
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      timeZone: "America/Bogota",
-    });
-  } catch {
-    return isoString;
-  }
+  const formateada = formatFechaCalendario(isoString);
+  return formateada || isoString;
 }
 
 /**

@@ -5,16 +5,16 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 
+import { fechaCalendarioSchema } from "@/lib/validations/comunes";
+
 /**
- * Fecha de un día del calendario. El formulario manda "AAAA-MM-DD"; leído tal
- * cual queda a medianoche UTC y en Colombia (UTC−5) se ve como el día anterior.
- * Se ancla al mediodía de Bogotá para que el día no cambie al mostrarlo.
+ * Fecha de un día del calendario (movimiento o cruce). Convención única de
+ * CxP v2 (§D.7): "AAAA-MM-DD" → 00:00 UTC de ese día, mostrada en UTC con
+ * `formatFechaCalendario`. Reemplaza el anclaje a mediodía de Bogotá de la
+ * rama Coldex; las filas que ya quedaron a mediodía (17:00Z) se siguen
+ * mostrando en su día (ver `aFechaCalendario`).
  */
-const fechaDia = z.preprocess(
-  (valor) =>
-    typeof valor === "string" && /^\d{4}-\d{2}-\d{2}$/.test(valor) ? `${valor}T12:00:00-05:00` : valor,
-  z.coerce.date(),
-);
+const fechaDia = fechaCalendarioSchema;
 
 export const movimientoCuentaSchema = z.object({
   rol: z.nativeEnum(RolCuenta),

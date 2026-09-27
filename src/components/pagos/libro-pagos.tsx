@@ -23,7 +23,8 @@ import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entida
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast, type ToastVariant } from "@/components/ui/toast";
-import { usePermiso } from "@/lib/auth/rol-context";
+import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
+import { formatFechaCalendario, hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 import {
   CANALES_PAGO,
@@ -42,10 +43,14 @@ import {
   fetchTramiteDetail,
   formatCOP,
   subirComprobante,
+  valorParaSaldoCliente,
   updatePago,
   verificarMovimientoPago,
 } from "@/components/pagos/pagos-api";
 import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
+import { AnularBloqueDialog } from "@/components/pagos/anular-bloque-dialog";
+import { DetalleBloqueDialog } from "@/components/pagos/detalle-bloque-dialog";
+import { nuevaClaveIdempotencia } from "@/components/pagos/clave-idempotencia";
 
 // ---------------------------------------------------------------------------
 // Tipos internos
@@ -59,6 +64,8 @@ type LoadState = "loading" | "ready" | "error";
  * REVISOR y SOCIO ven el libro en solo lectura.
  */
 const ROLES_EDITAR_PAGOS = ["ADMIN", "OPERATIVO"] as const;
+/** GET /api/pagos/grupos/[id] admite estos roles (no SOCIO): el detalle del bloque solo se abre para ellos. */
+const ROLES_DETALLE_BLOQUE = ["ADMIN", "REVISOR", "OPERATIVO"] as const;
 
 /** Fila del libro con saldo corriente calculado localmente */
 type FilaLibro = PagoRow & {
@@ -81,8 +88,9 @@ function isoToDateInput(iso: string | null): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** "Hoy" es el día calendario en Bogotá (R17): después de las 19:00 no propone mañana. */
 function todayInput(): string {
-  return new Date().toISOString().slice(0, 10);
+  return hoyBogotaISO();
 }
 
 function filaFromRow(row: PagoRow, saldo: string): FilaLibro {
@@ -94,7 +102,9 @@ function filaFromRow(row: PagoRow, saldo: string): FilaLibro {
     editingBeneficiarios: row.beneficiarios ?? [],
     editingNumSoporte: row.numSoporte ?? "",
     editingCanal: row.canalPago,
-    editingFechaReal: isoToDateInput(row.fechaRealPago) || todayInput(),
+    // Sin fecha real se edita vacía (§D.4): nunca se inventa "hoy", que se
+    // grabaría al guardar cualquier otro campo de la fila.
+    editingFechaReal: isoToDateInput(row.fechaRealPago),
     dirty: false,
     saving: false,
     errorFila: null,
@@ -126,15 +136,9 @@ function saldoColorClass(saldoStr: string): string {
   }
 }
 
+/** Fechas-calendario (ETA, fecha del anticipo, fecha real de pago): en UTC, el mismo día en cualquier navegador (R17). */
 function formatDate(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso);
 }
 
 function statusClassName(status: string) {
@@ -338,6 +342,12 @@ function ResumenLibro({
         <div>
           <span className="text-slate-500">Total pagos: </span>
           <span className="font-semibold text-slate-900">{formatCOP(libro.totalPagos)}</span>
+          {BigInt(libro.totalNoCobrable) > 0n ? (
+            <span className="ml-2 text-[11px] text-slate-500">
+              de los que {formatCOP(libro.totalNoCobrable)} son asesoría NO SE COBRA: la asume
+              Galcomex y no baja el saldo del cliente
+            </span>
+          ) : null}
         </div>
         <div>
           <span className="text-slate-500">Costos bancarios: </span>
@@ -472,8 +482,8 @@ function FacturasProveedorCombobox({
                 key={factura.id}
                 className="inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-xs text-cyan-800"
               >
-                <span className="font-medium">{factura.numFactura}</span>
-                <span className="text-cyan-600">{formatCOP(factura.valor)}</span>
+                <span className="font-medium">{factura.numFacturaVisible}</span>
+                <span className="text-cyan-600">{formatCOP(factura.saldo)}</span>
                 <span
                   role="button"
                   tabIndex={0}
@@ -542,7 +552,14 @@ function FacturasProveedorCombobox({
             ) : (
               filteredFacturas.map((factura) => {
                 const selected = selectedIds.includes(factura.id);
-                const disponible = factura.estado !== "FACTURADA_CLIENTE";
+                // Solo facturas con saldo pendiente: una factura pagada no se puede volver a pagar.
+                const disponible = (() => {
+                  try {
+                    return BigInt(factura.saldo) > 0n;
+                  } catch {
+                    return false;
+                  }
+                })();
                 return (
                   <button
                     key={factura.id}
@@ -552,6 +569,7 @@ function FacturasProveedorCombobox({
                       toggleFactura(factura.id);
                     }}
                     disabled={!disponible}
+                    title={disponible ? undefined : "Pagada: no se puede volver a pagar"}
                     className={`flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm ${
                       disponible ? "hover:bg-slate-50" : "cursor-not-allowed opacity-60"
                     }`}
@@ -566,22 +584,22 @@ function FacturasProveedorCombobox({
                       {selected ? <Check className="h-3 w-3 text-white" /> : null}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block font-medium text-slate-800">{factura.numFactura}</span>
+                      <span className="block font-medium text-slate-800">{factura.numFacturaVisible}</span>
                       <span className="block truncate text-xs text-slate-500">{factura.proveedorNombre}</span>
                     </span>
                     <span className="flex items-center gap-2">
                       <span
                         className={`inline-flex items-center border px-1.5 py-0.5 text-[10px] font-semibold ${
-                          factura.estado === "REGISTRADA"
-                            ? "border-slate-200 bg-slate-50 text-slate-600"
-                            : factura.estado === "PAGADA"
-                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                              : "border-amber-200 bg-amber-50 text-amber-700"
+                          factura.etiqueta === "Pendiente"
+                            ? "border-amber-200 bg-amber-50 text-amber-700"
+                            : factura.etiqueta === "Pagada"
+                              ? "border-slate-200 bg-slate-100 text-slate-600"
+                              : "border-cyan-200 bg-cyan-50 text-cyan-700"
                         }`}
                       >
-                        {factura.estado.replace("_", " ")}
+                        {factura.etiqueta}
                       </span>
-                      <span className="font-mono text-sm text-slate-600">{formatCOP(factura.valor)}</span>
+                      <span className="font-mono text-sm text-slate-600">{formatCOP(factura.saldo)}</span>
                     </span>
                   </button>
                 );
@@ -733,7 +751,6 @@ export function NuevoPagoModal({
   onCreated,
 }: NuevoPagoModalProps) {
   const { toast } = useToast();
-  const confirmar = useConfirm();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [valorRaw, setValorRaw] = useState(initialValor ?? "");
@@ -741,15 +758,25 @@ export function NuevoPagoModal({
     initialBeneficiarios ?? [],
   );
   const [fechaRealPago, setFechaRealPago] = useState(todayInput());
+  // Idempotencia (§B.5, CA-43): una clave por formulario abierto. Si la
+  // respuesta se pierde y se vuelve a pulsar Guardar, el servidor devuelve el
+  // mismo pago en vez de registrar otro. Se renueva tras un guardado bueno o un
+  // 409 IDEMPOTENCIA_CONFLICTO (se cambiaron los datos de un pago ya guardado).
+  const [claveIdempotencia, setClaveIdempotencia] = useState(nuevaClaveIdempotencia);
   const [canalPago, setCanalPago] = useState<CanalPago>(CANALES_PAGO[0]?.value ?? "TRANSF_BANCOLOMBIA");
   // Banco (Beneficiario) usado como tercero del 4x1000. Solo se captura cuando
   // el canal NO es Bancolombia — para Bancolombia el backend auto-resuelve
   // desde SIIGO_BENEFICIARIO_BANCOLOMBIA_ID.
   const [bancoSel, setBancoSel] = useState<BeneficiarioSeleccion | null>(null);
 
-  // Facturas de proveedor disponibles (multiselect)
+  // Facturas de proveedor disponibles (multiselect) — CxP v2: monto por factura (§D.4).
   const [facturasDisponibles, setFacturasDisponibles] = useState<FacturaProveedorOpcion[]>([]);
   const [facturasSeleccionadas, setFacturasSeleccionadas] = useState<string[]>(initialFacturaIds ?? []);
+  const [montosPorFactura, setMontosPorFactura] = useState<Record<string, string>>(() =>
+    initialFacturaIds && initialFacturaIds.length === 1 && initialValor
+      ? { [initialFacturaIds[0]]: initialValor }
+      : {},
+  );
   const [facturasLoadError, setFacturasLoadError] = useState(false);
 
   // PSE: wizard de 2 pasos (form → soporte)
@@ -846,13 +873,46 @@ export function NuevoPagoModal({
   function handleFacturasChange(ids: string[]) {
     setFacturasSeleccionadas(ids);
     agregarBeneficiariosDeFacturas(ids, facturasDisponibles);
+    // Monto por defecto = saldo de cada factura recién marcada (tope: el saldo).
+    setMontosPorFactura((prev) => {
+      const next: Record<string, string> = {};
+      for (const id of ids) {
+        if (prev[id] !== undefined) {
+          next[id] = prev[id];
+          continue;
+        }
+        const fp = facturasDisponibles.find((f) => f.id === id);
+        next[id] = fp?.saldo ?? "0";
+      }
+      return next;
+    });
   }
 
-  const sumaFacturas: bigint = facturasDisponibles
-    .filter((fp) => facturasSeleccionadas.includes(fp.id))
-    .reduce((sum, fp) => {
-      try { return sum + BigInt(fp.valor); } catch { return sum; }
-    }, 0n);
+  function handleMontoFacturaChange(facturaId: string, raw: string) {
+    const fp = facturasDisponibles.find((f) => f.id === facturaId);
+    let digitos = raw.replace(/\D/g, "");
+    if (fp && digitos) {
+      // Tope: nunca más que el saldo (R2 — se refuerza también en el servidor).
+      try {
+        if (BigInt(digitos) > BigInt(fp.saldo)) digitos = fp.saldo;
+      } catch {
+        // ignore
+      }
+    }
+    setMontosPorFactura((prev) => ({ ...prev, [facturaId]: digitos }));
+  }
+
+  // Valor del pago = Σ de los montos por factura (solo lectura mientras haya facturas marcadas).
+  const sumaFacturas: bigint = facturasSeleccionadas.reduce((sum, id) => {
+    try {
+      return sum + BigInt(montosPorFactura[id] || "0");
+    } catch {
+      return sum;
+    }
+  }, 0n);
+  // Con facturas marcadas, el valor visible/enviado es SIEMPRE la suma (derivado,
+  // no via efecto): el campo queda de solo lectura.
+  const valorEfectivo = facturasSeleccionadas.length > 0 ? sumaFacturas.toString() : valorRaw;
 
   async function submitPayload(payload: PendingSubmit) {
     if (isSubmitting) return;
@@ -867,21 +927,30 @@ export function NuevoPagoModal({
         valor: payload.valor,
         canalPago: payload.canalPago,
         fechaRealPago: fechaRealPago || null,
-        facturaProveedorIds: facturasSeleccionadas,
+        // CxP v2 (§D.4): cuánto de este pago va a cada factura. Σ = valor.
+        aplicaciones: facturasSeleccionadas.map((facturaProveedorId) => ({
+          facturaProveedorId,
+          monto: montosPorFactura[facturaProveedorId] || "0",
+        })),
         // Solo mando el banco para canales != Bancolombia; el backend
         // auto-resuelve Bancolombia desde el parámetro de configuración.
         bancoBeneficiarioId:
           payload.canalPago !== "TRANSF_BANCOLOMBIA" && bancoSel
             ? bancoSel.id
             : null,
+        claveIdempotencia,
       });
+      setClaveIdempotencia(nuevaClaveIdempotencia());
       toast({
-        title: "Pago guardado",
+        title: pago.repetido ? "Este pago ya estaba guardado" : "Pago guardado",
         description: `${payload.concepto} · ${formatCOP(payload.valor)} en ${tramiteConsecutivo}`,
         variant: "success",
       });
       onCreated(pago);
     } catch (caught) {
+      if ((caught as { codigo?: string } | null)?.codigo === "IDEMPOTENCIA_CONFLICTO") {
+        setClaveIdempotencia(nuevaClaveIdempotencia());
+      }
       setError(describirError(caught, "Error al crear el pago."));
     } finally {
       setIsSubmitting(false);
@@ -963,7 +1032,7 @@ export function NuevoPagoModal({
     const formData = new FormData(e.currentTarget);
     const concepto = String(formData.get("concepto") ?? "").trim();
 
-    const valorBig = parseBigIntInput(valorRaw);
+    const valorBig = parseBigIntInput(valorEfectivo);
     if (!valorBig || BigInt(valorBig) <= 0n) {
       setError("El valor debe ser un número entero mayor a 0.");
       return;
@@ -1005,21 +1074,9 @@ export function NuevoPagoModal({
       }
     }
 
-    // Verificar desviación ±10% solo si hay facturas seleccionadas
-    if (facturasSeleccionadas.length > 0 && sumaFacturas > 0n) {
-      const diff = BigInt(valorBig) - sumaFacturas;
-      const pct = Number((diff * 1000n) / sumaFacturas) / 10;
-      if (Math.abs(pct) > 10) {
-        const seguir = await confirmar({
-          title: "Desviación significativa",
-          description: `El valor ingresado (${formatCOP(payload.valor)}) difiere ${pct > 0 ? "+" : ""}${pct.toFixed(1)}% del total de facturas seleccionadas (${formatCOP(sumaFacturas.toString())}). ¿Deseas continuar de todos modos?`,
-          confirmText: "Confirmar pago",
-          cancelText: "Revisar",
-        });
-        if (!seguir) return;
-      }
-    }
-
+    // CxP v2 (§D.4): con facturas marcadas, el valor SIEMPRE es la suma de sus
+    // montos (el campo queda de solo lectura) — ya no hay diálogo de
+    // desviación: el servidor rechaza `PAGO_NO_CUADRA` si algo no cuadra.
     await submitPayload(payload);
   }
 
@@ -1089,8 +1146,33 @@ export function NuevoPagoModal({
                       placeholder="Buscar y seleccionar facturas…"
                     />
                     <p className="text-xs text-slate-500">
-                      Puedes volver a vincular facturas en estado PAGADA. Solo las facturas FACTURADA CLIENTE quedan bloqueadas.
+                      Solo aparecen facturas con saldo pendiente. Una factura pagada no se puede volver a
+                      pagar.
                     </p>
+                    {facturasSeleccionadas.length > 0 ? (
+                      <div className="divide-y divide-slate-100 border border-slate-200">
+                        {facturasSeleccionadas.map((id) => {
+                          const fp = facturasDisponibles.find((f) => f.id === id);
+                          if (!fp) return null;
+                          return (
+                            <div key={id} className="flex items-center gap-3 px-3 py-2">
+                              <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                                {fp.numFacturaVisible}
+                                <span className="ml-1.5 text-xs text-slate-400">
+                                  saldo {formatCOP(fp.saldo)}
+                                </span>
+                              </span>
+                              <CampoMoneda
+                                value={montosPorFactura[id] ?? ""}
+                                onValueChange={(digitos) => handleMontoFacturaChange(id, digitos)}
+                                aria-label={`Monto a aplicar a la factura ${fp.numFacturaVisible}`}
+                                className="h-8 w-32 border border-slate-300 px-2 text-right text-sm outline-none focus:border-cyan-600"
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -1118,12 +1200,18 @@ export function NuevoPagoModal({
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="block space-y-1.5">
-                  <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
+                  <span className="text-sm font-medium text-slate-700">
+                    Valor (COP) *
+                    {facturasSeleccionadas.length > 0 ? (
+                      <span className="ml-1.5 font-normal text-slate-400">(= suma de las facturas)</span>
+                    ) : null}
+                  </span>
                   <CampoMoneda
-                    value={valorRaw}
+                    value={valorEfectivo}
                     onValueChange={setValorRaw}
                     placeholder="1.000.000"
-                    className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                    disabled={facturasSeleccionadas.length > 0}
+                    className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50 disabled:text-slate-500"
                   />
                 </label>
                 <label className="block space-y-1.5">
@@ -1382,10 +1470,18 @@ type LibroPagosProps = {
   tramiteId: string;
   /** Cambia cuando el detalle del DO se recargó: vuelve a leer el libro. */
   refreshToken?: number;
+  /**
+   * Avisa al DO que un pago se creó, se borró o se anuló su bloque: las
+   * facturas de proveedor cambiaron de estado (Pendiente/Abonada/Pagada) y la
+   * pestaña "Facturas proveedor" debe recargarse.
+   */
+  onCambio?: () => void;
 };
 
-export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
+export function LibroPagos({ tramiteId, refreshToken = 0, onCambio }: LibroPagosProps) {
   const puedeEditar = usePermiso(ROLES_EDITAR_PAGOS);
+  const puedeVerDetalleBloque = usePermiso(ROLES_DETALLE_BLOQUE);
+  const esAdmin = useEsAdmin();
   const { toast } = useToast();
   const confirmar = useConfirm();
   const [tramite, setTramite] = useState<TramiteDetail | null>(null);
@@ -1397,6 +1493,8 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [bloqueParaAnular, setBloqueParaAnular] = useState<{ grupoPagoId: string; resumen: string } | null>(null);
+  const [bloqueParaDetalle, setBloqueParaDetalle] = useState<string | null>(null);
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // --- Carga inicial ---
@@ -1417,9 +1515,10 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
       setLibro(libroData);
 
       // Construir filas con saldos calculados localmente
+      // Saldo del cliente: lo que asume Galcomex (asesoría NO SE COBRA) no lo baja.
       const saldos = calcularSaldosCliente(
         libroData.totalAnticipoAplicado,
-        libroData.pagos.map((p) => p.valor),
+        libroData.pagos.map((p) => valorParaSaldoCliente(p.valor, p.noCobrable)),
       );
       setFilas(libroData.pagos.map((p, i) => filaFromRow(p, saldos[i] ?? "0")));
       setLoadState("ready");
@@ -1441,7 +1540,8 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
       return filasActuales.map((fila) => {
         const val = parseBigIntInput(fila.editingValor);
         const bigVal = val ? BigInt(val) : BigInt(fila.valor);
-        saldo -= bigVal;
+        // Lo que asume Galcomex (asesoría) no baja el saldo del cliente.
+        saldo -= bigVal - BigInt(fila.noCobrable ?? "0");
         return { ...fila, saldoLocal: saldo.toString() };
       });
     },
@@ -1516,7 +1616,10 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
         numSoporte: fila.editingNumSoporte || null,
         valor: valorBig ?? fila.valor,
         canalPago: fila.editingCanal,
-        fechaRealPago: fila.editingFechaReal || null,
+        // Solo si cambió: editar el concepto no debe tocar la fecha de pago.
+        ...(fila.editingFechaReal !== isoToDateInput(fila.fechaRealPago)
+          ? { fechaRealPago: fila.editingFechaReal || null }
+          : {}),
       });
 
       setFilas((prev) => {
@@ -1530,7 +1633,7 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
             editingBeneficiarios: updated.beneficiarios ?? [],
             editingNumSoporte: updated.numSoporte ?? "",
             editingCanal: updated.canalPago,
-            editingFechaReal: isoToDateInput(updated.fechaRealPago) || todayInput(),
+            editingFechaReal: isoToDateInput(updated.fechaRealPago),
             dirty: false,
             saving: false,
             errorFila: null,
@@ -1550,7 +1653,12 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
         }, 0n);
         const saldos = calcularSaldosCliente(
           prev.totalAnticipoAplicado,
-          filas.map((f) => (f.id === id ? updated.valor : parseBigIntInput(f.editingValor) ?? f.valor)),
+          filas.map((f) =>
+            valorParaSaldoCliente(
+              f.id === id ? updated.valor : parseBigIntInput(f.editingValor) ?? f.valor,
+              f.noCobrable,
+            ),
+          ),
         );
         const saldoFinal = saldos.length > 0 ? saldos[saldos.length - 1] : prev.totalAnticipoAplicado;
         return { ...prev, totalPagos: totalPagos.toString(), saldos, saldoFinal: saldoFinal ?? "0" };
@@ -1645,12 +1753,21 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
         );
         const saldos = calcularSaldosCliente(
           prev.totalAnticipoAplicado,
-          remaining.map((f) => parseBigIntInput(f.editingValor) ?? f.valor),
+          remaining.map((f) => valorParaSaldoCliente(parseBigIntInput(f.editingValor) ?? f.valor, f.noCobrable)),
         );
         const saldoFinal = saldos.length > 0 ? saldos[saldos.length - 1] : prev.totalAnticipoAplicado;
-        return { ...prev, totalPagos: totalPagos.toString(), saldos, saldoFinal: saldoFinal ?? "0" };
+        const totalNoCobrable = remaining.reduce((sum, f) => sum + BigInt(f.noCobrable ?? "0"), 0n);
+        return {
+          ...prev,
+          totalPagos: totalPagos.toString(),
+          totalPagosCobrables: (totalPagos - totalNoCobrable).toString(),
+          totalNoCobrable: totalNoCobrable.toString(),
+          saldos,
+          saldoFinal: saldoFinal ?? "0",
+        };
       });
       toast({ title: "Pago eliminado", variant: "success" });
+      onCambio?.();
     } catch (caught) {
       toast({
         title: "No se pudo eliminar el pago",
@@ -1697,6 +1814,7 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
     setModalOpen(false);
     // Reload para asegurar saldo actualizado desde el backend
     setReloadKey((k) => k + 1);
+    onCambio?.();
   }
 
   // ---------------------------------------------------------------------------
@@ -1775,7 +1893,7 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
           <table className="w-full min-w-[900px] border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
-                <th className="border-b border-slate-200 px-3 py-2 w-8">#</th>
+                <th className="sticky left-0 z-10 w-8 border-b border-r border-slate-200 bg-slate-50 px-3 py-2">#</th>
                 <th className="border-b border-slate-200 px-3 py-2">Concepto</th>
                 <th className="border-b border-slate-200 px-3 py-2">Beneficiarios</th>
                 <th className="border-b border-slate-200 px-3 py-2">N° soporte</th>
@@ -1803,6 +1921,7 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
                   fila={fila}
                   index={idx + 1}
                   readOnly={!puedeEditar}
+                  esAdmin={esAdmin}
                   isDeleting={deletingId === fila.id}
                   onChange={handleFieldChange}
                   onBeneficiariosChange={handleBeneficiariosChange}
@@ -1810,6 +1929,8 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
                   onDelete={(id) => void handleDelete(id)}
                   onVerify={(id) => void handleVerificar(id)}
                   onAdjuntarComprobante={(id, file) => void handleAdjuntarComprobante(id, file)}
+                  onAnularBloque={(grupoPagoId, resumen) => setBloqueParaAnular({ grupoPagoId, resumen })}
+                  onVerDetalleBloque={puedeVerDetalleBloque ? (grupoPagoId) => setBloqueParaDetalle(grupoPagoId) : undefined}
                   isVerifying={verifyingId === fila.id}
                 />
               ))}
@@ -1825,6 +1946,23 @@ export function LibroPagos({ tramiteId, refreshToken = 0 }: LibroPagosProps) {
           onClose={() => setModalOpen(false)}
           onCreated={handlePagoCreado}
         />
+      ) : null}
+
+      {bloqueParaAnular ? (
+        <AnularBloqueDialog
+          grupoPagoId={bloqueParaAnular.grupoPagoId}
+          resumen={bloqueParaAnular.resumen}
+          onClose={() => setBloqueParaAnular(null)}
+          onDone={() => {
+            setBloqueParaAnular(null);
+            setReloadKey((k) => k + 1);
+            onCambio?.();
+          }}
+        />
+      ) : null}
+
+      {bloqueParaDetalle ? (
+        <DetalleBloqueDialog grupoPagoId={bloqueParaDetalle} onClose={() => setBloqueParaDetalle(null)} />
       ) : null}
     </section>
   );
@@ -1852,11 +1990,19 @@ function estadoMovimientoBadge(estado: EstadoMovimiento) {
   return null; // REALIZADO — sin badge extra
 }
 
+const COSTO_ASUMIDO_LABEL: Record<string, string> = {
+  GALCOMEX: "lo asume Galcomex",
+  PRIMER_DO: "en este DO",
+  PRORRATEADO: "repartido entre los DOs",
+};
+
 type FilaPagoProps = {
   fila: FilaLibro;
   index: number;
   /** Solo lectura (REVISOR/SOCIO): sin inputs ni acciones. */
   readOnly: boolean;
+  /** "Anular pago en bloque" solo ADMIN (R16). */
+  esAdmin: boolean;
   isDeleting: boolean;
   onChange: (
     id: string,
@@ -1872,6 +2018,9 @@ type FilaPagoProps = {
   onVerify: (id: string) => void;
   /** Sube y adjunta el comprobante bancario a un pago ya guardado. */
   onAdjuntarComprobante: (id: string, file: File) => void;
+  onAnularBloque: (grupoPagoId: string, resumen: string) => void;
+  /** Sin él (SOCIO: la ruta del detalle no lo admite) la etiqueta del bloque es solo texto. */
+  onVerDetalleBloque?: (grupoPagoId: string) => void;
   isVerifying: boolean;
 };
 
@@ -1883,6 +2032,7 @@ function FilaPago({
   fila,
   index,
   readOnly,
+  esAdmin,
   isDeleting,
   onChange,
   onBeneficiariosChange,
@@ -1890,6 +2040,8 @@ function FilaPago({
   onDelete,
   onVerify,
   onAdjuntarComprobante,
+  onAnularBloque,
+  onVerDetalleBloque,
   isVerifying,
 }: FilaPagoProps) {
   const etiqueta = `pago ${index}`;
@@ -1897,7 +2049,7 @@ function FilaPago({
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
-        <td className="px-3 py-2 text-xs text-slate-500">{index}</td>
+        <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-3 py-2 text-xs text-slate-500">{index}</td>
 
         {/* Concepto */}
         <td className="px-3 py-2">
@@ -1948,16 +2100,15 @@ function FilaPago({
           )}
         </td>
 
-        {/* Facturas proveedor vinculadas / vía Lucho / estado */}
+        {/* Facturas proveedor vinculadas (con monto) / vía Lucho / estado */}
         <td className="px-3 py-2">
           <div className="flex flex-col gap-0.5">
-            {fila.facturasProveedor.map((fp) => (
+            {fila.aplicaciones.map((ap) => (
               <span
-                key={fp.facturaId}
+                key={ap.facturaId}
                 className="inline-flex items-center border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700"
-                title={fp.proveedorNombre}
               >
-                {fp.numFactura}
+                {ap.numFacturaVisible} · {formatCOP(ap.monto)}
               </span>
             ))}
             {fila.viaSocio ? (
@@ -1997,26 +2148,52 @@ function FilaPago({
                 />
               </label>
             ) : null}
-            {fila.grupoPagoId ? (
-              <span
-                className="inline-flex items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700"
-                title={
-                  fila.grupoOtrosDOs.length > 0
-                    ? `Pago multi-DO — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
-                    : "Pago multi-DO"
-                }
-              >
-                Pago multi-DO
+            {fila.esBloque && fila.grupoPagoId ? (
+              onVerDetalleBloque ? (
+                <button
+                  type="button"
+                  onClick={() => onVerDetalleBloque(fila.grupoPagoId as string)}
+                  className="inline-flex w-fit items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-left text-[10px] font-semibold text-cyan-700 hover:bg-cyan-100"
+                >
+                  Pago en bloque
+                  {fila.grupoOtrosDOs.length > 0
+                    ? ` — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
+                    : ""}
+                </button>
+              ) : (
+                <span className="inline-flex w-fit items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700">
+                  Pago en bloque
+                  {fila.grupoOtrosDOs.length > 0
+                    ? ` — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
+                    : ""}
+                </span>
+              )
+            ) : null}
+            {fila.grupo && BigInt(fila.grupo.costoBancario || "0") > 0n ? (
+              <span className="text-[10px] text-slate-500">
+                Costo de la transferencia {formatCOP(fila.grupo.costoBancario)}
+                {" · "}
+                {COSTO_ASUMIDO_LABEL[fila.grupo.costoAsumidoPor] ?? fila.grupo.costoAsumidoPor}
               </span>
             ) : null}
             {estadoMovimientoBadge(fila.estado)}
           </div>
         </td>
 
-        {/* Valor */}
+        {/* Valor — de solo lectura cuando el pago tiene facturas o es de un bloque (§B.4). */}
         <td className="px-3 py-2 text-right">
-          {readOnly ? (
-            <span className="text-sm font-medium text-slate-900">{formatCOP(fila.valor)}</span>
+          {readOnly || !fila.editableDinero ? (
+            <span
+              className="text-sm font-medium text-slate-900"
+              title={!readOnly && !fila.editableDinero ? "Cubre facturas o es de un bloque: anula y registra de nuevo para cambiar el valor." : undefined}
+            >
+              {formatCOP(fila.valor)}
+              {BigInt(fila.noCobrable ?? "0") > 0n ? (
+                <span className="block text-[11px] font-normal text-slate-500">
+                  {formatCOP(fila.noCobrable ?? "0")} no se cobra (asesoría)
+                </span>
+              ) : null}
+            </span>
           ) : (
             <CampoMoneda
               value={fila.editingValor}
@@ -2029,9 +2206,9 @@ function FilaPago({
           )}
         </td>
 
-        {/* Canal de pago */}
+        {/* Canal de pago — de solo lectura en las mismas condiciones que el valor. */}
         <td className="px-3 py-2">
-          {readOnly ? (
+          {readOnly || !fila.editableDinero ? (
             <span className="text-sm text-slate-700">{canalPagoLabel(fila.canalPago)}</span>
           ) : (
             <select
@@ -2106,20 +2283,40 @@ function FilaPago({
               ) : (
                 <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
               )}
-              <button
-                type="button"
-                onClick={() => onDelete(fila.id)}
-                disabled={isDeleting}
-                className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
-                aria-label={`Eliminar ${etiqueta}`}
-                title="Eliminar pago"
-              >
-                {isDeleting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Trash2 className="h-4 w-4" aria-hidden="true" />
-                )}
-              </button>
+              {fila.esBloque && fila.grupoPagoId ? (
+                // Un pago de bloque no se borra suelto (§B.4 PAGO_DE_BLOQUE): solo ADMIN puede
+                // anular el bloque completo desde aquí.
+                esAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onAnularBloque(
+                        fila.grupoPagoId as string,
+                        `${fila.concepto} · ${formatCOP(fila.valor)} · ${fila.fechaRealPago ? formatDate(fila.fechaRealPago) : "sin fecha"}`,
+                      )
+                    }
+                    className="inline-flex h-7 items-center gap-1 border border-rose-200 bg-rose-50 px-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+                    title="Anular pago en bloque"
+                  >
+                    Anular bloque
+                  </button>
+                ) : null
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onDelete(fila.id)}
+                  disabled={isDeleting}
+                  className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                  aria-label={`Eliminar ${etiqueta}`}
+                  title="Eliminar pago"
+                >
+                  {isDeleting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  )}
+                </button>
+              )}
             </div>
           )}
         </td>

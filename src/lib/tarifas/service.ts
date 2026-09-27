@@ -19,6 +19,8 @@ import {
   type Tarifario,
 } from "@prisma/client";
 
+import { cargarPagosParaCobro } from "@/lib/borradores/pagos-para-cobro";
+import { desglosarPago } from "@/lib/calculations/pagos-cobrables";
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { tiene } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
@@ -149,14 +151,16 @@ export class ConceptoNoEnCatalogoError extends Error {
  * ni en `tramites/flujo-corto.ts`) porque ambos la usan y así no hay
  * importación circular entre esos dos módulos.
  */
+export type PendienteTarifa = { concepto: string; nombrePublico: string; motivo: string; causa?: string };
+
 export class TarifaIncompletaError extends Error {
   public readonly status = 422;
-  public readonly pendientes: { concepto: string; nombrePublico: string; motivo: string }[];
-  constructor(pendientes: { concepto: string; nombrePublico: string; motivo: string }[]) {
+  public readonly pendientes: PendienteTarifa[];
+  constructor(pendientes: PendienteTarifa[]) {
     super(
       `El tarifario no se puede aplicar completo: ${pendientes
         .map((p) => `${p.nombrePublico} (${p.motivo.toLowerCase()})`)
-        .join("; ")}. Completa la base de cálculo del trámite o pasa la comisión a mano.`,
+        .join("; ")}. Completa lo que falta (base de cálculo del DO, pago o factura del proveedor, o el tarifario) o pasa la comisión a mano.`,
     );
     this.name = "TarifaIncompletaError";
     this.pendientes = pendientes;
@@ -874,6 +878,12 @@ export interface PropuestaTarifa {
   } | null;
   /** Por qué no hay propuesta, en palabras para la UI. */
   motivo: string | null;
+  /**
+   * La empresa tiene encendida la función `tarifario_propio`, haya o no un
+   * tarifario vigente. Facturación lo usa para no proponer la comisión fija por
+   * defecto a una empresa que se factura por tarifario.
+   */
+  tarifarioPropio: boolean;
   resultado: ResultadoTarifa | null;
   contexto: ContextoTramite;
 }
@@ -884,6 +894,18 @@ export type ContextoTramite = ContextoTarifa & {
   ordenCompraValor: bigint | null;
 };
 
+/**
+ * Contexto del motor de tarifas para un trámite. Los costos que un ítem
+ * ESPEJO_DE_COSTO puede reflejar son SOLO lo que se le cobra al cliente
+ * (igual que el borrador; ver `lib/calculations/pagos-cobrables.ts`):
+ * - facturas de proveedor: solo las que se cobran (`repercutible`); una
+ *   «NO SE COBRA» (asesoría) nunca se espeja;
+ * - pagos del libro: solo su parte cobrable (`desglosarPago`, con los mismos
+ *   montos del pago en bloque que usa `generarBorrador`). Un pago que es
+ *   todo asesoría no aparece: ni siquiera con 0, que taparía a otro costo con
+ *   el mismo concepto. Los pagos sueltos y los 100 % repercutibles van
+ *   completos, como siempre.
+ */
 export async function contextoDeTramite(tramiteId: string): Promise<ContextoTramite> {
   const tramite = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
@@ -897,14 +919,21 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
       ordenCompraNumero: true,
       ordenCompraValor: true,
       eventos: { select: { eventoCodigo: true, cantidad: true } },
-      pagos: { select: { concepto: true, valor: true } },
-      facturasProveedor: { select: { concepto: true, valor: true } },
+      facturasProveedor: { where: { repercutible: true }, select: { concepto: true, valor: true } },
     },
   });
   if (!tramite) throw new TarifarioNoEncontradoError(tramiteId);
 
+  const pagos = await cargarPagosParaCobro(prisma, tramiteId);
+  const costosDePagos = pagos.flatMap(({ pago, paraCobro }) => {
+    if (!pago.concepto) return [];
+    const { cobrable, noCobrable } = desglosarPago(paraCobro);
+    if (cobrable.valor === 0n && noCobrable > 0n) return [];
+    return [{ concepto: pago.concepto, valor: cobrable.valor }];
+  });
+
   const costos = [
-    ...tramite.pagos.filter((p) => p.concepto).map((p) => ({ concepto: p.concepto ?? "", valor: p.valor })),
+    ...costosDePagos,
     ...tramite.facturasProveedor.filter((f) => f.concepto).map((f) => ({ concepto: f.concepto ?? "", valor: f.valor })),
   ];
 
@@ -928,8 +957,17 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
  * Líneas que el tarifario vigente de la empresa propone para el trámite. Es
  * lo que ve el revisor antes de generar el borrador y lo que `generarBorrador`
  * usa como desglose de la comisión cuando la empresa tiene tarifario propio.
+ *
+ * `fecha` es el DÍA calendario en Bogotá (hallazgo 2 del 24-sep): con
+ * `new Date()` (instante UTC) este default anulaba el de `tarifarioVigenteDe`
+ * y desde las 19:00 del último día de vigencia el modal no veía tarifario (y
+ * `ensureBorrador` facturaba la comisión por defecto); un día antes del cambio
+ * de versión ya usaba la nueva.
  */
-export async function propuestaParaTramite(tramiteId: string, fecha: Date = new Date()): Promise<PropuestaTarifa> {
+export async function propuestaParaTramite(
+  tramiteId: string,
+  fecha: Date = fechaCalendarioBogota(),
+): Promise<PropuestaTarifa> {
   const tramite = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
     select: {
@@ -943,7 +981,13 @@ export async function propuestaParaTramite(tramiteId: string, fecha: Date = new 
   const contexto = await contextoDeTramite(tramiteId);
   const capacidades = await capacidadesDeEmpresa(tramite.clienteId);
   if (!tiene(capacidades, "tarifario_propio")) {
-    return { tarifario: null, motivo: `${tramite.cliente.nombre} no tiene habilitado el tarifario propio`, resultado: null, contexto };
+    return {
+      tarifario: null,
+      motivo: `${tramite.cliente.nombre} no tiene habilitado el tarifario propio`,
+      tarifarioPropio: false,
+      resultado: null,
+      contexto,
+    };
   }
 
   const alcance = tramite.tipoTramite.lineaServicio;
@@ -952,6 +996,7 @@ export async function propuestaParaTramite(tramiteId: string, fecha: Date = new 
     return {
       tarifario: null,
       motivo: `${tramite.cliente.nombre} no tiene un tarifario vigente para ${alcance.toLowerCase()} en esta fecha`,
+      tarifarioPropio: true,
       resultado: null,
       contexto,
     };
@@ -969,6 +1014,7 @@ export async function propuestaParaTramite(tramiteId: string, fecha: Date = new 
       vigenteHasta: vigente.vigenteHasta,
     },
     motivo: null,
+    tarifarioPropio: true,
     resultado,
     contexto,
   };

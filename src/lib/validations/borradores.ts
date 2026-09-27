@@ -29,6 +29,43 @@ export const generarBorradorPayloadSchema = z.object({
     )
     .min(1)
     .optional(),
+  /**
+   * Generar con el tarifario vigente de la empresa (modal "Generar borrador").
+   * Si el servidor no puede aplicarlo (ya no hay tarifario vigente, cambió de
+   * versión, no propone líneas) responde 409 en vez de caer en silencio a la
+   * comisión por defecto. Excluye `comision` y `conceptosOperacionales`.
+   */
+  usarTarifario: z.boolean().optional(),
+  /** Tarifario que el revisor vio en la propuesta; si ya no es el que rige → 409. */
+  tarifarioId: z.string().trim().min(1).optional(),
+  /**
+   * Total del tarifario (sin IVA) que el revisor vio en la propuesta. Si al
+   * generar el tarifario da otro total (cambió la base del DO o un costo que un
+   * ítem ESPEJO refleja) → 409, aunque la versión sea la misma.
+   */
+  totalTarifario: z.coerce.bigint().nonnegative().optional(),
+}).superRefine((payload, ctx) => {
+  if (payload.usarTarifario && (payload.comision !== undefined || payload.conceptosOperacionales)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["usarTarifario"],
+      message: "Con el tarifario no se manda comisión ni conceptos a mano",
+    });
+  }
+  if (payload.totalTarifario !== undefined && !payload.usarTarifario) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["totalTarifario"],
+      message: "totalTarifario solo aplica con usarTarifario: true",
+    });
+  }
+  if (payload.tarifarioId && !payload.usarTarifario) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["tarifarioId"],
+      message: "tarifarioId solo aplica con usarTarifario: true",
+    });
+  }
 });
 
 export type GenerarBorradorPayload = z.infer<typeof generarBorradorPayloadSchema>;

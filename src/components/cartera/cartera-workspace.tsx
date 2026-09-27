@@ -28,6 +28,7 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useRol } from "@/lib/auth/rol-context";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import {
   OPCIONES_RECAUDO_PAGO,
   type CarteraData,
@@ -170,7 +171,7 @@ function RegistrarPagoModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [montoRaw, setMontoRaw] = useState("");
-  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [fecha, setFecha] = useState(hoyBogotaISO());
   // Selector combinado: "RECAUDO:BANCOLOMBIA" | "PAGO:TRANSF_BANCOLOMBIA", etc.
   const [opcionSeleccionada, setOpcionSeleccionada] = useState<string>("RECAUDO:BANCOLOMBIA");
   const [verificadoBanco, setVerificadoBanco] = useState(false);

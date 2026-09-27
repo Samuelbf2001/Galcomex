@@ -54,6 +54,14 @@ export type CuentaCorriente = {
   cuentaCorrienteActiva: boolean;
   /** Cuánto se puede cruzar hoy (la punta menor). */
   maximoCompensable: string;
+  /**
+   * Cuánto se puede cruzar SIN elegir factura de proveedor: solo lo que le
+   * debemos por movimientos registrados a mano. Lo que está en facturas se
+   * cruza eligiéndolas o se paga por el libro de pagos. `normalizar` siempre lo
+   * llena; es opcional solo para no romper los dobles de prueba que arman la
+   * cuenta a mano (sin él, el modal lo toma como 0).
+   */
+  maximoSinFacturaProveedor?: string;
   compensables: CompensablesRow;
 };
 
@@ -162,6 +170,7 @@ function normalizar(payload: unknown): CuentaCorriente | null {
     permiteCargosManuales: cuenta.permiteCargosManuales === true,
     cuentaCorrienteActiva: cuenta.cuentaCorrienteActiva === true,
     maximoCompensable: String(cuenta.maximoCompensable ?? "0"),
+    maximoSinFacturaProveedor: String(cuenta.maximoSinFacturaProveedor ?? "0"),
     compensables: normalizarCompensables(cuenta.compensables),
   };
 }

@@ -143,6 +143,7 @@ describe("Litoplas — trámite típico", () => {
         concepto: "DOCUMENTACION",
         nombrePublico: "DOCUMENTACION",
         motivo: "Falta el número de declaraciones del trámite",
+        causa: "BASE_DO",
       },
     ]);
   });
@@ -309,6 +310,31 @@ describe("Polyrec ZF — tarifa por tramos", () => {
 
 // Editor de escalas de volumen (B6, 22-sep): el ejemplo en vivo reusa
 // `tramoPara`, la misma selección de tramo que usa `calcularLineasTarifa`.
+describe("causa de cada pendiente (a dónde manda el modal a arreglarlo)", () => {
+  it("falta un dato del DO → BASE_DO; falta un costo → COSTO_PROVEEDOR; ítem mal configurado → TARIFARIO", () => {
+    const r = calcularLineasTarifa(
+      [
+        item({ concepto: "AGE", tipoCalculo: "PORCENTAJE_MIN", porcentajeBps: 37, orden: 1 }),
+        item({ concepto: "ESPEJO", tipoCalculo: "ESPEJO_DE_COSTO", conceptoCosto: "bodegaje", orden: 2 }),
+        item({ concepto: "SIN_TRAMOS", tipoCalculo: "POR_TRAMO", unidad: "CONTENEDOR", orden: 3 }),
+        item({ concepto: "SIN_PCT", tipoCalculo: "PORCENTAJE_MIN", orden: 4 }),
+      ],
+      ctx({ numContenedores: 1 }),
+    );
+    expect(r.pendientes.map((p) => [p.concepto, p.causa])).toEqual([
+      ["AGE", "BASE_DO"],
+      ["ESPEJO", "COSTO_PROVEEDOR"],
+      ["SIN_TRAMOS", "TARIFARIO"],
+      ["SIN_PCT", "BASE_DO"],
+    ]);
+    const conCif = calcularLineasTarifa(
+      [item({ concepto: "SIN_PCT", tipoCalculo: "PORCENTAJE_MIN" })],
+      ctx({ valorCif: 1_000_000n }),
+    );
+    expect(conCif.pendientes.map((p) => p.causa)).toEqual(["TARIFARIO"]);
+  });
+});
+
 describe("ejemploTramo", () => {
   const ESCALAS: TramoTarifa[] = [
     { hasta: 10, valor: "500000" },

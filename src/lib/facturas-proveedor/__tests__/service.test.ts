@@ -7,6 +7,12 @@
  * TEST_PREFIX único: "vitest-fps"
  * Año de datos de prueba: 3005 (no colisiona con datos reales)
  *
+ * CxP v2 (P2): toda factura nace con su ficha de pago (R7). Cada alta usa una
+ * ficha NUEVA (`nuevaFicha`) para que la llave anti-duplicado por proveedor
+ * (y su aviso por dígitos) no mezcle casos que no tienen que ver entre sí.
+ * Los trámites donde se genera un pago llevan anticipo aplicado (la función
+ * «Sin anticipo no hay pago» está encendida por defecto).
+ *
  * Cubre:
  * - CRUD de FacturaProveedor
  * - generarPago vincula y marca PAGADA
@@ -29,15 +35,17 @@ import {
   TipoCalculoTarifa,
   TipoCliente,
   UnidadTarifa,
+  TipoRecaudo,
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { FacturaConPagosError, FacturaDuplicadaError } from "@/lib/cxp/errores";
 import { prisma } from "@/lib/db/prisma";
+import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import {
   FacturaProveedorConPagosError,
   FacturaProveedorDuplicadaError,
   FacturaProveedorNoEncontradaError,
-  FacturaProveedorNoModificableError,
   TramiteSinPagosError,
   actualizarFacturaProveedor,
   crearFacturaProveedor,
@@ -117,6 +125,7 @@ async function cleanupTestData() {
     where: { facturaId: { in: fpIds } },
   });
 
+  await prisma.aplicacionAnticipo.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
   await prisma.pagoTramite.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
   await prisma.facturaProveedor.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
   await prisma.checklistItem.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
@@ -134,8 +143,10 @@ async function cleanupTestData() {
   // Tarifario/TarifaItem (test de "tarifa OTROS con ítem pendiente"): los
   // ítems se van en cascada al borrar el tarifario.
   await prisma.tarifario.deleteMany({ where: { empresaId: { in: clienteIds } } });
+  await prisma.anticipo.deleteMany({ where: { clienteId: { in: clienteIds } } });
   await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+  await prisma.beneficiario.deleteMany({ where: { nit: { startsWith: TEST_PREFIX } } });
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -207,6 +218,31 @@ async function crearTramiteTest(db: Fixture, clienteId: string): Promise<string>
   return tramite.id;
 }
 
+let fichaCounter = 0;
+/** Ficha de pago nueva (NIT con letras → llave propia, sin cruces entre casos). */
+async function nuevaFicha(nombre = "Proveedor Test SA"): Promise<string> {
+  fichaCounter += 1;
+  const b = await prisma.beneficiario.create({
+    data: { nombre, nit: `${TEST_PREFIX}-ben-${fichaCounter}-${runId.slice(-8)}` },
+  });
+  return b.id;
+}
+
+/** Anticipo aplicado al trámite (para poder generar pagos). */
+async function conAnticipo(tramiteId: string, clienteId: string, monto: bigint): Promise<void> {
+  const anticipo = await prisma.anticipo.create({
+    data: {
+      clienteId,
+      monto,
+      fecha: new Date(`${stateYear}-01-10`),
+      tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
+      costoRecaudo: 0n,
+      verificadoBanco: true,
+    },
+  });
+  await prisma.aplicacionAnticipo.create({ data: { anticipoId: anticipo.id, tramiteId, montoAplicado: monto } });
+}
+
 // ─── Setup / Teardown ─────────────────────────────────────────────────────────
 
 beforeAll(async () => {
@@ -236,6 +272,7 @@ describe("crearFacturaProveedor", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Proveedor Test SA",
       proveedorNit: "900123456-1",
       numFactura: "FACT-0001",
@@ -251,12 +288,13 @@ describe("crearFacturaProveedor", () => {
     expect(factura.tramiteId).toBe(tramiteId);
   });
 
-  it("rechaza factura duplicada (tramiteId + numFactura)", async (ctx) => {
+  it("rechaza factura duplicada (tramiteId + numFactura), aunque sea de otro proveedor", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, db.clientePropioId);
 
     await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Proveedor Test",
       numFactura: "FACT-DUP-001",
       valor: 500_000n,
@@ -267,6 +305,7 @@ describe("crearFacturaProveedor", () => {
     await expect(
       crearFacturaProveedor({
         tramiteId,
+        beneficiarioId: await nuevaFicha(),
         proveedorNombre: "Proveedor Test 2",
         numFactura: "FACT-DUP-001",
         valor: 600_000n,
@@ -283,6 +322,7 @@ describe("crearFacturaProveedor", () => {
 
     const f1 = await crearFacturaProveedor({
       tramiteId: tramite1,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Proveedor A",
       numFactura: "FACT-CROSS-001",
       valor: 100_000n,
@@ -292,6 +332,7 @@ describe("crearFacturaProveedor", () => {
 
     const f2 = await crearFacturaProveedor({
       tramiteId: tramite2,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Proveedor B",
       numFactura: "FACT-CROSS-001",
       valor: 200_000n,
@@ -300,6 +341,47 @@ describe("crearFacturaProveedor", () => {
     });
 
     expect(f1.id).not.toBe(f2.id);
+  });
+
+  it("CxP v2: la misma numFactura del MISMO proveedor en otro trámite se rechaza (llave única)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramite1 = await crearTramiteTest(db, db.clientePropioId);
+    const tramite2 = await crearTramiteTest(db, db.clientePropioId);
+    const ficha = await nuevaFicha("Proveedor Único");
+
+    await crearFacturaProveedor({
+      tramiteId: tramite1,
+      beneficiarioId: ficha,
+      numFactura: "FACT-UNICA-001",
+      valor: 100_000n,
+      fecha: new Date(),
+      subidaPorId: db.userId,
+    });
+    await expect(
+      crearFacturaProveedor({
+        tramiteId: tramite2,
+        beneficiarioId: ficha,
+        numFactura: "fact unica 001",
+        valor: 100_000n,
+        fecha: new Date(),
+        subidaPorId: db.userId,
+      }),
+    ).rejects.toBeInstanceOf(FacturaDuplicadaError);
+  });
+
+  it("CxP v2: la fecha se guarda como fecha-calendario (00:00 UTC del día en Bogotá)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, db.clientePropioId);
+    // 23:30 del 10-sep en Bogotá = 04:30 UTC del 11-sep: la factura es del 10.
+    const factura = await crearFacturaProveedor({
+      tramiteId,
+      beneficiarioId: await nuevaFicha(),
+      numFactura: "FACT-FECHA-001",
+      valor: 100_000n,
+      fecha: new Date("2026-09-11T04:30:00.000Z"),
+      subidaPorId: db.userId,
+    });
+    expect(factura.fecha.toISOString()).toBe("2026-09-10T00:00:00.000Z");
   });
 });
 
@@ -310,6 +392,7 @@ describe("listarPorTramite", () => {
 
     await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Prov A",
       numFactura: "FP-01",
       valor: 100_000n,
@@ -318,6 +401,7 @@ describe("listarPorTramite", () => {
     });
     await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Prov B",
       numFactura: "FP-02",
       valor: 200_000n,
@@ -339,6 +423,7 @@ describe("actualizarFacturaProveedor", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Proveedor Original",
       numFactura: "FP-UPD-01",
       valor: 300_000n,
@@ -348,11 +433,13 @@ describe("actualizarFacturaProveedor", () => {
 
     const updated = await actualizarFacturaProveedor(
       factura.id,
-      { proveedorNombre: "Proveedor Actualizado", valor: 350_000n },
+      { concepto: "Transporte", valor: 350_000n },
       db.userId,
     );
 
-    expect(updated.proveedorNombre).toBe("Proveedor Actualizado");
+    // El nombre del proveedor sale de la ficha (CxP v2), no se edita a mano.
+    expect(updated.proveedorNombre).toBe("Proveedor Test SA");
+    expect(updated.concepto).toBe("Transporte");
     expect(updated.valor).toBe(350_000n);
     expect(updated.numFactura).toBe("FP-UPD-01"); // no cambió
   });
@@ -370,12 +457,15 @@ describe("actualizarFacturaProveedor", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Proveedor Pagado",
       numFactura: "FP-PAGADA-UPD-01",
       valor: 750_000n,
       fecha: new Date(),
       subidaPorId: db.userId,
     });
+
+    await conAnticipo(tramiteId, db.clientePropioId, 750_000n);
 
     // Generar el pago deja la factura en estado PAGADA
     await generarPagoDesdeFactura({
@@ -385,10 +475,14 @@ describe("actualizarFacturaProveedor", () => {
       usuarioId: db.userId,
     });
 
-    // Intentar actualizar una factura PAGADA debe lanzar el error de estado
+    // CxP v2 (R11): con pagos no cambia el valor…
     await expect(
       actualizarFacturaProveedor(factura.id, { valor: 800_000n }, db.userId),
-    ).rejects.toThrow(FacturaProveedorNoModificableError);
+    ).rejects.toThrow(FacturaConPagosError);
+    // …pero el concepto sí se corrige.
+    const conConcepto = await actualizarFacturaProveedor(factura.id, { concepto: "Flete" }, db.userId);
+    expect(conConcepto.concepto).toBe("Flete");
+    expect(conConcepto.estado).toBe(EstadoFacturaProveedor.PAGADA);
   });
 });
 
@@ -399,6 +493,7 @@ describe("eliminarFacturaProveedor", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Prov Delete",
       numFactura: "FP-DEL-01",
       valor: 100_000n,
@@ -418,12 +513,15 @@ describe("eliminarFacturaProveedor", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Prov Con Pago",
       numFactura: "FP-PAGO-01",
       valor: 500_000n,
       fecha: new Date(),
       subidaPorId: db.userId,
     });
+
+    await conAnticipo(tramiteId, db.clientePropioId, 500_000n);
 
     // Generar el pago (lo vincula)
     await generarPagoDesdeFactura({
@@ -453,6 +551,7 @@ describe("generarPagoDesdeFactura", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "LUTOSA SAS",
       numFactura: "FACT-FESP-001",
       valor: 2_500_000n,
@@ -461,6 +560,7 @@ describe("generarPagoDesdeFactura", () => {
     });
 
     expect(factura.estado).toBe(EstadoFacturaProveedor.REGISTRADA);
+    await conAnticipo(tramiteId, db.clientePropioId, 2_500_000n);
 
     const { pago, factura: facturaActualizada } = await generarPagoDesdeFactura({
       facturaProveedorId: factura.id,
@@ -493,6 +593,7 @@ describe("generarPagoDesdeFactura", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Proveedor Efectivo",
       numFactura: "FP-SOCIO-01",
       valor: 1_000_000n,
@@ -500,6 +601,7 @@ describe("generarPagoDesdeFactura", () => {
       subidaPorId: db.userId,
     });
 
+    await conAnticipo(tramiteId, db.clientePropioId, 1_000_000n);
     const { pago } = await generarPagoDesdeFactura({
       facturaProveedorId: factura.id,
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
@@ -516,6 +618,7 @@ describe("generarPagoDesdeFactura", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Prov Transf",
       numFactura: "FP-COSTO-01",
       valor: 800_000n,
@@ -523,6 +626,7 @@ describe("generarPagoDesdeFactura", () => {
       subidaPorId: db.userId,
     });
 
+    await conAnticipo(tramiteId, db.clientePropioId, 1_000_000n);
     const { pago } = await generarPagoDesdeFactura({
       facturaProveedorId: factura.id,
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
@@ -551,12 +655,15 @@ describe("generarPagoDesdeFactura", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Proveedor No Doble",
       numFactura: "FP-DOBLE-01",
       valor: 1_000_000n,
       fecha: new Date(),
       subidaPorId: db.userId,
     });
+
+    await conAnticipo(tramiteId, db.clientePropioId, 2_000_000n);
 
     // Primera llamada: debe tener éxito y marcar la factura como PAGADA
     await generarPagoDesdeFactura({
@@ -566,7 +673,8 @@ describe("generarPagoDesdeFactura", () => {
       usuarioId: db.userId,
     });
 
-    // Segunda llamada sobre la misma factura (ahora en estado PAGADA): debe lanzar error
+    // Segunda llamada sobre la misma factura (ahora en estado PAGADA): debe lanzar
+    // error (e5cd35b: "no admite esta operación"; CxP v2/P1: "ya está pagada").
     await expect(
       generarPagoDesdeFactura({
         facturaProveedorId: factura.id,
@@ -574,7 +682,7 @@ describe("generarPagoDesdeFactura", () => {
         viaSocio: false,
         usuarioId: db.userId,
       }),
-    ).rejects.toThrow(FacturaProveedorNoModificableError);
+    ).rejects.toThrow(/ya está pagada|no admite esta operación/);
 
     // Verificar que en BD solo existe UN PagoTramite para este trámite
     const totalPagos = await prisma.pagoTramite.count({
@@ -638,8 +746,10 @@ describe("solicitarFacturacion", () => {
       data: { estado: EstadoTramite.DESPACHADO },
     });
 
+    const hoyAntes = fechaCalendarioBogota();
     const result = await solicitarFacturacion(tramiteId, db.userId);
     expect(result.ok).toBe(true);
+    const hoyDespues = fechaCalendarioBogota();
 
     // Verificar que el DO quedó en ENVIADO_A_FACTURAR con la fecha
     const tramiteActualizado = await prisma.tramiteDO.findUnique({
@@ -648,6 +758,10 @@ describe("solicitarFacturacion", () => {
     });
     expect(tramiteActualizado?.estado).toBe(EstadoTramite.ENVIADO_A_FACTURAR);
     expect(tramiteActualizado?.fechaEnviadoAFacturar).not.toBeNull();
+    // Fecha-calendario: el día en Bogotá a 00:00 UTC, no el instante del envío
+    // (a las 20:00 de Bogotá el instante ya es el día siguiente en UTC).
+    const enviado = tramiteActualizado?.fechaEnviadoAFacturar?.getTime();
+    expect([hoyAntes.getTime(), hoyDespues.getTime()]).toContain(enviado);
   });
 });
 
@@ -825,6 +939,7 @@ describe("Permisos SOCIO", () => {
 
     const factura = await crearFacturaProveedor({
       tramiteId,
+      beneficiarioId: await nuevaFicha(),
       proveedorNombre: "Prov SOCIO_LM",
       numFactura: "FP-LM-001",
       valor: 200_000n,

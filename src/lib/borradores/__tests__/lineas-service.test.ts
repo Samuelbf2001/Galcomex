@@ -21,6 +21,7 @@ import { generarBorrador, transicionarBorrador } from "../service";
 import {
   BorradorNoEditableError,
   FacturaDeOtroTramiteError,
+  ProductoSiigoNoEncontradoError,
   actualizarLinea,
   crearLineaManual,
   eliminarLinea,
@@ -106,6 +107,8 @@ async function cleanupTestData() {
   await prisma.tramiteDO.deleteMany({ where: { id: { in: tramiteIds } } });
   await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+  // Producto Siigo de prueba (el test de asignación de producto lo crea aparte).
+  await prisma.siigoProducto.deleteMany({ where: { codigo: { startsWith: TEST_PREFIX } } });
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -360,5 +363,81 @@ describe("lineas-service con Postgres local", () => {
 
     // Ahora la factura ya se puede borrar.
     await prisma.facturaProveedor.delete({ where: { id: fp } });
+  });
+
+  it("asigna un producto SIIGO a una línea existente sin pisar el concepto, y lo desconecta con null", async (ctx) => {
+    const db = ensureDb(ctx);
+    const producto = await prisma.siigoProducto.create({
+      data: {
+        id: `${TEST_PREFIX}-prod-${runId}`,
+        codigo: `${TEST_PREFIX}-COD-${runId}`,
+        nombre: "Producto de prueba",
+        tipo: "Product",
+        grupoContableId: 1,
+        grupoContableNombre: "Ingresos",
+        clasificacionIva: "Excluded",
+      },
+    });
+
+    const tramiteId = await crearTramite(db, db.clientePropioId);
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: 0n,
+      ivaComision: 0n,
+      usuarioId: db.userId,
+    });
+    const creado = await crearLineaManual({
+      borradorId: borrador!.id,
+      concepto: "Línea sin producto",
+      valor: 500_000n,
+      usuarioId: db.userId,
+    });
+    const lineaId = creado!.lineasRevision[0]!.id;
+    expect(creado!.lineasRevision[0]!.siigoProductoId).toBeNull();
+
+    const conProducto = await actualizarLinea({
+      lineaId,
+      siigoProductoId: producto.id,
+      usuarioId: db.userId,
+    });
+    const lineaConProducto = conProducto!.lineasRevision.find((l) => l.id === lineaId)!;
+    expect(lineaConProducto.siigoProductoId).toBe(producto.id);
+    // Asignar el producto nunca pisa el concepto (se sigue leyendo en la factura).
+    expect(lineaConProducto.concepto).toBe("Línea sin producto");
+
+    const sinProducto = await actualizarLinea({
+      lineaId,
+      siigoProductoId: null,
+      usuarioId: db.userId,
+    });
+    expect(
+      sinProducto!.lineasRevision.find((l) => l.id === lineaId)!.siigoProductoId,
+    ).toBeNull();
+  });
+
+  it("rechaza asignar un producto SIIGO que ya no existe en el catálogo (422)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramite(db, db.clientePropioId);
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: 0n,
+      ivaComision: 0n,
+      usuarioId: db.userId,
+    });
+    const creado = await crearLineaManual({
+      borradorId: borrador!.id,
+      concepto: "Línea",
+      valor: 100_000n,
+      usuarioId: db.userId,
+    });
+    const lineaId = creado!.lineasRevision[0]!.id;
+
+    await expect(
+      actualizarLinea({
+        lineaId,
+        siigoProductoId: `${TEST_PREFIX}-inexistente-${runId}`,
+        usuarioId: db.userId,
+      }),
+    ).rejects.toBeInstanceOf(ProductoSiigoNoEncontradoError);
   });
 });

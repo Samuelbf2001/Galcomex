@@ -8,7 +8,6 @@ import {
   Loader2,
   Plus,
   RotateCcw,
-  X,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -19,7 +18,6 @@ import {
   type BorradoresLoteItem,
   type EstadoBorrador,
   type TramiteParaFacturacion,
-  FacturacionApiError,
   ESTADO_BORRADOR_LABEL,
   descargarSiigoImport,
   estadoBorradorColorClass,
@@ -28,14 +26,11 @@ import {
   fetchTramiteParaFacturacion,
   fetchTramitesParaFacturacion,
   formatCOP,
-  formatDate,
-  generarBorrador,
-  parseBigIntInput,
+  formatDateTime,
 } from "@/components/facturacion/facturacion-api";
+import { GenerarBorradorModal } from "@/components/facturacion/generar-borrador-modal";
 import { RevisorBorrador } from "@/components/facturacion/revisor-borrador";
-import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
-import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useRol } from "@/lib/auth/rol-context";
@@ -56,272 +51,6 @@ type TramiteConBorradores = TramiteParaFacturacion & {
 };
 
 type FiltroEstado = EstadoBorrador | "TODOS";
-
-// ─── Modal: Generar borrador ──────────────────────────────────────────────────
-
-type GenerarBorradorModalProps = {
-  tramite: TramiteParaFacturacion;
-  onClose: () => void;
-  onGenerado: (borrador: BorradorRow) => void;
-};
-
-type ConceptoRow = { id: string; concepto: string; valorRaw: string };
-
-function GenerarBorradorModal({
-  tramite,
-  onClose,
-  onGenerado,
-}: GenerarBorradorModalProps) {
-  const { toast } = useToast();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [comisionRaw, setComisionRaw] = useState("150000");
-  const [montoLMRaw, setMontoLMRaw] = useState("");
-  const [retencionesRaw, setRetencionesRaw] = useState("0");
-  const [usarConceptos, setUsarConceptos] = useState(false);
-  const [conceptos, setConceptos] = useState<ConceptoRow[]>([
-    { id: "1", concepto: "", valorRaw: "" },
-  ]);
-
-  // Valida que la suma de conceptos = comisión
-  function getConceptosError(): string | null {
-    if (!usarConceptos) return null;
-    const comisionBig = parseBigIntInput(comisionRaw);
-    if (!comisionBig) return null;
-    let suma = 0n;
-    for (const c of conceptos) {
-      const v = parseBigIntInput(c.valorRaw);
-      if (!v) return "Todos los conceptos deben tener un valor válido.";
-      suma += BigInt(v);
-    }
-    if (suma !== BigInt(comisionBig)) {
-      return `La suma de conceptos (${new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", minimumFractionDigits: 0 }).format(Number(suma))}) debe igualar la comisión (${new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", minimumFractionDigits: 0 }).format(Number(BigInt(comisionBig)))}).`;
-    }
-    return null;
-  }
-
-  function addConcepto() {
-    setConceptos((prev) => [
-      ...prev,
-      { id: String(Date.now()), concepto: "", valorRaw: "" },
-    ]);
-  }
-
-  function removeConcepto(id: string) {
-    setConceptos((prev) => prev.filter((c) => c.id !== id));
-  }
-
-  function updateConcepto(id: string, field: "concepto" | "valorRaw", value: string) {
-    setConceptos((prev) => prev.map((c) => (c.id === id ? { ...c, [field]: value } : c)));
-  }
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError(null);
-
-    const comisionBig = parseBigIntInput(comisionRaw);
-    if (!comisionBig) {
-      setError("La comisión debe ser un número entero mayor o igual a 0.");
-      return;
-    }
-
-    const conceptosErr = getConceptosError();
-    if (conceptosErr) {
-      setError(conceptosErr);
-      return;
-    }
-
-    const montoLMBig = montoLMRaw.trim() ? parseBigIntInput(montoLMRaw) : null;
-    const retencionesBig = retencionesRaw.trim() ? parseBigIntInput(retencionesRaw) : null;
-
-    const conceptosPayload =
-      usarConceptos && conceptos.length > 0
-        ? conceptos
-            .filter((c) => c.concepto.trim() && parseBigIntInput(c.valorRaw))
-            .map((c) => ({ concepto: c.concepto.trim(), valor: parseBigIntInput(c.valorRaw)! }))
-        : undefined;
-
-    setSubmitting(true);
-    try {
-      const borrador = await generarBorrador(tramite.id, {
-        comision: comisionBig,
-        montoLM: montoLMBig ?? undefined,
-        retenciones: retencionesBig ?? undefined,
-        conceptosOperacionales: conceptosPayload,
-      });
-      toast({
-        title: "Borrador generado",
-        description: `${tramite.consecutivo} · ${formatCOP(borrador.totalFactura)}`,
-        variant: "success",
-      });
-      onGenerado(borrador);
-    } catch (caught) {
-      setError(
-        caught instanceof FacturacionApiError
-          ? caught.message
-          : describirError(caught, "Error al generar el borrador."),
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  const conceptosErr = getConceptosError();
-
-  return (
-    <ModalShell
-      open
-      onClose={onClose}
-      title="Generar borrador"
-      description={tramite.consecutivo}
-      size="md"
-      dismissible={!submitting}
-    >
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <p className="text-sm text-slate-600">
-            El sistema calculará automáticamente el 4×1000, IVA, costos bancarios
-            y saldos desde los pagos registrados en el trámite.
-          </p>
-
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">
-              Comisión Galcomex/LM (COP) *
-            </span>
-            <CampoMoneda
-              value={comisionRaw}
-              onValueChange={setComisionRaw}
-              placeholder="150000"
-              required
-              className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-            />
-            <span className="text-xs text-slate-400">Default: $150.000</span>
-          </label>
-
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">
-              Monto LM (COP) — opcional
-            </span>
-            <CampoMoneda
-              value={montoLMRaw}
-              onValueChange={setMontoLMRaw}
-              placeholder="0"
-              className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-            />
-            <span className="text-xs text-slate-400">
-              Monto atribuible al socio LM. Dejar vacío si no aplica.
-            </span>
-          </label>
-
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">
-              Retenciones (COP)
-            </span>
-            <CampoMoneda
-              value={retencionesRaw}
-              onValueChange={setRetencionesRaw}
-              placeholder="0"
-              className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-            />
-            <span className="text-xs text-slate-400">
-              RETE IVA + RETE FTE + RETE ICA. Dejar en 0 si no aplica.
-            </span>
-          </label>
-
-          {/* Desglose de conceptos operacionales */}
-          <div>
-            <label className="flex cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={usarConceptos}
-                onChange={(e) => setUsarConceptos(e.target.checked)}
-                className="h-4 w-4"
-              />
-              <span className="text-sm font-medium text-slate-700">
-                Desglosar conceptos operacionales
-              </span>
-            </label>
-            <p className="mt-0.5 ml-6 text-xs text-slate-400">
-              Ej: Revisión documentos + Sistematización + Logística operativa (suma = comisión)
-            </p>
-          </div>
-
-          {usarConceptos ? (
-            <div className="space-y-2 border border-slate-200 bg-slate-50 p-3">
-              <p className="text-xs font-medium text-slate-600">Conceptos operacionales</p>
-              {conceptos.map((c) => (
-                <div key={c.id} className="flex items-center gap-2">
-                  <input
-                    value={c.concepto}
-                    onChange={(e) => updateConcepto(c.id, "concepto", e.target.value)}
-                    placeholder="Nombre del concepto"
-                    className="h-8 flex-1 border border-slate-300 px-2 text-xs outline-none focus:border-cyan-600"
-                  />
-                  <CampoMoneda
-                    value={c.valorRaw}
-                    onValueChange={(digitos) => updateConcepto(c.id, "valorRaw", digitos)}
-                    placeholder="Valor"
-                    wrapperClassName="w-28"
-                    className="h-8 w-full border border-slate-300 px-2 text-right text-xs outline-none focus:border-cyan-600"
-                  />
-                  {conceptos.length > 1 ? (
-                    <button
-                      type="button"
-                      onClick={() => removeConcepto(c.id)}
-                      className="inline-flex h-8 w-8 items-center justify-center text-slate-400 hover:text-rose-600"
-                      aria-label="Eliminar concepto"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={addConcepto}
-                className="inline-flex h-7 items-center gap-1 border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:bg-slate-100"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Agregar concepto
-              </button>
-              {conceptosErr && !error ? (
-                <p className="text-xs text-rose-600">
-                  <AlertTriangle className="mr-1 inline h-3 w-3" />
-                  {conceptosErr}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-
-          {error ? (
-            <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-              {error}
-            </div>
-          ) : null}
-
-          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={submitting || (usarConceptos && Boolean(conceptosErr))}
-              className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
-            >
-              {submitting ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : null}
-              Generar borrador
-            </button>
-          </div>
-        </form>
-    </ModalShell>
-  );
-}
 
 // ─── Helpers visuales ─────────────────────────────────────────────────────────
 
@@ -408,7 +137,7 @@ function AlertaPendientesEnvio({ pendientes, onRevisar }: AlertaPendientesEnvioP
                 </span>
                 <span className="text-xs text-amber-700">
                   Aprobado{" "}
-                  {borrador.fechaAprobacion ? formatDate(borrador.fechaAprobacion) : ""}
+                  {borrador.fechaAprobacion ? formatDateTime(borrador.fechaAprobacion) : ""}
                 </span>
                 <ChevronRight className="h-4 w-4 text-amber-500" aria-hidden="true" />
               </span>

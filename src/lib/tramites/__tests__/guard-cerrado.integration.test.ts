@@ -122,7 +122,21 @@ async function cleanupTestData() {
   await prisma.pagoTramiteFactura.deleteMany({ where: { pago: { tramiteId: { in: tramiteIds } } } });
   await prisma.pagoTramiteBeneficiario.deleteMany({ where: { pago: { tramiteId: { in: tramiteIds } } } });
   await prisma.facturaProveedor.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
+  // CxP v2: cabeceras PagoGrupo de los pagos en bloque de prueba (FK
+  // pago_tramite.grupoPagoId → pago_grupo): se borran después de sus pagos.
+  const grupos = await prisma.pagoTramite.findMany({
+    where: { tramiteId: { in: tramiteIds }, grupoPagoId: { not: null } },
+    select: { grupoPagoId: true },
+  });
   await prisma.pagoTramite.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
+  await prisma.pagoGrupo.deleteMany({
+    where: {
+      OR: [
+        { id: { in: grupos.flatMap((g) => (g.grupoPagoId ? [g.grupoPagoId] : [])) } },
+        { creadoPorId: { in: userIds } },
+      ],
+    },
+  });
   await prisma.documento.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
 
   const testAnticipos = await prisma.anticipo.findMany({

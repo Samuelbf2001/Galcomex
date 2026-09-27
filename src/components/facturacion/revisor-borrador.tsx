@@ -38,9 +38,11 @@ import {
   fetchValidacionesCruce,
   formatCOP,
   formatDate,
+  formatDateTime,
   sincronizarFacturaDesdeSiigo,
   transicionarBorrador,
 } from "@/components/facturacion/facturacion-api";
+import { AvisoPagosPorRevisar, conservarPagosPorRevisar } from "@/components/facturacion/aviso-pagos-por-revisar";
 import {
   type FacturaProveedorRow,
   fetchFacturasProveedor,
@@ -51,6 +53,7 @@ import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { ModuleState } from "@/components/layout/module-state";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import { fetchDocumentos } from "@/components/documentos/documentos-api";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
@@ -88,7 +91,7 @@ type FacturarModalProps = {
 function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps) {
   const { toast } = useToast();
   const [numSiigo, setNumSiigo] = useState("");
-  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [fecha, setFecha] = useState(hoyBogotaISO());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -395,7 +398,7 @@ function ConfirmarEnvioSiigoModal({
                 <p className="font-semibold">Ya hay un borrador enviado</p>
                 <p className="text-xs">
                   {enviadoASiigoEn
-                    ? `Último envío: ${formatDate(enviadoASiigoEn)}. `
+                    ? `Último envío: ${formatDateTime(enviadoASiigoEn)}. `
                     : null}
                   Reenviar creará un nuevo borrador en SIIGO. El anterior debe
                   descartarse manualmente desde el portal si aún no se estampó.
@@ -760,7 +763,10 @@ export function RevisorBorrador({
     setTransicionando(true);
     setErrorTransicion(null);
     try {
-      const updated = await transicionarBorrador(borradorActual.id, { nuevoEstado });
+      const updated = conservarPagosPorRevisar(
+        await transicionarBorrador(borradorActual.id, { nuevoEstado }),
+        borradorActual,
+      );
       setBorradorActual(updated);
       // Conserva las marcas internas del revisor durante la sesión.
       setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
@@ -778,14 +784,16 @@ export function RevisorBorrador({
     }
   }
 
-  function handleFacturado(updated: BorradorRow) {
+  function handleFacturado(respuesta: BorradorRow) {
+    const updated = conservarPagosPorRevisar(respuesta, borradorActual);
     setModalFacturar(false);
     setBorradorActual(updated);
     setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
     onBorradorActualizado(updated);
   }
 
-  function handleDevuelto(updated: BorradorRow) {
+  function handleDevuelto(respuesta: BorradorRow) {
+    const updated = conservarPagosPorRevisar(respuesta, borradorActual);
     setModalDevolver(false);
     setErrorTransicion(null);
     setBorradorActual(updated);
@@ -1065,7 +1073,7 @@ export function RevisorBorrador({
               disabled={enviandoSiigo}
               title={
                 borradorActual.siigoDraftId
-                  ? `Ya enviado a SIIGO${borradorActual.enviadoASiigoEn ? ` (${formatDate(borradorActual.enviadoASiigoEn)})` : ""}. Reenviar lo recreará en SIIGO.`
+                  ? `Ya enviado a SIIGO${borradorActual.enviadoASiigoEn ? ` (${formatDateTime(borradorActual.enviadoASiigoEn)})` : ""}. Reenviar lo recreará en SIIGO.`
                   : "Enviar a SIIGO como borrador (pendiente de validar por un superior)"
               }
               className="inline-flex h-9 items-center gap-2 border border-cyan-300 bg-cyan-50 px-3 text-sm font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
@@ -1087,7 +1095,7 @@ export function RevisorBorrador({
             >
               Borrador en SIIGO
               {borradorActual.enviadoASiigoEn
-                ? ` · ${formatDate(borradorActual.enviadoASiigoEn)}`
+                ? ` · ${formatDateTime(borradorActual.enviadoASiigoEn)}`
                 : ""}
             </span>
           ) : null}
@@ -1218,6 +1226,9 @@ export function RevisorBorrador({
         );
       })() : null}
 
+      {/* Pagos de un trámite con asesoría (NO SE COBRA) cuyo reparto no es seguro. Solo ADMIN/REVISOR reciben la lista; nunca va a comentariosCabecera (viaja a SIIGO). */}
+      <AvisoPagosPorRevisar pagos={borradorActual.pagosPorRevisar} />
+
       {/* Observaciones de cabecera del borrador. Incluyen las notas
           "DEVUELTO POR …" que deja el revisor al devolverlo; esas NO salen en
           la factura de SIIGO (se filtran al armar las observaciones). */}
@@ -1273,7 +1284,8 @@ export function RevisorBorrador({
           ) : null}
           {cargandoFormas ? <p role="status" className="px-4 py-2 text-sm text-slate-500">Cargando formas de pago…</p> : puedeAprobar && !erroresConsulta.formas && formasPago.length === 0 ? <p role="status" className="px-4 py-2 text-sm text-slate-500">No hay formas de pago disponibles en Siigo.</p> : null}
           {/* Líneas de revisión */}
-          <div className="overflow-x-auto border-b border-slate-200">
+          {/* shrink-0: dentro de la columna flex con scroll propio, un hijo con overflow tiene min-height 0 y flexbox lo encogía a ~1px (22-sep). */}
+          <div className="shrink-0 overflow-x-auto border-b border-slate-200">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-2.5">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                 Líneas del borrador ({lineas.length})
@@ -1508,7 +1520,7 @@ export function RevisorBorrador({
 
             {borradorActual.fechaAprobacion ? (
               <p className="mt-4 text-xs text-slate-500">
-                Aprobado el {formatDate(borradorActual.fechaAprobacion)}
+                Aprobado el {formatDateTime(borradorActual.fechaAprobacion)}
               </p>
             ) : null}
           </div>
@@ -1659,15 +1671,21 @@ export function RevisorBorrador({
                       // nombre de Galcomex) nunca tiene línea de venta: su
                       // desfase no es un problema y no se pinta como alerta.
                       const cuadra = !fp.esDesviacion;
+                      // Lo facturado al cliente pasa del valor de la factura, o
+                      // una asesoría NO SE COBRA tiene líneas de venta: se le
+                      // estaría cobrando de más. Alerta roja, siempre.
+                      const cobraDeMas = fp.facturadoExcedeValor || fp.noCobrableFacturada;
                       return (
                         <div
                           key={fp.id}
                           className={`border px-3 py-2.5 text-sm ${
-                            !fp.repercutible
-                              ? "border-slate-200 bg-slate-50"
-                              : cuadra
-                                ? "border-emerald-200 bg-emerald-50"
-                                : "border-amber-200 bg-amber-50"
+                            cobraDeMas
+                              ? "border-rose-300 bg-rose-50"
+                              : !fp.repercutible
+                                ? "border-slate-200 bg-slate-50"
+                                : cuadra
+                                  ? "border-emerald-200 bg-emerald-50"
+                                  : "border-amber-200 bg-amber-50"
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
@@ -1681,18 +1699,24 @@ export function RevisorBorrador({
                             </div>
                             <span
                               className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 border ${
-                                !fp.repercutible
-                                  ? "border-slate-300 bg-slate-100 text-slate-600"
-                                  : cuadra
-                                    ? "border-emerald-300 bg-emerald-100 text-emerald-700"
-                                    : "border-amber-300 bg-amber-100 text-amber-700"
+                                cobraDeMas
+                                  ? "border-rose-300 bg-rose-100 text-rose-700"
+                                  : !fp.repercutible
+                                    ? "border-slate-300 bg-slate-100 text-slate-600"
+                                    : cuadra
+                                      ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                                      : "border-amber-300 bg-amber-100 text-amber-700"
                               }`}
                             >
-                              {!fp.repercutible
-                                ? "No se cobra al cliente"
-                                : cuadra
-                                  ? "Cuadra"
-                                  : "Desfase"}
+                              {fp.noCobrableFacturada
+                                ? "No se cobra, pero está facturada"
+                                : fp.facturadoExcedeValor
+                                  ? "Facturado pasa del valor"
+                                  : !fp.repercutible
+                                    ? "No se cobra al cliente"
+                                    : cuadra
+                                      ? "Cuadra"
+                                      : "Desfase"}
                             </span>
                           </div>
 
@@ -1730,6 +1754,13 @@ export function RevisorBorrador({
                               </dd>
                             </div>
                           </dl>
+                          {cobraDeMas ? (
+                            <p className="mt-2 text-xs font-medium text-rose-700">
+                              {fp.noCobrableFacturada
+                                ? `Esta factura no se le cobra al cliente (la asume Galcomex), pero hay líneas de la factura de venta por ${formatCOP(fp.montoFacturado)} vinculadas a ella. Quítalas antes de aprobar.`
+                                : `Las líneas de terceros vinculadas suman ${formatCOP(fp.montoFacturado)} y la factura del proveedor vale ${formatCOP(fp.valor)}: al cliente se le cobraría más de lo facturado. Corrige las líneas antes de aprobar.`}
+                            </p>
+                          ) : null}
                         </div>
                       );
                     })}

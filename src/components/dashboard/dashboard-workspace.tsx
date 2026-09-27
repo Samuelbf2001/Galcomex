@@ -29,6 +29,7 @@ import {
   fetchDashboard,
   formatCOP,
   formatDate,
+  formatDateTime,
   labelEstado,
 } from "./dashboard-api";
 
@@ -493,7 +494,7 @@ function ListaActividad({ rows }: { rows: ActividadRecienteRow[] }) {
                 title={`${row.entidad} · ${row.accion}`}
               >
                 <span className="font-medium">{usuario}</span> {describirActividad(row)}
-                <span className="text-slate-400"> · {formatDate(row.createdAt)}</span>
+                <span className="text-slate-400"> · {formatDateTime(row.createdAt)}</span>
               </p>
             </div>
           </li>

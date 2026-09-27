@@ -1,36 +1,30 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import {
-  FacturaProveedorNoEncontradaError,
-  FacturaProveedorNoModificableError,
-} from "@/lib/facturas-proveedor/service";
-import {
-  DocumentoDeOtroTramiteError,
-  DocumentoNoEncontradoParaPagoError,
-  MatrizCanalNoEncontradoError,
-  PagoMultiDOBeneficiarioMismatchError,
-  PagoMultiDOSinFacturasError,
-  SinAnticipoAplicadoMultiDOError,
-  crearPagoMultiDO,
-  listarFacturasElegiblesMultiDO,
-} from "@/lib/pagos/service";
-import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
+import { aFacturaElegibleJson } from "@/lib/cxp/estado-cuenta";
 import { jsonResponse } from "@/lib/http/json";
+import { respuestaErrorPagos } from "@/lib/pagos/respuesta-error";
+import { costosBancariosPorCanal, crearPagoMultiDO, listarFacturasElegiblesMultiDO } from "@/lib/pagos/service";
 import {
   crearPagoMultiDOSchema,
   listarFacturasElegiblesMultiDOQuerySchema,
 } from "@/lib/validations/pagos";
 
 /**
- * GET /api/pagos/multi?beneficiarioId=xxx
- *   Lista TODAS las FacturaProveedor REGISTRADA de un beneficiario, de TODOS
- *   los trámites — usado por el selector del modal "Pago multi-DO".
+ * GET /api/pagos/multi?beneficiarioId=xxx | ?empresaId=yyy
+ *   Facturas con saldo (Pendientes y Abonadas) del proveedor, de TODOS los
+ *   DOs, con su pagabilidad (`FacturaElegibleJson`) — selector del modal
+ *   "Pagar en bloque". ADMIN/OPERATIVO (la ficha del REVISOR usa
+ *   /api/clientes/[id]/cuenta-proveedor, no esta ruta). Trae también
+ *   `costosPorCanal` (matriz de pago) para mostrar el costo de la
+ *   transferencia antes de confirmar.
  *
  * POST /api/pagos/multi
- *   Crea el pago multi-DO (caso Karina/Occidente): un solo comprobante/canal
- *   cubre facturas de proveedor de varios trámites. Ver crearPagoMultiDO().
+ *   Crea el pago en bloque (CxP v2, §B.3): una transferencia y un comprobante
+ *   para varias facturas de varios DOs. 201 con `{ grupoPagoId, pagos,
+ *   advertencias, repetido: false }`; 200 con `repetido: true` si la misma
+ *   `claveIdempotencia` ya se registró (doble clic). Registro histórico
+ *   (`esHistorico`) solo ADMIN.
  */
 export async function GET(request: NextRequest) {
   const session = await requireRole(["ADMIN", "OPERATIVO"]);
@@ -40,17 +34,20 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const { beneficiarioId } = listarFacturasElegiblesMultiDOQuerySchema.parse({
+    const filtro = listarFacturasElegiblesMultiDOQuerySchema.parse({
       beneficiarioId: request.nextUrl.searchParams.get("beneficiarioId") ?? undefined,
+      empresaId: request.nextUrl.searchParams.get("empresaId") ?? undefined,
     });
 
-    const facturas = await listarFacturasElegiblesMultiDO(beneficiarioId);
+    const [facturas, costosPorCanal] = await Promise.all([
+      listarFacturasElegiblesMultiDO(filtro),
+      costosBancariosPorCanal(),
+    ]);
 
-    return jsonResponse({ facturas });
+    return jsonResponse({ facturas: facturas.map(aFacturaElegibleJson), costosPorCanal });
   } catch (error) {
-    if (error instanceof ZodError) {
-      return validationError(error);
-    }
+    const respuesta = respuestaErrorPagos(error);
+    if (respuesta) return respuesta;
     throw error;
   }
 }
@@ -65,55 +62,22 @@ export async function POST(request: NextRequest) {
   try {
     const payload = crearPagoMultiDOSchema.parse(await request.json());
 
+    if (payload.esHistorico && session.user.rol !== "ADMIN") {
+      return NextResponse.json(
+        { error: "Solo un administrador puede registrar pagos históricos de conciliación." },
+        { status: 403 },
+      );
+    }
+
     const resultado = await crearPagoMultiDO({
       ...payload,
       usuarioId: session.user.id,
     });
 
-    return jsonResponse(resultado, { status: 201 });
+    return jsonResponse(resultado, { status: resultado.repetido ? 200 : 201 });
   } catch (error) {
-    if (error instanceof ZodError) {
-      return validationError(error);
-    }
-
-    if (error instanceof PagoMultiDOSinFacturasError) {
-      return NextResponse.json({ error: error.message }, { status: 422 });
-    }
-
-    if (error instanceof MatrizCanalNoEncontradoError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-
-    if (error instanceof FacturaProveedorNoEncontradaError) {
-      return NextResponse.json({ error: error.message }, { status: 404 });
-    }
-
-    if (error instanceof FacturaProveedorNoModificableError) {
-      return NextResponse.json({ error: error.message }, { status: 422 });
-    }
-
-    if (error instanceof PagoMultiDOBeneficiarioMismatchError) {
-      return NextResponse.json({ error: error.message }, { status: 422 });
-    }
-
-    if (error instanceof SinAnticipoAplicadoMultiDOError) {
-      return NextResponse.json(
-        { error: error.message, tramiteId: error.tramiteId, consecutivo: error.consecutivo },
-        { status: 422 },
-      );
-    }
-
-    if (
-      error instanceof DocumentoNoEncontradoParaPagoError ||
-      error instanceof DocumentoDeOtroTramiteError
-    ) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
-    }
-
-    if (isDomainError(error)) {
-      return domainErrorResponse(error);
-    }
-
+    const respuesta = respuestaErrorPagos(error);
+    if (respuesta) return respuesta;
     throw error;
   }
 }
