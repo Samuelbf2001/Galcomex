@@ -13,6 +13,7 @@
 import type { EstadoFacturaProveedor, EstadoTramite } from "@prisma/client";
 
 import { type ErrorAplicacion, formatoCentavos, formatoPesos } from "@/lib/cxp/saldos";
+import { aFechaCalendario, formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 export { InvarianteCxpError } from "@/lib/cxp/saldos";
 
@@ -102,7 +103,8 @@ export type CodigoErrorCxp =
   | "POSIBLE_BENEFICIARIO_DUPLICADO"
   | "USD_VALOR_LEJOS_DE_TRM"
   | "DO_CON_FACTURAS_PENDIENTES"
-  | "BENEFICIARIO_EXISTE";
+  | "BENEFICIARIO_EXISTE"
+  | "FACTURA_EN_CUENTA_CORRIENTE";
 
 export type StatusErrorCxp = 404 | 409 | 422;
 
@@ -483,6 +485,24 @@ export class UsdValorLejosDeTrmError extends CxpError {
       { ...i },
     );
     this.name = "UsdValorLejosDeTrmError";
+  }
+}
+
+/**
+ * La misma factura ya se registró a mano en la cuenta corriente de la empresa
+ * dueña de esta ficha (`registrarMovimientoCuenta`, `CARGO_MANUAL` rol
+ * PROVEEDOR) — antes de que existiera este DO. Registrarla también aquí la
+ * contaría dos veces.
+ */
+export class FacturaEnCuentaCorrienteError extends CxpError {
+  constructor(numFactura: string, proveedor: string, fecha: Date) {
+    super(
+      409,
+      "FACTURA_EN_CUENTA_CORRIENTE",
+      `La factura ${numFactura} de ${proveedor} ya está registrada en su cuenta corriente (Registrar factura, fecha ${formatFechaCalendario(aFechaCalendario(fecha))}). Elimínala de allí o no la registres en el trámite.`,
+      { numFactura, proveedor },
+    );
+    this.name = "FacturaEnCuentaCorrienteError";
   }
 }
 

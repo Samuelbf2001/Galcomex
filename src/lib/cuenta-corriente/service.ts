@@ -32,7 +32,7 @@ import { eliminarPagoFactura, registrarPagoFacturaAbono } from "@/lib/cartera/se
 import { aplicarSaldo, bloquearFacturas, revertirSaldo } from "@/lib/cxp/aplicar";
 import { bloquearTramites } from "@/lib/cxp/bloqueos";
 import { fichasDeEmpresa } from "@/lib/cxp/estado-cuenta";
-import { formatoPesos, saldoDe } from "@/lib/cxp/saldos";
+import { formatoPesos, nitBaseDe, normalizarNumeroFactura, saldoDe } from "@/lib/cxp/saldos";
 import { TramiteCerradoError } from "@/lib/tramites/guard";
 import { aFechaCalendario, formatFechaCalendario, formatInstanteBogota } from "@/lib/tiempo/bogota";
 import {
@@ -121,11 +121,32 @@ export class FacturaProveedorDuplicadaError extends Error {
   }
 }
 
-/** Normaliza un N° de factura para detectar duplicados: mayúsculas, sin
- * espacios, puntos ni guiones ("FE-1234" y "fe 1234" son la misma factura). */
-export function normalizarNumeroFactura(numeroFactura: string): string {
-  return numeroFactura.trim().toUpperCase().replace(/[\s.\-]/g, "");
+/**
+ * Una factura de proveedor de ESTE proveedor (misma regla de fichas que CxP
+ * v2: `fichasDeEmpresa` de la empresa, o la clave "NIT:<base>" de la empresa)
+ * ya vive en un DO como `FacturaProveedor` — se cobraría dos veces si además
+ * se registra a mano en la cuenta corriente.
+ */
+export class FacturaYaRegistradaEnTramiteError extends Error {
+  public readonly status = 409;
+  constructor(numeroFactura: string, nombreEmpresa: string, consecutivo: string, fecha: Date) {
+    super(
+      `La factura ${numeroFactura} de ${nombreEmpresa} ya está registrada en el trámite ${consecutivo} (fecha de la factura ${formatFechaCalendario(aFechaCalendario(fecha))}). No la registres también aquí.`,
+    );
+    this.name = "FacturaYaRegistradaEnTramiteError";
+  }
 }
+
+/**
+ * Normaliza un N° de factura para detectar duplicados ("FE-1234" y "fe 1234"
+ * son la misma factura). Espejo del de CxP v2 (`@/lib/cxp/saldos`, única
+ * definición desde el 26-sep-2026: antes esta función solo quitaba espacios,
+ * puntos y guiones; ahora quita CUALQUIER carácter que no sea A-Z0-9, igual
+ * que `numFacturaNormalizado` de `FacturaProveedor` — así los dos caminos por
+ * los que puede entrar la misma factura (registrada a mano aquí, o como
+ * `FacturaProveedor` de un DO) usan la misma llave.
+ */
+export { normalizarNumeroFactura };
 
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(
@@ -588,7 +609,7 @@ export interface RegistrarMovimientoInput {
 export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput) {
   const empresa = await prisma.cliente.findUnique({
     where: { id: input.empresaId },
-    select: { id: true, nombre: true },
+    select: { id: true, nombre: true, nit: true },
   });
 
   if (!empresa) {
@@ -631,6 +652,38 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
         duplicado.fecha,
         duplicado.createdAt,
       );
+    }
+  }
+
+  // La misma factura puede haber entrado ya por el otro camino: como
+  // `FacturaProveedor` de un DO de este proveedor (misma regla de fichas que
+  // CxP v2 — `fichasDeEmpresa` — o la clave "NIT:<base>" de la empresa, para
+  // los "duplicados heredados" cuya ficha no tiene `beneficiarioId` puesto al
+  // día). Solo aplica al lado PROVEEDOR: el lado CLIENTE nunca comparte esa
+  // llave.
+  if (input.rol === RolCuenta.PROVEEDOR && numeroFacturaNorm) {
+    const fichaIds = await fichasProveedorDe(prisma, input.empresaId, empresa.nit);
+    const baseEmpresa = nitBaseDe(empresa.nit);
+    if (fichaIds.length > 0 || baseEmpresa) {
+      const enTramite = await prisma.facturaProveedor.findFirst({
+        where: {
+          numFacturaNormalizado: numeroFacturaNorm,
+          OR: [
+            ...(fichaIds.length > 0 ? [{ beneficiarioId: { in: fichaIds } }] : []),
+            ...(baseEmpresa ? [{ proveedorClave: `NIT:${baseEmpresa}` }] : []),
+          ],
+        },
+        select: { numFactura: true, fecha: true, tramite: { select: { consecutivo: true } } },
+        orderBy: { fecha: "asc" },
+      });
+      if (enTramite) {
+        throw new FacturaYaRegistradaEnTramiteError(
+          enTramite.numFactura,
+          empresa.nombre,
+          enTramite.tramite.consecutivo,
+          enTramite.fecha,
+        );
+      }
     }
   }
 

@@ -35,7 +35,9 @@ import {
   EstadoFacturaProveedor,
   EstadoTramite,
   Moneda,
+  OrigenMovimientoCuenta,
   Prisma,
+  RolCuenta,
   TipoAjusteFacturaProveedor,
 } from "@prisma/client";
 
@@ -45,6 +47,7 @@ import { bloquearTramites } from "@/lib/cxp/bloqueos";
 import {
   FacturaConPagosError,
   FacturaDuplicadaError,
+  FacturaEnCuentaCorrienteError,
   FacturaProveedorConPagosError,
   FacturaProveedorDuplicadaError,
   FacturaProveedorNoEncontradaError,
@@ -63,6 +66,7 @@ import {
   etiquetaDe,
   evaluarValorUsd,
   formatoPesos,
+  nitBaseDe,
   normalizarNumeroFactura,
   numeroFacturaVisible,
   saldoDe,
@@ -226,6 +230,7 @@ type FichaProveedor = {
   nit: string | null;
   nitBase: string | null;
   numFacturaConEspacio: boolean;
+  empresaId: string | null;
 };
 
 const selectFicha = {
@@ -235,6 +240,7 @@ const selectFicha = {
   nit: true,
   nitBase: true,
   numFacturaConEspacio: true,
+  empresaId: true,
 } satisfies Prisma.BeneficiarioSelect;
 
 /** Nombre del proveedor en los mensajes: el nombre corto de la ficha ("ALMACARGA") o su nombre. */
@@ -320,6 +326,56 @@ async function verificarDuplicados(
     if (coincidencias.length > 0) {
       throw new PosibleDuplicadoError(proveedor, coincidencias);
     }
+  }
+}
+
+/**
+ * Empresas (Cliente) dueñas de esta ficha, en el mismo sentido que
+ * `fichasDeEmpresa` (CxP v2) pero al revés: si la ficha está enlazada
+ * (`empresaId`), esa es la única dueña; si es suelta, cualquier empresa cuyo
+ * NIT comparta su NIT base (misma regla que las "fichas hermanas"). Sin
+ * NIT base y sin enlazar, la ficha no es de ninguna empresa (no puede chocar
+ * con la cuenta corriente de nadie).
+ */
+async function empresasDeFicha(tx: Tx, ficha: Pick<FichaProveedor, "empresaId" | "nitBase">): Promise<string[]> {
+  if (ficha.empresaId) return [ficha.empresaId];
+  if (!ficha.nitBase) return [];
+  const clientes = await tx.cliente.findMany({ select: { id: true, nit: true } });
+  return clientes.filter((c) => nitBaseDe(c.nit) === ficha.nitBase).map((c) => c.id);
+}
+
+/**
+ * La misma factura puede haber entrado ya por el otro camino: "Registrar
+ * factura" en la cuenta corriente de la empresa dueña de esta ficha
+ * (`MovimientoCuenta` CARGO_MANUAL rol PROVEEDOR), para facturas que no son de
+ * ningún trámite (caso Coldex). Sin eso, se contaría la misma deuda dos veces.
+ */
+async function verificarNoRegistradaEnCuentaCorriente(
+  tx: Tx,
+  i: { ficha: FichaProveedor; numFactura: string },
+): Promise<void> {
+  const normalizado = normalizarNumeroFactura(i.numFactura);
+  if (normalizado === "") return;
+
+  const empresaIds = await empresasDeFicha(tx, i.ficha);
+  if (empresaIds.length === 0) return;
+
+  const movimiento = await tx.movimientoCuenta.findFirst({
+    where: {
+      empresaId: { in: empresaIds },
+      rol: RolCuenta.PROVEEDOR,
+      origen: OrigenMovimientoCuenta.CARGO_MANUAL,
+      numeroFacturaNorm: normalizado,
+    },
+    select: { numeroFactura: true, fecha: true },
+    orderBy: { fecha: "asc" },
+  });
+  if (movimiento) {
+    throw new FacturaEnCuentaCorrienteError(
+      movimiento.numeroFactura ?? i.numFactura,
+      nombreVisible(i.ficha),
+      movimiento.fecha,
+    );
   }
 }
 
@@ -592,6 +648,7 @@ export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
         numFactura,
         confirmarPosibleDuplicado: input.confirmarPosibleDuplicado ?? false,
       });
+      await verificarNoRegistradaEnCuentaCorriente(tx, { ficha, numFactura });
 
       // Unicidad heredada por DO + texto crudo (otro proveedor, mismo número en el mismo DO).
       const existente = await tx.facturaProveedor.findUnique({
@@ -888,6 +945,7 @@ export async function actualizarFacturaProveedor(
           excluirId: facturaId,
           confirmarPosibleDuplicado: cambios.confirmarPosibleDuplicado ?? false,
         });
+        await verificarNoRegistradaEnCuentaCorriente(tx, { ficha: fichaFinal, numFactura: numeroFinal });
       }
       if (cambiaNumero) {
         const existente = await tx.facturaProveedor.findUnique({
