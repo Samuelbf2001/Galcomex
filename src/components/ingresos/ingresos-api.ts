@@ -4,6 +4,7 @@
  */
 
 import type { CanalPago } from "@/components/pagos/pagos-api";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -138,17 +139,8 @@ export function formatCOP(value: string): string {
   }
 }
 
+/** Fecha-calendario (fecha del ingreso): día guardado a 00:00 UTC, se muestra en UTC. */
 export function formatDate(isoString: string | null): string {
   if (!isoString) return "—";
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      timeZone: "America/Bogota",
-    });
-  } catch {
-    return isoString;
-  }
+  return formatFechaCalendario(isoString) || isoString;
 }

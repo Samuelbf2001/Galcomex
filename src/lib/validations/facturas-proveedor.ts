@@ -1,62 +1,167 @@
 import { CanalPago } from "@prisma/client";
 import { z } from "zod";
 
+import {
+  dineroCopPositivoSchema,
+  fechaCalendarioOpcionalSchema,
+  fechaCalendarioSchema,
+  motivoSchema,
+} from "@/lib/validations/comunes";
+
 export const MENSAJE_ARCHIVO_OBLIGATORIO =
   "El archivo de la factura es obligatorio. Solo se puede omitir en un costo propio que no se le cobra al cliente (por ejemplo, la clasificadora).";
 
+export const MENSAJE_NUMERO_SIN_ALFANUMERICOS =
+  "El número de factura debe tener al menos una letra o un número.";
+
+export const MENSAJE_USD_INCOMPLETO =
+  "Una factura en dólares necesita el valor en dólares y la TRM (ambos mayores que cero).";
+
+export const MENSAJE_COP_CON_USD =
+  "Una factura en pesos no lleva valor en dólares ni TRM: cambia la moneda a USD o borra esos campos.";
+
+/** "FE-12481" sí; "---" no (su número normalizado quedaría vacío y escaparía a la llave anti-duplicado). */
+const numFacturaSchema = z
+  .string()
+  .trim()
+  .min(1, "El número de factura es obligatorio")
+  .refine((v) => /[A-Za-z0-9]/.test(v), { message: MENSAJE_NUMERO_SIN_ALFANUMERICOS });
+
+/** Centavos (de dólar o de peso por dólar) como entero > 0: "13100" = USD 131,00; "371050" = TRM 3.710,50. */
+const centavosPositivosSchema = dineroCopPositivoSchema;
+
+export const monedaSchema = z.enum(["COP", "USD"]);
+
+type CamposMoneda = {
+  moneda?: "COP" | "USD";
+  valorOrigenCentavos?: bigint | null;
+  trmCentavos?: bigint | null;
+};
+
+/** R14: USD exige valor en dólares y TRM; COP no los admite. */
+function validarMoneda(data: CamposMoneda, ctx: z.RefinementCtx, monedaPorDefecto: "COP" | "USD" | undefined) {
+  const moneda = data.moneda ?? monedaPorDefecto;
+  if (moneda === "USD") {
+    if (!data.valorOrigenCentavos) {
+      ctx.addIssue({ code: "custom", path: ["valorOrigenCentavos"], message: MENSAJE_USD_INCOMPLETO });
+    }
+    if (!data.trmCentavos) {
+      ctx.addIssue({ code: "custom", path: ["trmCentavos"], message: MENSAJE_USD_INCOMPLETO });
+    }
+  } else if (moneda === "COP") {
+    if (data.valorOrigenCentavos != null || data.trmCentavos != null) {
+      ctx.addIssue({ code: "custom", path: ["moneda"], message: MENSAJE_COP_CON_USD });
+    }
+  }
+}
+
 export const crearFacturaProveedorSchema = z
   .object({
-  proveedorNombre: z.string().trim().min(1, "El nombre del proveedor es obligatorio"),
-  proveedorNit: z.string().trim().min(1).optional().nullable(),
-  /** ID del Beneficiario unificado (reemplaza proveedorNombre/NIT en el flujo nuevo) */
-  beneficiarioId: z.string().min(1).optional().nullable(),
-  concepto: z.string().trim().min(1).optional().nullable(),
-  siigoProductoId: z.string().min(1).optional().nullable(),
-  numFactura: z.string().trim().min(1, "El número de factura es obligatorio"),
-  valor: z.coerce
-    .bigint()
-    .refine((v) => v > 0n, { message: "El valor debe ser mayor a 0" }),
-  fecha: z.coerce.date(),
-  /**
-   * Archivo de la factura. Obligatorio si se le cobra al cliente: es el soporte
-   * del ítem de terceros en la factura de venta. En un costo propio (no
-   * repercutible) es opcional: la clasificadora no emite factura, solo cobra,
-   * y el soporte es el comprobante del pago.
-   */
-  documentoId: z.string().min(1).optional().nullable(),
-  /**
-   * ¿Se traslada al cliente en la factura de venta? (M6). Default `true`:
-   * el caso normal es que el gasto se pague por cuenta del cliente. En `false`
-   * la factura queda en el trámite para pagarla, pero el cliente no la ve.
-   */
-  repercutible: z.boolean().default(true),
-})
+    /**
+     * Legado: el nombre y el NIT que se guardan salen SIEMPRE de la ficha de
+     * pago (`beneficiarioId`). Se aceptan para no romper clientes viejos (MCP).
+     */
+    proveedorNombre: z.string().trim().min(1).optional(),
+    proveedorNit: z.string().trim().min(1).optional().nullable(),
+    /**
+     * Ficha de pago del proveedor. OBLIGATORIA (R7, CA-02): la exige el
+     * servicio con `PROVEEDOR_OBLIGATORIO` (422) para que valga también para
+     * scripts y MCP; aquí se deja pasar null/ausente para responder ese código.
+     */
+    beneficiarioId: z.string().min(1).optional().nullable(),
+    concepto: z.string().trim().min(1).optional().nullable(),
+    siigoProductoId: z.string().min(1).optional().nullable(),
+    numFactura: numFacturaSchema,
+    /** COP entero > 0 (en facturas USD es el valor en pesos: el que manda y se paga). */
+    valor: dineroCopPositivoSchema,
+    /** Fecha-calendario ("YYYY-MM-DD" → 00:00 UTC del día; sin corrimiento por la hora de Bogotá). */
+    fecha: fechaCalendarioSchema,
+    /**
+     * Archivo de la factura. Obligatorio si se le cobra al cliente: es el soporte
+     * del ítem de terceros en la factura de venta. En un costo propio (no
+     * repercutible) es opcional: la clasificadora no emite factura, solo cobra,
+     * y el soporte es el comprobante del pago.
+     */
+    documentoId: z.string().min(1).optional().nullable(),
+    /**
+     * ¿Se traslada al cliente en la factura de venta? (M6). Default `true`:
+     * el caso normal es que el gasto se pague por cuenta del cliente. En `false`
+     * la factura queda en el trámite para pagarla, pero el cliente no la ve.
+     */
+    repercutible: z.boolean().default(true),
+    /** R14 / D-4. Default COP. */
+    moneda: monedaSchema.default("COP"),
+    /** Solo USD: valor en centavos de dólar ("13100" = USD 131,00). */
+    valorOrigenCentavos: centavosPositivosSchema.optional().nullable(),
+    /** Solo USD: TRM en centavos de peso ("371050" = 3.710,50). */
+    trmCentavos: centavosPositivosSchema.optional().nullable(),
+    /** Solo USD: fecha-calendario de la TRM. */
+    fechaTrm: fechaCalendarioOpcionalSchema,
+    /** Reenvío tras `POSIBLE_DUPLICADO` ("Es otra factura, guardar"). */
+    confirmarPosibleDuplicado: z.boolean().default(false),
+    /** Reenvío tras `USD_VALOR_LEJOS_DE_TRM` ("Sí, guardar"). */
+    confirmarValorUsd: z.boolean().default(false),
+  })
   .superRefine((data, ctx) => {
     if (data.repercutible && !data.documentoId) {
       ctx.addIssue({ code: "custom", path: ["documentoId"], message: MENSAJE_ARCHIVO_OBLIGATORIO });
     }
+    validarMoneda(data, ctx, "COP");
   });
 
-export const actualizarFacturaProveedorSchema = z.object({
-  proveedorNombre: z.string().trim().min(1).optional(),
-  proveedorNit: z.string().trim().min(1).optional().nullable(),
-  beneficiarioId: z.string().min(1).optional().nullable(),
-  concepto: z.string().trim().min(1).optional().nullable(),
-  siigoProductoId: z.string().min(1).optional().nullable(),
-  numFactura: z.string().trim().min(1).optional(),
-  valor: z.coerce
-    .bigint()
-    .refine((v) => v > 0n, { message: "El valor debe ser mayor a 0" })
-    .optional(),
-  fecha: z.coerce.date().optional(),
-  documentoId: z.string().min(1).optional().nullable(),
-  repercutible: z.boolean().optional(),
+/**
+ * PATCH: la pantalla manda todos los campos en cada guardado; el servicio
+ * compara contra la fila actual y solo aplica R11 a los CAMBIOS REALES.
+ * La coherencia de moneda (USD con valor y TRM) la valida el servicio sobre el
+ * estado final de la factura (aquí solo se rechaza una combinación explícita
+ * imposible: moneda COP junto con valor en dólares o TRM).
+ */
+export const actualizarFacturaProveedorSchema = z
+  .object({
+    proveedorNombre: z.string().trim().min(1).optional(),
+    proveedorNit: z.string().trim().min(1).optional().nullable(),
+    beneficiarioId: z.string().min(1).optional().nullable(),
+    concepto: z.string().trim().min(1).optional().nullable(),
+    siigoProductoId: z.string().min(1).optional().nullable(),
+    numFactura: numFacturaSchema.optional(),
+    valor: dineroCopPositivoSchema.optional(),
+    fecha: fechaCalendarioSchema.optional(),
+    documentoId: z.string().min(1).optional().nullable(),
+    repercutible: z.boolean().optional(),
+    moneda: monedaSchema.optional(),
+    valorOrigenCentavos: centavosPositivosSchema.optional().nullable(),
+    trmCentavos: centavosPositivosSchema.optional().nullable(),
+    fechaTrm: fechaCalendarioOpcionalSchema,
+    confirmarPosibleDuplicado: z.boolean().optional(),
+    confirmarValorUsd: z.boolean().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.moneda === "COP") validarMoneda(data, ctx, undefined);
+  });
+
+/**
+ * Re-expresión del valor en pesos de una factura USD (D-4, solo ADMIN): nueva
+ * TRM y nuevo valor en pesos, con motivo. Nunca por debajo de lo ya pagado ni
+ * si la factura ya se le cobró al cliente (lo valida el servicio).
+ */
+export const reexpresarFacturaUsdSchema = z.object({
+  valor: dineroCopPositivoSchema,
+  trmCentavos: centavosPositivosSchema,
+  fechaTrm: fechaCalendarioOpcionalSchema,
+  motivo: motivoSchema,
+  confirmarValorUsd: z.boolean().default(false),
 });
 
+/**
+ * "Generar pago" (API/MCP; la ruta y el servicio son de P1). `monto` (abono) y
+ * `documentoId` (comprobante) son opcionales: sin `monto` se paga el saldo.
+ */
 export const generarPagoDesdeFacturaSchema = z.object({
   canalPago: z.nativeEnum(CanalPago),
   viaSocio: z.boolean().default(false),
-  fechaRealPago: z.coerce.date().optional().nullable(),
+  fechaRealPago: fechaCalendarioOpcionalSchema,
+  monto: dineroCopPositivoSchema.optional(),
+  documentoId: z.string().min(1).optional(),
 });
 
 export const solicitarFacturacionSchema = z.object({}).optional();

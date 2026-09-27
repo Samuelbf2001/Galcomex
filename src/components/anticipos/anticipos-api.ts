@@ -3,6 +3,8 @@
  * Patrón idéntico a tramites-api.ts / pagos-api.ts.
  */
 
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
+
 export type TipoRecaudo = "BANCOLOMBIA" | "OTROS_BANCOS" | "SUCURSAL" | "CORRESPONSAL" | "CAJERO";
 
 export type TipoRecaudoOption = {
@@ -472,13 +474,7 @@ export function formatCOP(value: string): string {
   }
 }
 
+/** Fecha-calendario del anticipo (día, no instante): usa UTC como Bogota.ts, nunca la zona del navegador. */
 export function formatDate(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso);
 }

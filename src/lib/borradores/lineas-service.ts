@@ -84,6 +84,19 @@ export class FacturaNoRepercutibleError extends Error {
   }
 }
 
+/**
+ * Se lanza al intentar asignar a una línea un `siigoProductoId` que ya no
+ * existe en el catálogo local (borrado o nunca sincronizado). Sin este check,
+ * el `connect` de Prisma revienta con P2025 (500 sin explicar la causa).
+ */
+export class ProductoSiigoNoEncontradoError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super("El producto SIIGO elegido ya no existe; sincroniza el catálogo.");
+    this.name = "ProductoSiigoNoEncontradoError";
+  }
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
@@ -343,10 +356,18 @@ export async function actualizarLinea(input: ActualizarLineaInput) {
     if (input.observacion !== undefined) data.observacion = input.observacion;
     if (input.seccion !== undefined) data.seccion = input.seccion;
     if (input.siigoProductoId !== undefined) {
-      data.siigoProducto =
-        input.siigoProductoId === null
-          ? { disconnect: true }
-          : { connect: { id: input.siigoProductoId } };
+      if (input.siigoProductoId === null) {
+        data.siigoProducto = { disconnect: true };
+      } else {
+        const producto = await tx.siigoProducto.findUnique({
+          where: { id: input.siigoProductoId },
+          select: { id: true },
+        });
+        if (!producto) {
+          throw new ProductoSiigoNoEncontradoError();
+        }
+        data.siigoProducto = { connect: { id: input.siigoProductoId } };
+      }
     }
     if (input.nitTercero !== undefined) data.nitTercero = input.nitTercero;
     if (input.aplicaIva !== undefined) data.aplicaIva = input.aplicaIva;

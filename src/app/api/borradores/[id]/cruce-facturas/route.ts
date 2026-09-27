@@ -4,10 +4,11 @@
  * Devuelve dos vistas de cruce, solo lectura, sin modificar estado:
  *
  * 1. `cruce` — por cada FacturaProveedor del trámite: montoPagado
- *    (Σ PagoTramiteFactura), montoFacturado (Σ LineaRevisionFactura) y la
- *    diferencia. Vista fina, a nivel de factura de venta / línea.
+ *    (Σ `monto` del puente PagoTramiteFactura: lo aplicado a la factura, CxP
+ *    v2), montoFacturado (Σ LineaRevisionFactura) y la diferencia. Las que no
+ *    se trasladan al cliente (`repercutible = false`) no son desviación.
  * 2. `validaciones` — por cada proveedor/beneficiario del trámite: Σ
- *    FacturaProveedor.valor vs Σ PagoTramite.valor vinculados, más los pagos
+ *    FacturaProveedor.valor vs Σ monto aplicado del puente, más los pagos
  *    sueltos (sin ninguna factura de proveedor vinculada). Vista agregada
  *    para la sección "Validaciones" del revisor.
  *
@@ -63,7 +64,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       pagos: {
         select: {
           pagoId: true,
-          pago: { select: { valor: true } },
+          monto: true,
         },
       },
     },
@@ -89,7 +90,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   const pagosPivot = facturasProveedor.flatMap((fp) =>
     fp.pagos.map((pivot) => ({
       facturaId: fp.id,
-      pago: { valor: pivot.pago.valor },
+      monto: pivot.monto,
     })),
   );
 
@@ -98,6 +99,8 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     proveedorNombre: fp.proveedorNombre,
     numFactura: fp.numFactura,
     valor: fp.valor,
+    // FPR-02: la ruta olvidaba el flag y toda asesoría salía como desviación.
+    repercutible: fp.repercutible,
   }));
 
   const cruce = calcularCruceFacturas(facturaInputs, pagosPivot, lineasPivot);
@@ -110,7 +113,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     valor: fp.valor,
   }));
   const pagosVinculadosParaValidacion = facturasProveedor.flatMap((fp) =>
-    fp.pagos.map((pivot) => ({ facturaId: fp.id, valor: pivot.pago.valor })),
+    fp.pagos.map((pivot) => ({ facturaId: fp.id, valor: pivot.monto })),
   );
   const pagosSueltosParaValidacion = pagosSueltosRaw.map((p) => ({
     pagoId: p.id,

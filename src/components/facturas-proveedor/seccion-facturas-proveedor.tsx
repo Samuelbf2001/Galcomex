@@ -1,5 +1,12 @@
 "use client";
 
+/**
+ * Pestaña "Facturas proveedor" del DO (CxP v2, diseño §D.3). Columnas del
+ * Excel + Pagado/Saldo/Estado; "Pagar $saldo" solo si hay saldo; ficha de pago
+ * obligatoria; alerta de duplicado y de posible duplicado; USD + TRM; ADMIN
+ * puede re-expresar USD o quitar un ajuste de migración (LEGADO).
+ */
+
 import {
   AlertTriangle,
   CheckCircle2,
@@ -9,8 +16,10 @@ import {
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
+  Undo2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,10 +27,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ModuleState } from "@/components/layout/module-state";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
-import { usePermiso } from "@/lib/auth/rol-context";
+import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
+import { copDesdeUsd, formatoCentavos } from "@/lib/cxp/saldos";
+import { formatFechaCalendario, hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 import {
   type DocumentoRow,
@@ -35,23 +47,21 @@ import {
   type BeneficiarioSeleccion,
 } from "@/components/beneficiarios/beneficiario-combobox";
 import {
-  CANALES_PAGO,
-  type CanalPago,
-} from "@/components/pagos/pagos-api";
-import {
   type CreateFacturaProveedorInput,
-  type EstadoFacturaProveedor,
+  type EtiquetaCxp,
   type FacturaProveedorRow,
-  type GenerarPagoInput,
+  type Moneda,
   type UpdateFacturaProveedorInput,
   FacturasProveedorApiError,
   createFacturaProveedor,
   deleteFacturaProveedor,
+  eliminarAjusteLegado,
   fetchFacturasProveedor,
   formatCOP,
-  generarPagoDesdeFactura,
   parseBigIntInput,
+  updateFacturaProveedor,
 } from "@/components/facturas-proveedor/facturas-proveedor-api";
+import { ReexpresarUsdModal } from "@/components/facturas-proveedor/reexpresar-usd-modal";
 
 // ─── Siigo producto combobox ──────────────────────────────────────────────────
 
@@ -180,8 +190,13 @@ function SiigoProductoCombobox({ valor, onChange, placeholder = "Opcional" }: Si
 
 type LoadState = "loading" | "ready" | "error";
 
-/** POST /api/tramites/[id]/facturas-proveedor y generar-pago admiten SOCIO. */
-const ROLES_CREAR_PAGAR_FACTURA = ["ADMIN", "OPERATIVO", "SOCIO"] as const;
+/** POST /api/tramites/[id]/facturas-proveedor admite SOCIO (solo en sus DOs, valida el servidor). */
+const ROLES_CREAR_FACTURA = ["ADMIN", "OPERATIVO", "SOCIO"] as const;
+/**
+ * "Pagar $saldo" abre el formulario de pago del DO (POST /api/tramites/[id]/pagos),
+ * que solo admite ADMIN y OPERATIVO: a SOCIO no se le muestra (antes recibía 403).
+ */
+const ROLES_PAGAR_FACTURA = ["ADMIN", "OPERATIVO"] as const;
 /** PATCH/DELETE /api/facturas-proveedor/[id] son solo ADMIN/OPERATIVO. */
 const ROLES_MODIFICAR_FACTURA = ["ADMIN", "OPERATIVO"] as const;
 
@@ -189,47 +204,46 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+function coincidenciasDeDetalles(detalles: unknown): string[] {
+  if (!isRecord(detalles) || !Array.isArray(detalles.coincidencias)) return [];
+  return detalles.coincidencias.filter(isRecord).map((c) => {
+    const num = typeof c.numFactura === "string" ? c.numFactura : "";
+    const doCorto = typeof c.doCorto === "string" ? c.doCorto : "";
+    const valor = typeof c.valor === "string" ? formatCOP(c.valor) : "";
+    return [num, doCorto, valor].filter(Boolean).join(" · ");
+  });
 }
 
-function isoToDateInput(iso: string | null | undefined): string {
-  if (!iso) return "";
-  return iso.slice(0, 10);
-}
-
-function dateInputToIso(value: string): string | null {
-  if (!value) return null;
-  return new Date(`${value}T00:00:00.000Z`).toISOString();
-}
-
-// Badge de estado de la factura de proveedor
-function EstadoBadge({ estado }: { estado: EstadoFacturaProveedor }) {
-  const map: Record<EstadoFacturaProveedor, { label: string; cls: string }> = {
-    REGISTRADA: {
-      label: "Registrada",
-      cls: "border-slate-200 bg-slate-50 text-slate-700",
-    },
-    PAGADA: {
-      label: "Pagada",
-      cls: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    },
-    FACTURADA_CLIENTE: {
-      label: "Facturada",
-      cls: "border-cyan-200 bg-cyan-50 text-cyan-700",
-    },
+// Chip Pendiente / Abonada / Pagada / Cruzada / Pagada con ajuste (etiqueta calculada por el servidor).
+function EstadoBadge({ etiqueta, fila }: { etiqueta: EtiquetaCxp; fila: FacturaProveedorRow }) {
+  const map: Record<EtiquetaCxp, string> = {
+    Pendiente: "border-amber-200 bg-amber-50 text-amber-700",
+    Abonada: "border-cyan-200 bg-cyan-50 text-cyan-700",
+    Pagada: "border-slate-300 bg-slate-100 text-slate-700",
+    Cruzada: "border-violet-200 bg-violet-50 text-violet-700",
+    "Pagada con ajuste": "border-rose-200 bg-rose-50 text-rose-700",
   };
-  const { label, cls } = map[estado] ?? map.REGISTRADA;
+  const fechaPago = fila.pagos
+    .map((p) => p.fechaRealPago)
+    .filter((f): f is string => Boolean(f))
+    .sort()
+    .at(-1);
+
+  let title: string | undefined;
+  if (etiqueta === "Abonada") {
+    title = `Pagado ${formatCOP(fila.aplicado)} de ${formatCOP(fila.valor)} · faltan ${formatCOP(fila.saldo)}`;
+  } else if (etiqueta === "Pagada" && fechaPago) {
+    title = `Pagada ${formatFechaCalendario(fechaPago, "corta")}`;
+  } else if (etiqueta === "Pagada con ajuste") {
+    title = "Cerrada con diferencia: revisar";
+  }
+
   return (
-    <span className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${cls}`}>
-      {label}
+    <span
+      className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${map[etiqueta]}`}
+      title={title}
+    >
+      {etiqueta}
     </span>
   );
 }
@@ -390,6 +404,8 @@ export function ModalFacturaProveedor({
   onGuardada,
 }: ModalFacturaProps) {
   const isEdit = Boolean(facturaExistente);
+  const confirmar = useConfirm();
+  const { toast } = useToast();
 
   const initialBeneficiario: BeneficiarioSeleccion | null =
     facturaExistente?.beneficiarioId
@@ -400,42 +416,50 @@ export function ModalFacturaProveedor({
         }
       : null;
 
-  const [beneficiario, setBeneficiario] = useState<BeneficiarioSeleccion | null>(
-    initialBeneficiario,
-  );
+  const [beneficiario, setBeneficiario] = useState<BeneficiarioSeleccion | null>(initialBeneficiario);
   const [concepto, setConcepto] = useState(facturaExistente?.concepto ?? "");
   const [siigoProductoId, setSiigoProductoId] = useState<string | undefined>(undefined);
-  const [numFactura, setNumFactura] = useState(
-    facturaExistente?.numFactura ?? "",
-  );
-  const [fecha, setFecha] = useState(
-    facturaExistente ? isoToDateInput(facturaExistente.fecha) : "",
-  );
-  const [valorRaw, setValorRaw] = useState(
-    facturaExistente?.valor ?? "",
-  );
-  const [documentoId, setDocumentoId] = useState<string | null>(
-    facturaExistente?.documentoId ?? null,
-  );
-  const [repercutible, setRepercutible] = useState<boolean>(
-    facturaExistente?.repercutible !== false,
-  );
+  const [numFactura, setNumFactura] = useState(facturaExistente?.numFactura ?? "");
+  const [fecha, setFecha] = useState(facturaExistente?.fecha ?? "");
+  const [valorRaw, setValorRaw] = useState(facturaExistente?.valor ?? "");
+  const [documentoId, setDocumentoId] = useState<string | null>(facturaExistente?.documentoId ?? null);
+  const [repercutible, setRepercutible] = useState<boolean>(facturaExistente?.repercutible !== false);
   const [documentoNombre, setDocumentoNombre] = useState<string | null>(null);
+
+  const [moneda, setMoneda] = useState<Moneda>(facturaExistente?.moneda ?? "COP");
+  const [valorUsdRaw, setValorUsdRaw] = useState(
+    facturaExistente?.valorOrigen ? formatoCentavos(BigInt(facturaExistente.valorOrigen)).replace(",", ".") : "",
+  );
+  const [trmRaw, setTrmRaw] = useState(
+    facturaExistente?.trm ? formatoCentavos(BigInt(facturaExistente.trm)).replace(",", ".") : "",
+  );
+  const [fechaTrm, setFechaTrm] = useState(facturaExistente?.fechaTrm ?? hoyBogotaISO());
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { toast } = useToast();
+
+  // R11: si hay bloqueo de edición, los campos que mueven plata quedan de solo lectura
+  // (concepto, producto, fecha y archivo siguen editables).
+  const bloqueo = facturaExistente?.bloqueoEdicion ?? null;
+  const camposDineroBloqueados = bloqueo !== null;
 
   function handleDocumentoSubido(docId: string, nombre: string) {
     setDocumentoId(docId);
     setDocumentoNombre(nombre);
   }
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (submitting) return;
-    setError(null);
+  function centavosDeTexto(raw: string): string | null {
+    const limpio = raw.replace(/\./g, "").replace(",", ".").trim();
+    if (!limpio) return null;
+    const n = Number(limpio);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.round(n * 100).toString();
+  }
 
+  async function enviar(
+    confirmarPosibleDuplicado: boolean,
+    confirmarValorUsd: boolean,
+  ): Promise<void> {
     const valorBig = parseBigIntInput(valorRaw);
     if (!valorBig) {
       setError("El valor debe ser un número entero mayor a 0.");
@@ -453,85 +477,64 @@ export function ModalFacturaProveedor({
       setError("La fecha es obligatoria.");
       return;
     }
-    // Un costo propio (la clasificadora) no trae factura: el soporte es el pago.
     if (!isEdit && !documentoId && repercutible) {
-      setError("El archivo de la factura es obligatorio. Si es un costo propio que no se le cobra al cliente, desmarca \"Se le cobra al cliente\".");
+      setError(
+        'El archivo de la factura es obligatorio. Si es un costo propio que no se le cobra al cliente, desmarca "Se le cobra al cliente".',
+      );
       return;
     }
 
+    let valorOrigenCentavos: string | null = null;
+    let trmCentavos: string | null = null;
+    if (moneda === "USD") {
+      valorOrigenCentavos = centavosDeTexto(valorUsdRaw);
+      trmCentavos = centavosDeTexto(trmRaw);
+      if (!valorOrigenCentavos || !trmCentavos) {
+        setError("Una factura en dólares necesita el valor en dólares y la TRM (ambos mayores que cero).");
+        return;
+      }
+    }
+
     setSubmitting(true);
+    setError(null);
     try {
       if (isEdit && facturaExistente) {
-        // PATCH — update parcial usando la misma API helper de create pero con el endpoint PATCH
         const input: UpdateFacturaProveedorInput = {
           beneficiarioId: beneficiario.id,
           concepto: concepto.trim() || null,
           siigoProductoId: siigoProductoId ?? null,
-          // backward compatibility: send legacy fields only when they were already set
-          ...(facturaExistente.proveedorNombre
-            ? { proveedorNombre: beneficiario.nombre }
-            : {}),
-          ...(facturaExistente.proveedorNit !== null
-            ? { proveedorNit: beneficiario.nit }
-            : {}),
           numFactura: numFactura.trim(),
           valor: valorBig,
-          fecha: dateInputToIso(fecha) ?? undefined,
+          fecha,
           documentoId,
           repercutible,
+          moneda,
+          valorOrigenCentavos: moneda === "USD" ? valorOrigenCentavos : null,
+          trmCentavos: moneda === "USD" ? trmCentavos : null,
+          fechaTrm: moneda === "USD" ? fechaTrm : null,
+          confirmarPosibleDuplicado,
+          confirmarValorUsd,
         };
-
-        const response = await fetch(`/api/facturas-proveedor/${facturaExistente.id}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify(input),
-        });
-
-        const payload: unknown = await response.json().catch(() => null);
-        if (!response.ok) {
-          const msg =
-            isRecord(payload) && typeof payload.error === "string"
-              ? payload.error
-              : `Error al actualizar (${response.status}).`;
-          throw new FacturasProveedorApiError(msg, response.status);
-        }
-        if (!isRecord(payload) || !isRecord(payload.factura)) {
-          throw new FacturasProveedorApiError("Respuesta de actualización no válida.");
-        }
-
-        const updated = payload.factura;
+        const actualizada = await updateFacturaProveedor(facturaExistente.id, input);
         toast({ title: "Factura actualizada", description: numFactura.trim(), variant: "success" });
-        onGuardada({
-          id: String(updated.id ?? ""),
-          tramiteId: String(updated.tramiteId ?? ""),
-          proveedorNombre: String(updated.proveedorNombre ?? ""),
-          proveedorNit: typeof updated.proveedorNit === "string" ? updated.proveedorNit : null,
-          beneficiarioId: typeof updated.beneficiarioId === "string" ? updated.beneficiarioId : null,
-          concepto: typeof updated.concepto === "string" ? updated.concepto : null,
-          numFactura: String(updated.numFactura ?? ""),
-          valor: String(updated.valor ?? "0"),
-          fecha: typeof updated.fecha === "string" ? updated.fecha : "",
-          estado: (updated.estado as EstadoFacturaProveedor) ?? "REGISTRADA",
-          documentoId: typeof updated.documentoId === "string" ? updated.documentoId : null,
-          repercutible: updated.repercutible !== false,
-          subidaPorId: String(updated.subidaPorId ?? ""),
-          createdAt: String(updated.createdAt ?? ""),
-          updatedAt: String(updated.updatedAt ?? ""),
-        });
+        onGuardada(actualizada);
       } else {
         const input: CreateFacturaProveedorInput = {
           beneficiarioId: beneficiario.id,
           concepto: concepto.trim() || null,
           siigoProductoId: siigoProductoId ?? null,
-          proveedorNombre: beneficiario.nombre,
-          proveedorNit: beneficiario.nit,
           numFactura: numFactura.trim(),
           valor: valorBig,
-          fecha: dateInputToIso(fecha) ?? "",
+          fecha,
           documentoId,
           repercutible,
+          moneda,
+          valorOrigenCentavos,
+          trmCentavos,
+          fechaTrm: moneda === "USD" ? fechaTrm : null,
+          confirmarPosibleDuplicado,
+          confirmarValorUsd,
         };
-
         const factura = await createFacturaProveedor(tramiteId, input);
         toast({
           title: "Factura de proveedor registrada",
@@ -541,11 +544,58 @@ export function ModalFacturaProveedor({
         onGuardada(factura);
       }
     } catch (caught) {
-      setError(describirError(caught, "Error al guardar la factura."));
+      if (caught instanceof FacturasProveedorApiError && caught.codigo === "POSIBLE_DUPLICADO") {
+        const lista = coincidenciasDeDetalles(caught.detalles);
+        const ok = await confirmar({
+          title: "¿Es la misma factura?",
+          description: `${caught.message}${lista.length > 0 ? ` (${lista.join(" · ")})` : ""}`,
+          confirmText: "Es otra factura, guardar",
+          cancelText: "Revisar",
+        });
+        if (ok) {
+          setSubmitting(false);
+          await enviar(true, confirmarValorUsd);
+          return;
+        }
+      } else if (caught instanceof FacturasProveedorApiError && caught.codigo === "USD_VALOR_LEJOS_DE_TRM") {
+        const ok = await confirmar({
+          title: "¿Está bien el valor?",
+          description: caught.message,
+          confirmText: "Sí, guardar",
+          cancelText: "Corregir",
+        });
+        if (ok) {
+          setSubmitting(false);
+          await enviar(confirmarPosibleDuplicado, true);
+          return;
+        }
+      } else {
+        setError(describirError(caught, "Error al guardar la factura."));
+      }
     } finally {
       setSubmitting(false);
     }
   }
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (submitting) return;
+    await enviar(false, false);
+  }
+
+  const sugeridoUsd =
+    moneda === "USD" && valorUsdRaw && trmRaw
+      ? (() => {
+          const v = centavosDeTexto(valorUsdRaw);
+          const t = centavosDeTexto(trmRaw);
+          if (!v || !t) return null;
+          try {
+            return copDesdeUsd(BigInt(v), BigInt(t));
+          } catch {
+            return null;
+          }
+        })()
+      : null;
 
   return (
     <ModalShell
@@ -555,7 +605,14 @@ export function ModalFacturaProveedor({
       size="md"
       dismissible={!submitting}
     >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
+          {bloqueo ? (
+            <div className="flex items-start gap-2 border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              {bloqueo.mensaje} Puedes seguir editando el concepto, el producto, la fecha y el archivo.
+            </div>
+          ) : null}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="block space-y-1.5 sm:col-span-2">
               <span className="text-sm font-medium text-slate-700">Proveedor *</span>
@@ -563,6 +620,7 @@ export function ModalFacturaProveedor({
                 value={beneficiario}
                 onChange={setBeneficiario}
                 placeholder="Buscar o crear proveedor…"
+                disabled={camposDineroBloqueados}
               />
             </div>
 
@@ -584,7 +642,9 @@ export function ModalFacturaProveedor({
                 onChange={(e) => setNumFactura(e.target.value)}
                 placeholder="Ej. FL-2026-001"
                 required
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                disabled={camposDineroBloqueados}
+                title={bloqueo?.mensaje}
+                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50 disabled:text-slate-500"
               />
             </label>
 
@@ -600,15 +660,71 @@ export function ModalFacturaProveedor({
             </label>
 
             <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Valor (COP) *</span>
+              <span className="text-sm font-medium text-slate-700">Moneda</span>
+              <select
+                value={moneda}
+                onChange={(e) => setMoneda(e.target.value as Moneda)}
+                disabled={camposDineroBloqueados}
+                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50 disabled:text-slate-500"
+              >
+                <option value="COP">COP (pesos)</option>
+                <option value="USD">USD (dólares)</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1.5">
+              <span className="text-sm font-medium text-slate-700">
+                {moneda === "USD" ? "Valor en pesos (este es el que se paga) *" : "Valor (COP) *"}
+              </span>
               <CampoMoneda
                 value={valorRaw}
                 onValueChange={setValorRaw}
                 placeholder="1.000.000"
                 required
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                disabled={camposDineroBloqueados}
+                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50 disabled:text-slate-500"
               />
             </label>
+
+            {moneda === "USD" ? (
+              <>
+                <label className="block space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">Valor en dólares *</span>
+                  <input
+                    value={valorUsdRaw}
+                    onChange={(e) => setValorUsdRaw(e.target.value)}
+                    placeholder="131,00"
+                    disabled={camposDineroBloqueados}
+                    className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50 disabled:text-slate-500"
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">TRM *</span>
+                  <input
+                    value={trmRaw}
+                    onChange={(e) => setTrmRaw(e.target.value)}
+                    placeholder="3.710,50"
+                    disabled={camposDineroBloqueados}
+                    className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50 disabled:text-slate-500"
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">Fecha de la TRM</span>
+                  <input
+                    type="date"
+                    value={fechaTrm}
+                    onChange={(e) => setFechaTrm(e.target.value)}
+                    disabled={camposDineroBloqueados}
+                    className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600 disabled:bg-slate-50 disabled:text-slate-500"
+                  />
+                </label>
+                {sugeridoUsd !== null ? (
+                  <p className="text-xs text-slate-500 sm:col-span-2">
+                    Con esa TRM da <span className="font-semibold text-slate-700">{formatCOP(sugeridoUsd.toString())}</span>
+                  </p>
+                ) : null}
+              </>
+            ) : null}
           </div>
 
           {/* Repercusión al cliente (M6) */}
@@ -617,6 +733,7 @@ export function ModalFacturaProveedor({
               type="checkbox"
               checked={repercutible}
               onChange={(e) => setRepercutible(e.target.checked)}
+              disabled={camposDineroBloqueados}
               className="mt-0.5 h-4 w-4"
             />
             <span className="text-sm">
@@ -683,48 +800,43 @@ export function ModalFacturaProveedor({
   );
 }
 
-// ─── Modal: Generar pago ──────────────────────────────────────────────────────
+// ─── Diálogo: quitar ajuste de migración (LEGADO) ─────────────────────────────
 
-type ModalGenerarPagoProps = {
+type QuitarAjusteLegadoDialogProps = {
   factura: FacturaProveedorRow;
+  ajusteId: string;
   onClose: () => void;
-  onPagoGenerado: (factura: FacturaProveedorRow) => void;
+  onQuitado: () => void;
 };
 
-function ModalGenerarPago({
-  factura,
-  onClose,
-  onPagoGenerado,
-}: ModalGenerarPagoProps) {
-  const [canal, setCanal] = useState<CanalPago>("TRANSF_BANCOLOMBIA");
-  const [viaSocio, setViaSocio] = useState(false);
-  const [fechaRealPago, setFechaRealPago] = useState("");
+const MOTIVO_MIN = 10;
+
+function QuitarAjusteLegadoDialog({ factura, ajusteId, onClose, onQuitado }: QuitarAjusteLegadoDialogProps) {
+  // Solo ADMIN (§B.4). El padre ya condiciona el botón por rol; esto es
+  // defensa en profundidad, igual que `AnularBloqueDialog` (P4).
+  const esAdmin = useEsAdmin();
+  const { toast } = useToast();
+  const [motivo, setMotivo] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { toast } = useToast();
+
+  if (!esAdmin) return null;
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (submitting) return;
-    setError(null);
+    if (motivo.trim().length < MOTIVO_MIN) {
+      setError(`Escribe el motivo (al menos ${MOTIVO_MIN} caracteres).`);
+      return;
+    }
     setSubmitting(true);
-
-    const input: GenerarPagoInput = {
-      canalPago: canal,
-      viaSocio,
-      fechaRealPago: fechaRealPago ? new Date(`${fechaRealPago}T00:00:00.000Z`).toISOString() : null,
-    };
-
+    setError(null);
     try {
-      const result = await generarPagoDesdeFactura(factura.id, input);
-      toast({
-        title: "Pago generado",
-        description: `${factura.numFactura} · ${formatCOP(result.pago.valor)}`,
-        variant: "success",
-      });
-      onPagoGenerado(result.factura);
+      await eliminarAjusteLegado(factura.id, ajusteId, motivo.trim());
+      toast({ title: "Ajuste de migración quitado", description: factura.numFacturaVisible, variant: "success" });
+      onQuitado();
     } catch (caught) {
-      setError(describirError(caught, "Error al generar el pago."));
+      setError(describirError(caught, "No fue posible quitar el ajuste."));
     } finally {
       setSubmitting(false);
     }
@@ -734,82 +846,46 @@ function ModalGenerarPago({
     <ModalShell
       open
       onClose={onClose}
-      title="Generar pago"
-      description={`${factura.proveedorNombre} · ${factura.numFactura} · ${formatCOP(factura.valor)}`}
+      title="Quitar ajuste de migración"
+      description={`${factura.numFacturaVisible} vuelve a quedar Pendiente o Abonada, según lo que falte.`}
       size="sm"
       dismissible={!submitting}
     >
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Canal de pago *</span>
-            <select
-              value={canal}
-              onChange={(e) => setCanal(e.target.value as CanalPago)}
-              required
-              className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
-            >
-              {CANALES_PAGO.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">Fecha real de pago</span>
-            <input
-              type="date"
-              value={fechaRealPago}
-              onChange={(e) => setFechaRealPago(e.target.value)}
-              className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-            />
-          </label>
-
-          <label className="flex cursor-pointer items-start gap-3">
-            <input
-              type="checkbox"
-              checked={viaSocio}
-              onChange={(e) => setViaSocio(e.target.checked)}
-              className="mt-0.5 h-4 w-4 cursor-pointer border-slate-300 text-slate-900"
-            />
-            <div>
-              <span className="text-sm font-medium text-slate-700">
-                Pagado en efectivo vía Lucho (socio LM)
-              </span>
-              <p className="text-xs text-slate-500">
-                Marca si la transferencia fue recibida por el socio y pagada en efectivo.
-              </p>
-            </div>
-          </label>
-
-          {error ? (
-            <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-              {error}
-            </div>
-          ) : null}
-
-          <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={submitting}
-              className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="inline-flex h-10 items-center gap-2 bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
-            >
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-              <CreditCard className="h-4 w-4" aria-hidden="true" />
-              Generar pago
-            </button>
+      <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-slate-700">Motivo *</span>
+          <textarea
+            value={motivo}
+            onChange={(e) => setMotivo(e.target.value)}
+            rows={3}
+            className="w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan-600"
+          />
+        </label>
+        {error ? (
+          <div className="flex items-start gap-2 border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            {error}
           </div>
-        </form>
+        ) : null}
+        <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="h-10 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="inline-flex h-10 items-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+          >
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            Quitar ajuste
+          </button>
+        </div>
+      </form>
     </ModalShell>
   );
 }
@@ -818,7 +894,9 @@ function ModalGenerarPago({
 
 type SeccionFacturasProveedorProps = {
   tramiteId: string;
-  onPagarFactura?: (factura: FacturaProveedorRow) => void;
+  onPagarFactura: (factura: FacturaProveedorRow) => void;
+  /** true = el DO está CERRADO: "Pagar" queda deshabilitado con el motivo. */
+  tramiteCerrado?: boolean;
   /** Cambia cuando el detalle del DO se recargó: vuelve a leer las facturas. */
   refreshToken?: number;
 };
@@ -826,13 +904,13 @@ type SeccionFacturasProveedorProps = {
 export function SeccionFacturasProveedor({
   tramiteId,
   onPagarFactura,
+  tramiteCerrado = false,
   refreshToken = 0,
 }: SeccionFacturasProveedorProps) {
-  // Permisos alineados con cada endpoint (ver constantes arriba). Antes
-  // `puedeEditar = rol !== "REVISOR"` dejaba editar/eliminar a SOCIO.
-  const puedeCrear = usePermiso(ROLES_CREAR_PAGAR_FACTURA);
-  const puedePagar = puedeCrear;
+  const puedeCrear = usePermiso(ROLES_CREAR_FACTURA);
+  const puedePagar = usePermiso(ROLES_PAGAR_FACTURA);
   const puedeModificar = usePermiso(ROLES_MODIFICAR_FACTURA);
+  const esAdmin = useEsAdmin();
   const hayAcciones = puedePagar || puedeModificar;
   const { toast } = useToast();
   const confirmar = useConfirm();
@@ -845,12 +923,12 @@ export function SeccionFacturasProveedor({
 
   // Modales
   const [modalAltaOpen, setModalAltaOpen] = useState(false);
-  const [facturaParaEditar, setFacturaParaEditar] =
-    useState<FacturaProveedorRow | null>(null);
-  const [facturaParaPago, setFacturaParaPago] =
-    useState<FacturaProveedorRow | null>(null);
+  const [facturaParaEditar, setFacturaParaEditar] = useState<FacturaProveedorRow | null>(null);
+  const [facturaParaReexpresar, setFacturaParaReexpresar] = useState<FacturaProveedorRow | null>(null);
+  const [ajusteParaQuitar, setAjusteParaQuitar] = useState<{ factura: FacturaProveedorRow; ajusteId: string } | null>(
+    null,
+  );
 
-  // Carga URLs de descarga para documentos adjuntos de facturas (no-critical)
   const cargarDocumentos = useCallback(
     async (tId: string, ids: string[]) => {
       try {
@@ -893,12 +971,10 @@ export function SeccionFacturasProveedor({
     [],
   );
 
-  // Carga de facturas
   useEffect(() => {
     const controller = new AbortController();
 
     async function load() {
-      // Solo la primera carga muestra el skeleton; las recargas conservan la tabla.
       setLoadState((prev) => (prev === "ready" ? prev : "loading"));
       setLoadError(null);
 
@@ -907,7 +983,6 @@ export function SeccionFacturasProveedor({
         setFacturas(data);
         setLoadState("ready");
 
-        // Cargar URLs de descarga de los documentos adjuntos en background
         const idsConDoc = data.flatMap((f) => (f.documentoId ? [f.documentoId] : []));
         if (idsConDoc.length > 0) {
           void cargarDocumentos(tramiteId, idsConDoc);
@@ -923,48 +998,35 @@ export function SeccionFacturasProveedor({
     return () => controller.abort();
   }, [tramiteId, reloadKey, refreshToken, cargarDocumentos]);
 
-  const handleFacturaGuardada = useCallback(
-    (factura: FacturaProveedorRow) => {
-      setFacturas((prev) => {
-        const idx = prev.findIndex((f) => f.id === factura.id);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = factura;
-          return next;
-        }
-        return [factura, ...prev];
-      });
-      setModalAltaOpen(false);
-      setFacturaParaEditar(null);
-    },
-    [],
-  );
+  const handleFacturaGuardada = useCallback((factura: FacturaProveedorRow) => {
+    setFacturas((prev) => {
+      const idx = prev.findIndex((f) => f.id === factura.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = factura;
+        return next;
+      }
+      return [factura, ...prev];
+    });
+    setModalAltaOpen(false);
+    setFacturaParaEditar(null);
+  }, []);
 
-  const handlePagoGenerado = useCallback(
-    (facturaActualizada: FacturaProveedorRow) => {
-      setFacturas((prev) =>
-        prev.map((f) => (f.id === facturaActualizada.id ? facturaActualizada : f)),
-      );
-      setFacturaParaPago(null);
-    },
-    [],
-  );
-
-  async function handleDelete(facturaId: string, numFact: string) {
+  async function handleDelete(factura: FacturaProveedorRow) {
     const ok = await confirmar({
-      title: `¿Eliminar la factura "${numFact}"?`,
+      title: `¿Eliminar la factura "${factura.numFacturaVisible}"?`,
       description: "Esta acción no se puede deshacer.",
       confirmText: "Eliminar factura",
       variant: "danger",
     });
     if (!ok) return;
 
-    setDeletingId(facturaId);
+    setDeletingId(factura.id);
 
     try {
-      await deleteFacturaProveedor(facturaId);
-      setFacturas((prev) => prev.filter((f) => f.id !== facturaId));
-      toast({ title: "Factura eliminada", description: numFact, variant: "success" });
+      await deleteFacturaProveedor(factura.id);
+      setFacturas((prev) => prev.filter((f) => f.id !== factura.id));
+      toast({ title: "Factura eliminada", description: factura.numFacturaVisible, variant: "success" });
     } catch (caught) {
       toast({
         title: "No se pudo eliminar la factura",
@@ -978,8 +1040,10 @@ export function SeccionFacturasProveedor({
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  const NUM_COLS = hayAcciones ? 9 : 8;
+
   if (loadState === "loading") {
-    return <TableSkeleton rows={4} cols={hayAcciones ? 8 : 7} rowHeight={44} />;
+    return <TableSkeleton rows={4} cols={NUM_COLS} rowHeight={44} />;
   }
 
   if (loadState === "error") {
@@ -1000,6 +1064,26 @@ export function SeccionFacturasProveedor({
       return sum;
     }
   }, 0n);
+  // "Pagado" = pagos del libro (misma definición que la ficha del proveedor y
+  // sus tarjetas); lo cruzado y los ajustes de migración se muestran aparte.
+  const sumar = (campo: "aplicado" | "compensado" | "ajustado") =>
+    facturas.reduce((sum, f) => {
+      try {
+        return sum + BigInt(f[campo] || "0");
+      } catch {
+        return sum;
+      }
+    }, 0n);
+  const totalPagado = sumar("aplicado");
+  const totalCruzado = sumar("compensado");
+  const totalAjustado = sumar("ajustado");
+  const totalSaldo = facturas.reduce((sum, f) => {
+    try {
+      return sum + BigInt(f.saldo);
+    } catch {
+      return sum;
+    }
+  }, 0n);
 
   return (
     <section className="space-y-4">
@@ -1010,8 +1094,21 @@ export function SeccionFacturasProveedor({
               Facturas de proveedor ({facturas.length})
             </p>
             {facturas.length > 0 ? (
-              <p className="text-xs text-slate-500 mt-0.5">
+              <p className="mt-0.5 text-xs text-slate-500">
                 Total: <span className="font-semibold text-slate-700">{formatCOP(totalValor.toString())}</span>
+                {" · "}Pagado: <span className="font-semibold text-slate-700">{formatCOP(totalPagado.toString())}</span>
+                {totalCruzado > 0n ? (
+                  <>
+                    {" · "}Cruzado: <span className="font-semibold text-slate-700">{formatCOP(totalCruzado.toString())}</span>
+                  </>
+                ) : null}
+                {totalAjustado > 0n ? (
+                  <>
+                    {" · "}Ajustes de migración:{" "}
+                    <span className="font-semibold text-slate-700">{formatCOP(totalAjustado.toString())}</span>
+                  </>
+                ) : null}
+                {" · "}Saldo: <span className="font-semibold text-amber-700">{formatCOP(totalSaldo.toString())}</span>
               </p>
             ) : null}
           </div>
@@ -1028,28 +1125,27 @@ export function SeccionFacturasProveedor({
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[800px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[960px] border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
                 <th className="border-b border-slate-200 px-3 py-2">Proveedor</th>
-                <th className="border-b border-slate-200 px-3 py-2">NIT</th>
                 <th className="border-b border-slate-200 px-3 py-2">N° factura</th>
                 <th className="border-b border-slate-200 px-3 py-2">Fecha</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">Valor</th>
+                <th className="border-b border-slate-200 px-3 py-2 text-right">Pagado</th>
+                <th className="border-b border-slate-200 px-3 py-2 text-right">Saldo</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-center">Estado</th>
+                <th className="border-b border-slate-200 px-3 py-2">Cobrada al cliente</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-center">Archivo</th>
                 {hayAcciones ? (
-                  <th className="border-b border-slate-200 px-3 py-2 text-right w-28">Acciones</th>
+                  <th className="border-b border-slate-200 px-3 py-2 text-right w-40">Acciones</th>
                 ) : null}
               </tr>
             </thead>
             <tbody>
               {facturas.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={hayAcciones ? 8 : 7}
-                    className="px-4 py-10 text-center text-sm text-slate-500"
-                  >
+                  <td colSpan={NUM_COLS} className="px-4 py-10 text-center text-sm text-slate-500">
                     Sin facturas de proveedor registradas.{" "}
                     {puedeCrear ? 'Usa "Nueva factura" para agregar la primera.' : ""}
                   </td>
@@ -1057,20 +1153,39 @@ export function SeccionFacturasProveedor({
               ) : null}
               {facturas.map((f) => {
                 const doc = f.documentoId ? documentos[f.documentoId] : null;
-                const beneficiarioDisplay = f.proveedorNombre;
+                const ajusteLegado = f.ajustes.find((a) => a.tipo === "LEGADO");
+                const saldo = (() => {
+                  try {
+                    return BigInt(f.saldo);
+                  } catch {
+                    return 0n;
+                  }
+                })();
+                const aBig = (v: string) => {
+                  try {
+                    return BigInt(v || "0");
+                  } catch {
+                    return 0n;
+                  }
+                };
+                const pagado = aBig(f.aplicado);
+                const cruzado = aBig(f.compensado);
+                const ajustado = aBig(f.ajustado);
+                const puedePagarEstaFila = puedePagar && saldo > 0n && !tramiteCerrado;
+                const motivoNoPagar = tramiteCerrado
+                  ? "El DO está cerrado."
+                  : saldo <= 0n
+                    ? "Sin saldo pendiente."
+                    : undefined;
+
                 return (
-                  <tr
-                    key={f.id}
-                    className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
-                  >
+                  <tr key={f.id} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
                     <td className="px-3 py-2.5 font-medium text-slate-900">
-                      {beneficiarioDisplay}
-                    </td>
-                    <td className="px-3 py-2.5 text-xs text-slate-600">
-                      {f.proveedorNit ?? "—"}
+                      {f.beneficiario?.nombreCorto || f.proveedorNombre}
+                      {f.proveedorNit ? <span className="block text-[11px] font-normal text-slate-400">{f.proveedorNit}</span> : null}
                     </td>
                     <td className="px-3 py-2.5 font-mono text-xs text-slate-800">
-                      {f.numFactura}
+                      {f.numFacturaVisible}
                       {!f.repercutible ? (
                         <span
                           className="ml-1.5 border border-slate-300 bg-slate-100 px-1 py-0.5 font-sans text-[10px] font-semibold text-slate-600"
@@ -1080,12 +1195,42 @@ export function SeccionFacturasProveedor({
                         </span>
                       ) : null}
                     </td>
-                    <td className="px-3 py-2.5 text-slate-600">{formatDate(f.fecha)}</td>
+                    <td className="px-3 py-2.5 text-slate-600">{formatFechaCalendario(f.fecha, "corta")}</td>
                     <td className="px-3 py-2.5 text-right font-mono font-semibold text-slate-900">
                       {formatCOP(f.valor)}
+                      {f.moneda === "USD" && f.valorOrigen && f.trm ? (
+                        <span className="block font-sans text-[11px] font-normal text-slate-400">
+                          USD {formatoCentavos(BigInt(f.valorOrigen))} · TRM {formatoCentavos(BigInt(f.trm))}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-mono text-slate-700">
+                      {formatCOP(pagado.toString())}
+                      {cruzado > 0n ? (
+                        <span className="block font-sans text-[11px] font-normal text-slate-400">
+                          + cruzado {formatCOP(cruzado.toString())}
+                        </span>
+                      ) : null}
+                      {ajustado > 0n ? (
+                        <span className="block font-sans text-[11px] font-normal text-slate-400">
+                          + ajuste {formatCOP(ajustado.toString())}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className={`px-3 py-2.5 text-right font-mono font-semibold ${saldo > 0n ? "text-amber-700" : "text-slate-400"}`}>
+                      {formatCOP(saldo.toString())}
                     </td>
                     <td className="px-3 py-2.5 text-center">
-                      <EstadoBadge estado={f.estado} />
+                      <EstadoBadge etiqueta={f.etiqueta} fila={f} />
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      {f.facturadaAlCliente ? (
+                        <EnlaceFacturaVenta tramiteId={f.tramiteId} className="font-semibold text-cyan-700 hover:underline">
+                          {f.facturadaAlCliente.numSiigo ?? "En borrador"}
+                        </EnlaceFacturaVenta>
+                      ) : (
+                        <span className="text-slate-400">No</span>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-center">
                       {doc?.downloadUrl ? (
@@ -1107,49 +1252,62 @@ export function SeccionFacturasProveedor({
                     </td>
                     {hayAcciones ? (
                       <td className="px-3 py-2.5">
-                        <div className="flex items-center justify-end gap-1">
-                          {/* Generar pago: disponible mientras no esté facturada al cliente */}
-                          {puedePagar && f.estado !== "FACTURADA_CLIENTE" ? (
+                        <div className="flex flex-wrap items-center justify-end gap-1">
+                          {puedePagar && saldo > 0n ? (
                             <button
                               type="button"
-                              onClick={() => {
-                                if (onPagarFactura) {
-                                  onPagarFactura(f);
-                                  return;
-                                }
-
-                                setFacturaParaPago(f);
-                              }}
-                              className="inline-flex h-7 items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
-                              title="Generar pago"
-                              aria-label={`Generar pago de la factura ${f.numFactura}`}
+                              onClick={() => onPagarFactura(f)}
+                              disabled={!puedePagarEstaFila}
+                              title={motivoNoPagar}
+                              className="inline-flex h-7 items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                              aria-label={`Pagar ${formatCOP(f.saldo)} de la factura ${f.numFacturaVisible}`}
                             >
                               <CreditCard className="h-3.5 w-3.5" aria-hidden="true" />
-                              Pagar
+                              Pagar {formatCOP(f.saldo)}
                             </button>
                           ) : null}
 
-                          {/* Editar: ADMIN/OPERATIVO */}
+                          {esAdmin && f.moneda === "USD" ? (
+                            <button
+                              type="button"
+                              onClick={() => setFacturaParaReexpresar(f)}
+                              className="inline-flex h-7 items-center gap-1 border border-slate-200 px-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
+                              title="Re-expresar en pesos (nueva TRM)"
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                          ) : null}
+
+                          {esAdmin && ajusteLegado ? (
+                            <button
+                              type="button"
+                              onClick={() => setAjusteParaQuitar({ factura: f, ajusteId: ajusteLegado.id })}
+                              className="inline-flex h-7 items-center gap-1 border border-slate-200 px-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
+                              title="Quitar ajuste de migración (la reabre)"
+                            >
+                              <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                          ) : null}
+
                           {puedeModificar ? (
                             <button
                               type="button"
                               onClick={() => setFacturaParaEditar(f)}
                               className="inline-flex h-7 w-7 items-center justify-center border border-slate-200 text-slate-400 transition hover:text-slate-700"
-                              aria-label={`Editar factura ${f.numFactura}`}
+                              aria-label={`Editar factura ${f.numFacturaVisible}`}
                               title="Editar"
                             >
                               <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                             </button>
                           ) : null}
 
-                          {/* Eliminar: ADMIN/OPERATIVO y solo si REGISTRADA (sin pagos) */}
-                          {puedeModificar && f.estado === "REGISTRADA" ? (
+                          {puedeModificar && f.puedeEliminar ? (
                             <button
                               type="button"
-                              onClick={() => void handleDelete(f.id, f.numFactura)}
+                              onClick={() => void handleDelete(f)}
                               disabled={deletingId === f.id}
                               className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
-                              aria-label={`Eliminar factura ${f.numFactura}`}
+                              aria-label={`Eliminar factura ${f.numFacturaVisible}`}
                               title="Eliminar"
                             >
                               {deletingId === f.id ? (
@@ -1170,7 +1328,6 @@ export function SeccionFacturasProveedor({
         </div>
       </div>
 
-      {/* Modal alta */}
       {modalAltaOpen && puedeCrear ? (
         <ModalFacturaProveedor
           tramiteId={tramiteId}
@@ -1179,7 +1336,6 @@ export function SeccionFacturasProveedor({
         />
       ) : null}
 
-      {/* Modal edición */}
       {facturaParaEditar && puedeModificar ? (
         <ModalFacturaProveedor
           tramiteId={tramiteId}
@@ -1189,12 +1345,26 @@ export function SeccionFacturasProveedor({
         />
       ) : null}
 
-      {/* Modal generar pago */}
-      {facturaParaPago ? (
-        <ModalGenerarPago
-          factura={facturaParaPago}
-          onClose={() => setFacturaParaPago(null)}
-          onPagoGenerado={handlePagoGenerado}
+      {facturaParaReexpresar ? (
+        <ReexpresarUsdModal
+          factura={facturaParaReexpresar}
+          onClose={() => setFacturaParaReexpresar(null)}
+          onReexpresada={(actualizada) => {
+            handleFacturaGuardada(actualizada);
+            setFacturaParaReexpresar(null);
+          }}
+        />
+      ) : null}
+
+      {ajusteParaQuitar ? (
+        <QuitarAjusteLegadoDialog
+          factura={ajusteParaQuitar.factura}
+          ajusteId={ajusteParaQuitar.ajusteId}
+          onClose={() => setAjusteParaQuitar(null)}
+          onQuitado={() => {
+            setAjusteParaQuitar(null);
+            setReloadKey((k) => k + 1);
+          }}
         />
       ) : null}
     </section>

@@ -24,6 +24,7 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import {
   TIPOS_RECAUDO,
   type AnticipoRow,
@@ -225,7 +226,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
                 name="fecha"
                 type="date"
                 required
-                defaultValue={new Date().toISOString().slice(0, 10)}
+                defaultValue={hoyBogotaISO()}
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>

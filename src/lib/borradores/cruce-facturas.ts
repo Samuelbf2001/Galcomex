@@ -17,9 +17,14 @@ export type FacturaProveedorInput = {
   repercutible?: boolean;
 };
 
+/**
+ * Puente pago↔factura (CxP v2): `monto` = cuánto de ESE pago se aplicó a ESTA
+ * factura (`PagoTramiteFactura.monto`), no el valor completo del pago (un pago
+ * puede cubrir varias facturas y una factura puede tener varios abonos).
+ */
 export type PagoTramiteFacturaInput = {
   facturaId: string;
-  pago: { valor: bigint };
+  monto: bigint;
 };
 
 export type LineaRevisionFacturaInput = {
@@ -38,9 +43,22 @@ export type CruceFacturaProveedor = {
   /** Copia del flag de la factura, para que la UI pueda etiquetarla. */
   repercutible: boolean;
   /**
-   * `true` solo si la diferencia es un problema real. Una factura que NO se
-   * traslada al cliente (asesoría a nombre de Galcomex) siempre tiene
-   * `montoFacturado = 0` y no debe ensuciar el panel de validaciones.
+   * Lo que las líneas de la factura de venta (TERCEROS) vinculadas a esta
+   * factura le cobran al cliente pasa del VALOR de la factura: se le estaría
+   * cobrando más de lo que el proveedor facturó.
+   */
+  facturadoExcedeValor: boolean;
+  /**
+   * Factura NO SE COBRA (asesoría) con líneas de venta vinculadas: se le
+   * estaría cobrando al cliente algo que asume Galcomex. (El editor de líneas
+   * ya lo impide; esto cubre datos anteriores.)
+   */
+  noCobrableFacturada: boolean;
+  /**
+   * `true` si la fila es un problema real: desfase pagado ↔ facturado en una
+   * factura que se cobra, lo facturado pasa del valor de la factura, o una
+   * asesoría NO SE COBRA tiene líneas de venta. Una asesoría sin líneas
+   * (`montoFacturado = 0`, lo normal) no ensucia el panel de validaciones.
    */
   esDesviacion: boolean;
 };
@@ -48,9 +66,14 @@ export type CruceFacturaProveedor = {
 /**
  * Cruza pagos y líneas de factura de venta por FacturaProveedor.
  *
- * - `montoPagado`   = Σ pagos vinculados via PagoTramiteFactura
+ * - `montoPagado`   = Σ `monto` del puente PagoTramiteFactura (CxP v2: lo
+ *                     aplicado a la factura, no el valor del pago)
  * - `montoFacturado`= Σ líneas vinculadas via LineaRevisionFactura
  * - `diferencia`    = montoFacturado − montoPagado  (signo positivo = facturado más de lo pagado)
+ * - `facturadoExcedeValor` = montoFacturado > valor de la factura
+ *
+ * Un pago que cubre varias facturas cuenta en cada una solo por lo que le
+ * aplicó (`monto` del puente, CxP v2), nunca por su valor completo.
  *
  * Todos los valores se devuelven como strings (BigInt serializado).
  */
@@ -62,7 +85,7 @@ export function calcularCruceFacturas(
   return facturas.map((fp) => {
     const montoPagado = pagosPivot
       .filter((p) => p.facturaId === fp.id)
-      .reduce((sum, p) => sum + p.pago.valor, 0n);
+      .reduce((sum, p) => sum + p.monto, 0n);
 
     const montoFacturado = lineasPivot
       .filter((l) => l.facturaId === fp.id)
@@ -70,6 +93,8 @@ export function calcularCruceFacturas(
 
     const diferencia = montoFacturado - montoPagado;
     const repercutible = fp.repercutible !== false;
+    const facturadoExcedeValor = montoFacturado > fp.valor;
+    const noCobrableFacturada = !repercutible && montoFacturado > 0n;
 
     return {
       id: fp.id,
@@ -80,7 +105,10 @@ export function calcularCruceFacturas(
       montoFacturado: montoFacturado.toString(),
       diferencia: diferencia.toString(),
       repercutible,
-      esDesviacion: repercutible && diferencia !== 0n,
+      facturadoExcedeValor,
+      noCobrableFacturada,
+      esDesviacion:
+        (repercutible && diferencia !== 0n) || facturadoExcedeValor || noCobrableFacturada,
     };
   });
 }

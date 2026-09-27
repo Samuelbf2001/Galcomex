@@ -35,7 +35,11 @@ function cuentaBase(overrides: Partial<CuentaCorriente> = {}): CuentaCorriente {
 let container: HTMLDivElement;
 let root: Root;
 
-async function montar(cuenta: CuentaCorriente, rol: "ADMIN" | "REVISOR" | "OPERATIVO" = "ADMIN") {
+async function montar(
+  cuenta: CuentaCorriente,
+  rol: "ADMIN" | "REVISOR" | "OPERATIVO" = "ADMIN",
+  opciones: { proveedorPuro?: boolean } = {},
+) {
   vi.mocked(fetchCuentaCorriente).mockResolvedValue(cuenta);
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div");
@@ -44,7 +48,7 @@ async function montar(cuenta: CuentaCorriente, rol: "ADMIN" | "REVISOR" | "OPERA
   await act(async () =>
     root.render(
       <RolProvider rol={rol}>
-        <SeccionCuentaCorriente clienteId="cliente-1" />
+        <SeccionCuentaCorriente clienteId="cliente-1" proveedorPuro={opciones.proveedorPuro} />
       </RolProvider>,
     ),
   );
@@ -111,5 +115,40 @@ describe("SeccionCuentaCorriente — botón «Registrar factura»", () => {
     await montar(cuentaBase({ habilitada: true, permiteCargosManuales: true }));
 
     expect(container.textContent).toContain("Cuenta corriente");
+  });
+});
+
+// Rebase CxP v2 sobre Coldex: la regla §D.1 (proveedor puro) respeta el flag
+// nuevo: la sección aparece con «Registrar factura» aunque no esté encendida la
+// cuenta corriente completa, y se oculta si solo repetiría el estado de cuenta.
+describe("SeccionCuentaCorriente — proveedor puro (§D.1) con las capacidades de Coldex", () => {
+  const proveedorPuro = {
+    id: "cliente-1",
+    nombre: "ALMACARGA S.A.S",
+    nit: "800154017",
+    esCliente: false,
+    esProveedor: true,
+  };
+
+  it("con solo «Registrar facturas» encendida se muestra, con «Registrar factura» y sin «Otro ajuste»", async () => {
+    await montar(
+      cuentaBase({ empresa: proveedorPuro, habilitada: true, permiteCargosManuales: true, cuentaCorrienteActiva: false }),
+      "ADMIN",
+      { proveedorPuro: true },
+    );
+
+    expect(container.textContent).toContain("Cuenta corriente");
+    expect(botonPorTexto("Registrar factura")).toBeDefined();
+    expect(botonPorTexto("Otro ajuste")).toBeUndefined();
+  });
+
+  it("con solo la cuenta corriente encendida (sin «Registrar facturas») no se muestra: repetiría el estado de cuenta", async () => {
+    await montar(
+      cuentaBase({ empresa: proveedorPuro, habilitada: true, permiteCargosManuales: false, cuentaCorrienteActiva: true }),
+      "ADMIN",
+      { proveedorPuro: true },
+    );
+
+    expect(container.textContent).not.toContain("Cuenta corriente");
   });
 });

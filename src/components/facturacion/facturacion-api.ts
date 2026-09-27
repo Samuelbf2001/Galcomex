@@ -4,6 +4,11 @@
  * BigInt serializado como string desde el backend — parsear con BigInt().
  */
 
+// Import circular inofensivo: el aviso usa `formatCOP` de aquí solo al pintar y
+// este archivo solo llama al normalizador dentro de funciones.
+import { normalizarPagosPorRevisar, type PagoPorRevisarRow } from "@/components/facturacion/aviso-pagos-por-revisar";
+import { formatFechaCalendario, formatInstanteBogota } from "@/lib/tiempo/bogota";
+
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 export type EstadoBorrador = "BORRADOR" | "EN_REVISION" | "APROBADO" | "FACTURADO";
@@ -95,6 +100,8 @@ export type BorradorRow = {
   createdAt: string;
   lineasRevision: LineaRevisionRow[];
   factura: FacturaRow | null;
+  /** Solo ADMIN/REVISOR (GET del trámite, lote y POST de generar). null/ausente = esta respuesta no lo trae (SOCIO, PATCH/POST de acciones). */
+  pagosPorRevisar?: PagoPorRevisarRow[] | null;
 };
 
 export type FacturaRow = {
@@ -115,7 +122,11 @@ export type CruceFacturaRow = {
   diferencia: string; // BigInt serializado (montoFacturado − montoPagado)
   /** ¿Se traslada al cliente en la factura de venta? (M6) */
   repercutible: boolean;
-  /** Diferencia que el revisor debe mirar. Falso si no se traslada al cliente. */
+  /** Lo facturado al cliente por esta factura pasa de su valor. */
+  facturadoExcedeValor: boolean;
+  /** Factura NO SE COBRA con líneas de venta vinculadas (se le cobraría al cliente). */
+  noCobrableFacturada: boolean;
+  /** Fila que el revisor debe mirar (desfase, exceso sobre el valor o asesoría facturada). */
   esDesviacion: boolean;
 };
 
@@ -288,6 +299,8 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
     createdAt: String(raw.createdAt ?? ""),
     lineasRevision: lineas,
     factura,
+    // null = la respuesta no lo trae (distinto de [] = sin pagos por revisar).
+    pagosPorRevisar: normalizarPagosPorRevisar(raw.pagosPorRevisar),
   };
 }
 
@@ -502,6 +515,15 @@ export type GenerarBorradorInput = {
    * DEUDA: el Zod schema del endpoint POST /borrador aún no acepta este campo.
    */
   conceptosOperacionales?: { concepto: string; valor: string }[];
+  /**
+   * Generar con el tarifario vigente. El servidor responde 409 si ya no puede
+   * aplicar `tarifarioId` (el que el revisor vio), en vez de caer a la
+   * comisión por defecto.
+   */
+  usarTarifario?: boolean;
+  tarifarioId?: string;
+  /** Total del tarifario que vio el revisor: si al generar da otro, 409. */
+  totalTarifario?: string;
 };
 
 export async function generarBorrador(
@@ -515,6 +537,9 @@ export async function generarBorrador(
   // retenciones y conceptosOperacionales se incluyen cuando el backend los acepte
   if (input.retenciones) body.retenciones = input.retenciones;
   if (input.conceptosOperacionales) body.conceptosOperacionales = input.conceptosOperacionales;
+  if (input.usarTarifario) body.usarTarifario = true;
+  if (input.tarifarioId) body.tarifarioId = input.tarifarioId;
+  if (input.totalTarifario !== undefined) body.totalTarifario = input.totalTarifario;
 
   const response = await fetch(`/api/tramites/${tramiteId}/borrador`, {
     method: "POST",
@@ -948,6 +973,8 @@ export async function fetchCruceFacturas(borradorId: string): Promise<CruceFactu
       montoFacturado: String(r.montoFacturado ?? "0"),
       diferencia: String(r.diferencia ?? "0"),
       repercutible: r.repercutible !== false,
+      facturadoExcedeValor: r.facturadoExcedeValor === true,
+      noCobrableFacturada: r.noCobrableFacturada === true,
       esDesviacion: r.esDesviacion === true,
     }),
   );
@@ -1044,15 +1071,16 @@ export function parseBigIntInput(raw: string): string | null {
   }
 }
 
+/** Fecha-calendario (fechaFactura): día guardado a 00:00 UTC, se muestra en UTC. */
 export function formatDate(iso: string): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso) || iso;
+}
+
+/** Instante real (fechaAprobacion, enviadoASiigoEn): se muestra en el día de Bogotá. */
+export function formatDateTime(iso: string): string {
+  if (!iso) return "—";
+  return formatInstanteBogota(iso) || iso;
 }
 
 export const ESTADO_BORRADOR_LABEL: Record<EstadoBorrador, string> = {

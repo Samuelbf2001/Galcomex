@@ -7,8 +7,8 @@ import { registrarCompensacion, type CuentaCorriente } from "@/components/client
 import { claseCampo } from "@/components/clientes/form-campos";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { ModalShell } from "@/components/ui/modal-shell";
-import { hoyBogota } from "@/lib/cuenta-corriente/hoy-bogota";
 import { describirError } from "@/components/ui/toast";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 function formatCOP(valor: string): string {
   let entero: bigint;
@@ -41,7 +41,7 @@ export function CompensacionModal({
   onGuardado: (cuenta: CuentaCorriente) => void;
 }) {
   const [valor, setValor] = useState(cuenta.maximoCompensable);
-  const [fecha, setFecha] = useState(hoyBogota());
+  const [fecha, setFecha] = useState(hoyBogotaISO());
   const [concepto, setConcepto] = useState("");
   const [lineaServicio, setLineaServicio] = useState("TRAMITE");
   const [facturaId, setFacturaId] = useState("");

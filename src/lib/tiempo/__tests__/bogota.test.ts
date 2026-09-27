@@ -1,6 +1,64 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fechaCalendarioBogota } from "../bogota";
+import {
+  aFechaCalendario,
+  fechaCalendarioAInput,
+  fechaCalendarioBogota,
+  formatFechaCalendario,
+  formatInstanteBogota,
+  hoyBogotaISO,
+} from "../bogota";
+
+describe("fechas-calendario CxP v2 (§D.7, R17)", () => {
+  it("hoyBogotaISO: a las 23:29 de Bogotá del 23-sep sigue siendo \"2026-09-23\" (N2)", () => {
+    // 2026-09-24T04:29Z = 2026-09-23 23:29 Bogotá
+    expect(hoyBogotaISO(new Date("2026-09-24T04:29:00.000Z"))).toBe("2026-09-23");
+    // 19:00 de Bogotá (00:00Z del día siguiente): antes proponía mañana
+    expect(hoyBogotaISO(new Date("2026-09-24T00:00:00.000Z"))).toBe("2026-09-23");
+    expect(hoyBogotaISO(new Date("2026-09-24T05:00:00.000Z"))).toBe("2026-09-24");
+  });
+
+  it("\"2026-09-10\" se guarda a 00:00 UTC y se muestra 10/09/2026 (N1: antes salía 09/09)", () => {
+    const d = aFechaCalendario("2026-09-10");
+    expect(d.toISOString()).toBe("2026-09-10T00:00:00.000Z");
+    expect(formatFechaCalendario(d)).toBe("10/09/2026");
+    expect(formatFechaCalendario("2026-09-10")).toBe("10/09/2026");
+    expect(formatFechaCalendario("2026-09-10T00:00:00.000Z")).toBe("10/09/2026");
+  });
+
+  it("aFechaCalendario: ISO a medianoche UTC se respeta; otro instante → día en Bogotá", () => {
+    expect(aFechaCalendario("2026-09-10T00:00:00.000Z").toISOString()).toBe("2026-09-10T00:00:00.000Z");
+    expect(aFechaCalendario(new Date("2026-09-10T00:00:00.000Z")).toISOString()).toBe("2026-09-10T00:00:00.000Z");
+    // 05:00Z = medianoche en Bogotá (un Date armado con la hora local del navegador)
+    expect(aFechaCalendario("2026-09-10T05:00:00.000Z").toISOString()).toBe("2026-09-10T00:00:00.000Z");
+    // 23:30 de Bogotá del 10-sep
+    expect(aFechaCalendario(new Date("2026-09-11T04:30:00.000Z")).toISOString()).toBe(
+      "2026-09-10T00:00:00.000Z",
+    );
+    expect(aFechaCalendario(" 2026-02-28 ").toISOString()).toBe("2026-02-28T00:00:00.000Z");
+  });
+
+  it("aFechaCalendario rechaza fechas imposibles o texto", () => {
+    expect(() => aFechaCalendario("2026-02-30")).toThrow(RangeError);
+    expect(() => aFechaCalendario("mañana")).toThrow(RangeError);
+    expect(() => aFechaCalendario(new Date("x"))).toThrow(RangeError);
+  });
+
+  it("formatFechaCalendario larga y valores vacíos", () => {
+    expect(formatFechaCalendario("2026-09-10", "larga")).toBe("10 de septiembre de 2026");
+    expect(formatFechaCalendario(null)).toBe("");
+    expect(formatFechaCalendario(undefined)).toBe("");
+    expect(formatFechaCalendario("no es fecha")).toBe("");
+  });
+
+  it("fechaCalendarioAInput: \"YYYY-MM-DD\" del día en UTC", () => {
+    expect(fechaCalendarioAInput(new Date("2026-09-10T00:00:00.000Z"))).toBe("2026-09-10");
+    expect(fechaCalendarioAInput("2026-09-10")).toBe("2026-09-10");
+    expect(fechaCalendarioAInput("2026-09-10T00:00:00.000Z")).toBe("2026-09-10");
+    expect(fechaCalendarioAInput(null)).toBe("");
+    expect(fechaCalendarioAInput("x")).toBe("");
+  });
+});
 
 describe("fechaCalendarioBogota — F5: día calendario en Bogotá (UTC−5, sin horario de verano)", () => {
   it("de madrugada en UTC, el día en Bogotá todavía es el anterior", () => {
@@ -43,5 +101,18 @@ describe("fechaCalendarioBogota — F5: día calendario en Bogotá (UTC−5, sin
 
       expect(fechaCalendarioBogota()).toEqual(new Date("2026-09-21T00:00:00.000Z"));
     });
+  });
+});
+
+describe("formatInstanteBogota — instantes reales (anulación de un bloque)", () => {
+  it("las 20:00 de Bogotá del 20-sep (01:00Z del 21) se muestran 20/09/2026, no 21/09", () => {
+    expect(formatInstanteBogota("2026-09-21T01:00:00.000Z")).toBe("20/09/2026");
+    expect(formatInstanteBogota(new Date("2026-09-21T05:00:00.000Z"))).toBe("21/09/2026");
+  });
+
+  it("vacío o inválido → \"\"", () => {
+    expect(formatInstanteBogota(null)).toBe("");
+    expect(formatInstanteBogota(undefined)).toBe("");
+    expect(formatInstanteBogota("no es fecha")).toBe("");
   });
 });

@@ -13,8 +13,8 @@ const fp2 = { id: "fp-2", proveedorNombre: "CONTECAR", numFactura: "C-002", valo
 describe("calcularCruceFacturas", () => {
   it("devuelve diferencia 0 cuando pagado == facturado (caso BAQ-18453)", () => {
     const pagosPivot = [
-      { facturaId: "fp-1", pago: { valor: 17_299_000n } },
-      { facturaId: "fp-2", pago: { valor: 7_024_869n } },
+      { facturaId: "fp-1", monto: 17_299_000n },
+      { facturaId: "fp-2", monto: 7_024_869n },
     ];
     const lineasPivot = [
       { facturaId: "fp-1", linea: { valor: 17_299_000n } },
@@ -33,7 +33,7 @@ describe("calcularCruceFacturas", () => {
   });
 
   it("devuelve diferencia positiva cuando montoFacturado > montoPagado", () => {
-    const pagosPivot = [{ facturaId: "fp-1", pago: { valor: 10_000_000n } }];
+    const pagosPivot = [{ facturaId: "fp-1", monto: 10_000_000n }];
     const lineasPivot = [{ facturaId: "fp-1", linea: { valor: 12_000_000n } }];
 
     const result = calcularCruceFacturas([fp1], pagosPivot, lineasPivot);
@@ -44,7 +44,7 @@ describe("calcularCruceFacturas", () => {
   });
 
   it("devuelve diferencia negativa cuando montoPagado > montoFacturado", () => {
-    const pagosPivot = [{ facturaId: "fp-2", pago: { valor: 8_000_000n } }];
+    const pagosPivot = [{ facturaId: "fp-2", monto: 8_000_000n }];
     const lineasPivot = [{ facturaId: "fp-2", linea: { valor: 7_024_869n } }];
 
     const result = calcularCruceFacturas([fp2], pagosPivot, lineasPivot);
@@ -62,8 +62,8 @@ describe("calcularCruceFacturas", () => {
 
   it("acumula correctamente múltiples pagos y líneas para la misma factura", () => {
     const pagosPivot = [
-      { facturaId: "fp-1", pago: { valor: 10_000_000n } },
-      { facturaId: "fp-1", pago: { valor: 7_299_000n } },
+      { facturaId: "fp-1", monto: 10_000_000n },
+      { facturaId: "fp-1", monto: 7_299_000n },
     ];
     const lineasPivot = [
       { facturaId: "fp-1", linea: { valor: 9_000_000n } },
@@ -96,7 +96,7 @@ describe("calcularCruceFacturas — repercusión al cliente (M6)", () => {
   it("marca desviación cuando una factura repercutible no cuadra", () => {
     const result = calcularCruceFacturas(
       [fp1],
-      [{ facturaId: "fp-1", pago: { valor: 17_299_000n } }],
+      [{ facturaId: "fp-1", monto: 17_299_000n }],
       [],
     );
 
@@ -107,7 +107,7 @@ describe("calcularCruceFacturas — repercusión al cliente (M6)", () => {
   it("la factura que no se traslada al cliente nunca es desviación", () => {
     const result = calcularCruceFacturas(
       [asesoria],
-      [{ facturaId: "fp-asesoria", pago: { valor: 250_000n } }],
+      [{ facturaId: "fp-asesoria", monto: 250_000n }],
       [],
     );
 
@@ -121,8 +121,8 @@ describe("calcularCruceFacturas — repercusión al cliente (M6)", () => {
     const result = calcularCruceFacturas(
       [fp1, asesoria],
       [
-        { facturaId: "fp-1", pago: { valor: 17_299_000n } },
-        { facturaId: "fp-asesoria", pago: { valor: 250_000n } },
+        { facturaId: "fp-1", monto: 17_299_000n },
+        { facturaId: "fp-asesoria", monto: 250_000n },
       ],
       [],
     );
@@ -131,5 +131,95 @@ describe("calcularCruceFacturas — repercusión al cliente (M6)", () => {
 
     expect(desviaciones).toHaveLength(1);
     expect(desviaciones[0]!.id).toBe("fp-1");
+  });
+});
+
+describe("calcularCruceFacturas — CxP v2: montoPagado = lo aplicado del puente (CA-40)", () => {
+  it("un pago que cubre dos facturas cuenta en cada una solo su monto, no el valor del pago", () => {
+    // Pago de 900.000 repartido 502.801 + 397.199 (antes cada factura sumaba 900.000).
+    const a = { id: "fa", proveedorNombre: "ALMACARGA", numFactura: "FE 11298", valor: 502_801n };
+    const b = { id: "fb", proveedorNombre: "ALMACARGA", numFactura: "FE 12334", valor: 433_361n };
+    const result = calcularCruceFacturas(
+      [a, b],
+      [
+        { facturaId: "fa", monto: 502_801n },
+        { facturaId: "fb", monto: 397_199n },
+      ],
+      [
+        { facturaId: "fa", linea: { valor: 502_801n } },
+        { facturaId: "fb", linea: { valor: 433_361n } },
+      ],
+    );
+    expect(result[0]!.montoPagado).toBe("502801");
+    expect(result[0]!.diferencia).toBe("0");
+    expect(result[1]!.montoPagado).toBe("397199");
+    // Abonada: se facturó al cliente el total, se ha pagado solo el abono.
+    expect(result[1]!.diferencia).toBe("36162");
+    expect(result[1]!.esDesviacion).toBe(true);
+  });
+
+  it("dos abonos a la misma factura suman exactamente su valor", () => {
+    const f = { id: "f", proveedorNombre: "ALMACARGA", numFactura: "FE 12602", valor: 300_000n };
+    const result = calcularCruceFacturas(
+      [f],
+      [
+        { facturaId: "f", monto: 100_000n },
+        { facturaId: "f", monto: 200_000n },
+      ],
+      [{ facturaId: "f", linea: { valor: 300_000n } }],
+    );
+    expect(result[0]!.montoPagado).toBe("300000");
+    expect(result[0]!.esDesviacion).toBe(false);
+  });
+});
+
+describe("calcularCruceFacturas — lo facturado al cliente no pasa del valor de la factura", () => {
+  it("líneas TERCEROS que suman más que el valor de la factura → facturadoExcedeValor y desviación", () => {
+    const f = { id: "f", proveedorNombre: "ALMACARGA", numFactura: "FE 12481", valor: 500_000n };
+    const [fila] = calcularCruceFacturas(
+      [f],
+      [{ facturaId: "f", monto: 500_000n }],
+      [
+        { facturaId: "f", linea: { valor: 500_000n } },
+        { facturaId: "f", linea: { valor: 120_000n } },
+      ],
+    );
+    expect(fila!.montoFacturado).toBe("620000");
+    expect(fila!.facturadoExcedeValor).toBe(true);
+    expect(fila!.noCobrableFacturada).toBe(false);
+    expect(fila!.esDesviacion).toBe(true);
+  });
+
+  it("facturado igual al valor no es exceso, aunque la factura esté solo abonada", () => {
+    const f = { id: "f", proveedorNombre: "ALMACARGA", numFactura: "FE 12539", valor: 500_000n };
+    const [fila] = calcularCruceFacturas(
+      [f],
+      [{ facturaId: "f", monto: 200_000n }],
+      [{ facturaId: "f", linea: { valor: 500_000n } }],
+    );
+    expect(fila!.facturadoExcedeValor).toBe(false);
+    // Desfase pagado ↔ facturado (abono): sigue siendo desviación, no exceso.
+    expect(fila!.esDesviacion).toBe(true);
+  });
+
+  it("una asesoría NO SE COBRA con líneas de venta vinculadas es desviación (se le cobraría al cliente)", () => {
+    const s = {
+      id: "s",
+      proveedorNombre: "ASCINTER",
+      numFactura: "S-1",
+      valor: 300_000n,
+      repercutible: false,
+    };
+    const [fila] = calcularCruceFacturas(
+      [s],
+      [{ facturaId: "s", monto: 300_000n }],
+      [{ facturaId: "s", linea: { valor: 300_000n } }],
+    );
+    expect(fila!.noCobrableFacturada).toBe(true);
+    expect(fila!.esDesviacion).toBe(true);
+    // Sin líneas, la asesoría no molesta.
+    const [limpia] = calcularCruceFacturas([s], [{ facturaId: "s", monto: 300_000n }], []);
+    expect(limpia!.noCobrableFacturada).toBe(false);
+    expect(limpia!.esDesviacion).toBe(false);
   });
 });

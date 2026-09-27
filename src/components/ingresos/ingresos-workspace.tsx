@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ModuleState } from "@/components/layout/module-state";
 import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import {
   type FilaIngreso,
   type TipoIngreso,
@@ -81,13 +82,13 @@ function saldoCorridoCell(valor: string): React.ReactNode {
   return <span className={`font-semibold ${colorClass}`}>{label}</span>;
 }
 
-/** Primer y último día del mes en curso (YYYY-MM-DD, zona local). */
+/** Primer y último día del mes en curso (YYYY-MM-DD), según el día calendario en Bogotá. */
 function rangoMesActual(): { desde: string; hasta: string } {
-  const hoy = new Date();
-  const anio = hoy.getFullYear();
-  const mes = hoy.getMonth();
+  const [anioStr, mesStr] = hoyBogotaISO().split("-");
+  const anio = Number(anioStr);
+  const mes = Number(mesStr) - 1; // 0-indexado, como Date.UTC
   const pad = (n: number) => String(n).padStart(2, "0");
-  const ultimoDia = new Date(anio, mes + 1, 0).getDate();
+  const ultimoDia = new Date(Date.UTC(anio, mes + 1, 0)).getUTCDate();
   return {
     desde: `${anio}-${pad(mes + 1)}-01`,
     hasta: `${anio}-${pad(mes + 1)}-${pad(ultimoDia)}`,

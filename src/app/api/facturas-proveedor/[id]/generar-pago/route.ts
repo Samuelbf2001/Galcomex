@@ -1,22 +1,23 @@
 import { TipoCliente } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
-import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import {
-  FacturaProveedorNoEncontradaError,
-  FacturaProveedorNoModificableError,
-  generarPagoDesdeFactura,
-} from "@/lib/facturas-proveedor/service";
-import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
-import { jsonResponse } from "@/lib/http/json";
 import { prisma } from "@/lib/db/prisma";
-import { generarPagoDesdeFacturaSchema } from "@/lib/validations/facturas-proveedor";
+import { jsonResponse } from "@/lib/http/json";
+import { generarPagoDesdeFactura } from "@/lib/pagos/generar-desde-factura";
+import { respuestaErrorPagos } from "@/lib/pagos/respuesta-error";
+import { generarPagoDesdeFacturaSchema } from "@/lib/validations/pagos";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
+/**
+ * POST /api/facturas-proveedor/[id]/generar-pago — "Generar pago" (API + MCP).
+ * CxP v2: paga el saldo (o `monto`, abono) por las mismas reglas del pago
+ * suelto (anticipo, proveedor, saldo, idempotencia). Una factura pagada: 409
+ * FACTURA_SIN_SALDO.
+ */
 export async function POST(request: NextRequest, context: RouteContext) {
   const session = await requireRole(["ADMIN", "OPERATIVO", "SOCIO"]);
 
@@ -51,20 +52,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
       usuarioId: session.user.id,
     });
 
-    return jsonResponse(resultado, { status: 201 });
+    return jsonResponse(resultado, { status: resultado.pago.repetido ? 200 : 201 });
   } catch (error) {
-    if (error instanceof ZodError) {
-      return validationError(error);
-    }
-    if (error instanceof FacturaProveedorNoEncontradaError) {
-      return NextResponse.json({ error: error.message }, { status: 404 });
-    }
-    if (error instanceof FacturaProveedorNoModificableError) {
-      return NextResponse.json({ error: error.message }, { status: 422 });
-    }
-    if (isDomainError(error)) {
-      return domainErrorResponse(error);
-    }
+    const respuesta = respuestaErrorPagos(error);
+    if (respuesta) return respuesta;
     throw error;
   }
 }

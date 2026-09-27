@@ -57,6 +57,7 @@ import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin } from "@/lib/auth/rol-context";
 import { ejemploTramo } from "@/lib/tarifas/motor";
+import { aFechaCalendario, fechaCalendarioAInput, hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -89,15 +90,19 @@ function soloDigitos(raw: string): string {
 }
 
 function hoyIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return hoyBogotaISO();
 }
 
 function unAnioDespues(desde: string): string {
-  const d = new Date(`${desde}T00:00:00.000Z`);
-  if (Number.isNaN(d.getTime())) return "";
+  let d: Date;
+  try {
+    d = aFechaCalendario(desde);
+  } catch {
+    return "";
+  }
   d.setUTCFullYear(d.getUTCFullYear() + 1);
   d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return fechaCalendarioAInput(d);
 }
 
 // ─── Modal: nuevo tarifario ───────────────────────────────────────────────────
@@ -273,10 +278,14 @@ function NuevoTarifarioModal({
 
 function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: TarifarioRow; onClose: () => void; onCreated: (t: TarifarioRow) => void }) {
   const siguienteDesde = (() => {
-    const d = new Date(tarifario.vigenteHasta);
-    if (Number.isNaN(d.getTime())) return hoyIso();
+    let d: Date;
+    try {
+      d = aFechaCalendario(tarifario.vigenteHasta);
+    } catch {
+      return hoyIso();
+    }
     d.setUTCDate(d.getUTCDate() + 1);
-    return d.toISOString().slice(0, 10);
+    return fechaCalendarioAInput(d);
   })();
   const [nombre, setNombre] = useState(tarifario.nombre);
   const [desde, setDesde] = useState(siguienteDesde);

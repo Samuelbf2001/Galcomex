@@ -108,10 +108,21 @@ export interface LineaPropuesta {
   detalle: string;
 }
 
+/**
+ * Por qué no se pudo calcular un ítem, para mandar al revisor al sitio donde
+ * se arregla (modal "Generar borrador", hallazgo 4 del 24-sep):
+ * - `BASE_DO`: falta un dato del trámite (CIF, contenedores, tipo de carga…).
+ * - `COSTO_PROVEEDOR`: el ítem espeja un costo y no hay pago ni factura de
+ *   proveedor que lo contenga.
+ * - `TARIFARIO`: el ítem está mal configurado (sin porcentaje, sin tramos…).
+ */
+export type CausaPendiente = "BASE_DO" | "COSTO_PROVEEDOR" | "TARIFARIO";
+
 export interface ItemPendiente {
   concepto: string;
   nombrePublico: string;
   motivo: string;
+  causa: CausaPendiente;
 }
 
 export interface ResultadoTarifa {
@@ -249,7 +260,7 @@ function buscarCosto(costos: CostoEspejable[], conceptoCosto: string): CostoEspe
 
 type Calculo =
   | { ok: true; cantidad: number; valorUnitario: bigint; valor: bigint; detalle: string }
-  | { ok: false; motivo: string };
+  | { ok: false; motivo: string; causa: CausaPendiente };
 
 function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadEvento: number | null): Calculo {
   switch (item.tipoCalculo) {
@@ -266,7 +277,7 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
 
     case "POR_UNIDAD": {
       const cantidad = cantidadEvento ?? cantidadDeUnidad(item.unidad, ctx);
-      if (cantidad === null) return { ok: false, motivo: motivoFaltante(item.unidad) };
+      if (cantidad === null) return { ok: false, motivo: motivoFaltante(item.unidad), causa: "BASE_DO" };
       return {
         ok: true,
         cantidad,
@@ -277,15 +288,15 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
     }
 
     case "PORCENTAJE_MIN": {
-      if (ctx.valorCif === null) return { ok: false, motivo: "Falta el valor CIF (valor en aduana) del trámite" };
-      if (item.porcentajeBps === null) return { ok: false, motivo: "El ítem no tiene porcentaje configurado" };
+      if (ctx.valorCif === null) return { ok: false, motivo: "Falta el valor CIF (valor en aduana) del trámite", causa: "BASE_DO" };
+      if (item.porcentajeBps === null) return { ok: false, motivo: "El ítem no tiene porcentaje configurado", causa: "TARIFARIO" };
       const calculado = porcentajeSobre(ctx.valorCif, item.porcentajeBps);
       const pct = (item.porcentajeBps / 100).toFixed(2).replace(".", ",");
 
       if (ctx.tipoCarga === null) {
         // Sin tipo de carga no se puede aplicar mínimo: si hay mínimos definidos, se pide el dato.
         if (item.minimos && Object.keys(item.minimos).length > 0) {
-          return { ok: false, motivo: "Falta el tipo de carga para aplicar el mínimo" };
+          return { ok: false, motivo: "Falta el tipo de carga para aplicar el mínimo", causa: "BASE_DO" };
         }
         return {
           ok: true,
@@ -317,7 +328,7 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
 
     case "PRIMERO_MAS_ADICIONAL": {
       const n = cantidadEvento ?? cantidadDeUnidad(item.unidad, ctx);
-      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad) };
+      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad), causa: "BASE_DO" };
       if (n <= 0) return { ok: true, cantidad: 0, valorUnitario: item.valor, valor: 0n, detalle: "Sin unidades" };
       const adicional = item.valorAdicional ?? item.valor;
       const valor = item.valor + adicional * BigInt(n - 1);
@@ -334,9 +345,9 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
     }
 
     case "ESPEJO_DE_COSTO": {
-      if (!item.conceptoCosto) return { ok: false, motivo: "El ítem no dice qué costo espeja" };
+      if (!item.conceptoCosto) return { ok: false, motivo: "El ítem no dice qué costo espeja", causa: "TARIFARIO" };
       const costo = buscarCosto(ctx.costos, item.conceptoCosto);
-      if (!costo) return { ok: false, motivo: `No hay un pago o factura de proveedor que contenga "${item.conceptoCosto}"` };
+      if (!costo) return { ok: false, motivo: `No hay un pago o factura de proveedor que contenga "${item.conceptoCosto}"`, causa: "COSTO_PROVEEDOR" };
       return {
         ok: true,
         cantidad: 1,
@@ -347,14 +358,14 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
     }
 
     case "POR_TRAMO": {
-      if (!item.tramos || item.tramos.length === 0) return { ok: false, motivo: "El ítem no tiene tramos configurados" };
+      if (!item.tramos || item.tramos.length === 0) return { ok: false, motivo: "El ítem no tiene tramos configurados", causa: "TARIFARIO" };
       const n = cantidadEvento ?? cantidadDeUnidad(item.unidad, ctx);
-      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad) };
+      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad), causa: "BASE_DO" };
       if (n <= 0) return { ok: true, cantidad: 0, valorUnitario: 0n, valor: 0n, detalle: "Sin unidades" };
       const tramo = tramoPara(item.tramos, n);
-      if (!tramo) return { ok: false, motivo: `Ningún tramo cubre ${n} ${unidades(item.unidad, n)}` };
+      if (!tramo) return { ok: false, motivo: `Ningún tramo cubre ${n} ${unidades(item.unidad, n)}`, causa: "TARIFARIO" };
       const unitario = valorTramo(tramo);
-      if (unitario === null) return { ok: false, motivo: "Un tramo tiene un valor que no es un entero en COP" };
+      if (unitario === null) return { ok: false, motivo: "Un tramo tiene un valor que no es un entero en COP", causa: "TARIFARIO" };
       return {
         ok: true,
         cantidad: n,
@@ -430,7 +441,7 @@ export function calcularLineasTarifa(
 
     const calculo = calcularItem(item, ctx, cantidadEvento);
     if (!calculo.ok) {
-      pendientes.push({ concepto: item.concepto, nombrePublico: item.nombrePublico, motivo: calculo.motivo });
+      pendientes.push({ concepto: item.concepto, nombrePublico: item.nombrePublico, motivo: calculo.motivo, causa: calculo.causa });
       continue;
     }
     if (calculo.valor <= 0n) continue;

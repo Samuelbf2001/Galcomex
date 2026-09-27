@@ -8,7 +8,8 @@
  *   - Cada concepto del tarifario es una línea OPERACIONAL con su producto Siigo
  *     y `aplicaIva`; no hay línea "COMISION GALCOMEX" ni costos bancarios.
  *   - Las líneas de terceros nacen de las facturas de proveedor repercutibles
- *     del trámite ("ALMACENAJE ALMACARGA FACT. FE-11298").
+ *     del trámite ("ALMACENAJE ALMACARGA FACT. FE 11298", R15 de CxP v2: nombre
+ *     corto de la ficha y número con el formato de la ficha).
  *   - La línea IVA_COMISION guarda la suma del IVA por ítem y la línea
  *     IMPUESTO_4X1000 el 0,4 % de los terceros. Ambas son derivadas: se
  *     recalculan cada vez que cambian las líneas (`sincronizarLineasDerivadas`).
@@ -24,6 +25,7 @@ import { z } from "zod";
 import { calcularFacturaConceptos } from "@/lib/calculations/factura-conceptos";
 import { configDe, tiene } from "@/lib/capacidades/resolver";
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
+import { numeroFacturaVisible } from "@/lib/cxp/saldos";
 import { getParametrosSistema } from "@/lib/parametros/service";
 
 import { resolverProductosLineasFijas } from "./lineas-fijas";
@@ -66,16 +68,29 @@ export async function formatoFacturaDeEmpresa(empresaId: string): Promise<Format
   };
 }
 
-/** "ALMACENAJE ALMACARGA FACT. FE-11298": concepto, proveedor y n° de factura, como en Siigo. */
+/**
+ * Texto de la línea de terceros como en Siigo (R15 de CxP v2):
+ * `{concepto} {nombre corto de la ficha ?? proveedor} FACT. {número}`.
+ * El número sale "FE 11298" solo si la ficha está marcada «Numerar como
+ * FE 11298» (Almacarga, Express); si no, tal cual se digitó ("REG-50151039").
+ *   "ALMACENAJE ALMACARGA FACT. FE 11298" (BAQ-18385)
+ *   "PAGO VUCE FACT. REG-50151039", "LIBERACION TAMPA CARGO FACT. 71388844"
+ */
 export function conceptoLineaTercero(factura: {
   concepto: string | null;
   proveedorNombre: string;
   numFactura: string;
   siigoProducto: { nombre: string } | null;
+  beneficiario?: { nombreCorto: string | null; numFacturaConEspacio: boolean } | null;
 }): string {
   const base =
     factura.concepto?.trim() || factura.siigoProducto?.nombre.trim() || "PAGO A TERCEROS";
-  return `${base} ${factura.proveedorNombre.trim()} FACT. ${factura.numFactura.trim()}`
+  const proveedor = factura.beneficiario?.nombreCorto?.trim() || factura.proveedorNombre.trim();
+  const numero = numeroFacturaVisible(
+    factura.numFactura,
+    factura.beneficiario?.numFacturaConEspacio ?? false,
+  );
+  return `${base} ${proveedor} FACT. ${numero}`
     .replace(/\s+/g, " ")
     .toUpperCase();
 }
@@ -83,6 +98,8 @@ export function conceptoLineaTercero(factura: {
 /**
  * Líneas TERCEROS para `lineasRevision.create`: una por factura de proveedor
  * repercutible del trámite que no esté ya en un borrador aprobado o facturado.
+ * Pagada al proveedor y facturada al cliente son independientes (R13): el
+ * estado de pago de la factura no cuenta aquí (`FACTURADA_CLIENTE` se retiró).
  */
 export async function lineasTercerosDesdeFacturas(
   tx: Tx,
@@ -92,7 +109,6 @@ export async function lineasTercerosDesdeFacturas(
     where: {
       tramiteId,
       repercutible: true,
-      estado: { not: "FACTURADA_CLIENTE" },
       lineasRevision: {
         none: {
           linea: {
@@ -112,6 +128,7 @@ export async function lineasTercerosDesdeFacturas(
       valor: true,
       siigoProductoId: true,
       siigoProducto: { select: { nombre: true } },
+      beneficiario: { select: { nombreCorto: true, numFacturaConEspacio: true } },
     },
   });
 
