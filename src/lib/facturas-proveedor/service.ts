@@ -330,25 +330,60 @@ async function verificarDuplicados(
 }
 
 /**
- * Empresas (Cliente) dueñas de esta ficha, en el mismo sentido que
- * `fichasDeEmpresa` (CxP v2) pero al revés: si la ficha está enlazada
- * (`empresaId`), esa es la única dueña; si es suelta, cualquier empresa cuyo
- * NIT comparta su NIT base (misma regla que las "fichas hermanas"). Sin
- * NIT base y sin enlazar, la ficha no es de ninguna empresa (no puede chocar
- * con la cuenta corriente de nadie).
+ * Empresas (Cliente) dueñas de esta ficha, el INVERSO exacto de
+ * `fichasDeEmpresa` (CxP v2): esa función suma, para una empresa, sus fichas
+ * propias más las sueltas cuyo NIT base coincida con el de la empresa O con el
+ * de CUALQUIERA de sus fichas propias (`bases = {nitBase(empresa)} ∪
+ * {nitBase de cada ficha propia}`). Si aquí solo se mirara el NIT de la
+ * empresa, una ficha suelta que comparte base con una ficha PROPIA de la
+ * empresa (pero no con `Cliente.nit`, típico cuando el NIT de la empresa
+ * quedó sin guion y su ficha propia sí lo tiene) entraría en la cuenta
+ * corriente de esa empresa sin que este chequeo la viera nunca — la misma
+ * factura pasaría dos veces, una a mano y otra como `FacturaProveedor`. Si la
+ * ficha está enlazada (`empresaId`), esa es la única dueña. Sin NIT base y sin
+ * enlazar, la ficha no es de ninguna empresa (no puede chocar con la cuenta
+ * corriente de nadie).
  */
 async function empresasDeFicha(tx: Tx, ficha: Pick<FichaProveedor, "empresaId" | "nitBase">): Promise<string[]> {
   if (ficha.empresaId) return [ficha.empresaId];
   if (!ficha.nitBase) return [];
-  const clientes = await tx.cliente.findMany({ select: { id: true, nit: true } });
-  return clientes.filter((c) => nitBaseDe(c.nit) === ficha.nitBase).map((c) => c.id);
+
+  const [clientes, fichasHermanasPropias] = await Promise.all([
+    tx.cliente.findMany({ select: { id: true, nit: true } }),
+    // Empresas que tienen una ficha PROPIA con este mismo NIT base: para
+    // ellas, `fichasDeEmpresa` suma esta suelta aunque el NIT de la empresa
+    // sea otro.
+    tx.beneficiario.findMany({
+      where: { empresaId: { not: null }, nitBase: ficha.nitBase },
+      select: { empresaId: true },
+    }),
+  ]);
+
+  const dueñas = new Set<string>();
+  for (const c of clientes) {
+    if (nitBaseDe(c.nit) === ficha.nitBase) dueñas.add(c.id);
+  }
+  for (const f of fichasHermanasPropias) {
+    if (f.empresaId) dueñas.add(f.empresaId);
+  }
+  return [...dueñas];
 }
 
 /**
  * La misma factura puede haber entrado ya por el otro camino: "Registrar
  * factura" en la cuenta corriente de la empresa dueña de esta ficha
- * (`MovimientoCuenta` CARGO_MANUAL rol PROVEEDOR), para facturas que no son de
- * ningún trámite (caso Coldex). Sin eso, se contaría la misma deuda dos veces.
+ * (`MovimientoCuenta` rol PROVEEDOR — CARGO_MANUAL, pero también AJUSTE o
+ * COMISION: `movimientoCuentaSchema` permite `numeroFactura` con cualquiera de
+ * los tres, así que se busca en los tres), para facturas que no son de ningún
+ * trámite (caso Coldex). Sin eso, se contaría la misma deuda dos veces.
+ *
+ * Toma el advisory lock `cuenta_corriente:<empresaId>` de cada empresa dueña
+ * (mismo lock, mismo orden — ascendente — que usan `registrarMovimientoCuenta`
+ * y `eliminarMovimientoCuenta`) ANTES de mirar `movimiento_cuenta`, y lo
+ * mantiene hasta que la transacción de quien llama confirme la factura: así
+ * "Registrar factura" en la cuenta corriente y "crear factura de proveedor" en
+ * un DO no pueden colarse los dos a la vez con la misma factura (cada uno
+ * chequea contra la tabla del otro sin verlo si no hay lock compartido).
  */
 async function verificarNoRegistradaEnCuentaCorriente(
   tx: Tx,
@@ -360,11 +395,17 @@ async function verificarNoRegistradaEnCuentaCorriente(
   const empresaIds = await empresasDeFicha(tx, i.ficha);
   if (empresaIds.length === 0) return;
 
+  // Orden fijo (ascendente) para que dos llamadas que compitan por las mismas
+  // empresas no se abracen esperándose (deadlock) por pedir los locks al revés.
+  for (const empresaId of [...empresaIds].sort()) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`cuenta_corriente:${empresaId}`}))`;
+  }
+
   const movimiento = await tx.movimientoCuenta.findFirst({
     where: {
       empresaId: { in: empresaIds },
       rol: RolCuenta.PROVEEDOR,
-      origen: OrigenMovimientoCuenta.CARGO_MANUAL,
+      origen: { not: OrigenMovimientoCuenta.COMPENSACION },
       numeroFacturaNorm: normalizado,
     },
     select: { numeroFactura: true, fecha: true },

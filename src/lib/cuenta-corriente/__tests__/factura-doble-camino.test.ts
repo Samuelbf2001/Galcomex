@@ -26,7 +26,11 @@ import {
 import { FacturaEnCuentaCorrienteError } from "@/lib/cxp/errores";
 import { normalizarNumeroFactura as normalizarCxp } from "@/lib/cxp/saldos";
 import {
+  eliminarMovimientoCuenta,
   FacturaYaRegistradaEnTramiteError,
+  getCuentaCorriente,
+  MovimientoCuentaEsCruceError,
+  MovimientoCuentaSostieneAjusteError,
   normalizarNumeroFactura as normalizarCuentaCorriente,
   registrarMovimientoCuenta,
 } from "@/lib/cuenta-corriente/service";
@@ -223,7 +227,9 @@ describe("B · 'Registrar factura' primero → FacturaProveedor (crear o editar)
     expect((error as InstanceType<typeof FacturaEnCuentaCorrienteError>).status).toBe(409);
     expect((error as Error).message).toContain("FE-5678");
     expect((error as Error).message).toContain("Registrar factura");
-    expect((error as Error).message).toContain("Elimínala de allí");
+    // No le pide a quien ve el mensaje que la elimine él mismo: casi nunca
+    // puede (solo ADMIN ve Cuenta corriente y su botón «Eliminar»).
+    expect((error as Error).message).toContain("Pide a un ADMIN que la elimine");
 
     expect(await prisma.facturaProveedor.count({ where: { tramiteId, numFacturaNormalizado: "FE5678" } })).toBe(0);
   }, 30_000);
@@ -354,6 +360,186 @@ describe("D · ficha suelta con el mismo NIT base SÍ choca (coherente con ficha
     }).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(FacturaEnCuentaCorrienteError);
+  }, 30_000);
+
+  it("ficha PROPIA con guion (base de 9 dígitos) y una suelta con el NIT completo (base de 10) SÍ choca — antes `empresasDeFicha` no la encontraba", async (ctx) => {
+    const db = ensureDb(ctx);
+    // NIT de la empresa CON guion: base = nitE1 (todo lo que hay antes del
+    // guion). El prefijo `nitE1` es el que usa `filtroNits()` para la
+    // limpieza — cualquier NIT que empiece por él se borra en `afterAll`.
+    const nitEmpresaConGuion = `${nitE1}-1`;
+    const empresa = await crearEmpresa("E8 BASES DISTINTAS", nitEmpresaConGuion);
+    // Ficha PROPIA con el NIT completo SIN guion → base de 11 dígitos, DISTINTA
+    // de la de la empresa (9 dígitos): `fichasDeEmpresa` la suma igual, porque
+    // junta la base de la empresa CON la de sus fichas propias.
+    const nitFichaSinGuion = `${nitE1}15`;
+    await crearFichaPropia("E8 (ficha propia)", nitFichaSinGuion, empresa.id);
+    // Ficha SUELTA con la MISMA base de 10 dígitos que la ficha propia (no con
+    // la de la empresa): la vieja `empresasDeFicha` solo miraba `Cliente.nit`
+    // y no la encontraba.
+    const suelta = await crearFichaSuelta("E8 (otra cuenta)", nitFichaSinGuion);
+
+    await crearFacturaDeProveedor(db, suelta.id, "FE-9191", 90_000n);
+
+    const error = await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Debería chocar con la ficha suelta hermana de la ficha propia",
+      valor: 90_000n,
+      fecha: FECHA,
+      usuarioId: db.userId,
+      numeroFactura: "fe-9191",
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(FacturaYaRegistradaEnTramiteError);
+  }, 30_000);
+
+  it("en reversa: crear la FacturaProveedor con la ficha suelta choca con lo ya registrado a mano (mismo caso, orden invertido)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const nitEmpresaConGuion = `${nitE2}-1`;
+    const empresa = await crearEmpresa("E9 BASES DISTINTAS REVERSO", nitEmpresaConGuion);
+    const nitFichaSinGuion = `${nitE2}15`;
+    await crearFichaPropia("E9 (ficha propia)", nitFichaSinGuion, empresa.id);
+    const suelta = await crearFichaSuelta("E9 (otra cuenta)", nitFichaSinGuion);
+
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Registrado a mano en la empresa",
+      valor: 45_000n,
+      fecha: FECHA,
+      usuarioId: db.userId,
+      numeroFactura: "FE-9292",
+    });
+
+    const tramiteId = await crearTramiteTest(db);
+    await aplicarAnticipoTest(db, tramiteId, 45_000n);
+    const error = await crearFacturaProveedor({
+      tramiteId,
+      beneficiarioId: suelta.id,
+      numFactura: "fe-9292",
+      valor: 45_000n,
+      fecha: FECHA,
+      repercutible: true,
+      confirmarPosibleDuplicado: true,
+      subidaPorId: db.userId,
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(FacturaEnCuentaCorrienteError);
+  }, 30_000);
+});
+
+describe("F · 'Registrar factura' con origen AJUSTE (no solo CARGO_MANUAL) también choca contra el DO", () => {
+  it("un movimiento AJUSTE con numeroFactura bloquea crear la misma factura como FacturaProveedor", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresa("E10 AJUSTE CON NUMERO", `${nitE1}-ajuste`);
+    // `cuenta_corriente` habilitada además de `cargos_manuales_contraparte`:
+    // AJUSTE la exige.
+    await prisma.empresaCapacidad.create({
+      data: { empresaId: empresa.id, codigo: "cuenta_corriente", habilitado: true },
+    });
+    const ficha = await crearFichaPropia("E10 (ficha)", `${nitE1}-ajuste-1`, empresa.id);
+
+    // Antes de esta corrección, `verificarNoRegistradaEnCuentaCorriente` solo
+    // miraba origen CARGO_MANUAL y este AJUSTE se colaba sin chocar.
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "AJUSTE",
+      lineaServicio: "TRAMITE",
+      concepto: "Ajuste con número de factura",
+      valor: 70_000n,
+      fecha: FECHA,
+      usuarioId: db.userId,
+      numeroFactura: "FE-AJ-01",
+    });
+
+    const tramiteId = await crearTramiteTest(db);
+    await aplicarAnticipoTest(db, tramiteId, 70_000n);
+    const error = await crearFacturaProveedor({
+      tramiteId,
+      beneficiarioId: ficha.id,
+      numFactura: "fe-aj-01",
+      valor: 70_000n,
+      fecha: FECHA,
+      repercutible: true,
+      confirmarPosibleDuplicado: true,
+      subidaPorId: db.userId,
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(FacturaEnCuentaCorrienteError);
+    expect((error as Error).message).toContain("FE-AJ-01");
+  }, 30_000);
+});
+
+describe("G · eliminarMovimientoCuenta cuando una factura de CxP sostiene la punta proveedor pero lo MANUAL solo queda negativo", () => {
+  it("un ajuste PROVEEDOR CARGO que se apoya en la factura manual borrada da MovimientoCuentaSostieneAjusteError (no 'es parte de un cruce')", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresa("E12 AJUSTE APOYADO", `${nitE1}-apoyado`);
+    await prisma.empresaCapacidad.create({
+      data: { empresaId: empresa.id, codigo: "cuenta_corriente", habilitado: true },
+    });
+    const ficha = await crearFichaPropia("E12 (ficha)", `${nitE1}-apoyado-1`, empresa.id);
+
+    // Una factura de CxP real (2.000.000) sostiene casi toda la punta
+    // proveedor: sin ella, borrar la factura manual sí cruzaría a negativo (lo
+    // que ya prueba la suite de arriba); CON ella, la punta COMPLETA se queda
+    // en positivo y el chequeo general no debe bloquear.
+    await crearFacturaDeProveedor(db, ficha.id, "FE-CXP-SOSTIENE", 2_000_000n);
+
+    const facturaManual = await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros (fuera de trámite)",
+      valor: 1_000_000n,
+      fecha: FECHA,
+      usuarioId: db.userId,
+      numeroFactura: "FE-MANUAL-APOYADO",
+    });
+    // El ajuste "gasta" 700.000 de lo que la factura manual sostiene en la
+    // parte SOLO manual (maximoSinFacturaProveedor): borrar la factura manual
+    // dejaría esa parte en negativo, aunque la punta completa siga en positivo
+    // gracias a la factura de CxP.
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "CARGO",
+      origen: "AJUSTE",
+      lineaServicio: "TRAMITE",
+      concepto: "Descuento del proveedor",
+      valor: 700_000n,
+      fecha: FECHA,
+      usuarioId: db.userId,
+    });
+
+    const cuentaAntes = await getCuentaCorriente(empresa.id);
+    expect(cuentaAntes.pendienteProveedor).toBe(2_300_000n); // 2.000.000 + 1.000.000 - 700.000
+    expect(cuentaAntes.maximoSinFacturaProveedor).toBe(0n); // pendienteCliente = 0 en esta empresa
+
+    const error = await eliminarMovimientoCuenta(empresa.id, facturaManual.id, db.userId).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(MovimientoCuentaSostieneAjusteError);
+    expect(error).not.toBeInstanceOf(MovimientoCuentaEsCruceError);
+    // El mensaje no manda a buscar un cruce que no existe.
+    expect((error as Error).message).not.toMatch(/deshaz el cruce primero/);
+    expect((error as Error).message).toMatch(/ajuste/i);
+
+    // No se borró nada y la cuenta no cambió.
+    const enBd = await prisma.movimientoCuenta.findUnique({ where: { id: facturaManual.id } });
+    expect(enBd).not.toBeNull();
+    const cuentaDespues = await getCuentaCorriente(empresa.id);
+    expect(cuentaDespues.pendienteProveedor).toBe(2_300_000n);
   }, 30_000);
 });
 

@@ -496,10 +496,16 @@ export class UsdValorLejosDeTrmError extends CxpError {
  */
 export class FacturaEnCuentaCorrienteError extends CxpError {
   constructor(numFactura: string, proveedor: string, fecha: Date) {
+    // Quien ve este mensaje al crear/editar una factura de proveedor en un DO
+    // (ADMIN, OPERATIVO o SOCIO) casi nunca puede entrar a la sección Cuenta
+    // corriente ni tiene el botón «Eliminar» (solo ADMIN, y solo si la ficha
+    // dueña de la cuenta corriente es visible desde ahí). Por eso no se le
+    // pide directamente que "la elimine": se le dice a quién pedírselo, además
+    // de la salida que sí puede tomar por su cuenta.
     super(
       409,
       "FACTURA_EN_CUENTA_CORRIENTE",
-      `La factura ${numFactura} de ${proveedor} ya está registrada en su cuenta corriente (Registrar factura, fecha ${formatFechaCalendario(aFechaCalendario(fecha))}). Elimínala de allí o no la registres en el trámite.`,
+      `La factura ${numFactura} de ${proveedor} ya está registrada en su cuenta corriente (Registrar factura, fecha ${formatFechaCalendario(aFechaCalendario(fecha))}). Pide a un ADMIN que la elimine desde la Cuenta corriente de esa empresa, o no la registres en este trámite.`,
       { numFactura, proveedor },
     );
     this.name = "FacturaEnCuentaCorrienteError";

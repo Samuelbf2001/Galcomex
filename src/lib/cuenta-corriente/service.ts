@@ -108,6 +108,22 @@ export class MovimientoCuentaEsCruceError extends Error {
   }
 }
 
+/**
+ * Igual de bloqueante que `MovimientoCuentaEsCruceError`, pero cuando lo que
+ * se apoya en esta factura manual NO es necesariamente un cruce: puede ser un
+ * ajuste manual del proveedor (p. ej. un `PROVEEDOR CARGO`) que las facturas
+ * de CxP respaldan. El mensaje no manda a buscar un cruce que quizás no exista.
+ */
+export class MovimientoCuentaSostieneAjusteError extends Error {
+  public readonly status = 409;
+  constructor() {
+    super(
+      "Borrarlo dejaría en negativo lo registrado a mano del proveedor: hay un ajuste manual (o un cruce sin factura) que se apoya en este importe. Quita primero ese ajuste o deshaz el cruce, y después borra este.",
+    );
+    this.name = "MovimientoCuentaSostieneAjusteError";
+  }
+}
+
 export class FacturaProveedorDuplicadaError extends Error {
   public readonly status = 409;
   constructor(numeroFactura: string, nombreEmpresa: string, fecha: Date, registradaEl: Date) {
@@ -605,6 +621,16 @@ export interface RegistrarMovimientoInput {
  * empresa + rol con el mismo N° de factura (normalizado) que no sea una
  * compensación — evita que "Registrar factura" se dispare dos veces por
  * descuido con la misma factura.
+ *
+ * El chequeo de duplicado y el cruce contra `FacturaProveedor` (¿ya entró por
+ * el otro camino, como factura de un DO?) corren bajo el mismo advisory lock
+ * `cuenta_corriente:<empresaId>` que `eliminarMovimientoCuenta` y
+ * `registrarCompensacion`, y el INSERT queda en la misma transacción: así dos
+ * registros casi simultáneos de la misma factura (aquí y/o como
+ * `FacturaProveedor` de un DO, que toma el mismo lock en
+ * `verificarNoRegistradaEnCuentaCorriente`) no se cuelan los dos a la vez
+ * porque cada `findFirst` ya no ve solo lo que estaba confirmado antes de
+ * empezar.
  */
 export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput) {
   const empresa = await prisma.cliente.findUnique({
@@ -628,100 +654,106 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
 
   const numeroFactura = input.numeroFactura?.trim() || null;
   const numeroFacturaNorm = numeroFactura ? normalizarNumeroFactura(numeroFactura) : null;
+  const lockCuenta = `cuenta_corriente:${input.empresaId}`;
 
-  if (numeroFacturaNorm) {
-    const duplicado = await prisma.movimientoCuenta.findFirst({
-      where: {
-        empresaId: input.empresaId,
-        rol: input.rol,
-        numeroFacturaNorm,
-        origen: { not: OrigenMovimientoCuenta.COMPENSACION },
-      },
-      select: { fecha: true, numeroFactura: true, createdAt: true },
-      orderBy: { fecha: "desc" },
-    });
-    if (duplicado) {
-      // El mensaje muestra el número tal como quedó guardado la primera vez,
-      // no el que tecleó el usuario ahora (puede venir con formato distinto:
-      // "fe.0001" vs "FE-0001", y confunde si se le devuelve tal cual). Trae
-      // las dos fechas: la de la factura y la de cuándo se registró en el
-      // sistema (no siempre coinciden).
-      throw new FacturaProveedorDuplicadaError(
-        duplicado.numeroFactura ?? numeroFactura!,
-        empresa.nombre,
-        duplicado.fecha,
-        duplicado.createdAt,
-      );
-    }
-  }
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockCuenta}))`;
 
-  // La misma factura puede haber entrado ya por el otro camino: como
-  // `FacturaProveedor` de un DO de este proveedor (misma regla de fichas que
-  // CxP v2 — `fichasDeEmpresa` — o la clave "NIT:<base>" de la empresa, para
-  // los "duplicados heredados" cuya ficha no tiene `beneficiarioId` puesto al
-  // día). Solo aplica al lado PROVEEDOR: el lado CLIENTE nunca comparte esa
-  // llave.
-  if (input.rol === RolCuenta.PROVEEDOR && numeroFacturaNorm) {
-    const fichaIds = await fichasProveedorDe(prisma, input.empresaId, empresa.nit);
-    const baseEmpresa = nitBaseDe(empresa.nit);
-    if (fichaIds.length > 0 || baseEmpresa) {
-      const enTramite = await prisma.facturaProveedor.findFirst({
-        where: {
-          numFacturaNormalizado: numeroFacturaNorm,
-          OR: [
-            ...(fichaIds.length > 0 ? [{ beneficiarioId: { in: fichaIds } }] : []),
-            ...(baseEmpresa ? [{ proveedorClave: `NIT:${baseEmpresa}` }] : []),
-          ],
-        },
-        select: { numFactura: true, fecha: true, tramite: { select: { consecutivo: true } } },
-        orderBy: { fecha: "asc" },
-      });
-      if (enTramite) {
-        throw new FacturaYaRegistradaEnTramiteError(
-          enTramite.numFactura,
-          empresa.nombre,
-          enTramite.tramite.consecutivo,
-          enTramite.fecha,
-        );
+      if (numeroFacturaNorm) {
+        const duplicado = await tx.movimientoCuenta.findFirst({
+          where: {
+            empresaId: input.empresaId,
+            rol: input.rol,
+            numeroFacturaNorm,
+            origen: { not: OrigenMovimientoCuenta.COMPENSACION },
+          },
+          select: { fecha: true, numeroFactura: true, createdAt: true },
+          orderBy: { fecha: "desc" },
+        });
+        if (duplicado) {
+          // El mensaje muestra el número tal como quedó guardado la primera
+          // vez, no el que tecleó el usuario ahora (puede venir con formato
+          // distinto: "fe.0001" vs "FE-0001", y confunde si se le devuelve tal
+          // cual). Trae las dos fechas: la de la factura y la de cuándo se
+          // registró en el sistema (no siempre coinciden).
+          throw new FacturaProveedorDuplicadaError(
+            duplicado.numeroFactura ?? numeroFactura!,
+            empresa.nombre,
+            duplicado.fecha,
+            duplicado.createdAt,
+          );
+        }
       }
-    }
-  }
 
-  return prisma.$transaction(async (tx) => {
-    const movimiento = await tx.movimientoCuenta.create({
-      data: {
-        empresaId: input.empresaId,
-        rol: input.rol,
-        tipo: input.tipo,
-        origen: input.origen,
-        lineaServicio: input.lineaServicio ?? "TRAMITE",
-        concepto: input.concepto,
-        // El signo lo lleva `tipo`: en BD el valor siempre es positivo.
-        valor: input.valor < 0n ? -input.valor : input.valor,
-        fecha: input.fecha,
-        tramiteId: input.tramiteId ?? null,
-        registradoPorId: input.usuarioId,
-        numeroFactura,
-        numeroFacturaNorm,
-        soporteKey: input.soporte?.key ?? null,
-        soporteNombre: input.soporte?.nombre ?? null,
-        soporteMime: input.soporte?.mime ?? null,
-      },
-    });
+      // La misma factura puede haber entrado ya por el otro camino: como
+      // `FacturaProveedor` de un DO de este proveedor (misma regla de fichas
+      // que CxP v2 — `fichasDeEmpresa` — o la clave "NIT:<base>" de la
+      // empresa, para los "duplicados heredados" cuya ficha no tiene
+      // `beneficiarioId` puesto al día). Solo aplica al lado PROVEEDOR: el
+      // lado CLIENTE nunca comparte esa llave.
+      if (input.rol === RolCuenta.PROVEEDOR && numeroFacturaNorm) {
+        const fichaIds = await fichasProveedorDe(tx, input.empresaId, empresa.nit);
+        const baseEmpresa = nitBaseDe(empresa.nit);
+        if (fichaIds.length > 0 || baseEmpresa) {
+          const enTramite = await tx.facturaProveedor.findFirst({
+            where: {
+              numFacturaNormalizado: numeroFacturaNorm,
+              OR: [
+                ...(fichaIds.length > 0 ? [{ beneficiarioId: { in: fichaIds } }] : []),
+                ...(baseEmpresa ? [{ proveedorClave: `NIT:${baseEmpresa}` }] : []),
+              ],
+            },
+            select: { numFactura: true, fecha: true, tramite: { select: { consecutivo: true } } },
+            orderBy: { fecha: "asc" },
+          });
+          if (enTramite) {
+            throw new FacturaYaRegistradaEnTramiteError(
+              enTramite.numFactura,
+              empresa.nombre,
+              enTramite.tramite.consecutivo,
+              enTramite.fecha,
+            );
+          }
+        }
+      }
 
-    await tx.auditLog.create({
-      data: {
-        entidad: "MovimientoCuenta",
-        entidadId: movimiento.id,
-        accion: "CREATE_MOVIMIENTO_CUENTA",
-        usuarioId: input.usuarioId,
-        tramiteId: input.tramiteId ?? undefined,
-        despues: normalizeSerializable(movimiento),
-      },
-    });
+      const movimiento = await tx.movimientoCuenta.create({
+        data: {
+          empresaId: input.empresaId,
+          rol: input.rol,
+          tipo: input.tipo,
+          origen: input.origen,
+          lineaServicio: input.lineaServicio ?? "TRAMITE",
+          concepto: input.concepto,
+          // El signo lo lleva `tipo`: en BD el valor siempre es positivo.
+          valor: input.valor < 0n ? -input.valor : input.valor,
+          fecha: input.fecha,
+          tramiteId: input.tramiteId ?? null,
+          registradoPorId: input.usuarioId,
+          numeroFactura,
+          numeroFacturaNorm,
+          soporteKey: input.soporte?.key ?? null,
+          soporteNombre: input.soporte?.nombre ?? null,
+          soporteMime: input.soporte?.mime ?? null,
+        },
+      });
 
-    return movimiento;
-  });
+      await tx.auditLog.create({
+        data: {
+          entidad: "MovimientoCuenta",
+          entidadId: movimiento.id,
+          accion: "CREATE_MOVIMIENTO_CUENTA",
+          usuarioId: input.usuarioId,
+          tramiteId: input.tramiteId ?? undefined,
+          despues: normalizeSerializable(movimiento),
+        },
+      });
+
+      return movimiento;
+    },
+    { maxWait: 10_000, timeout: 20_000 },
+  );
 }
 
 /**
@@ -738,9 +770,15 @@ export async function registrarMovimientoCuenta(input: RegistrarMovimientoInput)
  * factura de venta elegida) y deja este movimiento con `compensacionId` en
  * null. Por eso, además del chequeo directo de arriba, se recalcula la cuenta
  * SIN este movimiento y se rechaza si la punta que le corresponde (la que
- * baja al borrarlo: `pendienteProveedor` para un ABONO de PROVEEDOR,
- * `pendienteCliente` para un CARGO de CLIENTE) quedaría en negativo — señal de
- * que un cruce ya se apoyó en este saldo.
+ * BAJA al borrarlo: `pendienteProveedor` para un ABONO de PROVEEDOR,
+ * `pendienteCliente` para un CARGO de CLIENTE) CRUZA de ≥ 0 a < 0 — señal de
+ * que un cruce ya se apoyó en este saldo. Solo esas dos combinaciones bajan su
+ * punta al borrarse (un ABONO de CLIENTE o un CARGO de PROVEEDOR la suben), así
+ * que son las únicas que se revisan. Y se revisa la TRANSICIÓN, no el signo
+ * final: cada punta puede ser negativa de forma legítima sin que exista ningún
+ * cruce (saldo a favor del cliente sin devolver, un ajuste CLIENTE ABONO o un
+ * ajuste PROVEEDOR CARGO) — si ya venía negativa, borrar no es lo que rompió
+ * nada.
  *
  * Todo bajo el mismo advisory lock `cuenta_corriente:<empresaId>` que usa
  * `registrarCompensacion`, para que un cruce y un borrado simultáneos no se
@@ -776,31 +814,43 @@ export async function eliminarMovimientoCuenta(
       // positivo, `tipo` decide hacia dónde suma.
       const valorConSigno =
         movimiento.tipo === TipoMovimientoCuenta.CARGO ? movimiento.valor : -movimiento.valor;
-      const pendienteClienteSinMovimiento =
-        movimiento.rol === RolCuenta.CLIENTE
-          ? cuenta.pendienteCliente - valorConSigno
-          : cuenta.pendienteCliente;
-      const pendienteProveedorSinMovimiento =
-        movimiento.rol === RolCuenta.PROVEEDOR
-          ? cuenta.pendienteProveedor + valorConSigno
-          : cuenta.pendienteProveedor;
 
-      if (pendienteClienteSinMovimiento < 0n || pendienteProveedorSinMovimiento < 0n) {
-        throw new MovimientoCuentaEsCruceError();
+      // Solo se revisa la punta que el borrado REBAJA — un CARGO de CLIENTE o
+      // un ABONO de PROVEEDOR ("Registrar factura" siempre es un ABONO) — y
+      // solo se rechaza si CRUZA de ≥ 0 a < 0. Un ABONO de CLIENTE o un CARGO
+      // de PROVEEDOR suben esa punta al borrarse: nunca son la causa de que
+      // quede negativa.
+      if (movimiento.rol === RolCuenta.CLIENTE && movimiento.tipo === TipoMovimientoCuenta.CARGO) {
+        const pendienteClienteSinMovimiento = cuenta.pendienteCliente - valorConSigno;
+        if (cuenta.pendienteCliente >= 0n && pendienteClienteSinMovimiento < 0n) {
+          throw new MovimientoCuentaEsCruceError();
+        }
       }
 
-      // Coherente con `maximoSinFacturaProveedor` (CxP v2): ese tope es la
-      // punta proveedor reducida a SOLO lo registrado a mano
-      // (`pendienteManualProveedor`), sin las facturas de proveedor de CxP.
-      // Puede quedar en negativo aunque la punta completa de arriba no lo
-      // haga —las facturas de CxP la sostienen—, y eso significa lo mismo: un
-      // cruce "sin factura" ya se apoyó en esta factura manual.
-      if (movimiento.rol === RolCuenta.PROVEEDOR) {
-        const manuales = await asientosManuales(empresaId, tx);
-        const pendienteManualProveedorSinMovimiento =
-          pendienteManualProveedor(manuales) + valorConSigno;
-        if (pendienteManualProveedorSinMovimiento < 0n) {
+      if (movimiento.rol === RolCuenta.PROVEEDOR && movimiento.tipo === TipoMovimientoCuenta.ABONO) {
+        const pendienteProveedorSinMovimiento = cuenta.pendienteProveedor + valorConSigno;
+        if (cuenta.pendienteProveedor >= 0n && pendienteProveedorSinMovimiento < 0n) {
           throw new MovimientoCuentaEsCruceError();
+        }
+
+        // Coherente con `maximoSinFacturaProveedor` (CxP v2): ese tope es la
+        // punta proveedor reducida a SOLO lo registrado a mano
+        // (`pendienteManualProveedor`), sin las facturas de proveedor de CxP.
+        // Puede cruzar a negativo aunque la punta completa de arriba no lo
+        // haga —las facturas de CxP la sostienen—, y eso significa lo mismo
+        // mirado desde lo manual: un cruce "sin factura", o un ajuste
+        // PROVEEDOR CARGO, ya se apoyó en esta factura. El mensaje es
+        // distinto: no siempre hay un cruce que deshacer, puede ser un ajuste
+        // que hay que quitar primero.
+        const manuales = await asientosManuales(empresaId, tx);
+        const pendienteManualProveedorConMovimiento = pendienteManualProveedor(manuales);
+        const pendienteManualProveedorSinMovimiento =
+          pendienteManualProveedorConMovimiento + valorConSigno;
+        if (
+          pendienteManualProveedorConMovimiento >= 0n &&
+          pendienteManualProveedorSinMovimiento < 0n
+        ) {
+          throw new MovimientoCuentaSostieneAjusteError();
         }
       }
 

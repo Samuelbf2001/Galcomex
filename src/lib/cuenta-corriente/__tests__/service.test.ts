@@ -523,6 +523,90 @@ describe("eliminarMovimientoCuenta", () => {
     expect(cuentaFinal.pendienteProveedor).toBe(0n);
   });
 
+  it("NO bloquea borrar una factura de proveedor aunque la punta CLIENTE ya sea negativa (saldo a favor del cliente), si no hay ningún cruce", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-favor-cliente`);
+
+    // Saldo a favor del cliente (p. ej. sobró anticipo sin devolver, o una nota
+    // crédito registrada como ajuste): pendienteCliente queda en -3.000.000
+    // ANTES de que exista la factura de proveedor. Antes del arreglo, esto por
+    // sí solo bastaba para que CUALQUIER borrado del lado proveedor respondiera
+    // 409 "Es parte de un cruce", sin que hubiera ningún cruce.
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "CLIENTE",
+      tipo: "ABONO",
+      origen: "AJUSTE",
+      lineaServicio: "TRAMITE",
+      concepto: "Saldo a favor del cliente (nota crédito)",
+      valor: 3_000_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+    });
+
+    const cuentaAntes = await getCuentaCorriente(empresa.id);
+    expect(cuentaAntes.pendienteCliente).toBe(-3_000_000n);
+
+    const factura = await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros",
+      valor: 1_000_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-FAVOR-1",
+    });
+
+    // Se puede eliminar: no hay ningún cruce, solo un saldo a favor legítimo
+    // en la otra punta.
+    await expect(
+      eliminarMovimientoCuenta(empresa.id, factura.id, USUARIO_ID),
+    ).resolves.toBeDefined();
+
+    const cuentaDespues = await getCuentaCorriente(empresa.id);
+    expect(cuentaDespues.pendienteProveedor).toBe(0n);
+    // El saldo a favor del cliente, sin relación con la factura borrada, sigue igual.
+    expect(cuentaDespues.pendienteCliente).toBe(-3_000_000n);
+  });
+
+  it("NO bloquea borrar un ajuste PROVEEDOR CARGO aunque deje lo registrado a mano en negativo, si no hay ningún cruce", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-cargo-proveedor-negativo`);
+
+    // Dos ajustes "a cargo" del proveedor (p. ej. un descuento): la parte
+    // manual del lado proveedor queda en -350.000. Borrar uno de ellos SUBE lo
+    // que le debemos (nunca puede ser la causa de que algo quede negativo).
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "CARGO",
+      origen: "AJUSTE",
+      lineaServicio: "TRAMITE",
+      concepto: "Descuento del proveedor 1",
+      valor: 300_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+    });
+    const ajuste2 = await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "CARGO",
+      origen: "AJUSTE",
+      lineaServicio: "TRAMITE",
+      concepto: "Descuento del proveedor 2",
+      valor: 50_000n,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+    });
+
+    await expect(
+      eliminarMovimientoCuenta(empresa.id, ajuste2.id, USUARIO_ID),
+    ).resolves.toBeDefined();
+  });
+
   it("dos borrados simultáneos del mismo movimiento: uno gana y el otro recibe 404 (no un error genérico)", async (ctx) => {
     ensureDb(ctx);
     const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-carrera-borrado`);
