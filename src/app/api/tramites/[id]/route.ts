@@ -15,6 +15,7 @@ import {
   tramiteDetalleInclude,
   tramiteInclude,
   verificarContenedoresAlEditar,
+  verificarServicioFlujoCorto,
 } from "@/lib/tramites/service";
 import { tramiteUpdateSchema } from "@/lib/validations/tramites";
 
@@ -84,6 +85,20 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     // menos contenedores de los que ya llevan comisión (caso LTRANS).
     await verificarContenedoresAlEditar(before, payload);
     await verificarComisionesAlEditar(before, payload);
+    // Flujo corto (OTRO): servicio + valor a mano solo en un tipo `flujoCorto`;
+    // con un borrador ya generado o desde ENVIADO_A_FACTURAR (A2/B-N2/B-N3),
+    // o sin concepto en el estado combinado (B2), responde 409/422 antes de
+    // guardar nada. `referenciaExterna` entra al mismo chequeo de bloqueo
+    // (sale en "SERVICIO: …" de la factura) sin afectar a otros tipos.
+    await verificarServicioFlujoCorto({
+      tipoTramiteCodigo: before.tipoTramiteCodigo,
+      tramiteId: before.id,
+      estadoActual: before.estado,
+      antes: { valorServicio: before.valorServicio, conceptoServicioCodigo: before.conceptoServicioCodigo },
+      valorServicio: payload.valorServicio,
+      conceptoServicioCodigo: payload.conceptoServicioCodigo,
+      referenciaExterna: payload.referenciaExterna,
+    });
 
     const tramite = await prisma.$transaction(async (tx) => {
       await assertTramiteModificable(tx, before);

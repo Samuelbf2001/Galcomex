@@ -144,8 +144,15 @@ export type TipoTramiteOption = {
   requiereAgenciaAduanas: boolean;
   requiereEta: boolean;
   etiquetaReferenciaExterna: string | null;
-  /** Muestra "DO agencia"/"DO cliente" en el formulario. false en CLASIFICACION. */
+  /** Muestra "DO agencia"/"DO cliente" en el formulario. false en CLASIFICACION y OTRO. */
   usaCamposDo: boolean;
+  /**
+   * Flujo corto (decisión de Ernesto, 26-sep-2026, caso OTRO): se abre sin
+   * tarifa ni pagos y se manda a facturar directo, con servicio + valor
+   * escritos a mano. El formulario muestra "Servicio prestado" + concepto +
+   * valor en vez de DO agencia/documentos/contenedores.
+   */
+  flujoCorto: boolean;
 };
 
 /** Agencia fija de la empresa (capacidad regla_agencia_fija), si la tiene. */
@@ -178,6 +185,10 @@ export type CreateTramiteInput = {
   numContenedores?: number | null;
   /** "SUELTA" = carga suelta, sin contenedores. */
   tipoCarga?: string | null;
+  /** Flujo corto (OTRO): valor del servicio sin IVA, en pesos. */
+  valorServicio?: string | null;
+  /** Concepto de venta del servicio. Obligatorio si viene `valorServicio`. */
+  conceptoServicioCodigo?: string | null;
 };
 
 export class TramitesApiError extends Error {
@@ -555,6 +566,7 @@ export async function fetchTiposTramiteEmpresa(
         ? tipo.etiquetaReferenciaExterna
         : null,
     usaCamposDo: tipo.usaCamposDo !== false,
+    flujoCorto: tipo.flujoCorto === true,
   }));
 
   return { tipos, reglaAgencia };

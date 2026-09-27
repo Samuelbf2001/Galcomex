@@ -112,15 +112,20 @@ export function documentosRequeridos(
 /**
  * D3: ¿el DO de esta empresa y tipo debe traer el número de contenedores?
  * Solo si la empresa tiene la capacidad Y el tipo de trámite usa ese campo
- * (una clasificación arancelaria no tiene contenedores). `camposTipo`
- * vacío/ausente = el tipo no restringe campos (IMPORTACION, OTRO).
+ * (una clasificación arancelaria no tiene contenedores). `camposTipo` AUSENTE
+ * (`null`/`undefined`, respuesta vieja del API o `select` parcial) = el tipo
+ * no restringe campos, igual que antes (IMPORTACION). Un array VACÍO es
+ * distinto: es la decisión explícita de un tipo de no usar NINGÚN campo de la
+ * base de cálculo (OTRO, flujo corto, 26-sep-2026) — con `[]` no se exigen
+ * contenedores aunque la empresa tenga la capacidad encendida.
  */
 export function exigeContenedores(
   capacidades: MapaCapacidades,
   camposTipo: readonly string[] | null | undefined,
 ): boolean {
   if (!tiene(capacidades, CAPACIDAD_CONTENEDORES)) return false;
-  return !camposTipo || camposTipo.length === 0 || camposTipo.includes("numContenedores");
+  if (!camposTipo) return true;
+  return camposTipo.includes("numContenedores");
 }
 
 /** Cumple D3: al menos un contenedor, o marcado como carga suelta. */

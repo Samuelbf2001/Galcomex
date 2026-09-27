@@ -74,10 +74,13 @@ export type GenerarPagoInput = {
 
 export class FacturasProveedorApiError extends Error {
   status?: number;
-  constructor(message: string, status?: number) {
+  /** Código estable del bloqueo (p. ej. `VALOR_SERVICIO_REQUERIDO` al solicitar facturación). */
+  codigo?: string;
+  constructor(message: string, status?: number, codigo?: string) {
     super(message);
     this.name = "FacturasProveedorApiError";
     this.status = status;
+    this.codigo = codigo;
   }
 }
 
@@ -236,8 +239,11 @@ export async function solicitarFacturacion(tramiteId: string): Promise<void> {
   });
 
   if (!response.ok) {
-    const msg = await parseErrorMessage(response);
-    throw new FacturasProveedorApiError(msg, response.status);
+    const payload: unknown = await response.json().catch(() => null);
+    const msg =
+      isRecord(payload) && typeof payload.error === "string" ? payload.error : `Error ${response.status}`;
+    const codigo = isRecord(payload) && typeof payload.codigo === "string" ? payload.codigo : undefined;
+    throw new FacturasProveedorApiError(msg, response.status, codigo);
   }
 }
 

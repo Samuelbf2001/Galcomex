@@ -2,11 +2,10 @@ import { TipoCliente } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { requireRole } from "@/lib/auth/session";
-import {
-  TramiteSinPagosError,
-  solicitarFacturacion,
-} from "@/lib/facturas-proveedor/service";
+import { TramiteSinPagosError, solicitarFacturacion } from "@/lib/facturas-proveedor/service";
 import { jsonResponse } from "@/lib/http/json";
+import { domainErrorResponse, isDomainError } from "@/lib/http/errors";
+import { FormatoConceptosRequeridoError, ValorServicioRequeridoError } from "@/lib/tramites/flujo-corto";
 import { prisma } from "@/lib/db/prisma";
 
 type RouteContext = {
@@ -49,6 +48,17 @@ export async function POST(_request: NextRequest, context: RouteContext) {
   } catch (error) {
     if (error instanceof TramiteSinPagosError) {
       return NextResponse.json({ error: error.message }, { status: 422 });
+    }
+    // Flujo corto (servicio suelto) sin valor/concepto, sin tarifa con líneas,
+    // o sin el formato CONCEPTOS_IVA: la UI usa `codigo` para un aviso propio.
+    if (error instanceof ValorServicioRequeridoError || error instanceof FormatoConceptosRequeridoError) {
+      return NextResponse.json(
+        { error: error.message, codigo: error.codigo },
+        { status: error.status },
+      );
+    }
+    if (isDomainError(error)) {
+      return domainErrorResponse(error);
     }
     throw error;
   }

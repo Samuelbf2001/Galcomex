@@ -19,7 +19,9 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { fetchConceptosVenta, type ConceptoVentaRow } from "@/components/configuracion/catalogos/catalogos-api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -66,6 +68,7 @@ import {
   mensajeAdvertenciasEstado,
 } from "@/components/tramites/tramites-api";
 import {
+  FacturasProveedorApiError,
   type FacturaProveedorRow,
   solicitarFacturacion,
 } from "@/components/facturas-proveedor/facturas-proveedor-api";
@@ -152,6 +155,11 @@ type TramiteDetalleData = {
   };
   /** Tipo de trámite (M4). Ausente en respuestas viejas = importación. */
   referenciaExterna?: string | null;
+  /** Flujo corto (OTRO): valor del servicio sin IVA, COP enteros, escrito a mano. */
+  valorServicio?: string | null;
+  /** Concepto de venta del servicio. Obligatorio si viene `valorServicio`. */
+  conceptoServicioCodigo?: string | null;
+  conceptoServicio?: { codigo: string; nombre: string } | null;
   tipoTramite?: {
     codigo: string;
     nombre: string;
@@ -160,7 +168,7 @@ type TramiteDetalleData = {
     lineaServicio: string;
     /** Muestra "ETA" en la cabecera. */
     requiereEta: boolean;
-    /** Muestra "DO Agencia" y "DO Cliente" en la cabecera. false en CLASIFICACION. */
+    /** Muestra "DO Agencia" y "DO Cliente" en la cabecera. false en CLASIFICACION y OTRO. */
     usaCamposDo: boolean;
     /** Campos de la base de cálculo que aplica este tipo (M2/M3). */
     camposBaseCalculo: string[];
@@ -168,6 +176,9 @@ type TramiteDetalleData = {
     usaEventos: boolean;
     /** Fechas clave del DO que aplica este tipo. CLASIFICACION solo lleva 2. */
     fechasClave: string[];
+    /** Flujo corto (decisión de Ernesto, 26-sep-2026, caso OTRO): se abre sin
+     * tarifa ni pagos y se factura por servicio + valor a mano. */
+    flujoCorto: boolean;
   } | null;
   checklistItems: ChecklistItem[];
   estadoLogs?: EstadoLogEntry[];
@@ -377,6 +388,180 @@ function InlineTextField({ label, fieldKey, value, tramiteId, onSaved }: InlineT
     if (!isRecord(payload) || !isRecord(payload.tramite)) throw new Error("No se pudo confirmar el guardado. Reintenta.");
     onSaved(payload.tramite as TramiteDetalleData);
   }} />;
+}
+
+// ─── Servicio + valor (flujo corto, OTRO — decisión de Ernesto 26-sep-2026) ──
+// Los dos campos se guardan JUNTOS: el servidor exige el concepto siempre que
+// venga un valor (mismo patrón de "campo editable en línea" que InlineTramiteField,
+// pero para el par concepto+valor).
+
+type EditorServicioFlujoCortoProps = {
+  tramite: TramiteDetalleData;
+  /** Rol permite editar Y el DO no está bloqueado por estado/borrador. */
+  puedeEditar: boolean;
+  /**
+   * El bloqueo es por estado (≥ ENVIADO_A_FACTURAR) o porque ya hay un
+   * borrador — no por rol (decisión de Ernesto 26-sep-2026, A2). Cambia el
+   * texto de solo lectura para decir "edítalo en Facturación" en vez de nada.
+   */
+  soloLecturaPorFactura: boolean;
+  onSaved: (updated: TramiteDetalleData) => void;
+};
+
+function EditorServicioFlujoCorto({
+  tramite,
+  puedeEditar,
+  soloLecturaPorFactura,
+  onSaved,
+}: EditorServicioFlujoCortoProps) {
+  const { toast } = useToast();
+  const [conceptos, setConceptos] = useState<ConceptoVentaRow[]>([]);
+  const [conceptoDraft, setConceptoDraft] = useState<string | null>(null);
+  const [valorDraft, setValorDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!puedeEditar) return;
+    const controller = new AbortController();
+    fetchConceptosVenta(controller.signal)
+      .then((lista) => setConceptos(lista.filter((c) => c.activo)))
+      .catch(() => {
+        // El selector queda vacío; se puede reintentar guardando de nuevo.
+      });
+    return () => controller.abort();
+  }, [puedeEditar]);
+
+  const conceptoActual = tramite.conceptoServicioCodigo ?? "";
+  const valorActual = tramite.valorServicio ?? "";
+  const concepto = conceptoDraft ?? conceptoActual;
+  const valor = valorDraft ?? valorActual;
+  const changed =
+    (conceptoDraft !== null && conceptoDraft !== conceptoActual) ||
+    (valorDraft !== null && valorDraft !== valorActual);
+
+  async function guardar() {
+    if (!changed || saving) return;
+    if (valor.trim() !== "" && !concepto) {
+      setError("Escoge el concepto de venta del servicio.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/tramites/${tramite.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          valorServicio: valor.trim() === "" ? null : valor,
+          conceptoServicioCodigo: concepto.trim() === "" ? null : concepto,
+        }),
+      });
+      const payload: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `No se pudo guardar (${res.status}).`,
+        );
+      }
+      if (!isRecord(payload) || !isRecord(payload.tramite)) {
+        throw new Error("No se pudo confirmar el guardado. Reintenta.");
+      }
+      onSaved(payload.tramite as TramiteDetalleData);
+      setConceptoDraft(null);
+      setValorDraft(null);
+      toast({ title: "Servicio: cambios guardados", variant: "success" });
+    } catch (caught) {
+      setError(describirError(caught, "No se pudo guardar. Tu cambio sigue aquí para reintentar."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!puedeEditar) {
+    return (
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Servicio</p>
+        <p className="mt-0.5 font-semibold text-slate-800">{tramite.conceptoServicio?.nombre ?? "—"}</p>
+        <p className="mt-0.5 font-mono text-sm text-slate-700">
+          {tramite.valorServicio ? formatCOP(tramite.valorServicio) : "Sin valor"}
+        </p>
+        {soloLecturaPorFactura ? (
+          <p className="mt-1 text-xs text-slate-500">
+            Este servicio ya tiene factura en borrador; cambia el valor en el borrador de Facturación.
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-w-0 space-y-2" aria-busy={saving}>
+      <label className="block space-y-1">
+        <span className="block text-xs font-medium text-slate-500">Concepto de venta</span>
+        <select
+          value={concepto}
+          onChange={(event) => {
+            setConceptoDraft(event.target.value);
+            setError(null);
+          }}
+          disabled={saving}
+          className="h-10 w-full min-w-0 border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none focus:border-cyan-600 disabled:opacity-60"
+        >
+          <option value="">Sin escoger todavía</option>
+          {conceptos.map((c) => (
+            <option key={c.codigo} value={c.codigo}>
+              {c.nombre}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block space-y-1">
+        <span className="block text-xs font-medium text-slate-500">Valor sin IVA</span>
+        <CampoMoneda
+          value={valor}
+          onValueChange={(digitos) => {
+            setValorDraft(digitos);
+            setError(null);
+          }}
+          disabled={saving}
+          placeholder="350000"
+          className="h-10 w-full min-w-0 border border-slate-300 px-3 text-sm text-slate-950 outline-none focus:border-cyan-600 disabled:opacity-60"
+        />
+      </label>
+      {changed ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void guardar()}
+            disabled={saving}
+            className="inline-flex h-9 items-center gap-2 bg-cyan-700 px-3 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => {
+              setConceptoDraft(null);
+              setValorDraft(null);
+              setError(null);
+            }}
+            className="h-9 px-3 text-sm text-slate-600"
+          >
+            Deshacer
+          </button>
+        </div>
+      ) : null}
+      {error ? (
+        <p role="alert" className="text-sm text-rose-700">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 // ─── Botón cambio de estado ───────────────────────────────────────────────────
@@ -763,6 +948,14 @@ function TabResumen({
     esCuadreHistorico(tramite, item) ? puedeCerrarCuadreDo : checklistEditable;
   const algunItemEditable = tramite.checklistItems.some(itemEditable);
   const conCuadre = tieneCuadreHistorico(tramite);
+  // Servicio + valor del flujo corto (A2, decisión de Ernesto 26-sep-2026):
+  // solo de lectura desde ENVIADO_A_FACTURAR o si ya hay un borrador — de ahí
+  // en adelante se edita en el borrador de Facturación, no en el DO.
+  const yaEnviadoAFacturarServicio =
+    estadoIdx !== -1 && estadoIdx >= PIPELINE.indexOf("ENVIADO_A_FACTURAR");
+  const tieneBorradorServicio = (tramite.borradores?.length ?? 0) > 0;
+  const bloqueadoPorFacturaServicio = yaEnviadoAFacturarServicio || tieneBorradorServicio;
+  const puedeEditarServicio = puedeEditar && !bloqueadoPorFacturaServicio;
   const { etiquetaReferenciaExterna, muestraCamposDo, muestraEta } = visibilidadCabeceraDo(
     tramite.tipoTramite,
   );
@@ -798,7 +991,11 @@ function TabResumen({
         </div>
         {etiquetaReferenciaExterna ? (
           <div>
-            {puedeEditar ? (
+            {/* B-N2: en un flujo corto (OTRO), "Servicio prestado" sale en
+                las observaciones de la factura ("SERVICIO: …") — con
+                borrador ya generado o desde ENVIADO_A_FACTURAR se edita en
+                Facturación, no aquí (mismo bloqueo que Concepto/Valor). */}
+            {puedeEditar && !(tramite.tipoTramite?.flujoCorto && bloqueadoPorFacturaServicio) ? (
               <InlineTextField
                 label={etiquetaReferenciaExterna}
                 fieldKey="referenciaExterna"
@@ -814,6 +1011,11 @@ function TabResumen({
                 <p className="mt-0.5 font-mono font-semibold text-slate-800">
                   {tramite.referenciaExterna ?? "—"}
                 </p>
+                {puedeEditar && tramite.tipoTramite?.flujoCorto && bloqueadoPorFacturaServicio ? (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Este servicio ya tiene factura en borrador; cambia el valor en el borrador de Facturación.
+                  </p>
+                ) : null}
               </>
             )}
           </div>
@@ -845,6 +1047,15 @@ function TabResumen({
               <p className="mt-0.5 font-semibold text-slate-800">{tramite.doCliente}</p>
             </div>
           ) : null
+        ) : null}
+        {/* Flujo corto (OTRO): servicio + valor a mano en vez de tarifario. */}
+        {tramite.tipoTramite?.flujoCorto ? (
+          <EditorServicioFlujoCorto
+            tramite={tramite}
+            puedeEditar={puedeEditarServicio}
+            soloLecturaPorFactura={puedeEditar && bloqueadoPorFacturaServicio}
+            onSaved={onFieldSaved}
+          />
         ) : null}
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Estado</p>
@@ -1434,7 +1645,17 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       // Recargar para reflejar el nuevo estado
       reload();
     } catch (caught) {
-      setErrorSolicitud(describirError(caught, "No se pudo solicitar la facturación."));
+      const mensaje = describirError(caught, "No se pudo solicitar la facturación.");
+      setErrorSolicitud(mensaje);
+      // Servicio suelto sin valor/concepto o sin el formato de factura
+      // correcto: además del banner, un toast — el usuario suele estar en
+      // otra pestaña (Facturas proveedor) cuando lo intenta.
+      if (
+        caught instanceof FacturasProveedorApiError &&
+        (caught.codigo === "VALOR_SERVICIO_REQUERIDO" || caught.codigo === "FORMATO_CONCEPTOS_REQUERIDO")
+      ) {
+        toast({ title: "No se pudo facturar el servicio", description: mensaje, variant: "warning" });
+      }
     } finally {
       setSolicitandoFacturacion(false);
     }

@@ -21,10 +21,14 @@ import {
   AgenciaAduanas,
   CanalPago,
   Ciudad,
+  DisparadorTarifa,
   EstadoFacturaProveedor,
+  EstadoTarifario,
   EstadoTramite,
   Rol,
+  TipoCalculoTarifa,
   TipoCliente,
+  UnidadTarifa,
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -127,6 +131,9 @@ async function cleanupTestData() {
   await prisma.lineaRevision.deleteMany({ where: { borradorId: { in: borradorIds } } });
   await prisma.borradorFactura.deleteMany({ where: { id: { in: borradorIds } } });
   await prisma.tramiteDO.deleteMany({ where: { id: { in: tramiteIds } } });
+  // Tarifario/TarifaItem (test de "tarifa OTROS con ítem pendiente"): los
+  // ítems se van en cascada al borrar el tarifario.
+  await prisma.tarifario.deleteMany({ where: { empresaId: { in: clienteIds } } });
   await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
 }
@@ -641,6 +648,172 @@ describe("solicitarFacturacion", () => {
     });
     expect(tramiteActualizado?.estado).toBe(EstadoTramite.ENVIADO_A_FACTURAR);
     expect(tramiteActualizado?.fechaEnviadoAFacturar).not.toBeNull();
+  });
+});
+
+describe("solicitarFacturacion — servicio suelto (OTRO, decisión de Ernesto 26-sep-2026)", () => {
+  let contadorOtro = 0;
+
+  async function crearOtro(
+    clienteId: string,
+    db: Fixture,
+    extra: Partial<{ valorServicio: bigint | null; conceptoServicioCodigo: string | null }> = {},
+  ) {
+    contadorOtro += 1;
+    return prisma.tramiteDO.create({
+      data: {
+        consecutivo: `OTR-fps-${runId.slice(-6)}-${contadorOtro}`,
+        tipoTramiteCodigo: "OTRO",
+        ciudad: Ciudad.BUN,
+        anio: stateYear,
+        numero: 500_000 + contadorOtro,
+        clienteId,
+        creadoPorId: db.userId,
+        comentarios: `${TEST_PREFIX}:${runId}`,
+        estado: EstadoTramite.APERTURA,
+        valorServicio: extra.valorServicio,
+        conceptoServicioCodigo: extra.conceptoServicioCodigo,
+      },
+    });
+  }
+
+  async function crearClienteFlujoCorto(
+    nombre: string,
+    conceptosIva: boolean,
+    tarifarioPropio = false,
+  ) {
+    return prisma.cliente.create({
+      data: {
+        nombre,
+        nit: `${TEST_PREFIX}-fc-${runId.slice(-6)}-${nombre}`,
+        tipo: TipoCliente.PROPIO,
+        capacidades: {
+          create: [
+            ...(conceptosIva
+              ? [
+                  {
+                    codigo: "factura_conceptos_iva",
+                    habilitado: true,
+                    config: { reteIvaPorcentaje: 15, observacionNoRetenciones: true },
+                  },
+                ]
+              : []),
+            ...(tarifarioPropio ? [{ codigo: "tarifario_propio", habilitado: true }] : []),
+          ],
+        },
+      },
+    });
+  }
+
+  it("no exige pagos; con valor + concepto y formato CONCEPTOS_IVA pasa a ENVIADO_A_FACTURAR", async (ctx) => {
+    const db = ensureDb(ctx);
+    await prisma.conceptoVenta.upsert({
+      where: { codigo: "PLAN_VALLEJO" },
+      update: { nombre: "Programa Plan Vallejo", aplicaIva: true },
+      create: { codigo: "PLAN_VALLEJO", nombre: "Programa Plan Vallejo", aplicaIva: true },
+    });
+    const cliente = await crearClienteFlujoCorto("ConValor", true);
+    const otro = await crearOtro(cliente.id, db, {
+      valorServicio: 350_000n,
+      conceptoServicioCodigo: "PLAN_VALLEJO",
+    });
+
+    const result = await solicitarFacturacion(otro.id, db.userId);
+    expect(result.ok).toBe(true);
+
+    const actualizado = await prisma.tramiteDO.findUnique({
+      where: { id: otro.id },
+      select: { estado: true, fechaEnviadoAFacturar: true },
+    });
+    expect(actualizado?.estado).toBe(EstadoTramite.ENVIADO_A_FACTURAR);
+    expect(actualizado?.fechaEnviadoAFacturar).not.toBeNull();
+  });
+
+  it("sin valor ni concepto (y sin tarifa vigente) → 422 VALOR_SERVICIO_REQUERIDO, nunca pasa de estado", async (ctx) => {
+    const db = ensureDb(ctx);
+    const cliente = await crearClienteFlujoCorto("SinValor", true);
+    const otro = await crearOtro(cliente.id, db);
+
+    await expect(solicitarFacturacion(otro.id, db.userId)).rejects.toMatchObject({
+      name: "ValorServicioRequeridoError",
+      status: 422,
+      codigo: "VALOR_SERVICIO_REQUERIDO",
+    });
+
+    const sinCambios = await prisma.tramiteDO.findUnique({
+      where: { id: otro.id },
+      select: { estado: true },
+    });
+    expect(sinCambios?.estado).toBe(EstadoTramite.APERTURA);
+  });
+
+  it("con valor + concepto pero SIN «Factura con conceptos e IVA» → 422 FORMATO_CONCEPTOS_REQUERIDO", async (ctx) => {
+    const db = ensureDb(ctx);
+    const cliente = await crearClienteFlujoCorto("SinFormato", false);
+    const otro = await crearOtro(cliente.id, db, {
+      valorServicio: 350_000n,
+      conceptoServicioCodigo: "PLAN_VALLEJO",
+    });
+
+    await expect(solicitarFacturacion(otro.id, db.userId)).rejects.toMatchObject({
+      name: "FormatoConceptosRequeridoError",
+      status: 422,
+      codigo: "FORMATO_CONCEPTOS_REQUERIDO",
+    });
+  });
+
+  // ─── M-N1 · un ítem pendiente tampoco deja pasar por esta ruta ───────────
+  it("con tarifa OTROS vigente pero con un ítem pendiente (por contenedor) → 422 TarifaIncompletaError, sin avanzar de estado", async (ctx) => {
+    const db = ensureDb(ctx);
+    const cliente = await crearClienteFlujoCorto("TarifaPendiente", true, true);
+    await prisma.tarifario.create({
+      data: {
+        empresaId: cliente.id,
+        nombre: "Tarifa OTROS pendiente vitest",
+        alcance: "OTROS",
+        estado: EstadoTarifario.VIGENTE,
+        vigenteDesde: new Date(Date.now() - 30 * 86_400_000),
+        vigenteHasta: new Date(Date.now() + 30 * 86_400_000),
+        version: 1,
+        creadoPorId: db.userId,
+        items: {
+          create: [
+            {
+              orden: 10,
+              concepto: "SELLOS",
+              nombrePublico: "Sellos de seguridad",
+              tipoCalculo: TipoCalculoTarifa.FIJO,
+              disparador: DisparadorTarifa.SIEMPRE,
+              unidad: UnidadTarifa.TRAMITE,
+              valor: 80_000n,
+              aplicaIva: false,
+            },
+            {
+              orden: 20,
+              concepto: "PLAN_VALLEJO",
+              nombrePublico: "Por contenedor",
+              tipoCalculo: TipoCalculoTarifa.POR_UNIDAD,
+              disparador: DisparadorTarifa.SIEMPRE,
+              unidad: UnidadTarifa.CONTENEDOR,
+              valor: 50_000n,
+              aplicaIva: true,
+            },
+          ],
+        },
+      },
+    });
+    const otro = await crearOtro(cliente.id, db);
+
+    await expect(solicitarFacturacion(otro.id, db.userId)).rejects.toMatchObject({
+      name: "TarifaIncompletaError",
+      status: 422,
+    });
+
+    const sinCambios = await prisma.tramiteDO.findUnique({
+      where: { id: otro.id },
+      select: { estado: true },
+    });
+    expect(sinCambios?.estado).toBe(EstadoTramite.APERTURA);
   });
 });
 

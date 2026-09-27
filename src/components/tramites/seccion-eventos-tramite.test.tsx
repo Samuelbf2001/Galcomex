@@ -155,7 +155,7 @@ describe("SeccionEventosTramite — panel por tipo de trámite (M4)", () => {
 });
 
 describe("camposBaseCalculoVisibles — función pura", () => {
-  it("universo vacío/ausente = sin restricción de tipo (IMPORTACION, OTRO)", () => {
+  it("universo ausente = sin restricción de tipo (IMPORTACION)", () => {
     expect([...camposBaseCalculoVisibles(null, true)].sort()).toEqual(
       ["numContenedores", "numDeclaraciones", "numDocumentos", "numItems", "tipoCarga", "valorCif"].sort(),
     );
@@ -163,6 +163,10 @@ describe("camposBaseCalculoVisibles — función pura", () => {
 
   it("CLASIFICACION: solo numItems, incluso con la capacidad CIF encendida", () => {
     expect([...camposBaseCalculoVisibles(["numItems"], true)]).toEqual(["numItems"]);
+  });
+
+  it("OTRO (flujo corto, 26-sep-2026): universo vacío = ningún campo, ni con CIF encendido", () => {
+    expect([...camposBaseCalculoVisibles([], true)]).toEqual([]);
   });
 
   it("intersecta con la capacidad CIF/tarifario: sin ella, oculta valorCif/tipoCarga aunque el tipo los liste", () => {

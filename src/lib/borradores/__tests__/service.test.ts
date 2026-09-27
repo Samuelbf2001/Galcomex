@@ -13,11 +13,15 @@ import {
   AgenciaAduanas,
   CanalPago,
   Ciudad,
+  DisparadorTarifa,
   EstadoBorrador,
+  EstadoTarifario,
   EstadoTramite,
   Rol,
+  TipoCalculoTarifa,
   TipoCliente,
   TipoRecaudo,
+  UnidadTarifa,
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -122,6 +126,11 @@ async function cleanupTestData() {
   });
   await prisma.tramiteDO.deleteMany({
     where: { id: { in: tramiteIds } },
+  });
+  // Tarifario/TarifaItem (test de "tarifa OTROS vigente con líneas"): los
+  // ítems se van en cascada al borrar el tarifario.
+  await prisma.tarifario.deleteMany({
+    where: { empresaId: { in: clienteIds } },
   });
   await prisma.cliente.deleteMany({
     where: { id: { in: clienteIds } },
@@ -249,6 +258,75 @@ async function crearPagoTest(
   });
 }
 
+// ─── Helpers de flujo corto (servicio suelto: OTRO) ──────────────────────────
+
+let empresaFlujoCortoCounter = 0;
+
+/**
+ * Empresa para los tests de flujo corto. `conceptosIva`/`tarifarioPropio`
+ * controlan las dos capacidades que gobiernan `resolverFacturableFlujoCorto`
+ * (`lib/tramites/flujo-corto.ts`): sin `factura_conceptos_iva` no se puede
+ * facturar un servicio suelto (C1); `tarifario_propio` habilita la rama de
+ * tarifa vigente con líneas.
+ */
+async function crearEmpresaFlujoCorto(
+  nombre: string,
+  opciones: { tipo?: TipoCliente; conceptosIva?: boolean; tarifarioPropio?: boolean } = {},
+) {
+  empresaFlujoCortoCounter++;
+  const capacidades = [
+    ...(opciones.conceptosIva !== false
+      ? [
+          {
+            codigo: "factura_conceptos_iva",
+            habilitado: true,
+            config: { reteIvaPorcentaje: 15, observacionNoRetenciones: true },
+          },
+        ]
+      : []),
+    ...(opciones.tarifarioPropio ? [{ codigo: "tarifario_propio", habilitado: true }] : []),
+  ];
+
+  return prisma.cliente.create({
+    data: {
+      nombre,
+      nit: `${TEST_PREFIX}-flujo-corto-${runId}-${empresaFlujoCortoCounter}`,
+      tipo: opciones.tipo ?? TipoCliente.PROPIO,
+      capacidades: capacidades.length > 0 ? { create: capacidades } : undefined,
+    },
+  });
+}
+
+/** DO de tipo OTRO (flujo corto) listo para `generarBorrador`. */
+async function crearOtroTest(
+  clienteId: string,
+  usuarioId: string,
+  extra: Partial<{
+    valorServicio: bigint | null;
+    conceptoServicioCodigo: string | null;
+    referenciaExterna: string | null;
+    estado: EstadoTramite;
+  }> = {},
+) {
+  tramiteCounter++;
+  return prisma.tramiteDO.create({
+    data: {
+      consecutivo: `OTR${String(stateYear).slice(-2)}-${String(tramiteCounter).padStart(4, "0")}-${runId}`,
+      tipoTramiteCodigo: "OTRO",
+      ciudad: Ciudad.BUN,
+      anio: stateYear,
+      numero: tramiteCounter,
+      clienteId,
+      creadoPorId: usuarioId,
+      comentarios: `${TEST_PREFIX}:${runId}`,
+      estado: extra.estado ?? EstadoTramite.ENVIADO_A_FACTURAR,
+      valorServicio: extra.valorServicio,
+      conceptoServicioCodigo: extra.conceptoServicioCodigo,
+      referenciaExterna: extra.referenciaExterna,
+    },
+  });
+}
+
 // ─── Setup / Teardown ────────────────────────────────────────────────────────
 
 describe("borradores service con Postgres local", () => {
@@ -363,6 +441,245 @@ describe("borradores service con Postgres local", () => {
       );
     },
   );
+
+  // ─── TEST DORADO: flujo corto (OTRO), decisión de Ernesto 26-sep-2026 ────
+  // Un OTRO (Plan Vallejo, sellos…) se abre sin tarifa y se factura por el
+  // valor escrito a mano — nunca por tarifario. Caso real BAQ-18222: OTR con
+  // valor 350.000, concepto PLAN_VALLEJO, empresa CONCEPTOS_IVA con ReteIVA
+  // 15 % → IVA 66.500, ReteIVA 9.975, total 406.525 (tolerancia 0).
+  it(
+    "TEST DORADO flujo corto: OTR valorServicio=350.000 (PLAN_VALLEJO) → total 406.525 (BAQ-18222)",
+    async (ctx) => {
+      const db = ensureDb(ctx);
+
+      // `update` fija el nombre siempre (no solo en `create`): así el test es
+      // determinista sin importar si el seed real ya sembró el concepto con
+      // otra mayúscula/minúscula.
+      await prisma.conceptoVenta.upsert({
+        where: { codigo: "PLAN_VALLEJO" },
+        update: { nombre: "Programa Plan Vallejo", aplicaIva: true },
+        create: { codigo: "PLAN_VALLEJO", nombre: "Programa Plan Vallejo", aplicaIva: true },
+      });
+
+      const empresa = await crearEmpresaFlujoCorto("Cliente Vitest Flujo Corto Dorado");
+      const otro = await crearOtroTest(empresa.id, db.userId, {
+        valorServicio: 350_000n,
+        conceptoServicioCodigo: "PLAN_VALLEJO",
+        referenciaExterna: "Firma programa Plan Vallejo 2026",
+      });
+
+      const borrador = await generarBorrador({ tramiteId: otro.id, usuarioId: db.userId });
+
+      expect(borrador.formatoFactura, "formatoFactura").toBe("CONCEPTOS_IVA");
+      expect(borrador.totalFactura, "totalFactura").toBe(406_525n);
+      expect(borrador.saldoACargoCliente, "saldoACargoCliente").toBe(406_525n);
+      expect(borrador.saldoAFavorCliente, "saldoAFavorCliente").toBe(0n);
+      // Una sola línea operacional (el servicio) + la línea derivada de IVA;
+      // sin terceros no hay 4x1000. El nombre de la línea es el del concepto
+      // de venta (docs/CATALOGOS.md §1) — `referenciaExterna` NO llega ahí.
+      const lineasOperacion = borrador.lineasRevision.filter((l) => l.tipoFija === null);
+      expect(lineasOperacion).toHaveLength(1);
+      expect(lineasOperacion[0]?.valor).toBe(350_000n);
+      expect(lineasOperacion[0]?.concepto).toBe("Programa Plan Vallejo");
+      const ivaLinea = borrador.lineasRevision.find((l) => l.tipoFija === "IVA_COMISION");
+      expect(ivaLinea?.valor, "IVA").toBe(66_500n);
+      expect(borrador.retenciones, "ReteIVA").toBe(9_975n);
+      // M1: referenciaExterna sale en las observaciones ("SERVICIO: …").
+      expect(borrador.comentariosCabecera).toContain(
+        "SERVICIO: Firma programa Plan Vallejo 2026",
+      );
+    },
+  );
+
+  // ─── C1 · sin formato CONCEPTOS_IVA no se factura un servicio suelto ─────
+  it("generarBorrador: PROPIO sin «Factura con conceptos e IVA» → 422 FORMATO_CONCEPTOS_REQUERIDO", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Comision", {
+      conceptosIva: false,
+    });
+    const otro = await crearOtroTest(empresa.id, db.userId, {
+      valorServicio: 350_000n,
+      conceptoServicioCodigo: "PLAN_VALLEJO",
+    });
+
+    await expect(generarBorrador({ tramiteId: otro.id, usuarioId: db.userId })).rejects.toMatchObject(
+      { name: "FormatoConceptosRequeridoError", status: 422, codigo: "FORMATO_CONCEPTOS_REQUERIDO" },
+    );
+  });
+
+  it("generarBorrador: SOCIO_LM (factura por comisión) → 422 FORMATO_CONCEPTOS_REQUERIDO", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC SocioLM", {
+      tipo: TipoCliente.SOCIO_LM,
+      conceptosIva: false,
+    });
+    const otro = await crearOtroTest(empresa.id, db.userId, {
+      valorServicio: 350_000n,
+      conceptoServicioCodigo: "PLAN_VALLEJO",
+    });
+
+    await expect(generarBorrador({ tramiteId: otro.id, usuarioId: db.userId })).rejects.toMatchObject(
+      { name: "FormatoConceptosRequeridoError", status: 422, codigo: "FORMATO_CONCEPTOS_REQUERIDO" },
+    );
+  });
+
+  // ─── A1 · sin valor/concepto ni tarifa con líneas no se factura "en blanco" ──
+  it("generarBorrador: sin valorServicio/concepto y sin tarifa vigente → 422 VALOR_SERVICIO_REQUERIDO (nunca comisionDefault)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Sin Valor");
+    const otro = await crearOtroTest(empresa.id, db.userId);
+
+    await expect(generarBorrador({ tramiteId: otro.id, usuarioId: db.userId })).rejects.toMatchObject(
+      { name: "ValorServicioRequeridoError", status: 422, codigo: "VALOR_SERVICIO_REQUERIDO" },
+    );
+  });
+
+  it("generarBorrador: valorServicio SIN conceptoServicioCodigo → 422 VALOR_SERVICIO_REQUERIDO", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Sin Concepto");
+    const otro = await crearOtroTest(empresa.id, db.userId, { valorServicio: 350_000n });
+
+    await expect(generarBorrador({ tramiteId: otro.id, usuarioId: db.userId })).rejects.toMatchObject(
+      { name: "ValorServicioRequeridoError", status: 422, codigo: "VALOR_SERVICIO_REQUERIDO" },
+    );
+  });
+
+  // ─── Con tarifa OTROS vigente y CON líneas, y sin valor a mano: usa la tarifa ──
+  it("generarBorrador: sin valorServicio pero con tarifa OTROS vigente (con líneas) → usa la tarifa", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Tarifa", {
+      tarifarioPropio: true,
+    });
+    await prisma.tarifario.create({
+      data: {
+        empresaId: empresa.id,
+        nombre: "Tarifa OTROS vitest",
+        alcance: "OTROS",
+        estado: EstadoTarifario.VIGENTE,
+        vigenteDesde: new Date(Date.now() - 30 * 86_400_000),
+        vigenteHasta: new Date(Date.now() + 30 * 86_400_000),
+        version: 1,
+        creadoPorId: db.userId,
+        items: {
+          create: [
+            {
+              orden: 10,
+              concepto: "SELLOS",
+              nombrePublico: "Sellos de seguridad",
+              tipoCalculo: TipoCalculoTarifa.FIJO,
+              disparador: DisparadorTarifa.SIEMPRE,
+              unidad: UnidadTarifa.TRAMITE,
+              valor: 80_000n,
+              aplicaIva: false,
+            },
+          ],
+        },
+      },
+    });
+    const otro = await crearOtroTest(empresa.id, db.userId);
+
+    const borrador = await generarBorrador({ tramiteId: otro.id, usuarioId: db.userId });
+
+    expect(borrador.formatoFactura).toBe("CONCEPTOS_IVA");
+    const lineasOperacion = borrador.lineasRevision.filter((l) => l.tipoFija === null);
+    expect(lineasOperacion).toHaveLength(1);
+    expect(lineasOperacion[0]?.valor).toBe(80_000n);
+    expect(borrador.comision, "comisionTarifa").toBe(80_000n);
+  });
+
+  // ─── M-N1 · un ítem pendiente nunca se factura "de menos" en silencio ────
+  it("generarBorrador: tarifa OTROS con un ítem pendiente (por contenedor, sin datos) → 422 TarifaIncompletaError", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Pendiente", {
+      tarifarioPropio: true,
+    });
+    await prisma.tarifario.create({
+      data: {
+        empresaId: empresa.id,
+        nombre: "Tarifa OTROS con pendiente vitest",
+        alcance: "OTROS",
+        estado: EstadoTarifario.VIGENTE,
+        vigenteDesde: new Date(Date.now() - 30 * 86_400_000),
+        vigenteHasta: new Date(Date.now() + 30 * 86_400_000),
+        version: 1,
+        creadoPorId: db.userId,
+        items: {
+          create: [
+            {
+              orden: 10,
+              concepto: "SELLOS",
+              nombrePublico: "Sellos de seguridad",
+              tipoCalculo: TipoCalculoTarifa.FIJO,
+              disparador: DisparadorTarifa.SIEMPRE,
+              unidad: UnidadTarifa.TRAMITE,
+              valor: 80_000n,
+              aplicaIva: false,
+            },
+            {
+              orden: 20,
+              concepto: "PLAN_VALLEJO",
+              nombrePublico: "Por contenedor",
+              tipoCalculo: TipoCalculoTarifa.POR_UNIDAD,
+              disparador: DisparadorTarifa.SIEMPRE,
+              unidad: UnidadTarifa.CONTENEDOR,
+              valor: 50_000n,
+              aplicaIva: true,
+            },
+          ],
+        },
+      },
+    });
+    // El OTRO no trae numContenedores: el ítem "Por contenedor" queda pendiente.
+    const otro = await crearOtroTest(empresa.id, db.userId);
+
+    await expect(
+      generarBorrador({ tramiteId: otro.id, usuarioId: db.userId }),
+    ).rejects.toMatchObject({ name: "TarifaIncompletaError", status: 422 });
+
+    // Nunca se crea un borrador con solo la línea que sí se pudo calcular
+    // (80.000): facturar de menos en silencio es peor que no facturar.
+    const borradores = await prisma.borradorFactura.findMany({ where: { tramiteId: otro.id } });
+    expect(borradores).toHaveLength(0);
+  });
+
+  // ─── B-N1 · el modal manual de Facturación no puede saltarse la regla ───
+  it("generarBorrador: con valor+concepto ignora la comisión del modal manual (usa el valor a mano)", async (ctx) => {
+    const db = ensureDb(ctx);
+    await prisma.conceptoVenta.upsert({
+      where: { codigo: "PLAN_VALLEJO" },
+      update: { nombre: "Programa Plan Vallejo", aplicaIva: true },
+      create: { codigo: "PLAN_VALLEJO", nombre: "Programa Plan Vallejo", aplicaIva: true },
+    });
+    const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Modal Manual");
+    const otro = await crearOtroTest(empresa.id, db.userId, {
+      valorServicio: 350_000n,
+      conceptoServicioCodigo: "PLAN_VALLEJO",
+    });
+
+    // Simula el modal manual "Generar borrador" de Facturación, que precarga
+    // comisión = 150.000.
+    const borrador = await generarBorrador({
+      tramiteId: otro.id,
+      comision: 150_000n,
+      usuarioId: db.userId,
+    });
+
+    // El valor a mano manda: 350.000, no los 150.000 del modal.
+    expect(borrador.comision).toBe(350_000n);
+    const lineasOperacion = borrador.lineasRevision.filter((l) => l.tipoFija === null);
+    expect(lineasOperacion).toHaveLength(1);
+    expect(lineasOperacion[0]?.valor).toBe(350_000n);
+  });
+
+  it("generarBorrador: sin valor/concepto ni tarifa, la comisión del modal manual tampoco factura (422)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Modal Sin Valor");
+    const otro = await crearOtroTest(empresa.id, db.userId);
+
+    await expect(
+      generarBorrador({ tramiteId: otro.id, comision: 150_000n, usuarioId: db.userId }),
+    ).rejects.toMatchObject({ name: "ValorServicioRequeridoError", status: 422 });
+  });
 
   // ─── No se puede facturar un borrador no aprobado ────────────────────────
   it("no se puede facturar un borrador no aprobado → 422", async (ctx) => {

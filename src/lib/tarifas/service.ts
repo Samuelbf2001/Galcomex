@@ -142,6 +142,27 @@ export class ConceptoNoEnCatalogoError extends Error {
   }
 }
 
+/**
+ * La empresa tiene tarifario vigente pero al trámite le faltan datos de la
+ * base de cálculo (CIF, contenedores, declaraciones…). Antes que facturar de
+ * menos, se pide completar el trámite. Vive aquí (no en `borradores/service.ts`
+ * ni en `tramites/flujo-corto.ts`) porque ambos la usan y así no hay
+ * importación circular entre esos dos módulos.
+ */
+export class TarifaIncompletaError extends Error {
+  public readonly status = 422;
+  public readonly pendientes: { concepto: string; nombrePublico: string; motivo: string }[];
+  constructor(pendientes: { concepto: string; nombrePublico: string; motivo: string }[]) {
+    super(
+      `El tarifario no se puede aplicar completo: ${pendientes
+        .map((p) => `${p.nombrePublico} (${p.motivo.toLowerCase()})`)
+        .join("; ")}. Completa la base de cálculo del trámite o pasa la comisión a mano.`,
+    );
+    this.name = "TarifaIncompletaError";
+    this.pendientes = pendientes;
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function normalizeSerializable(value: unknown): Prisma.InputJsonValue {

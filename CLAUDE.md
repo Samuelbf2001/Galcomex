@@ -182,6 +182,41 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   Plan Vallejo, sellos, coordinación logística; sin agencia, ETA ni checklist,
   factura aparte, línea de cartera `OTROS`). Agencias: Moviaduanas, Coldex,
   AR Logisty, Cortes.
+- **Flujo corto (`TipoTramite.flujoCorto`, decisión de Ernesto 26-sep-2026,
+  hoy solo `OTRO`):** un servicio sin operación de importación — se abre sin
+  tarifa vigente ni pagos a proveedores, se manda a facturar directo (atajo de
+  estados, ver abajo) y se factura por `TramiteDO.valorServicio` (COP sin IVA,
+  escrito a mano) + `conceptoServicioCodigo` (`ConceptoVenta`), no por
+  tarifario — el valor a mano manda porque es un servicio no estándar. Sin
+  `valorServicio`, `generarBorrador` sigue usando el tarifario si lo hay
+  (comportamiento M2 intacto). `usaCamposDo=false` y `camposBaseCalculo=[]`
+  para OTRO: sin DO agencia/cliente ni contenedores/base de cálculo, ni
+  siquiera con `contenedores_obligatorio` encendida (`exigeContenedores`: un
+  array VACÍO es la decisión explícita del tipo de no usar ningún campo,
+  distinto de `null`/ausente que sí es "sin restricción", ver
+  `lib/tramites/requisitos.ts`).
+  **Con qué se factura (revisión adversarial 26-sep-2026,
+  `lib/tramites/flujo-corto.ts`, función `resolverFacturableFlujoCorto`):**
+  misma condición en `generarBorrador`, `solicitarFacturacion` (sin
+  `flujoCorto`, exige ≥1 pago) y `transitionTramite` hacia
+  ENVIADO_A_FACTURAR (que además fija `fechaEnviadoAFacturar`) — 1) exige el
+  formato CONCEPTOS_IVA (función `factura_conceptos_iva`; sin ella, incluidas
+  las empresas SOCIO_LM que facturan por comisión, 422
+  `FORMATO_CONCEPTOS_REQUERIDO`); 2) con eso, `valorServicio` +
+  `conceptoServicioCodigo` a mano, o una tarifa vigente de la línea con
+  líneas calculadas; 3) sin ninguno de los dos, 422
+  `VALOR_SERVICIO_REQUERIDO` — nunca el valor/concepto por defecto
+  (`comisionDefault`, "SERVICIO LOGÍSTICO"). `referenciaExterna` no se usa
+  como nombre de línea (eso lo decide siempre el concepto/producto Siigo);
+  sale en `comentariosCabecera` como `SERVICIO: …`.
+  **Editar el servicio después de crear el DO** (`verificarServicioFlujoCorto`
+  en `lib/tramites/service.ts`): el PATCH mira el estado COMBINADO (lo que ya
+  tenía el DO + lo que llega) — un valor sin concepto es 422, pero mandar
+  solo `valorServicio` cuando el DO ya tenía concepto guardado no lo vuelve a
+  exigir. Con un borrador ya generado (cualquier estado), el PATCH de
+  `valorServicio`/`conceptoServicioCodigo` responde 409: se edita en el
+  borrador de Facturación, no en el DO (la ficha pone el editor en solo
+  lectura desde ENVIADO_A_FACTURAR o con borrador, mismo aviso).
 - UI: sección "Tarifario" en la ficha (`seccion-tarifario.tsx`), panel "Base de
   cálculo y eventos" en el Resumen del DO (`seccion-eventos-tramite.tsx`),
   PDF en `GET /api/tarifarios/[id]/pdf`. Demo: `npx tsx scripts/demo-tarifario.ts`.
@@ -227,7 +262,8 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
 `SOLICITUD → APERTURA → EN_TRAMITE → EN_PUERTO → DESPACHADO → ENVIADO_A_FACTURAR → FACTURADO → PAGADO → CERRADO`
 
 - **APERTURA → EN_TRAMITE:** bloqueado si hay `ChecklistItem` requerido sin marcar
-- **Tarifa vigente (`do_exige_tarifa_vigente`, encendida por defecto; la migración `20260923092000` la apaga en las empresas SOCIO_LM):** sin tarifario VIGENTE hoy de la línea de servicio del tipo (config `tiposTramite`) no se crea el DO (`TarifaVigenteRequeridaError`, 422, `codigo` + `detalles`). La solicitud pública (`POST /api/solicitudes`, `origen: "SOLICITUD_PUBLICA"`) sí entra, pero SOLICITUD → APERTURA exige la tarifa. Sin excepción de ADMIN: se apaga la función en la ficha.
+- **Atajo de flujo corto (`TipoTramite.flujoCorto`, decisión de Ernesto 26-sep-2026, hoy `OTRO`):** desde SOLICITUD, APERTURA o EN_TRAMITE también se puede saltar directo a ENVIADO_A_FACTURAR — sin operación de importación no hay EN_PUERTO ni DESPACHADO que pasar. Lógica pura en `lib/tramites/transiciones.ts` (`estadosSiguientes`); el resto del mapa (y las demás reglas de esta sección) es igual para todos los tipos — es un atajo, no una excepción. La UI no filtra el selector "Mover a…": ya lista todos los estados y el servidor decide.
+- **Tarifa vigente (`do_exige_tarifa_vigente`, encendida por defecto solo para `IMPORTACION` y `CLASIFICACION`; la migración `20260923092000` la apaga además en las empresas SOCIO_LM):** sin tarifario VIGENTE hoy de la línea de servicio del tipo (config `tiposTramite`) no se crea el DO (`TarifaVigenteRequeridaError`, 422, `codigo` + `detalles`). La solicitud pública (`POST /api/solicitudes`, `origen: "SOLICITUD_PUBLICA"`) sí entra, pero SOLICITUD → APERTURA exige la tarifa. Sin excepción de ADMIN: se apaga la función en la ficha. `OTRO` (flujo corto) no está en el default: se abre sin tarifa y se factura por `valorServicio`.
 - **BL + factura comercial (`docs_bl_factura_obligatorios`, encendida por defecto, config `tiposTramite`: solo `IMPORTACION`):** pasar de SOLICITUD/APERTURA a EN_TRAMITE o más allá exige documentos `BL` y `FACTURA_COMERCIAL` no eliminados (422 `DOCUMENTOS_OBLIGATORIOS_FALTANTES`). El formulario los pide al crear (se suben justo después del POST). La excepción del ADMIN (`bypassChecklist`) deja pasar con `advertencias` y un `AuditLog` `OMITIR_REQUISITOS` (checklist y documentos pendientes).
 - Lógica pura de ambas reglas en `src/lib/tramites/requisitos.ts`; la UI las consulta antes de crear con `GET /api/tramites/requisitos?clienteId=&tipoTramiteCodigo=` (`fetchRequisitosDo` en `tramites-api.ts`).
 - **Facturado solo con factura emitida (decisión de Ernesto, 25-sep-2026):** entrar a FACTURADO (o saltar a PAGADO sin pasar por él) exige un borrador FACTURADO del DO; si no, 422 `FACTURA_NO_EMITIDA`. El `bypassChecklist` del ADMIN NO alcanza: forzarlo pide `motivoExcepcion` (≥ 10 caracteres) y deja un `AuditLog` `FORZAR_FACTURADO` (la UI abre `forzar-facturado-modal.tsx`). FACTURADO → PAGADO sigue libre (no revisa saldo) y cerrar/descartar no la pide. Lógica pura en `src/lib/tramites/factura-emitida.ts`.

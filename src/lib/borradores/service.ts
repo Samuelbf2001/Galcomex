@@ -15,9 +15,10 @@ import { COMISION_INTERNA_LM_MINIMO } from "@/lib/validations/borradores";
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { calcularSaldoLMInterno } from "@/lib/calculations/cruce-lm";
 import { prisma } from "@/lib/db/prisma";
-import { propuestaParaTramite } from "@/lib/tarifas/service";
+import { propuestaParaTramite, TarifaIncompletaError, type PropuestaTarifa } from "@/lib/tarifas/service";
 import { getParametrosSistema } from "@/lib/parametros/service";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
+import { resolverFacturableFlujoCorto } from "@/lib/tramites/flujo-corto";
 import { conceptosParaLineas as conceptosVentaPorCodigo } from "@/lib/catalogos/conceptos-service";
 import { resolverLineaConcepto } from "@/lib/catalogos/nombre-linea";
 
@@ -128,24 +129,11 @@ export class ConceptosOperacionalesInvalidosError extends Error {
   }
 }
 
-/**
- * La empresa tiene tarifario vigente pero al trámite le faltan datos de la
- * base de cálculo (CIF, contenedores, declaraciones…). Antes que facturar de
- * menos, se pide completar el trámite.
- */
-export class TarifaIncompletaError extends Error {
-  public readonly status = 422;
-  public readonly pendientes: { concepto: string; nombrePublico: string; motivo: string }[];
-  constructor(pendientes: { concepto: string; nombrePublico: string; motivo: string }[]) {
-    super(
-      `El tarifario no se puede aplicar completo: ${pendientes
-        .map((p) => `${p.nombrePublico} (${p.motivo.toLowerCase()})`)
-        .join("; ")}. Completa la base de cálculo del trámite o pasa la comisión a mano.`,
-    );
-    this.name = "TarifaIncompletaError";
-    this.pendientes = pendientes;
-  }
-}
+// `TarifaIncompletaError` ahora vive en `@/lib/tarifas/service` (la usa
+// también `lib/tramites/flujo-corto.ts`, sin importar de vuelta este
+// archivo — evita el ciclo borradores → flujo-corto → borradores). Se
+// re-exporta aquí para no romper a quien la importaba desde este módulo.
+export { TarifaIncompletaError };
 
 export class TramiteNoFacturableError extends Error {
   public readonly status = 422;
@@ -255,6 +243,14 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       doCliente: true,
       proveedorCliente: true,
       ordenCompraNumero: true,
+      // Servicio suelto (OTRO, decisión de Ernesto 26-sep-2026): el valor
+      // escrito a mano manda sobre el tarifario; `referenciaExterna` sale en
+      // las observaciones de la factura ("SERVICIO: …"), no en el nombre de
+      // la línea (ese lo decide siempre el concepto/producto Siigo).
+      referenciaExterna: true,
+      valorServicio: true,
+      conceptoServicioCodigo: true,
+      tipoTramite: { select: { flujoCorto: true, lineaServicio: true } },
       cliente: { select: { tipo: true } },
     },
   });
@@ -316,14 +312,66 @@ export async function generarBorrador(input: GenerarBorradorInput) {
     .reduce((sum, a) => sum + a.anticipo.costoRecaudo, 0n);
   void anticiposDistintosIds; // referenciado implícitamente
 
-  // ── Tarifario propio (M2) ─────────────────────────────────────────────────
-  // Si nadie pasó comisión ni desglose y la empresa tiene tarifario vigente,
-  // el desglose sale del motor de tarifas y la comisión es su suma. Con datos
-  // de base incompletos se corta aquí: nunca se factura de menos en silencio.
-  // Sin tarifario, todo sigue exactamente como antes (casos dorados intactos).
+  // ── Tarifario propio (M2) / servicio suelto (OTRO, 26-sep-2026) ───────────
+  //   - un tipo `flujoCorto` SIEMPRE resuelve por `resolverFacturableFlujoCorto`
+  //     (formato CONCEPTOS_IVA + valor/concepto a mano, o tarifa vigente sin
+  //     pendientes) — nunca cae al valor por defecto ni al concepto genérico.
+  //     IGNORA `comision`/`conceptosOperacionales` si llegan (p. ej. desde el
+  //     modal manual "Generar borrador" de Facturación, que precarga 150.000):
+  //     ese modal no puede facturar un servicio suelto por su cuenta (B-N1).
+  //   - el resto de los tipos sigue igual: si nadie pasó comisión ni
+  //     desglose, tarifario vigente si lo hay (con datos de base incompletos
+  //     se corta con `TarifaIncompletaError`); sin tarifario, nada cambia
+  //     (casos dorados intactos).
+  const conceptosDesdeTarifa = (propuesta: PropuestaTarifa): ConceptoOperacional[] =>
+    propuesta.resultado!.lineas.map((l) => ({
+      concepto: l.nombrePublico,
+      valor: l.valor,
+      siigoCodigo: l.siigoCodigo,
+      aplicaIva: l.aplicaIva,
+      // Código del maestro de conceptos: marca la línea como "viene del
+      // tarifario" y habilita la regla de nombre (docs/CATALOGOS.md §1).
+      conceptoCodigo: l.concepto,
+    }));
+
   let tarifarioId: string | null = null;
   let comisionTarifa: bigint | null = null;
-  if (input.comision === undefined && !conceptosOperacionales) {
+
+  if (tramiteEstado.tipoTramite.flujoCorto) {
+    conceptosOperacionales = undefined;
+    const facturableFlujoCorto = await resolverFacturableFlujoCorto(tramiteEstado, tramiteId);
+    if (!facturableFlujoCorto) {
+      // Inalcanzable: `resolverFacturableFlujoCorto` solo devuelve `null`
+      // cuando el tipo NO es flujoCorto, y acabamos de comprobar que sí lo es.
+      throw new Error(`resolverFacturableFlujoCorto no aplicó al DO ${tramiteEstado.consecutivo}`);
+    }
+    if (!facturableFlujoCorto.ok) {
+      throw facturableFlujoCorto.error;
+    }
+
+    if (facturableFlujoCorto.modo === "VALOR") {
+      const conceptoServicio = (
+        await conceptosVentaPorCodigo([tramiteEstado.conceptoServicioCodigo!])
+      ).get(tramiteEstado.conceptoServicioCodigo!);
+
+      comisionTarifa = tramiteEstado.valorServicio!;
+      conceptosOperacionales = [
+        {
+          // El nombre final de la línea lo decide siempre el concepto/
+          // producto Siigo (docs/CATALOGOS.md §1); este es solo el respaldo
+          // si el concepto no tuviera nombre.
+          concepto: conceptoServicio?.nombre ?? "SERVICIO",
+          valor: tramiteEstado.valorServicio!,
+          aplicaIva: conceptoServicio?.aplicaIva ?? true,
+          conceptoCodigo: tramiteEstado.conceptoServicioCodigo!,
+        },
+      ];
+    } else {
+      tarifarioId = facturableFlujoCorto.propuesta.tarifario!.id;
+      comisionTarifa = facturableFlujoCorto.propuesta.resultado!.total;
+      conceptosOperacionales = conceptosDesdeTarifa(facturableFlujoCorto.propuesta);
+    }
+  } else if (input.comision === undefined && !conceptosOperacionales) {
     const propuesta = await propuestaParaTramite(tramiteId);
     if (propuesta.tarifario && propuesta.resultado) {
       if (propuesta.resultado.pendientes.length > 0) {
@@ -332,20 +380,17 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       if (propuesta.resultado.lineas.length > 0) {
         tarifarioId = propuesta.tarifario.id;
         comisionTarifa = propuesta.resultado.total;
-        conceptosOperacionales = propuesta.resultado.lineas.map((l) => ({
-          concepto: l.nombrePublico,
-          valor: l.valor,
-          siigoCodigo: l.siigoCodigo,
-          aplicaIva: l.aplicaIva,
-          // Código del maestro de conceptos: marca la línea como "viene del
-          // tarifario" y habilita la regla de nombre (docs/CATALOGOS.md §1).
-          conceptoCodigo: l.concepto,
-        }));
+        conceptosOperacionales = conceptosDesdeTarifa(propuesta);
       }
     }
   }
 
-  const comision = input.comision ?? comisionTarifa ?? params.comisionDefault;
+  // Flujo corto: la comisión SIEMPRE sale de `resolverFacturableFlujoCorto`
+  // (arriba); `input.comision` (el modal manual) y `params.comisionDefault`
+  // nunca aplican — `comisionTarifa` queda garantizado no-nulo en este punto.
+  const comision = tramiteEstado.tipoTramite.flujoCorto
+    ? comisionTarifa!
+    : (input.comision ?? comisionTarifa ?? params.comisionDefault);
 
   // Validar conceptosOperacionales si se proporcionan
   if (conceptosOperacionales && conceptosOperacionales.length > 0) {
@@ -421,6 +466,15 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
       .join(" ");
     if (lineaDo) comentariosCabeceraInicial.push(lineaDo);
+  }
+
+  // Servicio suelto (OTRO): el nombre de la línea siempre lo decide el
+  // concepto/producto Siigo (docs/CATALOGOS.md §1) — `referenciaExterna` no
+  // llega ahí. En cambio sí sale en las observaciones de la factura, para
+  // que quede escrito qué se cobró exactamente (ej. "Firma programa Plan
+  // Vallejo 2026").
+  if (tramiteEstado.tipoTramite.flujoCorto && tramiteEstado.referenciaExterna?.trim()) {
+    comentariosCabeceraInicial.push(`SERVICIO: ${tramiteEstado.referenciaExterna.trim()}`);
   }
 
   // Formato CONCEPTOS_IVA: un ítem por concepto (con su producto Siigo e IVA) en

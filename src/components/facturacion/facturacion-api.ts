@@ -155,6 +155,8 @@ export type TramiteParaFacturacion = {
   /** Orden de compra del cliente (capacidad `orden_compra_en_revision`). Valor en COP string, sin IVA. */
   ordenCompraNumero: string | null;
   ordenCompraValor: string | null;
+  /** Flujo corto (servicio suelto: OTRO). El modal manual no aplica ahí (B-N1): lo resuelve el servidor. */
+  flujoCorto: boolean;
   borradores: BorradorRow[];
 };
 
@@ -327,6 +329,7 @@ export async function fetchTramitesParaFacturacion(
 
 function mapTramiteParaFacturacion(t: Record<string, unknown>): TramiteParaFacturacion {
   const cliente = isRecord(t.cliente) ? t.cliente : {};
+  const tipoTramite = isRecord(t.tipoTramite) ? t.tipoTramite : {};
   return {
     id: String(t.id ?? ""),
     consecutivo: String(t.consecutivo ?? ""),
@@ -342,6 +345,7 @@ function mapTramiteParaFacturacion(t: Record<string, unknown>): TramiteParaFactu
       typeof t.ordenCompraValor === "string" || typeof t.ordenCompraValor === "number"
         ? String(t.ordenCompraValor)
         : null,
+    flujoCorto: tipoTramite.flujoCorto === true,
     borradores: [],
   };
 }

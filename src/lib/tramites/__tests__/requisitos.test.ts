@@ -56,7 +56,6 @@ describe("config tiposTramite", () => {
     expect(tiposTramiteDeRegla("do_exige_tarifa_vigente", { tiposTramite: "x" })).toEqual([
       "IMPORTACION",
       "CLASIFICACION",
-      "OTRO",
     ]);
     expect(tiposTramiteDeRegla("docs_bl_factura_obligatorios", null)).toEqual(["IMPORTACION"]);
     // Lista vacía = decisión explícita de no aplicarla a ningún tipo.
@@ -65,11 +64,11 @@ describe("config tiposTramite", () => {
 });
 
 describe("D1 · exigeTarifaVigente", () => {
-  it("encendida por defecto para importación, clasificación y otros", () => {
+  it("encendida por defecto para importación y clasificación; OTRO (flujo corto) se abre sin tarifa", () => {
     const capacidades = empresaCon();
     expect(exigeTarifaVigente(capacidades, "IMPORTACION")).toBe(true);
     expect(exigeTarifaVigente(capacidades, "CLASIFICACION")).toBe(true);
-    expect(exigeTarifaVigente(capacidades, "OTRO")).toBe(true);
+    expect(exigeTarifaVigente(capacidades, "OTRO")).toBe(false);
   });
 
   it("apagada en la empresa → nunca se exige", () => {
@@ -328,12 +327,14 @@ describe("D3 · número de contenedores (caso Polyrec / Polyrec ZF)", () => {
 
   it("encendida: lo exige en los tipos que usan contenedores, no en la clasificación", () => {
     const polyrec = empresaCon([CONTENEDORES_ON]);
-    // IMPORTACION / OTRO no restringen campos (lista vacía o ausente).
-    expect(exigeContenedores(polyrec, [])).toBe(true);
+    // IMPORTACION (ausente) no restringe campos.
     expect(exigeContenedores(polyrec, null)).toBe(true);
     expect(exigeContenedores(polyrec, ["valorCif", "numContenedores"])).toBe(true);
     // CLASIFICACION solo usa numItems.
     expect(exigeContenedores(polyrec, ["numItems"])).toBe(false);
+    // OTRO (flujo corto, 26-sep-2026): `[]` es la decisión explícita de no
+    // usar ningún campo de la base de cálculo — tampoco contenedores.
+    expect(exigeContenedores(polyrec, [])).toBe(false);
   });
 
   it("cumple con al menos un contenedor o con carga suelta", () => {
@@ -353,13 +354,26 @@ describe("D3 · número de contenedores (caso Polyrec / Polyrec ZF)", () => {
   });
 
   it("armarRequisitos lo informa para que el formulario lo pida", () => {
+    // IMPORTACION no restringe campos: `camposBaseCalculo` ausente (no `[]`,
+    // que es la decisión explícita de OTRO de no usar ninguno).
     const requisitos = armarRequisitos({
       capacidades: empresaCon([CONTENEDORES_ON]),
       empresa: "POLYREC ZONA FRANCA S.A.S",
-      tipoTramite: { codigo: "IMPORTACION", lineaServicio: "TRAMITE", camposBaseCalculo: [] },
+      tipoTramite: { codigo: "IMPORTACION", lineaServicio: "TRAMITE" },
       tarifario: null,
       fueraDeFecha: null,
     });
     expect(requisitos.contenedores).toEqual({ requerido: true });
+  });
+
+  it("OTRO (flujo corto): camposBaseCalculo=[] no pide contenedores aunque la capacidad esté encendida", () => {
+    const requisitos = armarRequisitos({
+      capacidades: empresaCon([CONTENEDORES_ON]),
+      empresa: "POLYREC ZONA FRANCA S.A.S",
+      tipoTramite: { codigo: "OTRO", lineaServicio: "OTROS", camposBaseCalculo: [] },
+      tarifario: null,
+      fueraDeFecha: null,
+    });
+    expect(requisitos.contenedores).toEqual({ requerido: false });
   });
 });

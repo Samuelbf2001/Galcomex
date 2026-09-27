@@ -70,15 +70,16 @@ export type CampoBaseCalculo = (typeof CAMPOS_BASE_CALCULO_TODOS)[number];
  * 22-sep-2026). Función PURA: el tipo de trámite decide el universo
  * (CLASIFICACION solo usa `numItems`) y las capacidades de la empresa
  * siguen gobernando Valor CIF / Tipo de carga como siempre — es una
- * intersección, nunca un reemplazo. `camposTipo` vacío/ausente = sin
- * restricción del tipo (IMPORTACION y OTRO, y respuestas viejas del API).
+ * intersección, nunca un reemplazo. `camposTipo` AUSENTE (`null`/`undefined`,
+ * respuesta vieja del API) = sin restricción del tipo (IMPORTACION). Un array
+ * VACÍO es distinto: el tipo decidió no usar ningún campo (OTRO, flujo
+ * corto, 26-sep-2026) — no se muestra ninguno.
  */
 export function camposBaseCalculoVisibles(
   camposTipo: readonly string[] | null | undefined,
   aplicaCifOTarifario: boolean,
 ): Set<CampoBaseCalculo> {
-  const universo: readonly string[] =
-    camposTipo && camposTipo.length > 0 ? camposTipo : CAMPOS_BASE_CALCULO_TODOS;
+  const universo: readonly string[] = camposTipo ?? CAMPOS_BASE_CALCULO_TODOS;
   const visibles = new Set<CampoBaseCalculo>();
 
   for (const campo of CAMPOS_BASE_CALCULO_TODOS) {

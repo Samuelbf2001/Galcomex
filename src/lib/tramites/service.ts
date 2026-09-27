@@ -56,6 +56,8 @@ import {
   type DireccionOrden,
   type OrdenTramitesCampo,
 } from "@/lib/tramites/orden";
+import { estadosSiguientes } from "@/lib/tramites/transiciones";
+import { resolverFacturableFlujoCorto } from "@/lib/tramites/flujo-corto";
 
 type CreateTramiteInput = {
   ciudad: Ciudad;
@@ -76,6 +78,10 @@ type CreateTramiteInput = {
   numContenedores?: number | null;
   /** `SUELTA` = carga suelta, sin contenedores (cumple D3). */
   tipoCarga?: TipoCarga | null;
+  /** Flujo corto (`tipoTramite.flujoCorto`, solo OTRO): valor del servicio sin IVA. */
+  valorServicio?: bigint | null;
+  /** Concepto de venta del servicio. Obligatorio si viene `valorServicio` (validado por Zod). */
+  conceptoServicioCodigo?: string | null;
   creadoPorId: string;
 };
 
@@ -154,6 +160,151 @@ export class AgenciaAduanasRequeridaError extends Error {
   }
 }
 
+/**
+ * Flujo corto (decisión de Ernesto, 26-sep-2026): `valorServicio` y
+ * `conceptoServicioCodigo` solo se pueden escribir en un DO cuyo tipo de
+ * trámite es `flujoCorto` (hoy, OTRO) — un trámite estándar se factura por
+ * tarifario, no por un valor a mano.
+ */
+export class ServicioFlujoCortoNoPermitidoError extends Error {
+  public readonly status = 422;
+  constructor(nombreTipo: string) {
+    super(
+      `Los trámites de tipo "${nombreTipo}" no llevan servicio ni valor escritos a mano: eso es solo para servicios sueltos (Otros servicios).`,
+    );
+    this.name = "ServicioFlujoCortoNoPermitidoError";
+  }
+}
+
+export class ConceptoServicioNoEncontradoError extends Error {
+  public readonly status = 422;
+  constructor(codigo: string) {
+    super(`El concepto de venta "${codigo}" no existe o está inactivo`);
+    this.name = "ConceptoServicioNoEncontradoError";
+  }
+}
+
+/** B2: el DO va a quedar con valor pero sin concepto (en el estado combinado, no solo en el payload). */
+export class ConceptoServicioRequeridoError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super("Escoge el concepto de venta del servicio.");
+    this.name = "ConceptoServicioRequeridoError";
+  }
+}
+
+/**
+ * A2/B-N2/B-N3 (decisión de Ernesto 26-sep-2026): con un borrador ya
+ * generado (cualquier estado), o desde ENVIADO_A_FACTURAR aunque no haya
+ * borrador todavía, el servicio se edita en Facturación, no en el DO.
+ */
+export class ServicioConBorradorExistenteError extends Error {
+  public readonly status = 409;
+  constructor() {
+    super("Este servicio ya tiene factura en borrador; cambia el valor en el borrador de Facturación.");
+    this.name = "ServicioConBorradorExistenteError";
+  }
+}
+
+/** Estados desde los que un flujo corto ya no se edita en el DO (A2/B-N3): igual que la ficha. */
+const ESTADOS_SERVICIO_BLOQUEADO: readonly EstadoTramite[] = [
+  EstadoTramite.ENVIADO_A_FACTURAR,
+  EstadoTramite.FACTURADO,
+  EstadoTramite.PAGADO,
+  EstadoTramite.CERRADO,
+];
+
+/** true si ya hay un borrador del DO, o si su estado ya pasó a "enviado a facturar" o más allá. */
+async function servicioBloqueadoPorFactura(
+  tramiteId: string,
+  estadoActual: EstadoTramite | undefined,
+): Promise<boolean> {
+  if (estadoActual && ESTADOS_SERVICIO_BLOQUEADO.includes(estadoActual)) {
+    return true;
+  }
+  const borrador = await prisma.borradorFactura.findFirst({
+    where: { tramiteId },
+    select: { id: true },
+  });
+  return borrador !== null;
+}
+
+/**
+ * Guard del flujo corto. Dos partes independientes:
+ *   - Si toca `referenciaExterna` (sale en "SERVICIO: …" de la factura,
+ *     B-N2) Y el tipo es `flujoCorto`, exige que no esté bloqueado por
+ *     factura (A2/B-N3) — sin penalizar a otros tipos que también usan
+ *     `referenciaExterna` (p. ej. CLASIFICACION).
+ *   - Si toca `valorServicio`/`conceptoServicioCodigo`: exige que el tipo sea
+ *     `flujoCorto` (`ServicioFlujoCortoNoPermitidoError`), que no esté
+ *     bloqueado por factura (A2/B-N3), que el estado COMBINADO (lo que ya
+ *     tenía el DO + lo que llega) tenga concepto si hay valor (B2 — un PATCH
+ *     que solo trae `valorServicio` con el concepto YA guardado en `antes`
+ *     no lo vuelve a exigir), y que el concepto (si viene) exista y esté
+ *     activo.
+ * Sin ninguno de los tres campos, no hace nada. La usan `createTramite` (sin
+ * `tramiteId`/`antes`/`estadoActual`: DO nuevo, nunca hay borrador ni estado
+ * previo) y el `PATCH /api/tramites/[id]`.
+ */
+export async function verificarServicioFlujoCorto(args: {
+  tipoTramiteCodigo: string;
+  /** DO existente (PATCH): permite el chequeo de borrador/estado (A2/B-N2/B-N3). */
+  tramiteId?: string;
+  /** Estado ACTUAL del DO antes del PATCH (A2/B-N3). */
+  estadoActual?: EstadoTramite;
+  /** Estado ANTES del PATCH, para completar lo que el payload no toca (B2). */
+  antes?: { valorServicio: bigint | null; conceptoServicioCodigo: string | null };
+  valorServicio?: bigint | null;
+  conceptoServicioCodigo?: string | null;
+  /** B-N2: la referencia externa también queda bloqueada por factura en un flujo corto. */
+  referenciaExterna?: string | null;
+}): Promise<void> {
+  const tocaServicio =
+    args.valorServicio !== undefined || args.conceptoServicioCodigo !== undefined;
+  const tocaReferencia = args.referenciaExterna !== undefined;
+  if (!tocaServicio && !tocaReferencia) return;
+
+  const tipo = await prisma.tipoTramite.findUnique({
+    where: { codigo: args.tipoTramiteCodigo },
+    select: { flujoCorto: true, nombre: true },
+  });
+
+  if (tocaServicio && !tipo?.flujoCorto) {
+    throw new ServicioFlujoCortoNoPermitidoError(tipo?.nombre ?? args.tipoTramiteCodigo);
+  }
+
+  // El bloqueo por borrador/estado solo aplica a un DO flujoCorto; otros
+  // tipos (CLASIFICACION también usa `referenciaExterna`) no cambian nada.
+  if (tipo?.flujoCorto && args.tramiteId) {
+    if (await servicioBloqueadoPorFactura(args.tramiteId, args.estadoActual)) {
+      throw new ServicioConBorradorExistenteError();
+    }
+  }
+
+  if (!tocaServicio) return;
+
+  const conceptoResultante =
+    args.conceptoServicioCodigo !== undefined
+      ? args.conceptoServicioCodigo
+      : args.antes?.conceptoServicioCodigo ?? null;
+  const valorResultante =
+    args.valorServicio !== undefined ? args.valorServicio : args.antes?.valorServicio ?? null;
+
+  if (valorResultante !== null && !conceptoResultante) {
+    throw new ConceptoServicioRequeridoError();
+  }
+
+  if (args.conceptoServicioCodigo) {
+    const concepto = await prisma.conceptoVenta.findUnique({
+      where: { codigo: args.conceptoServicioCodigo },
+      select: { activo: true },
+    });
+    if (!concepto || !concepto.activo) {
+      throw new ConceptoServicioNoEncontradoError(args.conceptoServicioCodigo);
+    }
+  }
+}
+
 export type DetallesTarifaVigenteRequerida = {
   clienteId: string;
   lineaServicio: string;
@@ -218,29 +369,24 @@ type TransitionResult =
       detalles?: Record<string, unknown>;
     };
 
+/**
+ * Convierte cualquier error de dominio con `.status` (y opcionalmente
+ * `.codigo`/`.detalles`) en el resultado `{ ok: false }` de una transición.
+ * Firma amplia a propósito: la usan tanto los errores propios de esta
+ * cascada (D1/D2/factura emitida) como los del flujo corto
+ * (`lib/tramites/flujo-corto.ts`), que no llevan `.detalles`.
+ */
 function falloDeRegla(
-  error: TarifaVigenteRequeridaError | DocumentosObligatoriosFaltantesError | FacturaNoEmitidaError,
+  error: Error & { status: number; codigo?: string; detalles?: Record<string, unknown> },
 ): TransitionResult {
   return {
     ok: false,
     status: error.status,
     message: error.message,
     codigo: error.codigo,
-    detalles: { ...error.detalles },
+    detalles: error.detalles ? { ...error.detalles } : undefined,
   };
 }
-
-const transitionMap: Record<EstadoTramite, EstadoTramite[]> = {
-  SOLICITUD: [EstadoTramite.APERTURA],
-  APERTURA: [EstadoTramite.EN_TRAMITE],
-  EN_TRAMITE: [EstadoTramite.EN_PUERTO],
-  EN_PUERTO: [EstadoTramite.DESPACHADO],
-  DESPACHADO: [EstadoTramite.ENVIADO_A_FACTURAR],
-  ENVIADO_A_FACTURAR: [EstadoTramite.FACTURADO],
-  FACTURADO: [EstadoTramite.PAGADO],
-  PAGADO: [EstadoTramite.CERRADO],
-  CERRADO: [],
-};
 
 const TIPO_TRAMITE_POR_DEFECTO = "IMPORTACION";
 
@@ -526,6 +672,14 @@ export async function createTramite(
     nombreEmpresa,
   );
 
+  // Flujo corto (OTRO): `valorServicio`/`conceptoServicioCodigo` solo en un
+  // tipo `flujoCorto`, y con el concepto de venta activo.
+  await verificarServicioFlujoCorto({
+    tipoTramiteCodigo: tipo.codigo,
+    valorServicio: input.valorServicio,
+    conceptoServicioCodigo: input.conceptoServicioCodigo,
+  });
+
   // D1 — sin tarifa vigente no hay DO (capacidad `do_exige_tarifa_vigente`).
   // La solicitud externa sí entra: queda en SOLICITUD y `transitionTramite`
   // no la deja abrir hasta que la tarifa esté publicada.
@@ -623,6 +777,8 @@ export async function createTramite(
               numContenedores,
               tipoCarga: input.tipoCarga ?? null,
               comentarios: input.comentarios,
+              valorServicio: input.valorServicio ?? null,
+              conceptoServicioCodigo: input.conceptoServicioCodigo ?? null,
               creadoPorId: input.creadoPorId,
               checklistItems: plantilla
                 ? {
@@ -671,13 +827,20 @@ export const tramiteInclude = {
       tipo: true,
     },
   },
-  // Solo `usaCamposDo`: la lista lo usa para decidir si la columna
-  // "Referencia" muestra `referenciaExterna` en vez del coalesce de siempre
-  // (ver `normalizeRow` en tramites-api.ts).
+  // `usaCamposDo`: la lista lo usa para decidir si la columna "Referencia"
+  // muestra `referenciaExterna` en vez del coalesce de siempre (ver
+  // `normalizeRow` en tramites-api.ts). `flujoCorto`: este mismo include lo
+  // devuelve el PATCH del DO — sin él, el editor de servicio (flujo corto)
+  // desaparecería de la pantalla justo después de guardar.
   tipoTramite: {
     select: {
       usaCamposDo: true,
+      flujoCorto: true,
     },
+  },
+  // Servicio + valor del flujo corto (solo si `tipoTramite.flujoCorto`).
+  conceptoServicio: {
+    select: { codigo: true, nombre: true },
   },
   creadoPor: {
     select: {
@@ -826,7 +989,14 @@ export const tramiteDetalleInclude = {
       camposBaseCalculo: true,
       usaEventos: true,
       fechasClave: true,
+      // Flujo corto (OTRO, 26-sep-2026): sin operación de importación, se
+      // factura por servicio + valor escrito a mano.
+      flujoCorto: true,
     },
+  },
+  // Servicio + valor del flujo corto (solo si `tipoTramite.flujoCorto`).
+  conceptoServicio: {
+    select: { codigo: true, nombre: true },
   },
   creadoPor: {
     select: {
@@ -901,7 +1071,12 @@ export async function transitionTramite(
         cliente: { select: { nombre: true } },
         checklistItems: true,
         tipoTramite: {
-          select: { codigo: true, lineaServicio: true, requiereAgenciaAduanas: true },
+          select: {
+            codigo: true,
+            lineaServicio: true,
+            requiereAgenciaAduanas: true,
+            flujoCorto: true,
+          },
         },
       },
     });
@@ -920,6 +1095,31 @@ export async function transitionTramite(
       }
       return capacidadesLeidas;
     };
+
+    // Flujo corto (servicio suelto: OTRO, decisión de Ernesto 26-sep-2026):
+    // llegar a ENVIADO_A_FACTURAR por cualquier camino (atajo, DESPACHADO o
+    // incluso la reapertura de un CERRADO) exige lo mismo que
+    // `solicitarFacturacion`/`generarBorrador` — formato CONCEPTOS_IVA y
+    // (valor + concepto a mano, o una tarifa vigente con líneas) — y fija
+    // `fechaEnviadoAFacturar` igual que esa función. Nunca se manda a
+    // facturar "en blanco". No aplica a otros destinos ni a tipos que no
+    // sean flujoCorto.
+    let fechaEnviadoAFacturarFlujoCorto: Date | null = null;
+    if (estadoDes === EstadoTramite.ENVIADO_A_FACTURAR && actual.tipoTramite.flujoCorto) {
+      const resuelto = await resolverFacturableFlujoCorto(
+        {
+          clienteId: actual.clienteId,
+          valorServicio: actual.valorServicio,
+          conceptoServicioCodigo: actual.conceptoServicioCodigo,
+          tipoTramite: { flujoCorto: true, lineaServicio: actual.tipoTramite.lineaServicio },
+        },
+        tramiteId,
+      );
+      if (resuelto && !resuelto.ok) {
+        return falloDeRegla(resuelto.error);
+      }
+      fechaEnviadoAFacturarFlujoCorto = new Date();
+    }
 
     // Reapertura de emergencia: el trámite YA está CERRADO (estado terminal).
     // Bloqueo total salvo ADMIN, que puede sacarlo de CERRADO hacia cualquier
@@ -978,7 +1178,12 @@ export async function transitionTramite(
 
       const reabierto = await tx.tramiteDO.update({
         where: { id: tramiteId },
-        data: { estado: estadoDes },
+        data: {
+          estado: estadoDes,
+          ...(fechaEnviadoAFacturarFlujoCorto
+            ? { fechaEnviadoAFacturar: fechaEnviadoAFacturarFlujoCorto }
+            : {}),
+        },
         include: tramiteInclude,
       });
 
@@ -1023,7 +1228,14 @@ export async function transitionTramite(
       return { ok: true, tramite: reabierto, advertencias: advertenciasReapertura };
     }
 
-    if (!bypassChecklist && !transitionMap[actual.estado].includes(estadoDes)) {
+    // Flujo corto (OTRO, decisión de Ernesto 26-sep-2026): desde SOLICITUD,
+    // APERTURA o EN_TRAMITE también se puede saltar directo a
+    // ENVIADO_A_FACTURAR — sin operación de importación, no hay EN_PUERTO ni
+    // DESPACHADO que pasar. El resto del mapa es igual para todos los tipos.
+    const destinosValidos = estadosSiguientes(actual.estado, {
+      flujoCorto: actual.tipoTramite.flujoCorto,
+    });
+    if (!bypassChecklist && !destinosValidos.includes(estadoDes)) {
       return {
         ok: false,
         status: 422,
@@ -1153,7 +1365,12 @@ export async function transitionTramite(
 
     const updated = await tx.tramiteDO.update({
       where: { id: tramiteId },
-      data: { estado: estadoDes },
+      data: {
+        estado: estadoDes,
+        ...(fechaEnviadoAFacturarFlujoCorto
+          ? { fechaEnviadoAFacturar: fechaEnviadoAFacturarFlujoCorto }
+          : {}),
+      },
       include: tramiteInclude,
     });
 

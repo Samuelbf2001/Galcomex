@@ -413,7 +413,8 @@ describe("config por tipo de trámite (requisitos del DO)", () => {
     const capacidades = await leerCapacidades(empresaEnGrupoId);
     const tarifa = buscar(capacidades, "do_exige_tarifa_vigente");
     expect(tarifa.habilitado).toBe(true);
-    expect(tarifa.config).toEqual({ tiposTramite: ["IMPORTACION", "CLASIFICACION", "OTRO"] });
+    // OTRO (flujo corto, 26-sep-2026) se abre sin tarifa: no está en el default.
+    expect(tarifa.config).toEqual({ tiposTramite: ["IMPORTACION", "CLASIFICACION"] });
   });
 
   it("rechaza una config que no es una lista de códigos", async (ctx) => {

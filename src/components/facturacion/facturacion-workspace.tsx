@@ -570,8 +570,13 @@ function FilaTramite({
             </button>
           ) : null}
           {/* Sin lectura confirmada (cargando o con error) no se ofrece
-              generar: podría duplicar un borrador que sí existe. */}
-          {puedeGenerarBorrador && !tramite.cargandoBorradores && !conError ? (
+              generar: podría duplicar un borrador que sí existe. Un servicio
+              suelto (OTRO) que ya tiene borrador tampoco lo ofrece (B-N1):
+              el valor/concepto se edita en ese borrador, no generando otro. */}
+          {puedeGenerarBorrador &&
+          !tramite.cargandoBorradores &&
+          !conError &&
+          !(tramite.flujoCorto && borrador) ? (
             <button
               type="button"
               onClick={onGenerar}

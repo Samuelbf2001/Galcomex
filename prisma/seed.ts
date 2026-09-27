@@ -191,11 +191,15 @@ async function main() {
     },
     {
       // Plan Vallejo, sellos, coordinación logística: "eso también se cobra,
-      // no es un DO" (reunión 10-sep-2026). Sin agencia, sin ETA, sin checklist.
+      // no es un DO" (reunión 10-sep-2026). Flujo corto (decisión de Ernesto,
+      // 26-sep-2026): sin agencia, sin ETA, sin checklist, sin DO de agencia
+      // ni cliente, sin tarifa vigente y sin pagos a proveedores. Se abre y se
+      // manda a facturar directo (`flujoCorto`), con servicio + valor escrito
+      // a mano (`TramiteDO.valorServicio` + `conceptoServicioCodigo`).
       codigo: "OTRO",
       nombre: "Otros servicios",
       descripcion:
-        "Servicios sueltos que se cobran sin DO: firma de Plan Vallejo, sellos, coordinación logística. Consecutivo propio (OTR26-0001), sin agencia, sin ETA ni checklist; se factura aparte.",
+        "Servicios sueltos que se cobran sin DO: firma de Plan Vallejo, sellos, coordinación logística. Consecutivo propio (OTR26-0001); se abre sin tarifa ni pagos a proveedores y se manda a facturar directo, con el servicio y el valor escritos a mano.",
       prefijoConsecutivo: "OTR",
       secuenciaPor: SecuenciaTramite.ANIO,
       incluyeCiudadEnConsecutivo: false,
@@ -205,24 +209,12 @@ async function main() {
       requiereAgenciaAduanas: false,
       requiereEta: false,
       usaChecklist: false,
-      usaCamposDo: true,
+      usaCamposDo: false,
       etiquetaReferenciaExterna: "Servicio prestado",
-      camposBaseCalculo: [
-        "valorCif",
-        "tipoCarga",
-        "numContenedores",
-        "numDeclaraciones",
-        "numDocumentos",
-        "numItems",
-      ],
-      usaEventos: true,
-      fechasClave: [
-        "fechaAceptacionDeclaracion",
-        "fechaLevante",
-        "fechaEnviadoAFacturar",
-        "fechaDocumentosOk",
-        "fechaSalidaCarga",
-      ],
+      camposBaseCalculo: [],
+      usaEventos: false,
+      fechasClave: ["fechaEnviadoAFacturar"],
+      flujoCorto: true,
       orden: 30,
     },
   ];

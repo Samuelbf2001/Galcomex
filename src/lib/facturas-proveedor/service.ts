@@ -13,6 +13,7 @@ import { CanalPago, EstadoFacturaProveedor, EstadoTramite, Prisma } from "@prism
 import { ensureBorrador } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
+import { resolverFacturableFlujoCorto } from "@/lib/tramites/flujo-corto";
 import { transitionTramite } from "@/lib/tramites/service";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -401,20 +402,44 @@ export async function generarPagoDesdeFactura(input: GenerarPagoInput) {
  * 3. Actualiza fechaEnviadoAFacturar.
  *
  * IMPORTANTE: La transición válida al estado ENVIADO_A_FACTURAR es desde DESPACHADO
- * (ver transitionMap en tramites/service.ts). Si el DO está en otro estado,
- * se retorna un error 422 con los estados válidos.
+ * (ver transiciones.ts en tramites/service.ts). Con flujo corto (servicio
+ * suelto: OTRO, decisión de Ernesto 26-sep-2026) también es válida desde
+ * SOLICITUD, APERTURA o EN_TRAMITE — sin operación de importación no hay
+ * DESPACHADO que esperar. Si el DO está en otro estado, se retorna un error
+ * 422 con los estados válidos.
  */
 export async function solicitarFacturacion(
   tramiteId: string,
   usuarioId: string,
 ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
-  // Verificar que tenga pagos
-  const pagosCount = await prisma.pagoTramite.count({
-    where: { tramiteId },
+  const tramite = await prisma.tramiteDO.findUnique({
+    where: { id: tramiteId },
+    select: {
+      clienteId: true,
+      valorServicio: true,
+      conceptoServicioCodigo: true,
+      tipoTramite: { select: { flujoCorto: true, lineaServicio: true } },
+    },
   });
 
-  if (pagosCount === 0) {
-    throw new TramiteSinPagosError(tramiteId);
+  if (tramite?.tipoTramite.flujoCorto) {
+    // Flujo corto: no exige pagos a proveedores. La misma condición que
+    // generarBorrador y el atajo de transitionTramite: formato CONCEPTOS_IVA
+    // y (valor + concepto a mano, o tarifa vigente con líneas). Nunca se
+    // manda a facturar "en blanco".
+    const resuelto = await resolverFacturableFlujoCorto(tramite, tramiteId);
+    if (resuelto && !resuelto.ok) {
+      throw resuelto.error;
+    }
+  } else {
+    // Verificar que tenga pagos
+    const pagosCount = await prisma.pagoTramite.count({
+      where: { tramiteId },
+    });
+
+    if (pagosCount === 0) {
+      throw new TramiteSinPagosError(tramiteId);
+    }
   }
 
   // Intentar transición usando el servicio de trámites existente

@@ -18,6 +18,21 @@ const optionalDate = z
   // un campo ausente no se toca; solo `null` o "" lo borran.
   .transform((value) => (value === undefined ? undefined : value ? new Date(value) : null));
 
+/**
+ * Flujo corto (`TipoTramite.flujoCorto`, decisión de Ernesto 26-sep-2026, caso
+ * OTRO): valor del servicio sin IVA (COP enteros, positivo) y el concepto de
+ * venta que lo factura. El servicio (`service.ts`/rutas) es quien valida que
+ * el tipo de trámite sea `flujoCorto` y que el concepto exista y esté activo
+ * — el schema solo valida la forma.
+ */
+const valorServicioSchema = z.coerce
+  .bigint()
+  .refine((v) => v > 0n, { message: "El valor del servicio debe ser mayor a cero" })
+  .optional()
+  .nullable();
+
+const conceptoServicioCodigoSchema = z.string().trim().min(1).max(60).optional().nullable();
+
 export const tramiteCreateSchema = z.object({
   ciudad: z.nativeEnum(Ciudad),
   anio: z.number().int().min(2020).max(2100).optional(),
@@ -37,6 +52,14 @@ export const tramiteCreateSchema = z.object({
   numContenedores: z.number().int().min(0).max(100_000).optional().nullable(),
   /** `SUELTA` = carga suelta (cumple D3 sin contenedores). */
   tipoCarga: z.nativeEnum(TipoCarga).optional().nullable(),
+  /**
+   * Si viene `valorServicio`, `conceptoServicioCodigo` es obligatorio — pero
+   * eso se valida en el servicio (`verificarServicioFlujoCorto`), no aquí:
+   * en un PATCH el estado combinado (lo que ya tenía el DO + lo que llega)
+   * manda, y el schema solo ve el payload (B2).
+   */
+  valorServicio: valorServicioSchema,
+  conceptoServicioCodigo: conceptoServicioCodigoSchema,
 });
 
 const enteroOpcional = z.number().int().min(0).max(100_000).optional().nullable();
@@ -63,6 +86,10 @@ export const atributosTramiteSchema = z.object({
     .refine((v) => v >= 0n, { message: "El valor de la orden de compra no puede ser negativo" })
     .optional()
     .nullable(),
+  /** Flujo corto (OTRO): valor del servicio sin IVA, COP enteros. */
+  valorServicio: valorServicioSchema,
+  /** Concepto de venta del servicio. Obligatorio si viene `valorServicio`. */
+  conceptoServicioCodigo: conceptoServicioCodigoSchema,
 });
 
 export const tramiteUpdateSchema = atributosTramiteSchema.extend({

@@ -20,8 +20,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { fetchConceptosVenta, type ConceptoVentaRow } from "@/components/configuracion/catalogos/catalogos-api";
 import { ModuleState } from "@/components/layout/module-state";
 import { KanbanTramites } from "@/components/tramites/kanban-tramites";
+import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { EncabezadoOrdenable } from "@/components/ui/encabezado-ordenable";
 import { ModalShell } from "@/components/ui/modal-shell";
@@ -61,6 +63,33 @@ const AGENCIA_LABEL: Record<string, string> = {
   AR_LOGISTY: "AR Logisty",
   CORTES: "Cortes",
 };
+
+/**
+ * Ejemplo del "número de referencia externa" por tipo de trámite: cada tipo
+ * usa esa etiqueta para algo distinto (informe de la clasificadora vs.
+ * servicio del flujo corto), así que el ejemplo también cambia. Ausente = sin
+ * ejemplo (el placeholder queda vacío).
+ */
+const EJEMPLOS_REFERENCIA_EXTERNA: Record<string, string> = {
+  CLASIFICACION: "2140",
+  OTRO: "Ej.: Firma programa Plan Vallejo 2026",
+};
+
+/** PLAN_VALLEJO y SELLOS primero (los más usados en flujo corto); el resto en su orden del catálogo. */
+const PRIORIDAD_CONCEPTO_SERVICIO = ["PLAN_VALLEJO", "SELLOS"];
+
+function ordenarConceptosServicio(lista: ConceptoVentaRow[]): ConceptoVentaRow[] {
+  return [...lista].sort((a, b) => {
+    const pa = PRIORIDAD_CONCEPTO_SERVICIO.indexOf(a.codigo);
+    const pb = PRIORIDAD_CONCEPTO_SERVICIO.indexOf(b.codigo);
+    if (pa !== -1 || pb !== -1) {
+      if (pa === -1) return 1;
+      if (pb === -1) return -1;
+      return pa - pb;
+    }
+    return a.orden - b.orden;
+  });
+}
 
 /** Convierte una expresión regular sencilla en una pista legible (^I\d{8}$ → I########). */
 function pistaFormato(regex: string): string {
@@ -398,6 +427,29 @@ export function CreateTramiteDialog({
   const [contenedores, setContenedores] = useState("");
   const [cargaSuelta, setCargaSuelta] = useState(false);
 
+  // Flujo corto (OTRO, decisión de Ernesto 26-sep-2026): servicio + valor a
+  // mano en vez de tarifa vigente/pagos. El catálogo de conceptos es el mismo
+  // para cualquier tipo de trámite, así que se carga una sola vez al abrir.
+  const [conceptosServicio, setConceptosServicio] = useState<ConceptoVentaRow[]>([]);
+  const [conceptoServicio, setConceptoServicio] = useState("");
+  const [valorServicio, setValorServicio] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const controller = new AbortController();
+    fetchConceptosVenta(controller.signal)
+      .then((lista) => setConceptosServicio(lista.filter((c) => c.activo)))
+      .catch(() => {
+        // El selector queda vacío; el DO se puede crear sin concepto y se
+        // completa después en la ficha.
+      });
+
+    return () => controller.abort();
+  }, [open]);
+
   useEffect(() => {
     if (!open || !clienteId) {
       return;
@@ -436,9 +488,22 @@ export function CreateTramiteDialog({
     tiposCargados.clienteId === clienteId ? tiposCargados.reglaAgencia : null;
   const pideEta = tipoTramiteSeleccionado?.requiereEta ?? true;
   const etiquetaReferencia = tipoTramiteSeleccionado?.etiquetaReferenciaExterna ?? null;
-  // CLASIFICACION no tiene DO de agencia ni de cliente (revisión de Ernesto,
-  // 22-sep-2026): solo lleva el número que asigna la clasificadora.
+  // CLASIFICACION y OTRO no tienen DO de agencia ni de cliente (revisión de
+  // Ernesto, 22-sep-2026 y 26-sep-2026).
   const usaCamposDo = tipoTramiteSeleccionado?.usaCamposDo ?? true;
+  // Flujo corto (OTRO): sin tarifa ni pagos, se factura por servicio + valor
+  // a mano — el formulario cambia documentos/contenedores por esos dos campos.
+  const esFlujoCorto = tipoTramiteSeleccionado?.flujoCorto ?? false;
+  const ejemploReferenciaExterna = EJEMPLOS_REFERENCIA_EXTERNA[tipoTramiteCodigo] ?? "2140";
+
+  // B1: al cambiar a un tipo de servicio suelto se oculta la zona de
+  // adjuntos, pero un archivo que ya se había seleccionado seguía en el
+  // estado y se subía igual al crear. Se limpia al elegir el tipo (ver botón
+  // "Tipo de trámite" más abajo), no en un efecto.
+  function elegirTipoTramite(tipo: TipoTramiteOption) {
+    setTipoElegido(tipo.codigo);
+    if (tipo.flujoCorto) setStagedFiles({});
+  }
 
   function handleTipoClienteChange(next: ClienteTipo) {
     if (next === tipoCliente) {
@@ -538,6 +603,10 @@ export function CreateTramiteDialog({
       setError("Escribe cuántos contenedores trae el DO (sale del BL) o marca «Carga suelta».");
       return;
     }
+    if (esFlujoCorto && valorServicio.trim() !== "" && !conceptoServicio) {
+      setError("Escoge el concepto de venta del servicio.");
+      return;
+    }
 
     setIsSubmitting(true);
 
@@ -566,6 +635,8 @@ export function CreateTramiteDialog({
           : undefined,
       numContenedores: pideContenedores ? (cargaSuelta ? 0 : numContenedoresForm) : undefined,
       tipoCarga: pideContenedores && cargaSuelta ? "SUELTA" : undefined,
+      valorServicio: esFlujoCorto && valorServicio.trim() !== "" ? valorServicio : undefined,
+      conceptoServicioCodigo: esFlujoCorto ? optionalText(formData.get("conceptoServicioCodigo")) : undefined,
     };
 
     try {
@@ -603,6 +674,8 @@ export function CreateTramiteDialog({
       setStagedFiles({});
       setContenedores("");
       setCargaSuelta(false);
+      setConceptoServicio("");
+      setValorServicio("");
     } catch (caught) {
       setError(describirError(caught, "No fue posible crear el trámite."));
 
@@ -754,7 +827,7 @@ export function CreateTramiteDialog({
                   <button
                     key={tipo.codigo}
                     type="button"
-                    onClick={() => setTipoElegido(tipo.codigo)}
+                    onClick={() => elegirTipoTramite(tipo)}
                     aria-pressed={tipoTramiteCodigo === tipo.codigo}
                     className={`inline-flex h-10 flex-1 items-center justify-center px-3 text-sm font-semibold transition first:border-l-0 border-l border-slate-300 ${
                       tipoTramiteCodigo === tipo.codigo
@@ -870,18 +943,58 @@ export function CreateTramiteDialog({
               </label>
             ) : null}
             {etiquetaReferencia ? (
-              <label className="space-y-1.5">
+              // Un servicio suelto (OTRO) no tiene DO agencia/cliente al
+              // lado (usaCamposDo=false): esta casilla queda sola en la
+              // fila y ocupa las 3 columnas para no cortar el texto
+              // ("Firma programa Plan Vallejo 2026…"). En clasificación
+              // (con usaCamposDo=true, dos casillas más al lado) se queda
+              // en una sola columna, como siempre.
+              <label className={`space-y-1.5 ${esFlujoCorto ? "md:col-span-3" : ""}`}>
                 <span className="text-sm font-medium text-slate-700">
                   {etiquetaReferencia}
                 </span>
                 <input
                   name="referenciaExterna"
-                  placeholder="2140"
+                  placeholder={ejemploReferenciaExterna}
                   className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
                 />
               </label>
             ) : null}
           </div>
+
+          {/* Flujo corto (OTRO): sin tarifa ni pagos — se factura por
+              servicio + valor escritos a mano (decisión de Ernesto,
+              26-sep-2026). Ambos son opcionales aquí: se pueden completar
+              después en la ficha del DO, antes de mandarlo a facturar. */}
+          {esFlujoCorto ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Concepto de venta</span>
+                <select
+                  name="conceptoServicioCodigo"
+                  value={conceptoServicio}
+                  onChange={(event) => setConceptoServicio(event.target.value)}
+                  className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+                >
+                  <option value="">Sin escoger todavía</option>
+                  {ordenarConceptosServicio(conceptosServicio).map((concepto) => (
+                    <option key={concepto.codigo} value={concepto.codigo}>
+                      {concepto.nombre}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Valor sin IVA</span>
+                <CampoMoneda
+                  value={valorServicio}
+                  onValueChange={setValorServicio}
+                  placeholder="350000"
+                  className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+                />
+              </label>
+            </div>
+          ) : null}
 
           {pideEta && clienteSeleccionado?.tipo !== "SOCIO_LM" ? (
             <label className="space-y-1.5">
@@ -993,7 +1106,9 @@ export function CreateTramiteDialog({
             </div>
           ) : null}
 
-          {/* Zona de adjuntos — uno por categoría */}
+          {/* Zona de adjuntos — uno por categoría. Un flujo corto (OTRO) no
+              tiene documentos de importación: se factura directo. */}
+          {esFlujoCorto ? null : (
           <div className="space-y-2">
             <span className="text-sm font-medium text-slate-700">Documentos adjuntos</span>
             <ul className="divide-y divide-slate-100 border border-slate-200 bg-white">
@@ -1050,6 +1165,7 @@ export function CreateTramiteDialog({
               })}
             </ul>
           </div>
+          )}
 
           {error ? (
             <div role="alert" className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">

@@ -66,11 +66,11 @@ export const CAPACIDADES = [
     codigo: "do_exige_tarifa_vigente",
     nombre: "DO solo con tarifa vigente",
     descripcion:
-      "No deja crear un DO si la empresa no tiene una tarifa vigente para esa línea de servicio. Las solicitudes que llegan de afuera sí entran, pero no se pueden abrir hasta que la tarifa esté publicada.",
+      "No deja crear un DO si la empresa no tiene una tarifa vigente para esa línea de servicio. Las solicitudes que llegan de afuera sí entran, pero no se pueden abrir hasta que la tarifa esté publicada. Por defecto solo aplica a IMPORTACION y CLASIFICACION: los «Otros servicios» se abren sin tarifa y se facturan por valor escrito a mano.",
     grupo: "Comercial",
     ambito: "EMPRESA",
     porDefecto: true,
-    configPorDefecto: { tiposTramite: ["IMPORTACION", "CLASIFICACION", "OTRO"] },
+    configPorDefecto: { tiposTramite: ["IMPORTACION", "CLASIFICACION"] },
     orden: 25,
   },
   {

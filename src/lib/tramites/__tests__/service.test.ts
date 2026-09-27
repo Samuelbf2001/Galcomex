@@ -20,6 +20,7 @@ import {
   listTramites,
   transitionTramite,
   verificarContenedoresAlEditar,
+  verificarServicioFlujoCorto,
 } from "../service";
 
 /**
@@ -466,6 +467,28 @@ describe("tramites service con Postgres local", () => {
     expect(tramite.numContenedores).toBeNull();
   });
 
+  it("D3 — OTRO (flujo corto, 26-sep-2026) no exige contenedores aunque la empresa tenga la función encendida", async (ctx) => {
+    ensureDb(ctx);
+
+    const polyrecOtros = await prisma.cliente.create({
+      data: {
+        nombre: "Polyrec Otros Vitest",
+        nit: `${runId}-polyrec-otros`,
+        tipo: TipoCliente.PROPIO,
+        capacidades: {
+          create: [...SIN_REQUISITOS_DO, { codigo: "contenedores_obligatorio", habilitado: true }],
+        },
+      },
+    });
+
+    // `camposBaseCalculo=[]` de OTRO es una decisión explícita de no usar
+    // ningún campo de la base de cálculo — ni siquiera numContenedores.
+    const otro = await createTramite(
+      createInput({ clienteId: polyrecOtros.id, tipoTramiteCodigo: "OTRO" }),
+    );
+    expect(otro).toMatchObject({ numContenedores: null, tipoCarga: null });
+  });
+
   it("crea 20 tramites concurrentes sin consecutivos duplicados ni saltos", async (ctx) => {
     const db = ensureDb(ctx);
     const ciudad = Ciudad.SMR;
@@ -501,6 +524,339 @@ describe("tramites service con Postgres local", () => {
         formatConsecutivo(IMPORTACION, ciudad, concurrencyYear, tramite.numero),
       ),
     );
+  });
+
+  describe("transitionTramite — atajo de flujo corto (OTRO, decisión de Ernesto 26-sep-2026)", () => {
+    let contadorFlujoCorto = 0;
+
+    async function crearClienteFlujoCorto(nombre: string, conceptosIva: boolean) {
+      return prisma.cliente.create({
+        data: {
+          nombre,
+          nit: `${runId}-fc-${nombre}`,
+          tipo: TipoCliente.PROPIO,
+          capacidades: {
+            create: [
+              ...SIN_REQUISITOS_DO,
+              ...(conceptosIva
+                ? [
+                    {
+                      codigo: "factura_conceptos_iva",
+                      habilitado: true,
+                      config: { reteIvaPorcentaje: 15, observacionNoRetenciones: true },
+                    },
+                  ]
+                : []),
+            ],
+          },
+        },
+      });
+    }
+
+    async function crearOtroEnEstado(
+      db: Fixture,
+      clienteId: string,
+      estado: EstadoTramite,
+      extra: Partial<{ valorServicio: bigint | null; conceptoServicioCodigo: string | null }> = {},
+    ) {
+      contadorFlujoCorto += 1;
+      return prisma.tramiteDO.create({
+        data: {
+          consecutivo: `OTR-flujocorto-${runId.slice(-6)}-${contadorFlujoCorto}`,
+          tipoTramiteCodigo: "OTRO",
+          ciudad: Ciudad.BUN,
+          anio: stateYear,
+          numero: 700_000 + contadorFlujoCorto,
+          clienteId,
+          creadoPorId: db.userId,
+          comentarios: `${TEST_PREFIX}:${runId}`,
+          estado,
+          valorServicio: extra.valorServicio,
+          conceptoServicioCodigo: extra.conceptoServicioCodigo,
+        },
+      });
+    }
+
+    it("APERTURA → ENVIADO_A_FACTURAR sin valor/concepto → ok=false 422 VALOR_SERVICIO_REQUERIDO, sin tocar el estado", async (ctx) => {
+      const db = ensureDb(ctx);
+      const cliente = await crearClienteFlujoCorto("SinValorTransicion", true);
+      const otro = await crearOtroEnEstado(db, cliente.id, EstadoTramite.APERTURA);
+
+      const result = await transitionTramite(
+        otro.id,
+        EstadoTramite.ENVIADO_A_FACTURAR,
+        db.userId,
+        false,
+        Rol.OPERATIVO,
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        status: 422,
+        codigo: "VALOR_SERVICIO_REQUERIDO",
+      });
+
+      const sinCambios = await prisma.tramiteDO.findUnique({
+        where: { id: otro.id },
+        select: { estado: true, fechaEnviadoAFacturar: true },
+      });
+      expect(sinCambios?.estado).toBe(EstadoTramite.APERTURA);
+      expect(sinCambios?.fechaEnviadoAFacturar).toBeNull();
+    });
+
+    it("SOLICITUD → ENVIADO_A_FACTURAR con valor + concepto → ok=true y fija fechaEnviadoAFacturar", async (ctx) => {
+      const db = ensureDb(ctx);
+      await prisma.conceptoVenta.upsert({
+        where: { codigo: "PLAN_VALLEJO" },
+        update: { nombre: "Programa Plan Vallejo", aplicaIva: true },
+        create: { codigo: "PLAN_VALLEJO", nombre: "Programa Plan Vallejo", aplicaIva: true },
+      });
+      const cliente = await crearClienteFlujoCorto("ConValorTransicion", true);
+      const otro = await crearOtroEnEstado(db, cliente.id, EstadoTramite.SOLICITUD, {
+        valorServicio: 350_000n,
+        conceptoServicioCodigo: "PLAN_VALLEJO",
+      });
+
+      const result = await transitionTramite(
+        otro.id,
+        EstadoTramite.ENVIADO_A_FACTURAR,
+        db.userId,
+        false,
+        Rol.OPERATIVO,
+      );
+
+      expect(result.ok).toBe(true);
+      const actualizado = await prisma.tramiteDO.findUnique({
+        where: { id: otro.id },
+        select: { estado: true, fechaEnviadoAFacturar: true },
+      });
+      expect(actualizado?.estado).toBe(EstadoTramite.ENVIADO_A_FACTURAR);
+      expect(actualizado?.fechaEnviadoAFacturar).not.toBeNull();
+    });
+
+    it("con valor + concepto pero sin «Factura con conceptos e IVA» → ok=false 422 FORMATO_CONCEPTOS_REQUERIDO", async (ctx) => {
+      const db = ensureDb(ctx);
+      const cliente = await crearClienteFlujoCorto("SinFormatoTransicion", false);
+      const otro = await crearOtroEnEstado(db, cliente.id, EstadoTramite.APERTURA, {
+        valorServicio: 350_000n,
+        conceptoServicioCodigo: "PLAN_VALLEJO",
+      });
+
+      const result = await transitionTramite(
+        otro.id,
+        EstadoTramite.ENVIADO_A_FACTURAR,
+        db.userId,
+        false,
+        Rol.OPERATIVO,
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        status: 422,
+        codigo: "FORMATO_CONCEPTOS_REQUERIDO",
+      });
+    });
+  });
+
+  describe("verificarServicioFlujoCorto — B2 (estado combinado), A2/B-N2/B-N3 (borrador o estado avanzado)", () => {
+    let contadorGuard = 0;
+
+    async function crearOtroGuard(
+      db: Fixture,
+      extra: Partial<{
+        valorServicio: bigint | null;
+        conceptoServicioCodigo: string | null;
+        estado: EstadoTramite;
+        referenciaExterna: string | null;
+      }> = {},
+    ) {
+      contadorGuard += 1;
+      return prisma.tramiteDO.create({
+        data: {
+          consecutivo: `OTR-guard-${runId.slice(-6)}-${contadorGuard}`,
+          tipoTramiteCodigo: "OTRO",
+          ciudad: Ciudad.BUN,
+          anio: stateYear,
+          numero: 800_000 + contadorGuard,
+          clienteId: db.clienteId,
+          creadoPorId: db.userId,
+          comentarios: `${TEST_PREFIX}:${runId}`,
+          estado: extra.estado ?? EstadoTramite.APERTURA,
+          valorServicio: extra.valorServicio,
+          conceptoServicioCodigo: extra.conceptoServicioCodigo,
+          referenciaExterna: extra.referenciaExterna,
+        },
+      });
+    }
+
+    async function crearClasificacionGuard(db: Fixture) {
+      contadorGuard += 1;
+      return prisma.tramiteDO.create({
+        data: {
+          consecutivo: `CLAS-guard-${runId.slice(-6)}-${contadorGuard}`,
+          tipoTramiteCodigo: "CLASIFICACION",
+          ciudad: Ciudad.BUN,
+          anio: stateYear,
+          numero: 810_000 + contadorGuard,
+          clienteId: db.clienteId,
+          creadoPorId: db.userId,
+          comentarios: `${TEST_PREFIX}:${runId}`,
+          estado: EstadoTramite.ENVIADO_A_FACTURAR,
+          referenciaExterna: "2110",
+        },
+      });
+    }
+
+    it("B2: PATCH que solo trae valorServicio, con concepto YA guardado, pasa sin exigirlo de nuevo", async (ctx) => {
+      const db = ensureDb(ctx);
+      await prisma.conceptoVenta.upsert({
+        where: { codigo: "PLAN_VALLEJO" },
+        update: { nombre: "Programa Plan Vallejo", aplicaIva: true },
+        create: { codigo: "PLAN_VALLEJO", nombre: "Programa Plan Vallejo", aplicaIva: true },
+      });
+      const otro = await crearOtroGuard(db, { conceptoServicioCodigo: "PLAN_VALLEJO" });
+
+      await expect(
+        verificarServicioFlujoCorto({
+          tipoTramiteCodigo: "OTRO",
+          tramiteId: otro.id,
+          antes: { valorServicio: null, conceptoServicioCodigo: "PLAN_VALLEJO" },
+          valorServicio: 500_000n,
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it("B2: PATCH que solo trae valorServicio, SIN concepto guardado, exige el concepto (422)", async (ctx) => {
+      const db = ensureDb(ctx);
+      const otro = await crearOtroGuard(db);
+
+      await expect(
+        verificarServicioFlujoCorto({
+          tipoTramiteCodigo: "OTRO",
+          tramiteId: otro.id,
+          antes: { valorServicio: null, conceptoServicioCodigo: null },
+          valorServicio: 500_000n,
+        }),
+      ).rejects.toMatchObject({ name: "ConceptoServicioRequeridoError", status: 422 });
+    });
+
+    it("A2: con un borrador ya generado, el PATCH de valorServicio/concepto responde 409", async (ctx) => {
+      const db = ensureDb(ctx);
+      const otro = await crearOtroGuard(db, {
+        valorServicio: 350_000n,
+        conceptoServicioCodigo: "PLAN_VALLEJO",
+      });
+      await prisma.borradorFactura.create({
+        data: {
+          tramiteId: otro.id,
+          comision: 0n,
+          ivaComision: 0n,
+          impuesto4x1000: 0n,
+          costosBancarios: 0n,
+          totalAnticipo: 0n,
+          totalPagos: 0n,
+          totalFactura: 0n,
+        },
+      });
+
+      await expect(
+        verificarServicioFlujoCorto({
+          tipoTramiteCodigo: "OTRO",
+          tramiteId: otro.id,
+          antes: { valorServicio: 350_000n, conceptoServicioCodigo: "PLAN_VALLEJO" },
+          valorServicio: 999_000n,
+        }),
+      ).rejects.toMatchObject({ name: "ServicioConBorradorExistenteError", status: 409 });
+    });
+
+    it("B-N2: con un borrador ya generado, el PATCH de referenciaExterna también responde 409", async (ctx) => {
+      const db = ensureDb(ctx);
+      const otro = await crearOtroGuard(db, {
+        valorServicio: 350_000n,
+        conceptoServicioCodigo: "PLAN_VALLEJO",
+        referenciaExterna: "Firma programa Plan Vallejo 2026",
+      });
+      await prisma.borradorFactura.create({
+        data: {
+          tramiteId: otro.id,
+          comision: 0n,
+          ivaComision: 0n,
+          impuesto4x1000: 0n,
+          costosBancarios: 0n,
+          totalAnticipo: 0n,
+          totalPagos: 0n,
+          totalFactura: 0n,
+        },
+      });
+
+      await expect(
+        verificarServicioFlujoCorto({
+          tipoTramiteCodigo: "OTRO",
+          tramiteId: otro.id,
+          estadoActual: EstadoTramite.APERTURA,
+          referenciaExterna: "Otro texto",
+        }),
+      ).rejects.toMatchObject({ name: "ServicioConBorradorExistenteError", status: 409 });
+    });
+
+    it("B-N2: sin borrador y en estado temprano, el PATCH de referenciaExterna pasa normal", async (ctx) => {
+      const db = ensureDb(ctx);
+      const otro = await crearOtroGuard(db);
+
+      await expect(
+        verificarServicioFlujoCorto({
+          tipoTramiteCodigo: "OTRO",
+          tramiteId: otro.id,
+          estadoActual: EstadoTramite.APERTURA,
+          referenciaExterna: "Firma programa Plan Vallejo 2026",
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it("B-N3: sin borrador pero desde ENVIADO_A_FACTURAR, el PATCH de valorServicio también responde 409", async (ctx) => {
+      const db = ensureDb(ctx);
+      const otro = await crearOtroGuard(db, {
+        valorServicio: 350_000n,
+        conceptoServicioCodigo: "PLAN_VALLEJO",
+        estado: EstadoTramite.ENVIADO_A_FACTURAR,
+      });
+
+      await expect(
+        verificarServicioFlujoCorto({
+          tipoTramiteCodigo: "OTRO",
+          tramiteId: otro.id,
+          estadoActual: EstadoTramite.ENVIADO_A_FACTURAR,
+          antes: { valorServicio: 350_000n, conceptoServicioCodigo: "PLAN_VALLEJO" },
+          valorServicio: 999_000n,
+        }),
+      ).rejects.toMatchObject({ name: "ServicioConBorradorExistenteError", status: 409 });
+    });
+
+    it("Control: CLASIFICACION (no flujoCorto) puede seguir editando referenciaExterna sin restricción, aunque tenga borrador", async (ctx) => {
+      const db = ensureDb(ctx);
+      const clasificacion = await crearClasificacionGuard(db);
+      await prisma.borradorFactura.create({
+        data: {
+          tramiteId: clasificacion.id,
+          comision: 0n,
+          ivaComision: 0n,
+          impuesto4x1000: 0n,
+          costosBancarios: 0n,
+          totalAnticipo: 0n,
+          totalPagos: 0n,
+          totalFactura: 0n,
+        },
+      });
+
+      await expect(
+        verificarServicioFlujoCorto({
+          tipoTramiteCodigo: "CLASIFICACION",
+          tramiteId: clasificacion.id,
+          estadoActual: EstadoTramite.ENVIADO_A_FACTURAR,
+          referenciaExterna: "2117",
+        }),
+      ).resolves.toBeUndefined();
+    });
   });
 
   describe("listTramites - filtros de listado", () => {

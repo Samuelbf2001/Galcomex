@@ -68,6 +68,7 @@ const TIPO_IMPORTACION: TipoTramiteOption = {
   requiereEta: true,
   etiquetaReferenciaExterna: null,
   usaCamposDo: true,
+  flujoCorto: false,
 };
 
 function requisitosFixture(

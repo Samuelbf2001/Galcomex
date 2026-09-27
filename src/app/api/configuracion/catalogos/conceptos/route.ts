@@ -14,12 +14,19 @@ import {
   conceptoVentaCrearSchema,
 } from "@/lib/validations/catalogos";
 
-/** GET — maestro de conceptos de venta. ADMIN configura, REVISOR consulta. */
+/**
+ * GET — maestro de conceptos de venta. ADMIN configura, REVISOR consulta.
+ * OPERATIVO también puede leer: el modal "Crear trámite" y la ficha del DO
+ * lo usan para el selector "Concepto de venta" del servicio suelto (OTRO,
+ * decisión de Ernesto 26-sep-2026) — pero SOLO activos, sin importar el
+ * query param: OPERATIVO no administra el catálogo.
+ */
 export async function GET(request: NextRequest) {
-  const session = await requireRole(["ADMIN", "REVISOR"]);
+  const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO"]);
   if (session instanceof NextResponse) return session;
 
-  const soloActivos = request.nextUrl.searchParams.get("activos") === "1";
+  const soloActivos =
+    session.user.rol === "OPERATIVO" || request.nextUrl.searchParams.get("activos") === "1";
   const conceptos = await listarConceptosVenta({ soloActivos });
 
   return jsonResponse({ conceptos, total: conceptos.length });

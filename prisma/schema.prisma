@@ -432,6 +432,16 @@ model TipoTramite {
   /// ni salida de carga); IMPORTACION y OTRO usan las cinco, igual que siempre.
   fechasClave String[] @default(["fechaAceptacionDeclaracion", "fechaLevante", "fechaEnviadoAFacturar", "fechaDocumentosOk", "fechaSalidaCarga"])
 
+  /// Servicio sin operación de importación (decisión de Ernesto, 26-sep-2026,
+  /// caso OTRO: Plan Vallejo, sellos, coordinación logística): se abre sin
+  /// pagos a proveedores y se manda a facturar directo (sin pasar por los
+  /// estados de puerto). Para facturar exige el formato CONCEPTOS_IVA de la
+  /// empresa y, dentro de eso, o bien `TramiteDO.valorServicio` +
+  /// `conceptoServicioCodigo` escritos a mano, o una tarifa vigente de la
+  /// línea con líneas calculadas — nunca un valor ni un concepto por defecto.
+  /// Ver `lib/tramites/flujo-corto.ts` y `lib/tramites/transiciones.ts`.
+  flujoCorto Boolean @default(false)
+
   orden     Int      @default(0)
   activo    Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -496,6 +506,23 @@ model TramiteDO {
   ordenCompraNumero String?
   ordenCompraValor  BigInt? // COP sin IVA, tal como viene en la OC
 
+  // Servicio sin operación (flujo corto, decisión de Ernesto 26-sep-2026):
+  // solo aplica si `tipoTramite.flujoCorto` es true (hoy, OTRO). El valor
+  // escrito a mano manda sobre el tarifario — es un servicio no estándar.
+  /// Valor del servicio sin IVA, COP enteros. Con este valor Y
+  /// `conceptoServicioCodigo` puestos, `generarBorrador` arma una sola línea
+  /// con el nombre del concepto/producto Siigo (nunca de `referenciaExterna`,
+  /// que en cambio sale en las observaciones de la factura como
+  /// "SERVICIO: …") en vez de calcular por tarifario. Requiere el formato de
+  /// factura CONCEPTOS_IVA (función `factura_conceptos_iva`); ver
+  /// `lib/tramites/flujo-corto.ts`.
+  valorServicio         BigInt?
+  /// Concepto de venta del servicio (PLAN_VALLEJO, SELLOS…). Obligatorio si
+  /// viene `valorServicio`. `onDelete: SetNull` — dar de baja un concepto no
+  /// debe romper el DO que ya lo usó.
+  conceptoServicioCodigo String?
+  conceptoServicio        ConceptoVenta? @relation("TramiteConceptoServicio", fields: [conceptoServicioCodigo], references: [codigo], onDelete: SetNull)
+
   /// Trámite cargado desde el archivo histórico (Drive 2026): existe para que
   /// se vean su carpeta y sus documentos, sin detalle financiero. La UI lo
   /// marca con un distintivo y los importadores lo usan para no pisar DOs reales.
@@ -527,6 +554,7 @@ model TramiteDO {
   @@index([clienteId])
   @@index([estado])
   @@index([estado, fechaSalidaCarga])
+  @@index([conceptoServicioCodigo])
   @@map("tramite_do")
 }
 
@@ -1471,6 +1499,9 @@ model ConceptoVenta {
   updatedAt DateTime @updatedAt
 
   items TarifaItem[]
+  /// DOs de flujo corto (OTRO) que escribieron este concepto a mano en
+  /// `TramiteDO.valorServicio` (revisión de Ernesto, 26-sep-2026).
+  tramitesServicio TramiteDO[] @relation("TramiteConceptoServicio")
 
   @@index([activo, orden])
   @@map("concepto_venta")
