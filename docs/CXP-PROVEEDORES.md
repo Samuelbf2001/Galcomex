@@ -16,9 +16,16 @@ Dinero: COP enteros (`BigInt`), tolerancia 0 pesos. Centavos = fase aparte.
 | R3b | **Una factura, un cruce** de cuenta corriente: la factura guarda un solo `compensacionId` y el `montoCompensado` total, así que un segundo cruce se rechaza (`registrarCompensacion`, 422 "ya tiene un cruce") y no aparece entre los cruzables. Lo que le falte se paga por el libro, o se deshace el cruce y se vuelve a cruzar por el total. |
 | R6 | Un pago va a **un** proveedor. "Proveedor" = clave `NIT:<nitBase>` de la ficha (o `BEN:<id>` si la ficha no tiene NIT colombiano): dos fichas del mismo NIT (varias cuentas bancarias) son el mismo proveedor. |
 | R8 | Costo bancario del pago en bloque: **una vez**, en `PagoGrupo.costoBancario`. Por DO, `puedeAbsorber` = cliente sin `factura_conceptos_iva` y borrador ausente o en BORRADOR/EN_REVISION. Defecto `PRIMER_DO` (el primero que puede absorberlo); si ninguno puede → `GALCOMEX`. Opción `PRORRATEADO` (restos mayores, Σ exacta), con peso = lo que el bloque le cobra al cliente de cada DO (sus facturas que se cobran; la asesoría NO SE COBRA no atrae costo). El saldo del DO que usa CxP (`saldoTramite`: aviso «anticipo insuficiente», estado de cuenta, conciliación) es el del **cliente**: anticipo − parte cobrable de los pagos, la misma cifra del libro. |
-| R9 | "Sin anticipo no hay pago" = `anticipos_cliente && pago_exige_anticipo` del cliente del DO (capacidad nueva, encendida por defecto). No aplica a costos propios no repercutibles, histórico ni cruce. |
+| R9 | "Sin anticipo no hay pago" = `anticipos_cliente && pago_exige_anticipo` del cliente del DO (capacidad nueva, encendida por defecto). Vale para los tres caminos de pago: suelto, bloque y **«Generar pago»** (aviso abajo). No aplica a costos propios no repercutibles, histórico ni cruce. |
 | R12 | Una factura por proveedor: `@@unique([proveedorClave, numFacturaNormalizado])`. `numFacturaNormalizado` = mayúsculas y solo A-Z0-9 (`FE- 12481` → `FE12481`). |
 | R17 | Fechas-calendario (factura, pago, TRM, cruce): 00:00 UTC del día, se muestran en UTC (`formatFechaCalendario`); "hoy" = día calendario en Bogotá (`hoyBogotaISO`). |
+
+**Cambio de comportamiento (R9).** Hasta `bcde4de`, «Generar pago» desde una factura de
+proveedor era el único camino que se saltaba "Sin anticipo no hay pago". En v2 delega en
+`crearPago({ aplicaciones })` y la exige: en un cliente con anticipos, un DO sin anticipo
+aplicado **no se paga con «Generar pago»**. Salidas: aplicar el anticipo al DO, o apagar
+"Sin anticipo no hay pago" (`pago_exige_anticipo`) en la pestaña Funciones de ese cliente
+(queda en `AuditLog`).
 
 ### NIT sin adivinar el DV
 
@@ -66,16 +73,20 @@ Comprobar en una base: `SELECT tgrelid::regclass, tgname, tgenabled FROM pg_trig
 
 ## 4. Migraciones
 
-| Archivo | Contenido | Dueño |
-|---|---|---|
-| `20260925100000_cxp_v2_tipos` | enums (`PARCIAL` va solo: no se puede usar en la misma transacción) | P0 |
-| `20260925100100_cxp_v2_estructura` | columnas, tablas, índices, FKs de tablas nuevas, funciones SQL. `monto` nace NULL | P0 |
-| `20260925100200_cxp_v2_backfill` | llaves, `monto` (pasadas 0–2), beneficiario de pagos huérfanos, cruces, ajustes `LEGADO`, estado, cabeceras `PagoGrupo`, FK del grupo, índice único, triggers (guardianes apagados) | P0 |
-| `20260925100300_cxp_v2_capacidad_datos` | capacidad `pago_exige_anticipo` + filas `false` donde `anticipos_cliente` efectiva es `false`; `nombreCorto`/`numFacturaConEspacio`/`conciliacionPendiente` de Almacarga, Express y Tampa por `nitBase` | P0 |
-| `20260925100400_cxp_v2_guardian` | `ENABLE TRIGGER` de los tres guardianes | P1 |
+| M | Archivo | Contenido | Dueño |
+|---|---|---|---|
+| M1 | `20260925100000_cxp_v2_tipos` | enums (`PARCIAL` va solo: no se puede usar en la misma transacción) | P0 |
+| M2 | `20260925100100_cxp_v2_estructura` | columnas, tablas, índices, FKs de tablas nuevas, funciones SQL. `monto` nace NULL | P0 |
+| M3 | `20260925100200_cxp_v2_backfill` | llaves, `monto` (pasadas 0–2), beneficiario de pagos huérfanos, cruces, ajustes `LEGADO`, estado, cabeceras `PagoGrupo`, FK del grupo, índice único, triggers (guardianes apagados) | P0 |
+| M3b | `20260925100250_cxp_v2_bloques_lote_historicos` | marca como históricos (`esHistorico`, costo `GALCOMEX`) los bloques de pagos de cartera cargados por el lote `HIST-PLATA-2026-09-23`; solo los que no tienen comprobante ni costo (los que tienen soporte quedan como bloques normales). No toca pagos ni facturas | integración |
+| M4 | `20260925100300_cxp_v2_capacidad_datos` | capacidad `pago_exige_anticipo` + filas `false` donde `anticipos_cliente` efectiva es `false`; `nombreCorto`/`numFacturaConEspacio`/`conciliacionPendiente` de Almacarga, Express y Tampa por `nitBase` | P0 |
+| M5 | `20260925100400_cxp_v2_guardian` | `ENABLE TRIGGER` de los tres guardianes | P1 |
 
 Todas **aditivas** y **no pueden fallar** con datos reales (sin `RAISE`, todo con
 `GREATEST/LEAST/COALESCE`): el `docker-entrypoint.sh` corre `prisma migrate deploy` con `set -e`.
+Las de master que ya están en producción con `bcde4de` (`20260924200000_movimiento_cuenta_factura`,
+`20260924210000_renombrar_cargos_manuales_contraparte`, `20260925180000_comision_tramite`,
+`20260925200000_anticipo_origen_abono`) no son de CxP: ninguna reversa las toca.
 
 **Backfill de `monto`** (determinista, nunca sobre-aplica):
 - Pasada 0: enlaces de pagos en bloque → el `montoPagadoEnGrupo` del AuditLog del bloque (el más cercano en el tiempo al pago), con tope en el valor de la factura.
@@ -111,9 +122,30 @@ quitarlo y la factura se reabre). Una `REGISTRADA` con enlaces pasa a `PARCIAL`/
 - I6 `totalAplicado = Σ valor` del bloque activo.
 - I7 todo pago con puente tiene beneficiario y es del proveedor de sus facturas (salvo heredados del reporte Q4).
 
-## 7. Reversa y re-avance (runbook)
+## 7. Runbook: verificación, reversa y re-avance
 
-- `scripts/cxp/reversa-v2.sql`: para volver a correr `e5cd35b` sobre una BD con M1–M5. Lista las Abonadas con su saldo ("pagar solo el saldo"), `PARCIAL → REGISTRADA`, quita la FK del grupo, `monto` admite NULL, apaga guardianes. Deja activos las llaves y el índice único (un duplicado da error genérico en el código viejo). El `prisma migrate deploy` de `e5cd35b` no falla con M1–M5 ya aplicadas (ensayado).
+Versión anterior (la de producción hoy): `master` **`bcde4de`** (D0 + abonos +
+contenedores/LTRANS), con `20260925180000_comision_tramite` y
+`20260925200000_anticipo_origen_abono` ya aplicadas.
+
+### Verificación post-despliegue
+
+Dentro del contenedor de la app, en la misma sesión SSH del despliegue. Los dos son de
+solo lectura y salen con código 1 si encuentran algo: es la compuerta para dar el
+despliegue por bueno o decidir la reversa.
+
+```
+docker exec <app> npx tsx scripts/cxp/verificar-invariantes.ts      # I1–I7 (§6); --salida informe.txt, --json
+docker exec <app> npx tsx scripts/cxp/comparar-cuenta-vs-cxp.ts     # cuenta corriente vs estado de cuenta, por empresa
+```
+
+`comparar-cuenta-vs-cxp.ts` compara, empresa por empresa, las facturas de proveedor de la
+cuenta corriente con lo pendiente del estado de cuenta CxP, y el número de fichas. Los
+movimientos a mano de la cuenta corriente salen en columna aparte (CxP no los ve).
+
+### Reversa y re-avance
+
+- `scripts/cxp/reversa-v2.sql`: para volver a correr `bcde4de` sobre una BD con M1–M5 (y M3b). Lista las Abonadas con su saldo ("pagar solo el saldo"), `PARCIAL → REGISTRADA`, quita la FK del grupo, `monto` admite NULL, apaga guardianes. Deja activos las llaves y el índice único (un duplicado da error genérico en el código viejo). El `prisma migrate deploy` de `bcde4de` no intenta deshacer M1–M5: solo aplica las pendientes que conoce (ensayado con `e5cd35b`; de `e5cd35b` a `bcde4de` no cambian las tablas de CxP). Las migraciones de master que ya están en producción (`20260924200000_movimiento_cuenta_factura`, `20260924210000_renombrar_cargos_manuales_contraparte`, `20260925180000_comision_tramite`, `20260925200000_anticipo_origen_abono`) **no se revierten**.
 - `scripts/cxp/re-avance-v2.sql`: para volver a v2. Completa `monto` NULL con las pasadas de M3 respetando lo ya aplicado; arregla cruces hechos/deshechos por el código viejo; `LEGADO` para pagadas con faltante; recalcula estados; cabeceras de bloques nuevos; bloques activos sin pagos → ANULADO; FK de vuelta; enciende guardianes **solo si M5 está aplicada**; aborta (no guarda nada) si queda alguna factura sobre-aplicada (I2) o con estado distinto del saldo (I4). Idempotente.
 
 ```
@@ -138,3 +170,13 @@ Pruebas y archivos que P0 tocó mecánicamente y cambian de dueño:
 Pruebas existentes que el índice único o los triggers de llaves rompieron: **ninguna**
 (suite medida con M1–M4 aplicadas). Scripts rotos por `monto` obligatorio y que son de P2:
 `scripts/sim-almacarga/cargar-caso-real.ts:629`, `scripts/sim-almacarga/reparar-pago-vuce-226.ts:77`.
+
+## 9. Carga histórica (D0) después de v2
+
+- `pago_tramite_factura.monto` es obligatorio: todo enlace pago↔factura dice cuánto aplica.
+- El estado de la factura es derivado (R1): tras cargar, `recalcularEstadoFactura`; nunca `estado` a mano.
+- Bloques de pagos de cartera: `PagoGrupo` con `esHistorico = true` (sin comprobante obligatorio; R9 no aplica). M3b lo hace con los del lote `HIST-PLATA-2026-09-23` sin comprobante; `re-avance-v2.sql` lo repite.
+- **Duplicado heredado** (`proveedorClave` NULL): 3 facturas partidas entre DOs, SPRB 1003953368, SPRB 1003984610 y COMPAS CTG838115. No chocan con el índice único; editar solo su concepto no les devuelve la llave (§3); cambiarles el número o la ficha sí la recalcula.
+- COMPAS CTG802963 + CTG802964, cubiertas por un pago de 3.180.878, quedan con ajustes `LEGADO` por 3.501.837. Revisar con Camila contra el extracto: v2 no permite notas crédito manuales ni devolver una factura a `REGISTRADA` a mano (solo ADMIN puede quitar el `LEGADO`, y la factura se reabre).
+- Un pago con facturas no se edita en valor ni canal (`PagoNoEditableError`): se anula y se registra de nuevo.
+- La ficha de CEVA no tiene NIT: su clave es `BEN:<id>` (R6), un proveedor aparte de cualquier otra ficha. Si se le pone el NIT, `trg_beneficiario_reclave` re-clava sus facturas.

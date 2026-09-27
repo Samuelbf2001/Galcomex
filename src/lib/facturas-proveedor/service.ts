@@ -71,7 +71,7 @@ import {
   type PartesFactura,
 } from "@/lib/cxp/saldos";
 import { prisma } from "@/lib/db/prisma";
-import { aFechaCalendario } from "@/lib/tiempo/bogota";
+import { aFechaCalendario, fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 import { transitionTramite } from "@/lib/tramites/service";
 
@@ -1147,7 +1147,9 @@ export async function solicitarFacturacion(
   // Actualizar fechaEnviadoAFacturar
   await prisma.tramiteDO.update({
     where: { id: tramiteId },
-    data: { fechaEnviadoAFacturar: new Date() },
+    // Fecha-calendario: el día en Bogotá a 00:00 UTC (un envío a las 20:00 no
+    // debe salir con el día siguiente en el tablero ni en el DO).
+    data: { fechaEnviadoAFacturar: fechaCalendarioBogota() },
   });
 
   // Auto-crear borrador idempotente para PROPIO y SOCIO_LM. Nace con líneas

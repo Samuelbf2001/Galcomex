@@ -13,8 +13,10 @@
 --      puente sin monto).
 --   4. Apaga los tres guardianes de saldo (el código viejo permite doble pago
 --      por diseño y el guardián lo convertiría en error 500).
--- Qué NO toca (a propósito): columnas y tablas nuevas, triggers de llaves e
--- índice único (proveedor, número). Siguen al día para volver con
+-- Qué NO toca (a propósito): columnas y tablas nuevas (incluida la marca
+-- esHistorico que 20260925100250_cxp_v2_bloques_lote_historicos pone a los
+-- bloques de la carga histórica: el código viejo no lee pago_grupo), triggers
+-- de llaves e índice único (proveedor, número). Siguen al día para volver con
 -- `re-avance-v2.sql`. Consecuencia aceptada: en el código viejo una factura
 -- duplicada del mismo proveedor da un error genérico en vez de guardarse.
 --

@@ -12,8 +12,11 @@
  *   3. Manuales        — `MovimientoCuenta`: la mensualidad de Coldex, las
  *                        comisiones de Eltrans, los ajustes.
  *
- * El puente hacia el lado proveedor es `Beneficiario.empresaId`; sin ese enlace
- * la empresa simplemente no tiene lado proveedor.
+ * El puente hacia el lado proveedor son las fichas de pago de `fichasDeEmpresa`
+ * (CxP v2): las enlazadas por `Beneficiario.empresaId` más las sueltas con su
+ * NIT base. Es la misma lista que suma el estado de cuenta del proveedor, así
+ * las dos pantallas nunca cuentan fichas distintas. Sin fichas, la empresa
+ * simplemente no tiene lado proveedor.
  */
 
 import {
@@ -28,13 +31,15 @@ import { tiene } from "@/lib/capacidades/resolver";
 import { eliminarPagoFactura, registrarPagoFacturaAbono } from "@/lib/cartera/service";
 import { aplicarSaldo, bloquearFacturas, revertirSaldo } from "@/lib/cxp/aplicar";
 import { bloquearTramites } from "@/lib/cxp/bloqueos";
-import { saldoDe } from "@/lib/cxp/saldos";
+import { fichasDeEmpresa } from "@/lib/cxp/estado-cuenta";
+import { formatoPesos, saldoDe } from "@/lib/cxp/saldos";
 import { TramiteCerradoError } from "@/lib/tramites/guard";
 import { aFechaCalendario, formatFechaCalendario } from "@/lib/tiempo/bogota";
 import {
   asientoDesde,
   calcularCuentaCorriente,
   maximoCompensable,
+  rolDe,
   type AsientoCuenta,
   type ResumenCuenta,
 } from "@/lib/cuenta-corriente/calculo";
@@ -233,27 +238,35 @@ function saldoFacturaProveedor(f: {
 const ESTADOS_CON_SALDO = ["REGISTRADA", "PARCIAL"] as const;
 
 /**
+ * Ids de las fichas de pago de la empresa como proveedor: la MISMA lista que
+ * suma el estado de cuenta CxP v2 (`fichasDeEmpresa`: enlazadas + sueltas con
+ * su NIT base, nunca las de otra empresa).
+ */
+async function fichasProveedorDe(
+  db: Prisma.TransactionClient,
+  empresaId: string,
+  nitEmpresa: string | null,
+): Promise<string[]> {
+  return (await fichasDeEmpresa(db, empresaId, nitEmpresa)).map((f) => f.id);
+}
+
+/**
  * Asientos del lado PROVEEDOR: el saldo de las facturas que la empresa nos
  * emitió y que todavía no se han pagado del todo (Pendientes y Abonadas).
  * Incluye las marcadas como "no se le cobra al cliente" (M6): al proveedor se
  * le debe igual, se traslade o no.
  */
 async function asientosComoProveedor(
-  empresaId: string,
+  fichaIds: string[],
   db: Prisma.TransactionClient = prisma,
 ): Promise<AsientoCuenta[]> {
-  const beneficiarios = await db.beneficiario.findMany({
-    where: { empresaId },
-    select: { id: true },
-  });
-
-  if (beneficiarios.length === 0) {
+  if (fichaIds.length === 0) {
     return [];
   }
 
   const facturas = await db.facturaProveedor.findMany({
     where: {
-      beneficiarioId: { in: beneficiarios.map((b) => b.id) },
+      beneficiarioId: { in: fichaIds },
       estado: { in: [...ESTADOS_CON_SALDO] },
     },
     select: {
@@ -358,22 +371,20 @@ export interface CompensablesEmpresa {
 
 async function compensablesDe(
   empresaId: string,
+  fichaIds: string[],
   db: Prisma.TransactionClient = prisma,
 ): Promise<CompensablesEmpresa> {
-  const [facturas, beneficiarios] = await Promise.all([
-    db.factura.findMany({
-      where: { clienteId: empresaId },
-      select: {
-        id: true,
-        numSiigo: true,
-        saldoAFavorCliente: true,
-        saldoACargoCliente: true,
-        borrador: { select: { tramite: { select: { consecutivo: true } } } },
-        pagos: { where: { destino: "CLIENTE" }, select: { tipo: true, monto: true } },
-      },
-    }),
-    db.beneficiario.findMany({ where: { empresaId }, select: { id: true } }),
-  ]);
+  const facturas = await db.factura.findMany({
+    where: { clienteId: empresaId },
+    select: {
+      id: true,
+      numSiigo: true,
+      saldoAFavorCliente: true,
+      saldoACargoCliente: true,
+      borrador: { select: { tramite: { select: { consecutivo: true } } } },
+      pagos: { where: { destino: "CLIENTE" }, select: { tipo: true, monto: true } },
+    },
+  });
 
   const facturasVenta = facturas
     .map((f) => {
@@ -391,12 +402,12 @@ async function compensablesDe(
     .filter((f) => f.pendiente > 0n);
 
   const facturasProveedor =
-    beneficiarios.length === 0
+    fichaIds.length === 0
       ? []
       : (
           await db.facturaProveedor.findMany({
             where: {
-              beneficiarioId: { in: beneficiarios.map((b) => b.id) },
+              beneficiarioId: { in: fichaIds },
               estado: { in: [...ESTADOS_CON_SALDO] },
               repercutible: false,
               // Una factura, un cruce (ver registrarCompensacionBajoLock).
@@ -446,7 +457,25 @@ export interface CuentaCorrienteEmpresa extends ResumenCuenta {
   cuentaCorrienteActiva: boolean;
   /** Cuánto se puede cruzar hoy (la punta menor). */
   maximoCompensable: bigint;
+  /**
+   * Cuánto se puede cruzar SIN elegir factura de proveedor: la punta cliente
+   * contra lo que le debemos por movimientos a mano con rol PROVEEDOR (facturas
+   * de contraparte registradas a mano y ajustes, netos de los cruces sin
+   * factura ya hechos). Lo que le debemos en facturas de proveedor no entra:
+   * esas se cruzan eligiéndolas (las que no se cobran al cliente) o se pagan
+   * por el libro de pagos; cruzarlas "sin factura" las dejaría Pendientes en el
+   * estado de cuenta y se pagarían dos veces. Nunca pasa de `maximoCompensable`.
+   */
+  maximoSinFacturaProveedor: bigint;
   compensables: CompensablesEmpresa;
+}
+
+/**
+ * Lo que le debemos a la empresa por movimientos a mano con rol PROVEEDOR
+ * (positivo = le debemos). Misma convención que `pendienteProveedor`.
+ */
+function pendienteManualProveedor(manuales: AsientoCuenta[]): bigint {
+  return manuales.filter((a) => rolDe(a) === "PROVEEDOR").reduce((s, a) => s - a.valor, 0n);
 }
 
 /** `db` = la transacción cuando se consulta para validar un cruce bajo lock. */
@@ -463,12 +492,16 @@ export async function getCuentaCorriente(
     throw new EmpresaCuentaNoEncontradaError(empresaId);
   }
 
+  // Una sola lista de fichas para el saldo y para lo cruzable: la del estado
+  // de cuenta CxP v2.
+  const fichaIds = await fichasProveedorDe(db, empresaId, empresa.nit);
+
   const [comoCliente, comoProveedor, manuales, capacidades, compensables] = await Promise.all([
     asientosComoCliente(empresaId, db),
-    asientosComoProveedor(empresaId, db),
+    asientosComoProveedor(fichaIds, db),
     asientosManuales(empresaId, db),
     capacidadesDeEmpresa(empresaId),
-    compensablesDe(empresaId, db),
+    compensablesDe(empresaId, fichaIds, db),
   ]);
 
   const resumen = calcularCuentaCorriente([
@@ -488,6 +521,12 @@ export async function getCuentaCorriente(
     permiteCargosManuales: tiene(capacidades, "cargos_manuales_contraparte"),
     cuentaCorrienteActiva: tiene(capacidades, "cuenta_corriente"),
     maximoCompensable: maximoCompensable(resumen),
+    // Misma regla de "la punta menor", con la punta proveedor reducida a lo
+    // registrado a mano.
+    maximoSinFacturaProveedor: maximoCompensable({
+      pendienteCliente: resumen.pendienteCliente,
+      pendienteProveedor: pendienteManualProveedor(manuales),
+    }),
     compensables,
   };
 }
@@ -659,7 +698,10 @@ export interface RegistrarCompensacionInput {
  *   · Punta proveedor: la factura de proveedor elegida se salda por su SALDO
  *     con `aplicarSaldo` (CxP v2: una Abonada se cruza por lo que le falta;
  *     solo no repercutibles: las que se cobran al cliente necesitan el pago
- *     real del libro), o un CARGO manual con origen COMPENSACION.
+ *     real del libro), o un CARGO manual con origen COMPENSACION — este último
+ *     solo hasta lo registrado a mano (`maximoSinFacturaProveedor`): lo que se
+ *     le debe en facturas no se descuenta "sin factura", porque la factura
+ *     seguiría Pendiente y se pagaría otra vez.
  * El neto de la cuenta no cambia; bajan las dos puntas.
  *
  * Concurrencia: la validación va DENTRO de la transacción, bajo un advisory
@@ -750,6 +792,15 @@ async function registrarCompensacionBajoLock(
   if (valor > cuenta.maximoCompensable) {
     throw new CompensacionInvalidaError(
       `Solo se pueden cruzar hasta ${cuenta.maximoCompensable.toString()}: pendiente nos deben ${cuenta.pendienteCliente.toString()} y les debemos ${cuenta.pendienteProveedor.toString()}.`,
+    );
+  }
+  // Sin factura de proveedor, la punta proveedor es un CARGO a mano: solo puede
+  // bajar lo registrado a mano. Lo que le debemos en facturas de proveedor sigue
+  // Pendiente en el estado de cuenta y en «Pagar en bloque»; descontarlo aquí lo
+  // pagaría dos veces.
+  if (!facturaProveedor && valor > cuenta.maximoSinFacturaProveedor) {
+    throw new CompensacionInvalidaError(
+      `Sin factura de proveedor solo se cruza lo registrado a mano (${formatoPesos(cuenta.maximoSinFacturaProveedor)}). Lo demás que le debemos está en facturas: las que no se cobran al cliente elígelas en la lista; las demás se pagan por el libro de pagos o en Pagar en bloque.`,
     );
   }
 
@@ -880,12 +931,18 @@ export async function eliminarCompensacion(empresaId: string, compensacionId: st
         where: { compensacionId, factura: { clienteId: empresaId } },
         select: { id: true, facturaId: true },
       }),
+      // Todas las facturas del cruce: son las que `revertirSaldo` devuelve, así
+      // que todas deben quedar bloqueadas y revisadas (DO cerrado) antes.
       tx.facturaProveedor.findMany({
-        where: { compensacionId, beneficiario: { empresaId } },
+        where: { compensacionId },
         select: { id: true, tramiteId: true },
       }),
     ]);
-    if (movimientos.length === 0 && pagos.length === 0 && facturasProveedor.length === 0) {
+    // Todo cruce tiene una punta cliente de la empresa que lo registró: un abono
+    // a su factura de venta o un movimiento suyo. Solo esa punta prueba que el
+    // cruce es de esta empresa; la punta proveedor no, porque una ficha suelta
+    // puede compartir NIT base con dos empresas y la otra podría deshacerlo.
+    if (movimientos.length === 0 && pagos.length === 0) {
       throw new CompensacionNoEncontradaError(compensacionId);
     }
 

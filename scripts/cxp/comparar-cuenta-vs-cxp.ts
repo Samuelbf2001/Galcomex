@@ -25,7 +25,7 @@ async function main() {
   });
 
   let diferencias = 0;
-  console.log("empresa | fichas_cc(empresaId) | fichas_cxp(empresaId+NIT) | cc_facturas_proveedor | cxp_pendiente | cc_movimientos_a_mano_proveedor | igual");
+  console.log("empresa | fichas_enlazadas | fichas_de_la_empresa | cc_facturas_proveedor | cxp_pendiente | cc_movimientos_a_mano_proveedor | igual");
   for (const e of empresas) {
     const [cc, cxp, fichasCc] = await Promise.all([
       getCuentaCorriente(e.id),
@@ -37,13 +37,14 @@ async function main() {
       .reduce((s, a) => s - a.valor, 0n);
     const ccManualProveedor = cc.pendienteProveedor - ccFacturas;
     const cxpPendiente = cxp.resumen ? BigInt(cxp.resumen.pendiente) : 0n;
-    const igual = ccFacturas === cxpPendiente && fichasCc === cxp.fichas.length;
+    // Las dos vistas usan fichasDeEmpresa: las fichas se muestran solo como dato.
+    const igual = ccFacturas === cxpPendiente;
     if (!igual) diferencias += 1;
     console.log(
       [e.nombre, fichasCc, cxp.fichas.length, ccFacturas, cxpPendiente, ccManualProveedor, igual ? "sí" : "NO"].join(" | "),
     );
   }
-  console.log(`\nEmpresas revisadas: ${empresas.length} · con diferencia en facturas de proveedor o fichas: ${diferencias}`);
+  console.log(`\nEmpresas revisadas: ${empresas.length} · con diferencia en facturas de proveedor: ${diferencias}`);
   await prisma.$disconnect();
   if (diferencias > 0) process.exitCode = 1;
 }

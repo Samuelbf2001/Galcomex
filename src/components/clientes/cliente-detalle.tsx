@@ -33,6 +33,7 @@ import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, Skeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin } from "@/lib/auth/rol-context";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 // ---------------------------------------------------------------------------
 // Helpers de formato
@@ -51,15 +52,15 @@ function formatCOP(bigStr: string): string {
   }
 }
 
-function formatDate(iso: string | null): string {
+/**
+ * Fecha del anticipo (fecha-calendario, 00:00 UTC): se muestra el día guardado
+ * en cualquier navegador. Antes usaba la zona del navegador y en Bogotá salía
+ * un día antes (un anticipo del 10-sep se veía 09/09). Un instante viejo con
+ * hora se muestra con su día en Bogotá.
+ */
+export function formatDate(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso) || iso;
 }
 
 // ---------------------------------------------------------------------------

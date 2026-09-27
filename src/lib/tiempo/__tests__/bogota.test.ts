@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   aFechaCalendario,
@@ -116,3 +116,58 @@ describe("formatInstanteBogota — instantes reales (anulación de un bloque)", 
     expect(formatInstanteBogota("no es fecha")).toBe("");
   });
 });
+
+describe.each(["America/Bogota", "UTC"])(
+  "tolerancia a instantes viejos (fechaEnviadoAFacturar, facturas históricas) — TZ=%s",
+  (tz) => {
+    const tzOriginal = process.env.TZ;
+
+    beforeEach(() => {
+      process.env.TZ = tz;
+    });
+
+    afterEach(() => {
+      process.env.TZ = tzOriginal;
+      vi.useRealTimers();
+    });
+
+    it("formatFechaCalendario: a 00:00:00.000 UTC es fecha-calendario → ese día UTC", () => {
+      expect(formatFechaCalendario("2026-09-10T00:00:00.000Z")).toBe("10/09/2026");
+      expect(formatFechaCalendario(new Date("2026-09-10T00:00:00.000Z"))).toBe("10/09/2026");
+      expect(formatFechaCalendario("2026-09-10")).toBe("10/09/2026");
+    });
+
+    it("formatFechaCalendario: un instante con hora → su día en Bogotá", () => {
+      // 20:00 de Bogotá del 20-sep (01:00Z del 21): antes salía 21/09
+      expect(formatFechaCalendario("2026-09-21T01:00:00.000Z")).toBe("20/09/2026");
+      expect(formatFechaCalendario(new Date("2026-09-21T01:00:00.000Z"))).toBe("20/09/2026");
+      expect(formatFechaCalendario("2026-09-21T01:00:00.000Z", "larga")).toBe("20 de septiembre de 2026");
+      // Factura histórica guardada a las 12:00 UTC (07:00 de Bogotá)
+      expect(formatFechaCalendario("2026-01-12T12:00:00.000Z")).toBe("12/01/2026");
+      // Anclaje viejo a mediodía de Bogotá (17:00Z)
+      expect(formatFechaCalendario("2026-09-10T17:00:00.000Z")).toBe("10/09/2026");
+      // Borde de medianoche en Bogotá (05:00Z)
+      expect(formatFechaCalendario("2026-09-22T04:59:59.999Z")).toBe("21/09/2026");
+      expect(formatFechaCalendario("2026-09-22T05:00:00.000Z")).toBe("22/09/2026");
+      // Un milisegundo después de medianoche UTC ya es un instante
+      expect(formatFechaCalendario("2026-09-10T00:00:00.001Z")).toBe("09/09/2026");
+    });
+
+    it("fechaCalendarioAInput sigue la misma regla (prellenar y comparar días)", () => {
+      expect(fechaCalendarioAInput("2026-09-10T00:00:00.000Z")).toBe("2026-09-10");
+      expect(fechaCalendarioAInput("2026-09-21T01:00:00.000Z")).toBe("2026-09-20");
+      expect(fechaCalendarioAInput(new Date("2026-01-12T12:00:00.000Z"))).toBe("2026-01-12");
+      expect(fechaCalendarioAInput("no es fecha")).toBe("");
+    });
+
+    it("lo que ahora guarda «Enviar a facturar» a las 20:00 de Bogotá sale ese mismo día", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-09-21T01:00:00.000Z")); // 20-sep 20:00 Bogotá
+
+      const guardada = fechaCalendarioBogota();
+      expect(guardada.toISOString()).toBe("2026-09-20T00:00:00.000Z");
+      expect(formatFechaCalendario(guardada)).toBe("20/09/2026");
+      expect(formatFechaCalendario(guardada.toISOString())).toBe("20/09/2026");
+    });
+  },
+);

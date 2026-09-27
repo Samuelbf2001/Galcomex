@@ -88,7 +88,9 @@ type GenerarBorradorInput = {
    * `conceptosOperacionales`. Sin este flag, el comportamiento de siempre:
    * sin comisión ni conceptos se intenta el tarifario y, si no hay, la
    * comisión por defecto (scripts; `ensureBorrador` manda el flag si la
-   * empresa tiene `tarifario_propio`).
+   * empresa tiene `tarifario_propio`). Excepción: si hay tarifario vigente
+   * pero no propone líneas para el DO, también 409 (nunca la comisión por
+   * defecto).
    */
   usarTarifario?: boolean;
   /** Tarifario que el revisor vio en la propuesta; si ya no es el vigente → 409. */
@@ -169,7 +171,8 @@ type PendienteTarifa = { concepto: string; nombrePublico: string; motivo: string
  * aplicar el que el revisor vio: ya no hay tarifario vigente, rige otra
  * versión, la empresa ya no tiene la función o el tarifario no propone
  * líneas. 409: el estado cambió desde la propuesta; nunca se factura la
- * comisión por defecto en su lugar (hallazgo 1 del 24-sep).
+ * comisión por defecto en su lugar (hallazgo 1 del 24-sep). "No propone
+ * líneas" da 409 aunque no venga `usarTarifario` (MCP, scripts).
  */
 export class TarifarioNoAplicableError extends Error {
   public readonly status: number;
@@ -397,7 +400,13 @@ export async function generarBorrador(input: GenerarBorradorInput) {
       if (propuesta.resultado.pendientes.length > 0) {
         throw new TarifaIncompletaError(propuesta.resultado.pendientes);
       }
-      if (input.usarTarifario && propuesta.resultado.lineas.length === 0) {
+      // Tarifario vigente que no propone líneas para este DO (p. ej. Polyrec ZF
+      // con carga suelta: su ítem POR_TRAMO por CONTENEDOR da 0 con
+      // numContenedores = 0). Con o sin `usarTarifario`: la factura real no es
+      // la comisión por defecto, así que se corta aquí (MCP, scripts) en vez de
+      // facturar 150.000 en silencio. Sin tarifario vigente o sin la función
+      // (`propuesta.tarifario` null: Lucho/SOCIO_LM) no se entra a este bloque.
+      if (propuesta.resultado.lineas.length === 0) {
         throw new TarifarioNoAplicableError(
           `No se generó el borrador: el tarifario ${propuesta.tarifario.nombre} v${propuesta.tarifario.version} no propone líneas para este trámite. Escribe la comisión a mano o revisa el tarifario de la empresa.`,
         );
@@ -411,19 +420,17 @@ export async function generarBorrador(input: GenerarBorradorInput) {
           `No se generó el borrador: los valores del tarifario cambiaron mientras revisabas (viste ${formatoPesos(input.totalTarifarioEsperado)}, ahora da ${formatoPesos(propuesta.resultado.total)}), por ejemplo porque cambió la base de cálculo del DO o se registró un pago. Vuelve a consultar el tarifario y revisa los valores antes de generar.`,
         );
       }
-      if (propuesta.resultado.lineas.length > 0) {
-        tarifarioId = propuesta.tarifario.id;
-        comisionTarifa = propuesta.resultado.total;
-        conceptosOperacionales = propuesta.resultado.lineas.map((l) => ({
-          concepto: l.nombrePublico,
-          valor: l.valor,
-          siigoCodigo: l.siigoCodigo,
-          aplicaIva: l.aplicaIva,
-          // Código del maestro de conceptos: marca la línea como "viene del
-          // tarifario" y habilita la regla de nombre (docs/CATALOGOS.md §1).
-          conceptoCodigo: l.concepto,
-        }));
-      }
+      tarifarioId = propuesta.tarifario.id;
+      comisionTarifa = propuesta.resultado.total;
+      conceptosOperacionales = propuesta.resultado.lineas.map((l) => ({
+        concepto: l.nombrePublico,
+        valor: l.valor,
+        siigoCodigo: l.siigoCodigo,
+        aplicaIva: l.aplicaIva,
+        // Código del maestro de conceptos: marca la línea como "viene del
+        // tarifario" y habilita la regla de nombre (docs/CATALOGOS.md §1).
+        conceptoCodigo: l.concepto,
+      }));
     }
   }
 

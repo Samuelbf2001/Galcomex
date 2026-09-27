@@ -33,9 +33,16 @@ const h = vi.hoisted(() => {
       saldoACargoCliente: bigint;
       pagos: PagoFake[];
     }>,
-    beneficiarios: [{ id: "ben-1" }],
+    // Fichas de pago (CxP v2): la de la empresa, una suelta con su mismo NIT y
+    // una de OTRA empresa con la misma base (no debe contar para emp-1).
+    beneficiarios: [
+      { id: "ben-1", nombre: "COLDEX", nit: "900111222", nitBase: "900111222", nombreCorto: null, conciliacionPendiente: false, empresaId: "emp-1" as string | null },
+      { id: "ben-suelta", nombre: "COLDEX CUENTA 2", nit: "900111222-1", nitBase: "900111222", nombreCorto: null, conciliacionPendiente: false, empresaId: null as string | null },
+      { id: "ben-otra", nombre: "OTRA EMPRESA", nit: "900111222-5", nitBase: "900111222", nombreCorto: null, conciliacionPendiente: false, empresaId: "emp-2" as string | null },
+    ],
     facturasProveedor: [] as Array<{
       id: string;
+      beneficiarioId: string;
       numFactura: string;
       valor: bigint;
       fecha: Date;
@@ -86,9 +93,22 @@ const h = vi.hoisted(() => {
         },
       },
       beneficiario: {
-        findMany: async () => {
+        // Filtra como Prisma las dos consultas de `fichasDeEmpresa`: por empresa
+        // y por NIT base (solo sueltas o de la misma empresa).
+        findMany: async ({
+          where,
+        }: {
+          where: { empresaId?: string; nitBase?: { in: string[] }; OR?: { empresaId: string | null }[] };
+        }) => {
           await tick();
-          return db.beneficiarios.map((b) => ({ ...b }));
+          return db.beneficiarios
+            .filter(
+              (b) =>
+                (where.empresaId === undefined || b.empresaId === where.empresaId) &&
+                (where.nitBase === undefined || where.nitBase.in.includes(b.nitBase)) &&
+                (where.OR === undefined || where.OR.some((c) => c.empresaId === b.empresaId)),
+            )
+            .map((b) => ({ ...b }));
         },
       },
       facturaProveedor: {
@@ -99,7 +119,12 @@ const h = vi.hoisted(() => {
         findMany: async ({
           where,
         }: {
-          where: { estado?: string | { in: string[] }; repercutible?: boolean };
+          where: {
+            estado?: string | { in: string[] };
+            repercutible?: boolean;
+            beneficiarioId?: { in: string[] };
+            compensacionId?: string | null;
+          };
         }) => {
           await tick();
           const estados =
@@ -108,7 +133,9 @@ const h = vi.hoisted(() => {
             .filter(
               (f) =>
                 (estados === null || estados.includes(f.estado)) &&
-                (where.repercutible === undefined || f.repercutible === where.repercutible),
+                (where.repercutible === undefined || f.repercutible === where.repercutible) &&
+                (where.beneficiarioId === undefined || where.beneficiarioId.in.includes(f.beneficiarioId)) &&
+                (where.compensacionId === undefined || f.compensacionId === where.compensacionId),
             )
             .map((f) => ({ ...f, tramiteId: tramite.id, pagos: f.pagado > 0n ? [{ monto: f.pagado }] : [], ajustes: [], tramite }));
         },
@@ -240,7 +267,9 @@ const h = vi.hoisted(() => {
     },
   );
 
-  return { db, locks, ordenLocks, $transaction, registrarPagoFacturaAbono, bloquearFacturas, aplicarSaldo };
+  const revertirSaldo = vi.fn(async () => [] as string[]);
+
+  return { db, locks, ordenLocks, $transaction, registrarPagoFacturaAbono, bloquearFacturas, aplicarSaldo, revertirSaldo };
 });
 
 vi.mock("@/lib/db/prisma", () => ({ prisma: { $transaction: h.$transaction } }));
@@ -254,7 +283,7 @@ vi.mock("@/lib/cartera/service", () => ({
 vi.mock("@/lib/cxp/aplicar", () => ({
   bloquearFacturas: h.bloquearFacturas,
   aplicarSaldo: h.aplicarSaldo,
-  revertirSaldo: vi.fn(),
+  revertirSaldo: h.revertirSaldo,
 }));
 vi.mock("@/lib/cxp/bloqueos", () => ({
   bloquearTramites: vi.fn(async (_tx: unknown, ids: string[]) => {
@@ -263,7 +292,9 @@ vi.mock("@/lib/cxp/bloqueos", () => ({
   }),
 }));
 
-const { registrarCompensacion, eliminarCompensacion, CompensacionInvalidaError } = await import("../service");
+const { registrarCompensacion, eliminarCompensacion, CompensacionInvalidaError, CompensacionNoEncontradaError } = await import(
+  "../service"
+);
 
 const FECHA = new Date("2026-09-22T12:00:00Z");
 const base = { empresaId: "emp-1", fecha: FECHA, concepto: "Cruce Coldex", usuarioId: "usr-1" };
@@ -289,11 +320,13 @@ beforeEach(() => {
   h.registrarPagoFacturaAbono.mockClear();
   h.bloquearFacturas.mockClear();
   h.aplicarSaldo.mockClear();
+  h.revertirSaldo.mockClear();
 });
 
-function facturaProveedor(repercutible: boolean) {
+function facturaProveedor(repercutible: boolean, beneficiarioId = "ben-1") {
   return {
     id: "fp-1",
+    beneficiarioId,
     numFactura: "FE-11298",
     valor: 300_000n,
     fecha: FECHA,
@@ -302,6 +335,23 @@ function facturaProveedor(repercutible: boolean) {
     compensacionId: null,
     pagado: 0n,
     montoCompensado: 0n,
+  };
+}
+
+/** «Registrar factura de <proveedor>»: lo que le debemos registrado a mano. */
+function movimientoManualProveedor(valor: bigint) {
+  return {
+    id: "mov-manual",
+    rol: "PROVEEDOR",
+    tipo: "ABONO",
+    origen: "CARGO_MANUAL",
+    lineaServicio: "TRAMITE",
+    concepto: "Factura de contraparte FE-9001",
+    valor,
+    fecha: FECHA,
+    compensacionId: null,
+    numeroFactura: "FE-9001",
+    soporteKey: null,
   };
 }
 
@@ -327,9 +377,9 @@ describe("registrarCompensacion — concurrencia", () => {
   });
 
   it("dos cruces manuales simultáneos no pasan del máximo compensable", async () => {
-    // Nos deben 500.000 (factura de venta) y les debemos 300.000 (factura que
-    // se repercute: cuenta en el saldo, pero no es cruzable como documento).
-    h.db.facturasProveedor = [facturaProveedor(true)];
+    // Nos deben 500.000 (factura de venta) y les debemos 300.000 registrados a
+    // mano (factura de contraparte sin DO): lo único que se cruza sin factura.
+    h.db.movimientos = [movimientoManualProveedor(300_000n)];
 
     const resultados = await Promise.allSettled([
       registrarCompensacion({ ...base, valor: 300_000n }),
@@ -341,7 +391,7 @@ describe("registrarCompensacion — concurrencia", () => {
     expect(fallidos).toHaveLength(1);
     expect(String(fallidos[0]!.reason.message)).toMatch(/Solo se pueden cruzar hasta 0/);
     // Una sola pareja ABONO (cliente) + CARGO (proveedor).
-    expect(h.db.movimientos).toHaveLength(2);
+    expect(h.db.movimientos.filter((m) => m.origen === "COMPENSACION")).toHaveLength(2);
   });
 
   it("toma el lock de la empresa y el de abonos de la factura de venta antes de validar", async () => {
@@ -420,5 +470,101 @@ describe("Revisión adversarial (FIX) — una factura, un cruce y orden de bloqu
     h.ordenLocks.length = 0;
     await eliminarCompensacion("emp-1", compensacionId, "usr-1");
     expect(h.ordenLocks).toEqual(["cuenta_corriente:emp-1", "pago_factura:fv-1:CLIENTE", "DO:tra-1"]);
+  });
+});
+
+describe("Cruce sin factura de proveedor — solo lo registrado a mano (hallazgo B)", () => {
+  beforeEach(() => {
+    // Coldex nos debe 10.080.187 y le debemos una factura que SÍ se cobra al
+    // cliente (repercutible) con saldo 2.000.000; nada registrado a mano.
+    h.db.facturas[0]!.saldoACargoCliente = 10_080_187n;
+    h.db.facturasProveedor = [{ ...facturaProveedor(true), valor: 2_000_000n }];
+  });
+
+  it("sin factura por el saldo de una factura repercutible: 422 y no escribe nada", async () => {
+    const error = await registrarCompensacion({ ...base, valor: 2_000_000n }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CompensacionInvalidaError);
+    expect((error as InstanceType<typeof CompensacionInvalidaError>).status).toBe(422);
+    expect((error as Error).message).toBe(
+      "Sin factura de proveedor solo se cruza lo registrado a mano ($0). Lo demás que le debemos está en facturas: las que no se cobran al cliente elígelas en la lista; las demás se pagan por el libro de pagos o en Pagar en bloque.",
+    );
+    expect(h.db.movimientos).toHaveLength(0);
+    expect(h.db.auditorias).toHaveLength(0);
+    expect(h.registrarPagoFacturaAbono).not.toHaveBeenCalled();
+    expect(h.aplicarSaldo).not.toHaveBeenCalled();
+    expect(h.db.facturasProveedor[0]).toMatchObject({ estado: "REGISTRADA", montoCompensado: 0n, compensacionId: null });
+  });
+
+  it("con una factura de contraparte a mano de 1.000.000: sin factura cruza hasta 1.000.000, ni un peso más", async () => {
+    h.db.movimientos = [movimientoManualProveedor(1_000_000n)];
+
+    await expect(registrarCompensacion({ ...base, valor: 1_000_001n })).rejects.toThrow(
+      /Sin factura de proveedor solo se cruza lo registrado a mano \(\$1\.000\.000\)/,
+    );
+    expect(h.db.movimientos).toHaveLength(1);
+
+    const r = await registrarCompensacion({ ...base, valor: 1_000_000n });
+    expect(r.valor).toBe(1_000_000n);
+    const cargo = h.db.movimientos.find((m) => m.origen === "COMPENSACION" && m.rol === "PROVEEDOR");
+    expect(cargo).toMatchObject({ tipo: "CARGO", valor: 1_000_000n, compensacionId: r.compensacionId });
+    // La factura repercutible no se tocó: sigue pendiente por el libro de pagos.
+    expect(h.db.facturasProveedor[0]).toMatchObject({ estado: "REGISTRADA", montoCompensado: 0n, compensacionId: null });
+
+    // Lo registrado a mano ya se cruzó: otro cruce sin factura no cabe.
+    await expect(registrarCompensacion({ ...base, valor: 1n })).rejects.toThrow(/registrado a mano \(\$0\)/);
+  });
+
+  it("la factura de proveedor elegida no pasa por ese tope (se valida contra lo cruzable)", async () => {
+    h.db.facturasProveedor = [
+      { ...facturaProveedor(true), valor: 2_000_000n },
+      { ...facturaProveedor(false), id: "fp-2", numFactura: "FE-20001", valor: 500_000n },
+    ];
+
+    const r = await registrarCompensacion({ ...base, facturaId: "fv-1", facturaProveedorId: "fp-2" });
+    expect(r.valor).toBe(500_000n);
+    expect(h.db.facturasProveedor.find((f) => f.id === "fp-2")).toMatchObject({ estado: "PAGADA" });
+  });
+});
+
+describe("Fichas del proveedor — la misma lista que el estado de cuenta CxP v2 (hallazgo A)", () => {
+  it("una factura no repercutible de una ficha suelta con el mismo NIT se cruza y se deshace completa", async () => {
+    h.db.facturasProveedor = [facturaProveedor(false, "ben-suelta")];
+
+    const { compensacionId } = await registrarCompensacion({ ...base, facturaId: "fv-1", facturaProveedorId: "fp-1" });
+    expect(h.db.facturasProveedor[0]).toMatchObject({ estado: "PAGADA", compensacionId });
+
+    h.ordenLocks.length = 0;
+    await eliminarCompensacion("emp-1", compensacionId, "usr-1");
+    // La punta proveedor se encontró: su DO se bloqueó y su saldo se devolvió.
+    expect(h.ordenLocks).toContain("DO:tra-1");
+    expect(h.revertirSaldo).toHaveBeenCalledWith(
+      expect.anything(),
+      { tipo: "COMPENSACION", compensacionId },
+      "usr-1",
+      "Cruce deshecho",
+    );
+  });
+
+  it("una factura de la ficha de OTRA empresa con la misma base no es cruzable ni cuenta en el máximo", async () => {
+    h.db.facturasProveedor = [facturaProveedor(false, "ben-otra")];
+
+    await expect(
+      registrarCompensacion({ ...base, facturaId: "fv-1", facturaProveedorId: "fp-1" }),
+    ).rejects.toThrow(/no es de esta empresa/);
+    // Sin esa factura no le debemos nada: sin factura tampoco hay qué cruzar.
+    await expect(registrarCompensacion({ ...base, valor: 1n })).rejects.toThrow(/Solo se pueden cruzar hasta 0/);
+    expect(h.aplicarSaldo).not.toHaveBeenCalled();
+  });
+
+  it("el id de un cruce sobre la ficha de otra empresa no se deshace desde esta", async () => {
+    h.db.facturasProveedor = [
+      { ...facturaProveedor(false, "ben-otra"), estado: "PAGADA", montoCompensado: 300_000n, compensacionId: "C-ajeno" },
+    ];
+
+    await expect(eliminarCompensacion("emp-1", "C-ajeno", "usr-1")).rejects.toBeInstanceOf(
+      CompensacionNoEncontradaError,
+    );
+    expect(h.revertirSaldo).not.toHaveBeenCalled();
   });
 });

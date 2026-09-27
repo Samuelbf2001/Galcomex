@@ -19,6 +19,8 @@
 --   7. Estado de todas las facturas = función del saldo.
 --   8. Cabeceras PagoGrupo para los grupoPagoId nuevos (PRIMER_DO); bloques
 --      ACTIVO: totalAplicado = Σ valor de sus pagos; sin pagos → ANULADO.
+--  8b. Bloques de la carga histórica (lote HIST-PLATA-…, sin comprobante ni
+--      costo) → esHistorico, igual que 20260925100250_cxp_v2_bloques_lote_historicos.
 --   9. Vuelve a crear la FK pago_tramite.grupoPagoId → pago_grupo.
 --  10. Guardianes de saldo: se ENCIENDEN solo si M5 (20260925100400_cxp_v2_guardian)
 --      ya está aplicada; si no, quedan como los dejó M3 (apagados).
@@ -201,6 +203,38 @@ SET "estado" = 'ANULADO',
     "updatedAt" = CURRENT_TIMESTAMP
 WHERE g."estado" = 'ACTIVO'
   AND NOT EXISTS (SELECT 1 FROM "pago_tramite" p WHERE p."grupoPagoId" = g.id);
+
+-- 8b. Bloques de la carga histórica = históricos. MISMO UPDATE que la migración
+--     20260925100250_cxp_v2_bloques_lote_historicos (ver sus criterios): cubre
+--     los bloques del lote a los que el paso 8 acaba de crear cabecera.
+UPDATE "pago_grupo" g
+SET "esHistorico" = true,
+    "costoAsumidoPor" = 'GALCOMEX',
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE g."esHistorico" = false
+  AND g."estado" = 'ACTIVO'
+  AND g."hashSolicitud" IS NULL
+  AND g."claveIdempotencia" IS NULL
+  AND g."documentoId" IS NULL
+  AND g."costoBancario" = 0
+  AND EXISTS (SELECT 1 FROM "pago_tramite" p WHERE p."grupoPagoId" = g.id)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM "pago_tramite" p
+    WHERE p."grupoPagoId" = g.id
+      AND (
+        p."documentoId" IS NOT NULL
+        OR p."costoBancario" <> 0
+        OR NOT EXISTS (
+          SELECT 1
+          FROM "audit_log" a
+          WHERE a."entidad" = 'PagoTramite'
+            AND a."entidadId" = p.id
+            AND a."despues" ->> '_lote' LIKE 'HIST-PLATA-%'
+            AND a."despues" ->> 'grupoPagoId' = g.id
+        )
+      )
+  );
 
 -- 9. FK de vuelta (idempotente).
 ALTER TABLE "pago_tramite" DROP CONSTRAINT IF EXISTS "pago_tramite_grupoPagoId_fkey";

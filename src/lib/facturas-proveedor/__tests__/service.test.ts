@@ -37,6 +37,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { FacturaConPagosError, FacturaDuplicadaError } from "@/lib/cxp/errores";
 import { prisma } from "@/lib/db/prisma";
+import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import {
   FacturaProveedorConPagosError,
   FacturaProveedorDuplicadaError,
@@ -738,8 +739,10 @@ describe("solicitarFacturacion", () => {
       data: { estado: EstadoTramite.DESPACHADO },
     });
 
+    const hoyAntes = fechaCalendarioBogota();
     const result = await solicitarFacturacion(tramiteId, db.userId);
     expect(result.ok).toBe(true);
+    const hoyDespues = fechaCalendarioBogota();
 
     // Verificar que el DO quedó en ENVIADO_A_FACTURAR con la fecha
     const tramiteActualizado = await prisma.tramiteDO.findUnique({
@@ -748,6 +751,10 @@ describe("solicitarFacturacion", () => {
     });
     expect(tramiteActualizado?.estado).toBe(EstadoTramite.ENVIADO_A_FACTURAR);
     expect(tramiteActualizado?.fechaEnviadoAFacturar).not.toBeNull();
+    // Fecha-calendario: el día en Bogotá a 00:00 UTC, no el instante del envío
+    // (a las 20:00 de Bogotá el instante ya es el día siguiente en UTC).
+    const enviado = tramiteActualizado?.fechaEnviadoAFacturar?.getTime();
+    expect([hoyAntes.getTime(), hoyDespues.getTime()]).toContain(enviado);
   });
 });
 

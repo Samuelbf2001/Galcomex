@@ -9,9 +9,11 @@
  *   · `resumenPorProveedor`       → Total de sus facturas / Pagado / Pendiente (franja de /pagos)
  *
  * Qué fichas cuentan como "el proveedor": las fichas de pago enlazadas a la
- * empresa (`Beneficiario.empresaId`) MÁS las que comparten su NIT base (la
- * llave anti-duplicado es el NIT base, no la ficha: una empresa puede tener
- * varias cuentas bancarias).
+ * empresa (`Beneficiario.empresaId`) MÁS las sueltas (sin empresa) que
+ * comparten su NIT base (la llave anti-duplicado es el NIT base, no la ficha:
+ * una empresa puede tener varias cuentas bancarias). Una ficha enlazada a OTRA
+ * empresa no cuenta aunque comparta la base. La cuenta corriente usa esta
+ * misma lista (`fichasDeEmpresa`).
  */
 
 import type { EstadoBorrador, EstadoTramite, Moneda, Prisma, TipoAjusteFacturaProveedor } from "@prisma/client";
@@ -394,7 +396,13 @@ const fichaSelect = {
   conciliacionPendiente: true,
 } satisfies Prisma.BeneficiarioSelect;
 
-/** Fichas de la empresa (por `empresaId`) + las que comparten su NIT base. */
+/**
+ * Fichas de la empresa (por `empresaId`) + las que comparten su NIT base y no
+ * están enlazadas a otra empresa (sueltas, `empresaId` null). Una ficha de OTRA
+ * empresa con la misma base no entra: si dos empresas comparten base, cada una
+ * suma solo lo suyo. Es la lista de la cuenta corriente y del estado de cuenta
+ * CxP v2, para que las dos pantallas cuenten las mismas fichas.
+ */
 export async function fichasDeEmpresa(db: Db, empresaId: string, nitEmpresa: string | null): Promise<FichaDelProveedor[]> {
   const propias = await db.beneficiario.findMany({ where: { empresaId }, select: fichaSelect });
   const bases = new Set(propias.flatMap((f) => (f.nitBase ? [f.nitBase] : [])));
@@ -403,7 +411,10 @@ export async function fichasDeEmpresa(db: Db, empresaId: string, nitEmpresa: str
   const hermanas =
     bases.size === 0
       ? []
-      : await db.beneficiario.findMany({ where: { nitBase: { in: [...bases] } }, select: fichaSelect });
+      : await db.beneficiario.findMany({
+          where: { nitBase: { in: [...bases] }, OR: [{ empresaId: null }, { empresaId }] },
+          select: fichaSelect,
+        });
   const porId = new Map<string, FichaDelProveedor>();
   for (const f of [...propias, ...hermanas]) porId.set(f.id, f);
   return [...porId.values()].sort((a, b) => a.nombre.localeCompare(b.nombre) || a.id.localeCompare(b.id));

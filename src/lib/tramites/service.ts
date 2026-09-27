@@ -916,6 +916,15 @@ async function facturasProveedorConSaldo(
   });
 }
 
+/**
+ * Opciones de la transacción de `transitionTramite`. Cerrar el DO espera su
+ * candado (`bloquearTramites`), que un pago en bloque o la anulación de un
+ * bloque retienen hasta 30 s (su propio timeout); con los 5 s por defecto de
+ * Prisma el cierre vencía en esa espera (P2028) y la ruta respondía 500. El
+ * timeout queda por encima de ese presupuesto de 30 s.
+ */
+const TX_TRANSICION = { maxWait: 10_000, timeout: 35_000 } as const;
+
 export async function transitionTramite(
   tramiteId: string,
   estadoDes: EstadoTramite,
@@ -1289,7 +1298,7 @@ export async function transitionTramite(
     }
 
     return { ok: true, tramite: updated, advertencias };
-  });
+  }, TX_TRANSICION);
 }
 
 export { formatConsecutivo };

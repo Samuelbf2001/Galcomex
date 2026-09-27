@@ -35,6 +35,12 @@ export function fechaCalendarioBogota(ahora: Date = new Date()): Date {
 // una factura del 10-sep sale 10/09/2026 en cualquier navegador (antes salía
 // 09/09 porque se formateaba en la hora de Colombia). "Hoy" es el día
 // calendario en Bogotá: después de las 19:00 ya no propone la fecha de mañana.
+//
+// Tolerancia a filas viejas: un valor con CUALQUIER hora distinta de
+// 00:00:00.000 UTC no es una fecha-calendario sino un instante (p. ej. un
+// `fechaEnviadoAFacturar` guardado con `new Date()` antes del 26-sep, o las
+// facturas históricas cargadas a las 12:00 UTC) y se lee como el día en Bogotá
+// de ese instante. Así esas filas muestran el día correcto sin migrar datos.
 
 const RE_SOLO_FECHA = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -95,6 +101,17 @@ function aDate(v: string | Date): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * El día que representa `v`, como 00:00 UTC y sin lanzar: una fecha-calendario
+ * (00:00:00.000 UTC) se respeta; cualquier otro instante → su día en Bogotá.
+ * Inválida → null.
+ */
+function aDiaCalendario(v: string | Date): Date | null {
+  const d = aDate(v);
+  if (!d) return null;
+  return esMedianocheUtc(d) ? d : fechaCalendarioBogota(d);
+}
+
 const FORMATO_CORTO = new Intl.DateTimeFormat("es-CO", {
   timeZone: "UTC",
   day: "2-digit",
@@ -110,23 +127,32 @@ const FORMATO_LARGO = new Intl.DateTimeFormat("es-CO", {
 });
 
 /**
- * Muestra una fecha-calendario en UTC: "10/09/2026" (corta) o
- * "10 de septiembre de 2026" (larga). null o inválida → "".
+ * Muestra una fecha-calendario: "10/09/2026" (corta) o
+ * "10 de septiembre de 2026" (larga), igual en cualquier navegador.
+ *  - a 00:00:00.000 UTC (fecha-calendario) → ese día en UTC:
+ *    2026-09-10T00:00:00.000Z → "10/09/2026"
+ *  - con cualquier otra hora (instante viejo) → su día en Bogotá:
+ *    2026-09-21T01:00:00.000Z (20:00 del 20 en Bogotá) → "20/09/2026"
+ * null o inválida → "".
  */
 export function formatFechaCalendario(
   v: string | Date | null | undefined,
   estilo: "corta" | "larga" = "corta",
 ): string {
   if (v === null || v === undefined) return "";
-  const d = aDate(v);
+  const d = aDiaCalendario(v);
   if (!d) return "";
   return (estilo === "larga" ? FORMATO_LARGO : FORMATO_CORTO).format(d);
 }
 
-/** Valor para un `<input type="date">`: "YYYY-MM-DD" del día en UTC. null o inválida → "". */
+/**
+ * Valor para un `<input type="date">` (y para comparar o serializar días):
+ * "YYYY-MM-DD" con la misma regla que `formatFechaCalendario` — 00:00 UTC →
+ * ese día; otro instante → su día en Bogotá. null o inválida → "".
+ */
 export function fechaCalendarioAInput(v: string | Date | null | undefined): string {
   if (v === null || v === undefined) return "";
-  const d = aDate(v);
+  const d = aDiaCalendario(v);
   if (!d) return "";
   return d.toISOString().slice(0, 10);
 }

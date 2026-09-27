@@ -31,7 +31,7 @@ import {
   puedeCerrarCuadre,
   tieneCuadreHistorico,
 } from "@/lib/tramites/cuadre-historico";
-import { formatFechaCalendario } from "@/lib/tiempo/bogota";
+import { fechaCalendarioAInput, formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 import {
   RegistrarAnticipoTramiteModal,
@@ -220,8 +220,7 @@ function formatCOP(bigStr: string | null | undefined): string {
 
 /** Converts a Date ISO string to YYYY-MM-DD for <input type="date"> */
 function isoToDateInput(iso: string | null | undefined): string {
-  if (!iso) return "";
-  return iso.slice(0, 10);
+  return fechaCalendarioAInput(iso);
 }
 
 /** Converts a YYYY-MM-DD input value to ISO string for the API */

@@ -189,7 +189,7 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
 ## Cuentas por pagar a proveedores (CxP v2)
 
 Lo que Galcomex le debe a cada proveedor, factura por factura, sin pagar dos
-veces. Detalle completo (reglas R1–R20, migraciones M1–M5, runbook, reversa):
+veces. Detalle completo (reglas R1–R20, migraciones M1–M5 y M3b, runbook, reversa):
 `docs/CXP-PROVEEDORES.md`.
 
 - **Saldo** = `valor − Σ PagoTramiteFactura.monto − Σ ajustes − montoCompensado`,
@@ -233,7 +233,12 @@ veces. Detalle completo (reglas R1–R20, migraciones M1–M5, runbook, reversa)
 - **Excel de Camila = maestro.** `scripts/cxp/conciliar-excel.ts` (simulacro por
   defecto; escribe solo con `--modo aplicar --aplicar`, usuario ADMIN) y
   `scripts/cxp/verificar-invariantes.ts` (I1–I7, sale con código 1 si hay
-  violaciones). Corre el verificador antes y después de desplegar o conciliar.
+  violaciones). Corre el verificador antes y después de desplegar o conciliar,
+  y tras desplegar también `scripts/cxp/comparar-cuenta-vs-cxp.ts` (cuenta
+  corriente vs estado de cuenta por empresa; sale con 1 si difieren).
+- **«Generar pago» exige anticipo** (R9, cambio de v2): en un cliente con
+  anticipos, un DO sin anticipo no se paga desde la factura; se aplica el
+  anticipo o se apaga `pago_exige_anticipo` para ese cliente.
 
 ## Invariantes de código — NUNCA violar
 
