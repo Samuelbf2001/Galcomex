@@ -8,6 +8,7 @@ import { claseCampo } from "@/components/clientes/form-campos";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError } from "@/components/ui/toast";
+import { etiquetaLineaServicio } from "@/lib/cuenta-corriente/etiquetas-linea";
 import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 function formatCOP(valor: string): string {
@@ -180,7 +181,7 @@ export function CompensacionModal({
               value={concepto}
               onChange={(e) => setConcepto(e.target.value)}
               required
-              placeholder="Liberación de BL contra mensualidad de septiembre"
+              placeholder="Describe el cruce"
               className={claseCampo(false)}
             />
           </label>
@@ -189,7 +190,7 @@ export function CompensacionModal({
             <select value={lineaServicio} onChange={(e) => setLineaServicio(e.target.value)} className={claseCampo(false)}>
               {LINEAS_SERVICIO.map((l) => (
                 <option key={l} value={l}>
-                  {l}
+                  {etiquetaLineaServicio(l)}
                 </option>
               ))}
             </select>

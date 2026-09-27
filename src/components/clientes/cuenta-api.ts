@@ -236,6 +236,25 @@ export async function eliminarCompensacion(
   return normalizar(await response.json());
 }
 
+export async function eliminarMovimiento(
+  clienteId: string,
+  movimientoId: string,
+): Promise<CuentaCorriente | null> {
+  const response = await fetch(
+    `/api/clientes/${clienteId}/cuenta/movimientos/${encodeURIComponent(movimientoId)}`,
+    { method: "DELETE", headers: { Accept: "application/json" } },
+  );
+
+  if (!response.ok) {
+    throw new CuentaApiError(
+      await mensajeDeError(response, "No fue posible eliminar el movimiento."),
+      response.status,
+    );
+  }
+
+  return normalizar(await response.json());
+}
+
 export async function fetchCuentaCorriente(
   clienteId: string,
   signal?: AbortSignal,

@@ -1,11 +1,13 @@
 "use client";
 
-import { AlertCircle, ArrowLeftRight, FileText, Loader2, Plus, Undo2 } from "lucide-react";
+import { AlertCircle, ArrowLeftRight, FileText, Loader2, Plus, Trash2, Undo2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 
 import { CompensacionModal } from "@/components/clientes/compensacion-modal";
 import {
+  CuentaApiError,
   eliminarCompensacion,
+  eliminarMovimiento,
   fetchCuentaCorriente,
   registrarMovimiento,
   type CuentaCorriente,
@@ -21,6 +23,7 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
+import { etiquetaLineaServicio } from "@/lib/cuenta-corriente/etiquetas-linea";
 import { aFechaCalendario, hoyBogotaISO } from "@/lib/tiempo/bogota";
 import { nombreCortoEmpresa } from "@/lib/cuenta-corriente/nombre-corto";
 
@@ -95,10 +98,13 @@ function esConceptoFacturaVenta(movimiento: MovimientoCuentaRow): boolean {
 
 function MovimientoModal({
   clienteId,
+  mostrarAyudaFactura,
   onClose,
   onGuardado,
 }: {
   clienteId: string;
+  /** `true` si la empresa tiene «Registrar factura» encendida: se le recuerda cuál botón usar. */
+  mostrarAyudaFactura: boolean;
   onClose: () => void;
   onGuardado: (cuenta: CuentaCorriente) => void;
 }) {
@@ -147,7 +153,7 @@ function MovimientoModal({
       open
       onClose={onClose}
       title="Registrar movimiento"
-      description="Importes que no nacen de un trámite: mensualidades, comisiones, ajustes."
+      description="Correcciones y comisiones que no nacen de un trámite."
       size="md"
       dismissible={!guardando}
       footer={
@@ -173,13 +179,18 @@ function MovimientoModal({
       }
     >
       <form id={formId} onSubmit={handleSubmit} className="space-y-4">
+        {mostrarAyudaFactura ? (
+          <p className="border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+            Para una factura que la empresa nos cobra usa «Registrar factura».
+          </p>
+        ) : null}
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="space-y-1.5">
             <span className="text-sm font-medium text-slate-700">Concepto *</span>
             <input
               name="concepto"
               required
-              placeholder="Servicios aduaneros marzo"
+              placeholder="Describe la corrección o la comisión"
               className={claseCampo(false)}
             />
           </label>
@@ -224,7 +235,7 @@ function MovimientoModal({
             <select name="lineaServicio" defaultValue="TRAMITE" className={claseCampo(false, "bg-white")}>
               {LINEAS_SERVICIO.map((linea) => (
                 <option key={linea} value={linea}>
-                  {linea}
+                  {etiquetaLineaServicio(linea)}
                 </option>
               ))}
             </select>
@@ -260,11 +271,16 @@ function FilaMovimiento({
   movimiento,
   onDeshacer,
   deshaciendo,
+  onEliminar,
+  eliminando,
 }: {
   clienteId: string;
   movimiento: MovimientoCuentaRow;
   onDeshacer?: (compensacionId: string) => void;
   deshaciendo: boolean;
+  /** Solo ADMIN; solo se ofrece en movimientos manuales que no son un cruce. */
+  onEliminar?: (movimiento: MovimientoCuentaRow, movimientoId: string) => void;
+  eliminando: boolean;
 }) {
   // Convención de la cuenta corriente: valor positivo = la empresa nos debe
   // (a su cargo); negativo = le debemos (a su favor). Nunca rojo/verde: son
@@ -276,6 +292,16 @@ function FilaMovimiento({
   const textoConcepto = movimiento.numeroFactura
     ? `Factura ${movimiento.numeroFactura} · ${movimiento.concepto}`
     : movimiento.concepto;
+  // «Registrar factura» siempre guarda lineaServicio = TRAMITE aunque la
+  // factura no pertenezca a ningún trámite (así lo dice el propio modal): acá
+  // se distingue en pantalla para no decir «Trámites» de algo que no lo es.
+  // Los chips por línea (resumen) siguen agrupando esto bajo TRAMITE a
+  // propósito: es la línea contable real que usa un cruce contra esta fila.
+  const esFacturaFueraDeTramite =
+    movimiento.fuente === "CARGO_MANUAL" && Boolean(movimiento.numeroFactura) && !movimiento.tramiteId;
+  const textoLinea = esFacturaFueraDeTramite
+    ? "Fuera de trámites"
+    : etiquetaLineaServicio(movimiento.lineaServicio);
 
   return (
     <tr className="border-b border-slate-100 last:border-b-0">
@@ -302,6 +328,17 @@ function FilaMovimiento({
             <FileText className="h-3 w-3" aria-hidden="true" />
             Ver PDF
           </a>
+        ) : null}
+        {onEliminar && movimientoId && !movimiento.compensacionId ? (
+          <button
+            type="button"
+            onClick={() => onEliminar(movimiento, movimientoId)}
+            disabled={eliminando}
+            className="ml-2 inline-flex items-center gap-1 text-xs font-semibold text-rose-700 hover:underline disabled:opacity-50"
+          >
+            <Trash2 className="h-3 w-3" aria-hidden="true" />
+            Eliminar
+          </button>
         ) : null}
         {movimiento.compensacionId ? (
           <span className="ml-2 inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-semibold uppercase text-cyan-700">
@@ -333,7 +370,7 @@ function FilaMovimiento({
           ) : null}
         </span>
       </td>
-      <td className="px-4 py-2.5 text-xs text-slate-500">{movimiento.lineaServicio}</td>
+      <td className="px-4 py-2.5 text-xs text-slate-500">{textoLinea}</td>
       <td
         className={`px-4 py-2.5 text-right font-mono font-semibold ${
           esACargo ? "text-amber-800" : "text-cyan-800"
@@ -382,6 +419,7 @@ export function SeccionCuentaCorriente({
   const [facturaModalAbierto, setFacturaModalAbierto] = useState(false);
   const [cruceAbierto, setCruceAbierto] = useState(false);
   const [deshaciendo, setDeshaciendo] = useState<string | null>(null);
+  const [eliminandoId, setEliminandoId] = useState<string | null>(null);
   const [verTodo, setVerTodo] = useState(false);
   const { toast } = useToast();
   const confirmar = useConfirm();
@@ -404,6 +442,37 @@ export function SeccionCuentaCorriente({
       toast({ title: "No se pudo deshacer", description: describirError(caught), variant: "error" });
     } finally {
       setDeshaciendo(null);
+    }
+  }
+
+  async function eliminarMovimientoManual(movimiento: MovimientoCuentaRow, movimientoId: string) {
+    const corto = cuenta ? nombreCortoEmpresa(cuenta.empresa.nombre) : "";
+    const valorAbsoluto = movimiento.valor.startsWith("-") ? movimiento.valor.slice(1) : movimiento.valor;
+    const descripcion = movimiento.numeroFactura
+      ? `¿Eliminar la factura ${movimiento.numeroFactura} de ${corto} por ${formatCOP(valorAbsoluto)}? Se quita de la cuenta corriente y queda registrado quién la eliminó.`
+      : `¿Eliminar «${movimiento.concepto}» de ${corto} por ${formatCOP(valorAbsoluto)}? Se quita de la cuenta corriente y queda registrado quién lo eliminó.`;
+
+    const ok = await confirmar({
+      title: "Eliminar movimiento",
+      description: descripcion,
+      confirmText: "Eliminar",
+      variant: "danger",
+    });
+    if (!ok) return;
+    setEliminandoId(movimientoId);
+    try {
+      const actualizada = await eliminarMovimiento(clienteId, movimientoId);
+      if (actualizada) setCuenta(actualizada);
+      toast({ title: "Movimiento eliminado", variant: "success" });
+    } catch (caught) {
+      toast({ title: "No se pudo eliminar", description: describirError(caught), variant: "error" });
+      // Si alguien más ya lo había eliminado (404), la fila en pantalla quedó
+      // vieja: se recarga la cuenta para que desaparezca sola.
+      if (caught instanceof CuentaApiError && caught.status === 404) {
+        recargar();
+      }
+    } finally {
+      setEliminandoId(null);
     }
   }
 
@@ -571,7 +640,7 @@ export function SeccionCuentaCorriente({
                   key={linea.lineaServicio}
                   className="inline-flex items-center gap-1.5 border border-slate-200 bg-slate-50 px-2 py-1 text-xs"
                 >
-                  <span className="font-medium text-slate-600">{linea.lineaServicio}</span>
+                  <span className="font-medium text-slate-600">{etiquetaLineaServicio(linea.lineaServicio)}</span>
                   <span className="font-mono font-semibold text-slate-900">
                     {formatCOP(linea.neto)}
                   </span>
@@ -605,6 +674,8 @@ export function SeccionCuentaCorriente({
                       movimiento={movimiento}
                       onDeshacer={puedeRegistrar ? deshacerCruce : undefined}
                       deshaciendo={deshaciendo === movimiento.compensacionId}
+                      onEliminar={puedeRegistrar ? eliminarMovimientoManual : undefined}
+                      eliminando={eliminandoId !== null && movimiento.id === `movimiento:${eliminandoId}`}
                     />
                   ))}
                 </tbody>
@@ -631,6 +702,7 @@ export function SeccionCuentaCorriente({
       {modalAbierto && puedeRegistrar ? (
         <MovimientoModal
           clienteId={clienteId}
+          mostrarAyudaFactura={puedeRegistrarFactura}
           onClose={() => setModalAbierto(false)}
           onGuardado={(actualizada) => setCuenta(actualizada)}
         />

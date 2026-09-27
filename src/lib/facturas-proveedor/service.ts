@@ -35,7 +35,9 @@ import {
   EstadoFacturaProveedor,
   EstadoTramite,
   Moneda,
+  OrigenMovimientoCuenta,
   Prisma,
+  RolCuenta,
   TipoAjusteFacturaProveedor,
 } from "@prisma/client";
 
@@ -45,6 +47,7 @@ import { bloquearTramites } from "@/lib/cxp/bloqueos";
 import {
   FacturaConPagosError,
   FacturaDuplicadaError,
+  FacturaEnCuentaCorrienteError,
   FacturaProveedorConPagosError,
   FacturaProveedorDuplicadaError,
   FacturaProveedorNoEncontradaError,
@@ -63,6 +66,7 @@ import {
   etiquetaDe,
   evaluarValorUsd,
   formatoPesos,
+  nitBaseDe,
   normalizarNumeroFactura,
   numeroFacturaVisible,
   saldoDe,
@@ -227,6 +231,7 @@ type FichaProveedor = {
   nit: string | null;
   nitBase: string | null;
   numFacturaConEspacio: boolean;
+  empresaId: string | null;
 };
 
 const selectFicha = {
@@ -236,6 +241,7 @@ const selectFicha = {
   nit: true,
   nitBase: true,
   numFacturaConEspacio: true,
+  empresaId: true,
 } satisfies Prisma.BeneficiarioSelect;
 
 /** Nombre del proveedor en los mensajes: el nombre corto de la ficha ("ALMACARGA") o su nombre. */
@@ -321,6 +327,97 @@ async function verificarDuplicados(
     if (coincidencias.length > 0) {
       throw new PosibleDuplicadoError(proveedor, coincidencias);
     }
+  }
+}
+
+/**
+ * Empresas (Cliente) dueñas de esta ficha, el INVERSO exacto de
+ * `fichasDeEmpresa` (CxP v2): esa función suma, para una empresa, sus fichas
+ * propias más las sueltas cuyo NIT base coincida con el de la empresa O con el
+ * de CUALQUIERA de sus fichas propias (`bases = {nitBase(empresa)} ∪
+ * {nitBase de cada ficha propia}`). Si aquí solo se mirara el NIT de la
+ * empresa, una ficha suelta que comparte base con una ficha PROPIA de la
+ * empresa (pero no con `Cliente.nit`, típico cuando el NIT de la empresa
+ * quedó sin guion y su ficha propia sí lo tiene) entraría en la cuenta
+ * corriente de esa empresa sin que este chequeo la viera nunca — la misma
+ * factura pasaría dos veces, una a mano y otra como `FacturaProveedor`. Si la
+ * ficha está enlazada (`empresaId`), esa es la única dueña. Sin NIT base y sin
+ * enlazar, la ficha no es de ninguna empresa (no puede chocar con la cuenta
+ * corriente de nadie).
+ */
+async function empresasDeFicha(tx: Tx, ficha: Pick<FichaProveedor, "empresaId" | "nitBase">): Promise<string[]> {
+  if (ficha.empresaId) return [ficha.empresaId];
+  if (!ficha.nitBase) return [];
+
+  const [clientes, fichasHermanasPropias] = await Promise.all([
+    tx.cliente.findMany({ select: { id: true, nit: true } }),
+    // Empresas que tienen una ficha PROPIA con este mismo NIT base: para
+    // ellas, `fichasDeEmpresa` suma esta suelta aunque el NIT de la empresa
+    // sea otro.
+    tx.beneficiario.findMany({
+      where: { empresaId: { not: null }, nitBase: ficha.nitBase },
+      select: { empresaId: true },
+    }),
+  ]);
+
+  const dueñas = new Set<string>();
+  for (const c of clientes) {
+    if (nitBaseDe(c.nit) === ficha.nitBase) dueñas.add(c.id);
+  }
+  for (const f of fichasHermanasPropias) {
+    if (f.empresaId) dueñas.add(f.empresaId);
+  }
+  return [...dueñas];
+}
+
+/**
+ * La misma factura puede haber entrado ya por el otro camino: "Registrar
+ * factura" en la cuenta corriente de la empresa dueña de esta ficha
+ * (`MovimientoCuenta` rol PROVEEDOR — CARGO_MANUAL, pero también AJUSTE o
+ * COMISION: `movimientoCuentaSchema` permite `numeroFactura` con cualquiera de
+ * los tres, así que se busca en los tres), para facturas que no son de ningún
+ * trámite (caso Coldex). Sin eso, se contaría la misma deuda dos veces.
+ *
+ * Toma el advisory lock `cuenta_corriente:<empresaId>` de cada empresa dueña
+ * (mismo lock, mismo orden — ascendente — que usan `registrarMovimientoCuenta`
+ * y `eliminarMovimientoCuenta`) ANTES de mirar `movimiento_cuenta`, y lo
+ * mantiene hasta que la transacción de quien llama confirme la factura: así
+ * "Registrar factura" en la cuenta corriente y "crear factura de proveedor" en
+ * un DO no pueden colarse los dos a la vez con la misma factura (cada uno
+ * chequea contra la tabla del otro sin verlo si no hay lock compartido).
+ */
+async function verificarNoRegistradaEnCuentaCorriente(
+  tx: Tx,
+  i: { ficha: FichaProveedor; numFactura: string },
+): Promise<void> {
+  const normalizado = normalizarNumeroFactura(i.numFactura);
+  if (normalizado === "") return;
+
+  const empresaIds = await empresasDeFicha(tx, i.ficha);
+  if (empresaIds.length === 0) return;
+
+  // Orden fijo (ascendente) para que dos llamadas que compitan por las mismas
+  // empresas no se abracen esperándose (deadlock) por pedir los locks al revés.
+  for (const empresaId of [...empresaIds].sort()) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`cuenta_corriente:${empresaId}`}))`;
+  }
+
+  const movimiento = await tx.movimientoCuenta.findFirst({
+    where: {
+      empresaId: { in: empresaIds },
+      rol: RolCuenta.PROVEEDOR,
+      origen: { not: OrigenMovimientoCuenta.COMPENSACION },
+      numeroFacturaNorm: normalizado,
+    },
+    select: { numeroFactura: true, fecha: true },
+    orderBy: { fecha: "asc" },
+  });
+  if (movimiento) {
+    throw new FacturaEnCuentaCorrienteError(
+      movimiento.numeroFactura ?? i.numFactura,
+      nombreVisible(i.ficha),
+      movimiento.fecha,
+    );
   }
 }
 
@@ -593,6 +690,7 @@ export async function crearFacturaProveedor(input: CrearFacturaProveedorInput) {
         numFactura,
         confirmarPosibleDuplicado: input.confirmarPosibleDuplicado ?? false,
       });
+      await verificarNoRegistradaEnCuentaCorriente(tx, { ficha, numFactura });
 
       // Unicidad heredada por DO + texto crudo (otro proveedor, mismo número en el mismo DO).
       const existente = await tx.facturaProveedor.findUnique({
@@ -889,6 +987,7 @@ export async function actualizarFacturaProveedor(
           excluirId: facturaId,
           confirmarPosibleDuplicado: cambios.confirmarPosibleDuplicado ?? false,
         });
+        await verificarNoRegistradaEnCuentaCorriente(tx, { ficha: fichaFinal, numFactura: numeroFinal });
       }
       if (cambiaNumero) {
         const existente = await tx.facturaProveedor.findUnique({
