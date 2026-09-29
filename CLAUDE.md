@@ -198,6 +198,14 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   lo recalcula en vivo con las líneas. Las cargas históricas que aprueben por la
   API facturas de empresas con OC que no cuadre deben mandar `motivoExcepcionOc`
   con sesión ADMIN.
+- **Aviso «sin gastos de Galcomex» (M2, revisión INTEG-B, 29-sep-2026; NO bloquea ni cambia montos):**
+  `src/lib/borradores/aviso-sin-gastos.ts`. Desde que las empresas sin `anticipos_cliente` se mandan a facturar sin pagos
+  (Polyrec-1), si el DO es de una de ellas y tiene 0 pagos y 0 facturas de proveedor que se cobran (`repercutible`),
+  `POST /api/tramites/[id]/solicitar-facturacion` responde `avisoSinGastos` (texto o null) y el borrador en
+  BORRADOR/EN_REVISION lo trae en `avisoSinGastos` (GET/PATCH `/api/borradores/[id]`, POST generar, GET del trámite y lote);
+  `revisor-borrador.tsx` lo pinta ámbar (`aviso-sin-gastos.tsx`) y `tramite-detalle.tsx` lo muestra como toast de aviso. No
+  aplica al «Otros» de «Facturar comisiones» (B10). Texto: «Este trámite no tiene gastos pagados por Galcomex registrados.
+  Si Galcomex pagó algo por el cliente (VUCE, puerto, transporte), regístralo antes de aprobar.»
 - **Tipos de trámite:** `IMPORTACION` (DO.BAQ26-0001), `CLASIFICACION`
   (CLAS26-0001, exige `clasificacion_arancelaria`) y `OTRO` (OTR26-0001:
   Plan Vallejo, sellos, coordinación logística; sin agencia, ETA ni checklist,

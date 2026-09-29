@@ -52,6 +52,7 @@ import {
   transicionarBorrador,
 } from "@/components/facturacion/facturacion-api";
 import { AvisoOrdenCompra } from "@/components/facturacion/aviso-orden-compra";
+import { AvisoSinGastos } from "@/components/facturacion/aviso-sin-gastos";
 import { AprobarSinCuadreOcModal } from "@/components/facturacion/aprobar-sin-cuadre-oc-modal";
 import { AvisoPagosPorRevisar, conservarPagosPorRevisar } from "@/components/facturacion/aviso-pagos-por-revisar";
 import {
@@ -696,6 +697,25 @@ export function RevisorBorrador({
     setOcGuardada({ id: borradorActual.id, oc: borradorActual.ordenCompra });
   }
   const ordenCompra = borradorActual.ordenCompra ?? (ocGuardada?.id === borradorActual.id ? ocGuardada.oc : null);
+  // M2 — igual con el aviso de "sin gastos de Galcomex": las respuestas de editar líneas, etc. no lo
+  // traen (undefined = se conserva el último); null = se evaluó y ya no aplica. Solo mientras se revisa.
+  const [avisoGuardado, setAvisoGuardado] = useState<{ id: string; texto: string | null } | null>(
+    borrador.avisoSinGastos !== undefined ? { id: borrador.id, texto: borrador.avisoSinGastos } : null,
+  );
+  if (
+    borradorActual.avisoSinGastos !== undefined &&
+    (avisoGuardado?.id !== borradorActual.id || avisoGuardado.texto !== borradorActual.avisoSinGastos)
+  ) {
+    setAvisoGuardado({ id: borradorActual.id, texto: borradorActual.avisoSinGastos });
+  }
+  const avisoSinGastos =
+    borradorActual.estado === "BORRADOR" || borradorActual.estado === "EN_REVISION"
+      ? borradorActual.avisoSinGastos !== undefined
+        ? borradorActual.avisoSinGastos
+        : avisoGuardado?.id === borradorActual.id
+          ? avisoGuardado.texto
+          : null
+      : null;
   const [lineas, setLineas] = useState<LineaLocal[]>(
     borrador.lineasRevision.map((l) => ({ ...l, estadoLocal: "pendiente" })),
   );
@@ -1520,6 +1540,10 @@ export function RevisorBorrador({
           Diseño B): el servidor evalúa que la factura (servicio + reembolsos, sin impuestos ni
           4x1000) dé el valor de la OC y frena la aprobación si no; aquí se muestra en vivo. */}
       <AvisoOrdenCompra oc={ordenCompra} lineas={borradorActual.lineasRevision} />
+
+      {/* M2 (revisión INTEG-B) — aviso NO bloqueante: DO de una empresa sin anticipos y sin gastos
+          pagados por Galcomex registrados; que se registren antes de aprobar. No cambia montos. */}
+      <AvisoSinGastos aviso={avisoSinGastos} />
 
       {/* Pagos de un trámite con asesoría (NO SE COBRA) cuyo reparto no es seguro. Solo ADMIN/REVISOR reciben la lista; nunca va a comentariosCabecera (viaja a SIIGO). */}
       <AvisoPagosPorRevisar pagos={borradorActual.pagosPorRevisar} />

@@ -15,6 +15,7 @@ import { ZodError } from "zod";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
 import { requireRole } from "@/lib/auth/session";
 import { anticipoDelTramite } from "@/lib/borradores/anticipo-disponible";
+import { avisoSinGastosSinRomper, borradorEnRevision } from "@/lib/borradores/aviso-sin-gastos";
 import { FORMATO_CONCEPTOS_IVA } from "@/lib/borradores/formato-conceptos";
 import { evaluarOcSinRomper } from "@/lib/borradores/orden-compra-service";
 import { getBorradorCompleto, transicionarBorrador } from "@/lib/borradores/service";
@@ -60,8 +61,12 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       : null;
 
   const ordenCompra = await evaluarOcSinRomper(prisma, borradorId);
+  // M2 — aviso (no bloqueante) de que el DO no tiene gastos pagados por Galcomex; solo mientras se revisa.
+  const avisoSinGastos = borradorEnRevision(completo.estado)
+    ? await avisoSinGastosSinRomper(completo.tramiteId)
+    : undefined;
 
-  return jsonResponse({ borrador: { ...completo, anticipoDo, ordenCompra } });
+  return jsonResponse({ borrador: { ...completo, anticipoDo, ordenCompra, avisoSinGastos } });
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
@@ -138,9 +143,14 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     // B4 — igual con la orden de compra: si el PATCH no la devuelve, el aviso
     // desaparece hasta recargar (la lección de M1 con el anticipo).
     const ordenCompra = result.borrador ? await evaluarOcSinRomper(prisma, borradorId) : null;
+    // M2 — igual con el aviso de gastos: si el PATCH no lo devuelve, desaparece hasta recargar.
+    const avisoSinGastos =
+      result.borrador && borradorEnRevision(result.borrador.estado)
+        ? await avisoSinGastosSinRomper(result.borrador.tramiteId)
+        : undefined;
 
     return jsonResponse({
-      borrador: result.borrador ? { ...result.borrador, anticipoDo, ordenCompra } : result.borrador,
+      borrador: result.borrador ? { ...result.borrador, anticipoDo, ordenCompra, avisoSinGastos } : result.borrador,
     });
   } catch (error) {
     if (isDomainError(error)) {

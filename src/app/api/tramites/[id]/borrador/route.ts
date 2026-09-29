@@ -23,6 +23,7 @@ import {
   TramiteNoFacturableError,
   generarBorrador,
 } from "@/lib/borradores/service";
+import { avisoSinGastosSinRomper } from "@/lib/borradores/aviso-sin-gastos";
 import { evaluarOcSinRomper } from "@/lib/borradores/orden-compra-service";
 import { prisma } from "@/lib/db/prisma";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
@@ -86,11 +87,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // abre con este borrador y debe mostrar el aviso desde el primer momento.
     // B4 — y con la orden de compra del cliente (si aplica): el aviso también sale desde el principio.
     const ordenCompra = await evaluarOcSinRomper(prisma, borrador.id);
+    // M2 — aviso (no bloqueante) si el DO no tiene gastos pagados por Galcomex registrados.
+    const avisoSinGastos = await avisoSinGastosSinRomper(tramiteId);
     return jsonResponse(
       {
         borrador: {
           ...(await conPagosPorRevisarDeBorrador(borrador, session.user.rol)),
           ...(ordenCompra ? { ordenCompra } : {}),
+          avisoSinGastos,
         },
       },
       { status: 201 },

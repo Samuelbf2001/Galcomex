@@ -2,6 +2,7 @@ import { TipoCliente } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { requireRole } from "@/lib/auth/session";
+import { avisoSinGastosSinRomper } from "@/lib/borradores/aviso-sin-gastos";
 import { TramiteSinPagosError, solicitarFacturacion } from "@/lib/facturas-proveedor/service";
 import { jsonResponse } from "@/lib/http/json";
 import { domainErrorResponse, isDomainError } from "@/lib/http/errors";
@@ -44,7 +45,13 @@ export async function POST(_request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: result.message }, { status: result.status });
     }
 
-    return jsonResponse({ ok: true, message: "Trámite enviado a facturar" });
+    // M2 — aviso (no bloqueante): sin pagos ni facturas de proveedor que cobrar en un DO de una
+    // empresa sin anticipos, ¿faltó registrar lo que Galcomex pagó por el cliente?
+    return jsonResponse({
+      ok: true,
+      message: "Trámite enviado a facturar",
+      avisoSinGastos: await avisoSinGastosSinRomper(id),
+    });
   } catch (error) {
     if (error instanceof TramiteSinPagosError) {
       return NextResponse.json({ error: error.message }, { status: 422 });

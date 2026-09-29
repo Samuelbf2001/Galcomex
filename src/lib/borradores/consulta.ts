@@ -13,6 +13,7 @@
 import type { Rol } from "@/lib/auth/auth";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
 import { anticipoDelTramite, type AnticipoDelTramite } from "@/lib/borradores/anticipo-disponible";
+import { avisosSinGastosDeTramites, borradorEnRevision } from "@/lib/borradores/aviso-sin-gastos";
 import { evaluarOcSinRomper, type OrdenCompraDeBorrador } from "@/lib/borradores/orden-compra-service";
 import {
   ROLES_VEN_PAGOS_POR_REVISAR,
@@ -76,6 +77,14 @@ export type BorradorConsultado = BorradorListado & {
    * partes. Ausente en el resto (COMISION, sin OC, sin la función).
    */
   ordenCompra?: OrdenCompraDeBorrador;
+  /**
+   * M2 (revisión INTEG-B) — aviso NO bloqueante: el DO es de una empresa sin
+   * `anticipos_cliente` y no tiene pagos ni facturas de proveedor que se cobren
+   * (¿faltó registrar lo que Galcomex pagó por el cliente?). Solo en borradores
+   * BORRADOR / EN_REVISION: `string` = hay que avisar, `null` = se evaluó y no
+   * aplica, ausente = esta respuesta no lo evalúa (APROBADO, FACTURADO).
+   */
+  avisoSinGastos?: string | null;
 };
 
 export type BorradoresDeTramite = {
@@ -101,7 +110,7 @@ export async function cargarBorradoresDeTramite(
   usuario: UsuarioConsulta,
 ): Promise<BorradoresDeTramite> {
   const borradores = await listarBorradoresConPermiso(tramiteId, usuario);
-  const conAnticipo = await conOrdenCompra(await conAnticipoDo(borradores));
+  const conAnticipo = await conAvisoSinGastos(await conOrdenCompra(await conAnticipoDo(borradores)));
 
   if (!ROLES_VEN_PAGOS_POR_REVISAR.includes(usuario.rol)) {
     return { borradores: conAnticipo };
@@ -150,6 +159,29 @@ async function conOrdenCompra<T extends BorradorListado>(borradores: T[]): Promi
       const ordenCompra = await evaluarOcSinRomper(prisma, b.id);
       return ordenCompra ? { ...b, ordenCompra } : b;
     }),
+  );
+}
+
+/**
+ * M2 — añade `avisoSinGastos` a los borradores que siguen por revisar. Una
+ * consulta agrupada para todos los DOs; si no se puede calcular, salen sin el
+ * campo (el aviso es un apoyo, nunca tumba la consulta).
+ */
+async function conAvisoSinGastos<T extends BorradorListado>(
+  borradores: T[],
+): Promise<Array<T & { avisoSinGastos?: string | null }>> {
+  const enRevision = borradores.filter((b) => borradorEnRevision(b.estado));
+  if (enRevision.length === 0) return borradores;
+
+  let avisos: Map<string, string>;
+  try {
+    avisos = await avisosSinGastosDeTramites(enRevision.map((b) => b.tramiteId));
+  } catch (error) {
+    console.error("[borradores/consulta] no se pudo calcular el aviso de gastos de Galcomex", error);
+    return borradores;
+  }
+  return borradores.map((b) =>
+    borradorEnRevision(b.estado) ? { ...b, avisoSinGastos: avisos.get(b.tramiteId) ?? null } : b,
   );
 }
 
@@ -272,15 +304,26 @@ export async function cargarBorradoresEnLote(
   }
 
   // B4 — la orden de compra de todo el lote en una pasada (una consulta decide qué DOs la tienen).
-  const conOc = await conOrdenCompra(listados.flatMap(([, r]) => (Array.isArray(r) ? r : [])));
-  const ocPorBorrador = new Map(conOc.flatMap((b) => (b.ordenCompra ? [[b.id, b.ordenCompra] as const] : [])));
+  const conOc = await conAvisoSinGastos(
+    await conOrdenCompra(listados.flatMap(([, r]) => (Array.isArray(r) ? r : []))),
+  );
+  const extrasPorBorrador = new Map(
+    conOc.map((b) => [
+      b.id,
+      {
+        ...(b.ordenCompra ? { ordenCompra: b.ordenCompra } : {}),
+        // M2 — el aviso de "sin gastos de Galcomex" (solo borradores por revisar).
+        ...(b.avisoSinGastos !== undefined ? { avisoSinGastos: b.avisoSinGastos } : {}),
+      },
+    ]),
+  );
 
   const porTramite: Record<string, ResultadoBorradoresLote> = {};
   for (const [tramiteId, resultado] of listados) {
     porTramite[tramiteId] = Array.isArray(resultado)
       ? {
           borradores: conPagosPorRevisar(
-            resultado.map((b) => (ocPorBorrador.has(b.id) ? { ...b, ordenCompra: ocPorBorrador.get(b.id) } : b)),
+            resultado.map((b) => ({ ...b, ...extrasPorBorrador.get(b.id) })),
             porRevisar,
           ),
         }

@@ -1682,12 +1682,16 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
     setSolicitandoFacturacion(true);
     setErrorSolicitud(null);
     try {
-      await solicitarFacturacion(tramite.id);
+      const { avisoSinGastos } = await solicitarFacturacion(tramite.id);
       toast({
         title: "Facturación solicitada",
         description: `${tramite.consecutivo} pasó a ENVIADO A FACTURAR.`,
         variant: "success",
       });
+      // M2 — aviso (no bloqueante): sin gastos pagados por Galcomex registrados en un DO de una empresa sin anticipos.
+      if (avisoSinGastos) {
+        toast({ title: "Revisa los gastos del trámite", description: avisoSinGastos, variant: "warning" });
+      }
       // Recargar para reflejar el nuevo estado
       reload();
     } catch (caught) {

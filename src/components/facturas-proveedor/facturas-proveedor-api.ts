@@ -363,7 +363,11 @@ export async function eliminarAjusteLegado(
   if (!response.ok && response.status !== 204) throw await leerError(response);
 }
 
-export async function solicitarFacturacion(tramiteId: string): Promise<void> {
+/**
+ * Manda el DO a facturar. `avisoSinGastos` (M2, no bloqueante): texto si el DO es de una
+ * empresa sin anticipos y no tiene gastos pagados por Galcomex registrados; null si no aplica.
+ */
+export async function solicitarFacturacion(tramiteId: string): Promise<{ avisoSinGastos: string | null }> {
   const response = await fetch(`/api/tramites/${tramiteId}/solicitar-facturacion`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
@@ -371,6 +375,16 @@ export async function solicitarFacturacion(tramiteId: string): Promise<void> {
   });
 
   if (!response.ok) throw await leerError(response);
+  try {
+    const cuerpo: unknown = await response.json();
+    const aviso =
+      typeof cuerpo === "object" && cuerpo !== null && "avisoSinGastos" in cuerpo
+        ? (cuerpo as { avisoSinGastos?: unknown }).avisoSinGastos
+        : null;
+    return { avisoSinGastos: typeof aviso === "string" && aviso ? aviso : null };
+  } catch {
+    return { avisoSinGastos: null };
+  }
 }
 
 /** Formatea BigInt serializado como COP */

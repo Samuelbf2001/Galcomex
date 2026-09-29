@@ -167,6 +167,12 @@ export type BorradorRow = {
    * null/ausente = no aplica o esta respuesta no lo trae (se conserva el anterior).
    */
   ordenCompra?: OrdenCompraBorradorDto | null;
+  /**
+   * M2 — aviso NO bloqueante: el DO no tiene gastos pagados por Galcomex registrados (empresa sin
+   * anticipos). string = avisar; null = se evaluó y no aplica; undefined = esta respuesta no lo
+   * evalúa (se conserva el anterior).
+   */
+  avisoSinGastos?: string | null;
 };
 
 export type FacturaRow = {
@@ -384,6 +390,12 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
     // null = la respuesta no lo trae (distinto de [] = sin pagos por revisar).
     pagosPorRevisar: normalizarPagosPorRevisar(raw.pagosPorRevisar),
     ordenCompra: normalizarOrdenCompra(raw.ordenCompra),
+    avisoSinGastos:
+      typeof raw.avisoSinGastos === "string" && raw.avisoSinGastos
+        ? raw.avisoSinGastos
+        : raw.avisoSinGastos === null || raw.avisoSinGastos === ""
+          ? null
+          : undefined,
   };
 }
 
