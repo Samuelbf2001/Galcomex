@@ -93,6 +93,19 @@ export function desgloseParaOc(lineas: readonly LineaParaOc[]): DesgloseOc {
   return { servicio, terceros, cuatroXMil };
 }
 
+/**
+ * Lo que la OC debe decir según la config: servicio (+ terceros) (+ 4x1000).
+ * ÚNICA fuente de la regla: la usan el freno (`evaluarOrdenCompra`) y el «valor
+ * para su orden de compra» de la cotización (B7, `cotizacion/calculo.ts`).
+ */
+export function baseParaOc(desglose: DesgloseOc, config: Pick<ConfigOrdenCompra, "base" | "incluye4x1000">): bigint {
+  return (
+    desglose.servicio +
+    (config.base === "SERVICIO_Y_TERCEROS" ? desglose.terceros : 0n) +
+    (config.incluye4x1000 ? desglose.cuatroXMil : 0n)
+  );
+}
+
 // ─── Evaluación ───────────────────────────────────────────────────────────────
 
 export type EvaluacionOc =
@@ -122,10 +135,7 @@ export function evaluarOrdenCompra(i: {
   if (i.valorOc === null) return { estado: "SIN_VALOR", numero };
 
   const { desglose, config } = i;
-  const base =
-    desglose.servicio +
-    (config.base === "SERVICIO_Y_TERCEROS" ? desglose.terceros : 0n) +
-    (config.incluye4x1000 ? desglose.cuatroXMil : 0n);
+  const base = baseParaOc(desglose, config);
   const diferencia = base - i.valorOc;
 
   return {

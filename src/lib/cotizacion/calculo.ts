@@ -15,40 +15,26 @@
  * la agencia de aduanas (la orden de compra de su agenciamiento es aparte, la
  * factura la hace la agencia: B9, solo como nota informativa).
  *
- * INTEG-B: `desgloseOc`/`configOcCotizacionDe` reproducen `desgloseParaOc` /
- * `configOrdenCompraDe` de B4 (`src/lib/borradores/orden-compra.ts`, otra
- * rama). Al fusionar ambas, usar esas y borrar estas dos.
+ * INTEG-B (resuelto): la regla de la OC es la MISMA del freno de B4
+ * (`src/lib/borradores/orden-compra.ts`): `configOrdenCompraDe` lee la config y
+ * `desgloseParaOc` + `baseParaOc` suman. Aquí solo se arma el desglose con los
+ * mismos filtros que las líneas del borrador (conceptos = OPERACIONAL, terceros
+ * = TERCEROS, 4x1000 = la línea fija IMPUESTO_4X1000).
  *
  * Dinero en BigInt (COP enteros), tolerancia 0.
  */
 
-import { z } from "zod";
-
+import {
+  baseParaOc,
+  desgloseParaOc,
+  type ConfigOrdenCompra,
+  type LineaParaOc,
+} from "@/lib/borradores/orden-compra";
 import { calcularFacturaConceptos, ivaDeItem } from "@/lib/calculations/factura-conceptos";
 
-export type BaseOc = "SERVICIO_Y_TERCEROS" | "SOLO_SERVICIO";
-
-export interface ConfigOcCotizacion {
-  base: BaseOc;
-  incluye4x1000: boolean;
-}
-
-/** Regla estándar de la orden de compra (Diseño B, DUDAS 2 opción A): servicio + reembolsos, sin 4x1000. */
-export const CONFIG_OC_COTIZACION_DEFECTO: ConfigOcCotizacion = {
-  base: "SERVICIO_Y_TERCEROS",
-  incluye4x1000: false,
-};
-
-const configOcSchema = z.object({
-  base: z.enum(["SERVICIO_Y_TERCEROS", "SOLO_SERVICIO"]).default("SERVICIO_Y_TERCEROS"),
-  incluye4x1000: z.boolean().default(false),
-});
-
-/** Config de `orden_compra_en_revision` → regla de la OC. Config rota o ausente → la estándar. */
-export function configOcCotizacionDe(raw: unknown): ConfigOcCotizacion {
-  const parsed = configOcSchema.safeParse(raw ?? {});
-  return parsed.success ? parsed.data : { ...CONFIG_OC_COTIZACION_DEFECTO };
-}
+/** Regla de la orden de compra de la empresa (la de B4, con su `bloqueaAprobacion`, que aquí no se usa). */
+export type ConfigOcCotizacion = ConfigOrdenCompra;
+export type BaseOc = ConfigOrdenCompra["base"];
 
 export interface ConceptoCotizacion {
   /** Nombre que ve el cliente (el mismo que llevará la línea de la factura). */
@@ -149,17 +135,21 @@ export function armarCotizacion(entrada: EntradaCotizacion): ResultadoCotizacion
     totalAnticipo: 0n,
   });
 
+  // «Valor para su OC» = la regla del freno de B4 sobre las MISMAS líneas que tendría el borrador.
   const { configOc } = entrada;
+  const lineasParaOc: LineaParaOc[] = [
+    ...conceptos.map((c): LineaParaOc => ({ valor: c.valor, seccion: "OPERACIONAL", tipoFija: null })),
+    ...terceros.map((t): LineaParaOc => ({ valor: t.valor, seccion: "TERCEROS", tipoFija: null })),
+    { valor: calculo.impuesto4x1000, seccion: "TERCEROS", tipoFija: "IMPUESTO_4X1000" },
+  ];
+  const desglose = desgloseParaOc(lineasParaOc);
   const valorParaOc: ValorParaOc = {
     base: configOc.base,
     incluye4x1000: configOc.incluye4x1000,
-    servicio: calculo.baseConceptos,
-    terceros: calculo.baseTerceros,
-    cuatroXMil: calculo.impuesto4x1000,
-    valor:
-      calculo.baseConceptos +
-      (configOc.base === "SERVICIO_Y_TERCEROS" ? calculo.baseTerceros : 0n) +
-      (configOc.incluye4x1000 ? calculo.impuesto4x1000 : 0n),
+    servicio: desglose.servicio,
+    terceros: desglose.terceros,
+    cuatroXMil: desglose.cuatroXMil,
+    valor: baseParaOc(desglose, configOc),
   };
 
   const { agencia, valor: valorAgencia } = entrada.agenciamiento;

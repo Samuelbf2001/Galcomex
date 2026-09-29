@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CONFIG_OC_COTIZACION_DEFECTO,
+  CONFIG_OC_DEFECTO,
+  configOrdenCompraDe,
+  desgloseParaOc,
+  evaluarOrdenCompra,
+} from "@/lib/borradores/orden-compra";
+import {
   armarCotizacion,
-  configOcCotizacionDe,
   textoNotaAgencia,
   type EntradaCotizacion,
 } from "@/lib/cotizacion/calculo";
@@ -19,7 +23,7 @@ const BASE: Omit<EntradaCotizacion, "conceptos" | "terceros"> = {
   tasaIva: 19n,
   tasa4x1000: 400n,
   reteIvaPorcentaje: 15,
-  configOc: CONFIG_OC_COTIZACION_DEFECTO,
+  configOc: CONFIG_OC_DEFECTO,
   agenciamiento: { agencia: null, valor: null },
 };
 
@@ -98,10 +102,10 @@ describe("armarCotizacion — casos dorados", () => {
     // OC por defecto: servicio + terceros, sin IVA, sin ReteIVA, sin 4x1000.
     expect(r.valorParaOc).toMatchObject({ servicio: $(340_000), terceros: $(1_088_360), cuatroXMil: $(4_353), valor: $(1_428_360) });
     // Configurable por empresa.
-    expect(armarCotizacion({ ...entrada, configOc: { base: "SOLO_SERVICIO", incluye4x1000: false } }).valorParaOc.valor).toBe($(340_000));
-    expect(armarCotizacion({ ...entrada, configOc: { base: "SERVICIO_Y_TERCEROS", incluye4x1000: true } }).valorParaOc.valor).toBe($(1_432_713));
+    expect(armarCotizacion({ ...entrada, configOc: { ...CONFIG_OC_DEFECTO, base: "SOLO_SERVICIO" } }).valorParaOc.valor).toBe($(340_000));
+    expect(armarCotizacion({ ...entrada, configOc: { ...CONFIG_OC_DEFECTO, incluye4x1000: true } }).valorParaOc.valor).toBe($(1_432_713));
     // La OC no cambia el total a girar.
-    expect(armarCotizacion({ ...entrada, configOc: { base: "SOLO_SERVICIO", incluye4x1000: false } }).totalAGirar).toBe($(1_487_623));
+    expect(armarCotizacion({ ...entrada, configOc: { ...CONFIG_OC_DEFECTO, base: "SOLO_SERVICIO" } }).totalAGirar).toBe($(1_487_623));
   });
 
   it("BAQ-18357 (Litoplas, sin terceros): 400.000 + IVA 76.000 − ReteIVA 11.400 = 464.600", () => {
@@ -165,18 +169,40 @@ describe("armarCotizacion — reglas", () => {
   });
 });
 
-describe("configOcCotizacionDe (regla de la orden de compra, como B4)", () => {
-  it("sin config o con config rota: servicio + terceros, sin 4x1000", () => {
-    expect(configOcCotizacionDe(null)).toEqual({ base: "SERVICIO_Y_TERCEROS", incluye4x1000: false });
-    expect(configOcCotizacionDe({})).toEqual({ base: "SERVICIO_Y_TERCEROS", incluye4x1000: false });
-    expect(configOcCotizacionDe({ base: "OTRA_COSA" })).toEqual({ base: "SERVICIO_Y_TERCEROS", incluye4x1000: false });
-    expect(configOcCotizacionDe({ incluye4x1000: "sí" })).toEqual({ base: "SERVICIO_Y_TERCEROS", incluye4x1000: false });
+describe("regla de la orden de compra = la de B4 (freno de aprobación)", () => {
+  it("sin config o con config rota: la estándar completa de B4 (servicio + terceros, sin 4x1000, con freno)", () => {
+    expect(configOrdenCompraDe(null)).toEqual(CONFIG_OC_DEFECTO);
+    expect(configOrdenCompraDe({ base: "OTRA_COSA" })).toEqual(CONFIG_OC_DEFECTO);
+    expect(configOrdenCompraDe({ incluye4x1000: "sí" })).toEqual(CONFIG_OC_DEFECTO);
   });
 
-  it("lee base e incluye4x1000 e ignora el resto de la config (p. ej. bloqueaAprobacion de B4)", () => {
-    expect(configOcCotizacionDe({ base: "SOLO_SERVICIO", incluye4x1000: true, bloqueaAprobacion: true })).toEqual({
-      base: "SOLO_SERVICIO",
-      incluye4x1000: true,
-    });
+  it("el «valor para su OC» de la cotización es EXACTAMENTE lo que el freno compara (misma base, todas las configs)", () => {
+    const entrada = {
+      ...BASE,
+      conceptos: [concepto("HONORARIOS", 200_000), concepto("SERVICIO LOGÍSTICO", 140_000), concepto("SIN IVA", 10_000, false)],
+      terceros: [tercero("ALMACENAJE", 502_801), tercero("PAGO VUCE", 486_075)],
+    };
+    for (const configOc of [
+      CONFIG_OC_DEFECTO,
+      { ...CONFIG_OC_DEFECTO, base: "SOLO_SERVICIO" as const },
+      { ...CONFIG_OC_DEFECTO, incluye4x1000: true },
+      { ...CONFIG_OC_DEFECTO, base: "SOLO_SERVICIO" as const, incluye4x1000: true },
+    ]) {
+      const r = armarCotizacion({ ...entrada, configOc });
+      // Las mismas líneas que tendría el borrador, pasadas por la regla del freno.
+      const desglose = desgloseParaOc([
+        ...entrada.conceptos.map((c) => ({ valor: c.valor, seccion: "OPERACIONAL" as const, tipoFija: null })),
+        ...entrada.terceros.map((t) => ({ valor: t.valor, seccion: "TERCEROS" as const, tipoFija: null })),
+        { valor: r.impuesto4x1000, seccion: "TERCEROS" as const, tipoFija: "IMPUESTO_4X1000" },
+      ]);
+      const ev = evaluarOrdenCompra({ numero: "OC1", valorOc: r.valorParaOc.valor, desglose, config: configOc });
+      expect(ev.estado).toBe("CUADRA");
+      expect(r.valorParaOc).toMatchObject({ base: configOc.base, incluye4x1000: configOc.incluye4x1000 });
+    }
+  });
+
+  it("lee base e incluye4x1000 de la config de la empresa (bloqueaAprobacion no cambia el valor)", () => {
+    const cfg = configOrdenCompraDe({ base: "SOLO_SERVICIO", incluye4x1000: true, bloqueaAprobacion: false });
+    expect(cfg).toEqual({ base: "SOLO_SERVICIO", incluye4x1000: true, bloqueaAprobacion: false });
   });
 });

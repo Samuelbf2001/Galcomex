@@ -17,13 +17,14 @@
  */
 
 import { FORMATO_CONCEPTOS_IVA, formatoFacturaDeEmpresa, lineasTercerosDesdeFacturas } from "@/lib/borradores/formato-conceptos";
+import { configOrdenCompraDe } from "@/lib/borradores/orden-compra";
+import { CAPACIDAD_ORDEN_COMPRA } from "@/lib/borradores/orden-compra-service";
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { configDe, tiene } from "@/lib/capacidades/resolver";
 import { conceptosParaLineas } from "@/lib/catalogos/conceptos-service";
 import { resolverLineaConcepto } from "@/lib/catalogos/nombre-linea";
 import {
   armarCotizacion,
-  configOcCotizacionDe,
   textoNotaAgencia,
   type ConceptoCotizacion,
   type ResultadoCotizacion,
@@ -35,7 +36,7 @@ import { propuestaParaTramite, TarifaIncompletaError, type PendienteTarifa } fro
 import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import { resolverFacturableFlujoCorto } from "@/lib/tramites/flujo-corto";
 
-export const CAPACIDAD_OC = "orden_compra_en_revision" as const;
+export const CAPACIDAD_OC = CAPACIDAD_ORDEN_COMPRA;
 
 export class TramiteCotizacionNoEncontradoError extends Error {
   public readonly status = 404;
@@ -229,7 +230,7 @@ export async function cotizacionDeTramite(
     tasaIva: params.tasaIva,
     tasa4x1000: params.tasa4x1000,
     reteIvaPorcentaje: formato.reteIvaPorcentaje,
-    configOc: configOcCotizacionDe(configDe(capacidades, CAPACIDAD_OC)),
+    configOc: configOrdenCompraDe(configDe(capacidades, CAPACIDAD_OC)),
     // INTEG-B DUDA: la nota sale con CUALQUIER agencia que tenga agenciamiento estándar (`AGENCIAMIENTO_<AGENCIA>`), aunque
     // la tarifa no reste ese valor (`restaAgenciamiento`). Es solo informativa (B9): no cambia ningún total.
     agenciamiento,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { CONFIG_OC_COTIZACION_DEFECTO, armarCotizacion, textoNotaAgencia } from "@/lib/cotizacion/calculo";
+import { CONFIG_OC_DEFECTO } from "@/lib/borradores/orden-compra";
+import { armarCotizacion, textoNotaAgencia } from "@/lib/cotizacion/calculo";
 
 import {
   filasCotizacion,
@@ -30,7 +31,7 @@ function dto(over: { usaOrdenCompra?: boolean; conTerceros?: boolean; configOcSo
     tasaIva: 19n,
     tasa4x1000: 400n,
     reteIvaPorcentaje: 15,
-    configOc: over.configOcSoloServicio ? { base: "SOLO_SERVICIO", incluye4x1000: false } : CONFIG_OC_COTIZACION_DEFECTO,
+    configOc: over.configOcSoloServicio ? { ...CONFIG_OC_DEFECTO, base: "SOLO_SERVICIO" } : CONFIG_OC_DEFECTO,
     agenciamiento: { agencia: "COLDEX", valor: 145_000n },
   });
   return {
