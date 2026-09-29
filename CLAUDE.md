@@ -219,7 +219,9 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   **Con qué se factura (revisión adversarial 26-sep-2026,
   `lib/tramites/flujo-corto.ts`, función `resolverFacturableFlujoCorto`):**
   misma condición en `generarBorrador`, `solicitarFacturacion` (sin
-  `flujoCorto`, exige ≥1 pago) y `transitionTramite` hacia
+  `flujoCorto`, exige ≥1 pago solo si la empresa tiene `anticipos_cliente`:
+  las que van a crédito —Polyrec ZF, Sesderma, CW ASIA, Coldex— se mandan a
+  facturar sin pagos, decisión del 29-sep-2026) y `transitionTramite` hacia
   ENVIADO_A_FACTURAR (que además fija `fechaEnviadoAFacturar`) — 1) exige el
   formato CONCEPTOS_IVA (función `factura_conceptos_iva`; sin ella, incluidas
   las empresas SOCIO_LM que facturan por comisión, 422

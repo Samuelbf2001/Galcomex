@@ -763,6 +763,69 @@ describe("solicitarFacturacion", () => {
     const enviado = tramiteActualizado?.fechaEnviadoAFacturar?.getTime();
     expect([hoyAntes.getTime(), hoyDespues.getTime()]).toContain(enviado);
   });
+
+  it("el error sin pagos nombra el consecutivo del DO, no su id interno", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, db.clientePropioId);
+    const { consecutivo } = await prisma.tramiteDO.findUniqueOrThrow({
+      where: { id: tramiteId },
+      select: { consecutivo: true },
+    });
+
+    await expect(solicitarFacturacion(tramiteId, db.userId)).rejects.toThrow(consecutivo);
+  });
+
+  // Polyrec ZF y demás clientes a crédito (sin `anticipos_cliente`): el cliente
+  // paga directo sus facturas, así que el DO puede no tener pagos de Galcomex
+  // y aun así se factura (reunión 10-sep-2026, traslados de Polyrec ZF).
+  it("empresa sin anticipos (a crédito): se manda a facturar sin pagos", async (ctx) => {
+    const db = ensureDb(ctx);
+    const credito = await prisma.cliente.create({
+      data: {
+        nombre: "Cliente a crédito",
+        nit: `${TEST_PREFIX}-credito-${runId.slice(-6)}`,
+        tipo: TipoCliente.PROPIO,
+        capacidades: { create: [{ codigo: "anticipos_cliente", habilitado: false }] },
+      },
+    });
+    const tramiteId = await crearTramiteTest(db, credito.id);
+    await prisma.tramiteDO.update({
+      where: { id: tramiteId },
+      data: { estado: EstadoTramite.DESPACHADO },
+    });
+
+    const result = await solicitarFacturacion(tramiteId, db.userId);
+    expect(result.ok).toBe(true);
+
+    const actualizado = await prisma.tramiteDO.findUnique({
+      where: { id: tramiteId },
+      select: { estado: true, fechaEnviadoAFacturar: true },
+    });
+    expect(actualizado?.estado).toBe(EstadoTramite.ENVIADO_A_FACTURAR);
+    expect(actualizado?.fechaEnviadoAFacturar).not.toBeNull();
+    expect(await prisma.pagoTramite.count({ where: { tramiteId } })).toBe(0);
+  });
+
+  it("empresa con anticipos (Litoplas, clientes de Lucho): sin pagos sigue frenando", async (ctx) => {
+    const db = ensureDb(ctx);
+    const conAnticipo = await prisma.cliente.create({
+      data: {
+        nombre: "Cliente con anticipo",
+        nit: `${TEST_PREFIX}-anticipo-${runId.slice(-6)}`,
+        tipo: TipoCliente.PROPIO,
+        capacidades: { create: [{ codigo: "anticipos_cliente", habilitado: true }] },
+      },
+    });
+    const tramiteId = await crearTramiteTest(db, conAnticipo.id);
+    await prisma.tramiteDO.update({
+      where: { id: tramiteId },
+      data: { estado: EstadoTramite.DESPACHADO },
+    });
+
+    await expect(solicitarFacturacion(tramiteId, db.userId)).rejects.toThrow(TramiteSinPagosError);
+    const sigue = await prisma.tramiteDO.findUnique({ where: { id: tramiteId }, select: { estado: true } });
+    expect(sigue?.estado).toBe(EstadoTramite.DESPACHADO);
+  });
 });
 
 describe("solicitarFacturacion — servicio suelto (OTRO, decisión de Ernesto 26-sep-2026)", () => {

@@ -74,6 +74,8 @@ import {
   type EtiquetaCxp,
   type PartesFactura,
 } from "@/lib/cxp/saldos";
+import { tiene } from "@/lib/capacidades/resolver";
+import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
 import { aFechaCalendario, fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
@@ -1222,6 +1224,22 @@ export async function eliminarFacturaProveedor(
  * DESPACHADO que esperar. Si el DO está en otro estado, se retorna un error
  * 422 con los estados válidos.
  */
+/**
+ * «Solicitar facturación» exige pagos a proveedores solo a las empresas que
+ * fondean sus trámites con anticipo (capacidad `anticipos_cliente`): ahí un DO
+ * sin pagos casi siempre es un DO incompleto. Las que van a crédito (Polyrec
+ * ZF, Sesderma, CW ASIA, Coldex…) muchas veces no tienen pagos de Galcomex en
+ * el DO — el cliente paga directo sus facturas, p. ej. los traslados de Polyrec
+ * ZF (reunión 10-sep-2026, min 01:23: «el traslado… solo las facturas, pero
+ * ellos las pagan») — y aun así se facturan por tarifa: en prod, 58 de 67 DO
+ * facturados de Polyrec ZF no tienen pagos. Misma idea que «sin anticipo no
+ * hay pagos» (`exigeAnticipo` en `pagos/service.ts`). Litoplas y los clientes
+ * de Lucho tienen la función encendida: para ellos no cambia nada.
+ */
+async function exigePagosParaFacturar(clienteId: string): Promise<boolean> {
+  return tiene(await capacidadesDeEmpresa(clienteId), "anticipos_cliente");
+}
+
 export async function solicitarFacturacion(
   tramiteId: string,
   usuarioId: string,
@@ -1229,6 +1247,7 @@ export async function solicitarFacturacion(
   const tramite = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
     select: {
+      consecutivo: true,
       clienteId: true,
       valorServicio: true,
       conceptoServicioCodigo: true,
@@ -1245,14 +1264,14 @@ export async function solicitarFacturacion(
     if (resuelto && !resuelto.ok) {
       throw resuelto.error;
     }
-  } else {
+  } else if (!tramite || (await exigePagosParaFacturar(tramite.clienteId))) {
     // Verificar que tenga pagos
     const pagosCount = await prisma.pagoTramite.count({
       where: { tramiteId },
     });
 
     if (pagosCount === 0) {
-      throw new TramiteSinPagosError(tramiteId);
+      throw new TramiteSinPagosError(tramite?.consecutivo ?? tramiteId);
     }
   }
 
