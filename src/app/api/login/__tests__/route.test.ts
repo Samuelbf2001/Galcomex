@@ -12,7 +12,7 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
-import { resolverIp } from "../route";
+import { resolverIp } from "@/lib/auth/resolver-ip";
 
 function peticion(headers: Record<string, string> = {}) {
   return new NextRequest("http://localhost:3000/api/login", { headers });

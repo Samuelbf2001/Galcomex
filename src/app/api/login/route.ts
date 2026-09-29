@@ -6,6 +6,7 @@ import {
   MENSAJE_USUARIO_DESACTIVADO,
   tieneClaveTemporal,
 } from "@/lib/auth/estado-cuenta";
+import { resolverIp } from "@/lib/auth/resolver-ip";
 import { destinoInternoSeguro } from "@/lib/auth/rutas-roles";
 import {
   construirClaveLimite,
@@ -18,27 +19,6 @@ import {
 async function leerCuerpo(response: Response): Promise<Record<string, unknown> | null> {
   const cuerpo: unknown = await response.clone().json().catch(() => null);
   return typeof cuerpo === "object" && cuerpo !== null ? (cuerpo as Record<string, unknown>) : null;
-}
-
-/**
- * Resuelve la IP del cliente a partir de los headers de proxy/reverse-proxy
- * habituales. NextRequest ya no expone `.ip` en Next 15; en despliegue
- * detrás de Traefik, `x-forwarded-for` es una lista `cliente, proxy1, ...`
- * donde cada proxy AÑADE su valor al final. El PRIMER valor lo pone el
- * propio cliente y puede falsificarse a mano (evade el límite de intentos);
- * el ÚLTIMO valor no vacío es el que agrega Traefik, el proxy de confianza,
- * y es el único que no se puede suplantar desde fuera.
- */
-export function resolverIp(request: NextRequest): string {
-  const forwardedFor = request.headers.get("x-forwarded-for");
-  if (forwardedFor) {
-    const valores = forwardedFor
-      .split(",")
-      .map((v) => v.trim())
-      .filter((v) => v.length > 0);
-    if (valores.length > 0) return valores[valores.length - 1]!;
-  }
-  return request.headers.get("x-real-ip") ?? "desconocida";
 }
 
 export async function POST(request: NextRequest) {
