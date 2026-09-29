@@ -22,6 +22,7 @@ import {
   liberarBdAlmacarga,
   prepararBdAlmacarga,
 } from "@/lib/cxp/__tests__/fixtures/almacarga";
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { fichasDeEmpresa, getEstadoCuentaProveedor, resumenPorProveedor } from "@/lib/cxp/estado-cuenta";
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -50,6 +51,8 @@ describe("cxp/estado-cuenta — ficha del proveedor", () => {
     await liberarBdAlmacarga();
     await prisma.beneficiario.deleteMany({ where: { nit: { startsWith: nitHermanas } } });
     await prisma.beneficiario.deleteMany({ where: { nit: { startsWith: nitCompartido } } });
+    // Fase 3: toda ficha tiene empresa; las fichas se borran antes (FK Restrict).
+    await prisma.cliente.deleteMany({ where: { nit: { startsWith: nitHermanas } } });
     await prisma.cliente.deleteMany({ where: { nit: { startsWith: nitCompartido } } });
     await prisma.$disconnect();
   });
@@ -182,8 +185,13 @@ describe("cxp/estado-cuenta — ficha del proveedor", () => {
 
   it("fichas con el mismo NIT base son el mismo proveedor: el bloque de una paga la factura de la otra", async (ctx) => {
     const db = ensureDb(ctx);
-    const cuentaA = await prisma.beneficiario.create({ data: { nombre: "PROVEEDOR NIT (cuenta A)", nit: `${nitHermanas}-1` } });
-    const cuentaB = await prisma.beneficiario.create({ data: { nombre: "PROVEEDOR NIT (cuenta B)", nit: nitHermanas } });
+    // Fase 3: las dos cuentas son del MISMO proveedor, o sea de la misma empresa.
+    const cuentaA = await crearFichaConEmpresaTest({ nombre: "PROVEEDOR NIT (cuenta A)", nit: `${nitHermanas}-1` });
+    const cuentaB = await crearFichaConEmpresaTest({
+      nombre: "PROVEEDOR NIT (cuenta B)",
+      nit: nitHermanas,
+      empresaId: cuentaA.empresaId,
+    });
     const t = await crearTramiteTest(db);
     await aplicarAnticipoTest(db, t, 500_000n);
     const factura = await crearFacturaAlmacargaTest(db, t, "FE-660201", 90_000n, cuentaB.id);
@@ -201,7 +209,7 @@ describe("cxp/estado-cuenta — ficha del proveedor", () => {
     expect((await prisma.facturaProveedor.findUniqueOrThrow({ where: { id: factura } })).estado).toBe("PAGADA");
   });
 
-  it("fichasDeEmpresa: suma la ficha suelta con su NIT base, pero nunca la de OTRA empresa con la misma base", async (ctx) => {
+  it("fichasDeEmpresa: suma la «otra cuenta» con su NIT base, pero nunca la de OTRA empresa con la misma base", async (ctx) => {
     ensureDb(ctx);
     const empresaA = await prisma.cliente.create({
       data: { nombre: "EMPRESA A (base compartida)", nit: nitCompartido, tipo: "PROPIO", esCliente: false, esProveedor: true },
@@ -210,7 +218,8 @@ describe("cxp/estado-cuenta — ficha del proveedor", () => {
       data: { nombre: "EMPRESA B (base compartida)", nit: `${nitCompartido}-4`, tipo: "PROPIO", esCliente: false, esProveedor: true },
     });
     const deA = await prisma.beneficiario.create({ data: { nombre: "A cuenta 1", nit: `${nitCompartido}-1`, empresaId: empresaA.id } });
-    const suelta = await prisma.beneficiario.create({ data: { nombre: "Ficha suelta", nit: nitCompartido } });
+    // Fase 3: ya no hay fichas sueltas; la «otra cuenta» nace enlazada a la empresa A.
+    const suelta = await crearFichaConEmpresaTest({ nombre: "Otra cuenta de A", nit: nitCompartido, empresaId: empresaA.id });
     const deB = await prisma.beneficiario.create({ data: { nombre: "B cuenta 1", nit: `${nitCompartido}-2`, empresaId: empresaB.id } });
 
     const fichasA = (await fichasDeEmpresa(prisma, empresaA.id, empresaA.nit)).map((f) => f.id);

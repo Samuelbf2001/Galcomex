@@ -17,6 +17,7 @@ import {
   EmpresaNoEncontradaParaBeneficiarioError,
   enlazarBeneficiarioEmpresa,
 } from "@/lib/beneficiarios/service";
+import { PosibleBeneficiarioDuplicadoError } from "@/lib/cxp/errores";
 import { dvNit } from "@/lib/cxp/saldos";
 import { prisma } from "@/lib/db/prisma";
 
@@ -87,6 +88,8 @@ afterAll(async () => {
   if (clienteIds.length > 0) {
     await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
   }
+  // Fase 3: empresas solo-proveedoras que creó crearBeneficiario sin empresaId.
+  await prisma.cliente.deleteMany({ where: { nombre: { startsWith: RUN_ID } } });
   if (USUARIO_ID) {
     await prisma.user.deleteMany({ where: { id: USUARIO_ID } });
   }
@@ -115,12 +118,14 @@ describe("crearBeneficiario / actualizarBeneficiario — persistencia de empresa
     ).rejects.toBeInstanceOf(EmpresaNoEncontradaParaBeneficiarioError);
   });
 
-  it("guarda empresaId al actualizar", async (ctx) => {
+  it("guarda empresaId al actualizar (cambio de empresa)", async (ctx) => {
     ensureDb(ctx);
+    // Fase 3: ya no existen fichas sin empresa; se prueba el cambio de una a otra.
+    const origen = await crearEmpresa(baseAleatoria());
     const empresa = await crearEmpresa(baseAleatoria());
-    const beneficiario = await crearBeneficiario({ nombre: `${RUN_ID} Sin enlazar` }, USUARIO_ID);
+    const beneficiario = await crearBeneficiario({ nombre: `${RUN_ID} Por mover`, empresaId: origen.id }, USUARIO_ID);
     beneficiarioIds.push(beneficiario.id);
-    expect(beneficiario.empresaId).toBeNull();
+    expect(beneficiario.empresaId).toBe(origen.id);
 
     const actualizado = await actualizarBeneficiario(beneficiario.id, { empresaId: empresa.id }, USUARIO_ID);
 
@@ -129,7 +134,8 @@ describe("crearBeneficiario / actualizarBeneficiario — persistencia de empresa
 
   it("rechaza empresaId de una empresa inexistente al actualizar", async (ctx) => {
     ensureDb(ctx);
-    const beneficiario = await crearBeneficiario({ nombre: `${RUN_ID} Otra ficha` }, USUARIO_ID);
+    const empresa = await crearEmpresa(baseAleatoria());
+    const beneficiario = await crearBeneficiario({ nombre: `${RUN_ID} Otra ficha`, empresaId: empresa.id }, USUARIO_ID);
     beneficiarioIds.push(beneficiario.id);
 
     await expect(
@@ -194,7 +200,12 @@ describe("enlazarBeneficiarioEmpresa", () => {
     );
     beneficiarioIds.push(parecida.id);
 
-    const resultado = await enlazarBeneficiarioEmpresa(empresa.id, USUARIO_ID);
+    // Fase 3 (sin repetidos): primero avisa que se parece a otra ficha…
+    await expect(enlazarBeneficiarioEmpresa(empresa.id, USUARIO_ID)).rejects.toBeInstanceOf(
+      PosibleBeneficiarioDuplicadoError,
+    );
+    // …y, confirmado que es otra, crea la suya sin enlazar la parecida.
+    const resultado = await enlazarBeneficiarioEmpresa(empresa.id, USUARIO_ID, { confirmarOtraFicha: true });
     beneficiarioIds.push(resultado.id);
 
     expect(resultado.id).not.toBe(parecida.id);

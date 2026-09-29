@@ -495,6 +495,10 @@ async function main() {
  * Ficha de pago (Beneficiario) del proveedor por nombre exacto; si no existe se
  * crea sin NIT (su llave de proveedor queda "BEN:<id>"). Solo para esta
  * importación histórica: la pantalla exige escoger la ficha.
+ *
+ * Fase 3: toda ficha pertenece a una empresa. Si no hay, se crea una empresa
+ * solo proveedora con un NIT provisional «SIN-NIT-<nombre>» (no se copia a la
+ * ficha ni va a Siigo); se corrige cuando se conozca el NIT real.
  */
 async function fichaPorNombre(nombre: string): Promise<string> {
   const limpio = nombre.trim() || "PROVEEDOR SIN NOMBRE";
@@ -504,7 +508,24 @@ async function fichaPorNombre(nombre: string): Promise<string> {
     select: { id: true },
   });
   if (existente) return existente.id;
-  const creada = await prisma.beneficiario.create({ data: { nombre: limpio }, select: { id: true } });
+  const nitProvisional = `SIN-NIT-${limpio.toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+  const empresa = await prisma.cliente.upsert({
+    where: { nit: nitProvisional },
+    update: {},
+    create: {
+      nombre: limpio,
+      nit: nitProvisional,
+      tipo: "PROPIO",
+      esCliente: false,
+      esProveedor: true,
+      manejaAnticipo: false,
+    },
+    select: { id: true },
+  });
+  const creada = await prisma.beneficiario.create({
+    data: { nombre: limpio, empresaId: empresa.id },
+    select: { id: true },
+  });
   return creada.id;
 }
 

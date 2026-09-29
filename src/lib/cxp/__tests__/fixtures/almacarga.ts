@@ -25,6 +25,7 @@ import {
   TipoRecaudo,
 } from "@prisma/client";
 
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { prisma } from "@/lib/db/prisma";
 import { crearFacturaProveedor } from "@/lib/facturas-proveedor/service";
 import { listarFacturasElegiblesMultiDO } from "@/lib/pagos/service";
@@ -154,17 +155,21 @@ export async function cleanupTestData() {
   await prisma.tramiteDO.deleteMany({
     where: { id: { in: tramiteIds } },
   });
+  // Beneficiarios de prueba (ficha de pago de Almacarga/Express/Tampa/VUCE) —
+  // el pivot pago_tramite_beneficiario ya se borró en cascada arriba. Fase 3:
+  // la FK ficha → empresa es Restrict, así que las fichas se borran ANTES que
+  // los clientes (también las que cuelgan de una empresa de prueba aunque su
+  // NIT no lleve el prefijo).
+  await prisma.beneficiario.deleteMany({
+    where: {
+      OR: [{ nit: { startsWith: TEST_PREFIX } }, { empresaId: { in: clienteIds } }],
+    },
+  });
   await prisma.cliente.deleteMany({
     where: { id: { in: clienteIds } },
   });
   await prisma.user.deleteMany({
     where: { id: { in: userIds } },
-  });
-
-  // Beneficiarios de prueba (ficha de pago de Almacarga/Express/Tampa/VUCE) —
-  // el pivot pago_tramite_beneficiario ya se borró en cascada arriba.
-  await prisma.beneficiario.deleteMany({
-    where: { nit: { startsWith: TEST_PREFIX } },
   });
 }
 
@@ -222,16 +227,14 @@ export async function createFixture(): Promise<Fixture> {
     },
   });
 
-  // Tampa Cargo y VUCE: beneficiarios SIN empresa enlazada — son quienes
-  // reciben los pagos reales de flete/trámite en DO.BAQ26-0069/0226, ajenos
-  // a Almacarga (usados en CA-10 y en el caso real para bajar el saldo del DO
-  // sin tocar la cartera de Almacarga).
-  const tampa = await prisma.beneficiario.create({
-    data: { nombre: "TAMPA CARGO", nit: `${TEST_PREFIX}-ben-tampa-${runId}` },
-  });
-  const vuce = await prisma.beneficiario.create({
-    data: { nombre: "VUCE", nit: `${TEST_PREFIX}-ben-vuce-${runId}` },
-  });
+  // Tampa Cargo y VUCE: fichas de OTRAS empresas proveedoras (una empresa
+  // solo-proveedora propia cada una; fase 3: toda ficha tiene empresa) — son
+  // quienes reciben los pagos reales de flete/trámite en DO.BAQ26-0069/0226,
+  // ajenos a Almacarga (usados en CA-10 y en el caso real para bajar el saldo
+  // del DO sin tocar la cartera de Almacarga). El NIT de la empresa lleva el
+  // prefijo de prueba: `cleanupTestData` la borra con el resto.
+  const tampa = await crearFichaConEmpresaTest({ nombre: "TAMPA CARGO", nit: `${TEST_PREFIX}-ben-tampa-${runId}` });
+  const vuce = await crearFichaConEmpresaTest({ nombre: "VUCE", nit: `${TEST_PREFIX}-ben-vuce-${runId}` });
 
   return {
     userId: user.id,

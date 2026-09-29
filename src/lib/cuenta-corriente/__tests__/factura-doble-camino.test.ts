@@ -23,6 +23,7 @@ import {
   prepararBdAlmacarga,
   type Fixture,
 } from "@/lib/cxp/__tests__/fixtures/almacarga";
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { FacturaEnCuentaCorrienteError } from "@/lib/cxp/errores";
 import { normalizarNumeroFactura as normalizarCxp } from "@/lib/cxp/saldos";
 import {
@@ -78,8 +79,14 @@ async function crearFichaPropia(nombre: string, nit: string, empresaId: string) 
   return prisma.beneficiario.create({ data: { nombre, nit, empresaId } });
 }
 
-async function crearFichaSuelta(nombre: string, nit: string) {
-  return prisma.beneficiario.create({ data: { nombre, nit } });
+/**
+ * «Otra ficha» del mismo proveedor (otra cuenta bancaria). Fase 3: ya no existen
+ * fichas sueltas (la BD las rechaza) y dos empresas con fichas del mismo NIT
+ * base NO se suman; la «otra cuenta» nace enlazada a la MISMA empresa
+ * (`empresaId`) o, sin él, a la empresa que tenga ese NIT exacto.
+ */
+async function crearFichaSuelta(nombre: string, nit: string, empresaId?: string) {
+  return crearFichaConEmpresaTest({ nombre, nit, empresaId });
 }
 
 async function crearFacturaDeProveedor(
@@ -377,7 +384,7 @@ describe("D · ficha suelta con el mismo NIT base SÍ choca (coherente con ficha
     // Ficha SUELTA con la MISMA base de 10 dígitos que la ficha propia (no con
     // la de la empresa): la vieja `empresasDeFicha` solo miraba `Cliente.nit`
     // y no la encontraba.
-    const suelta = await crearFichaSuelta("E8 (otra cuenta)", nitFichaSinGuion);
+    const suelta = await crearFichaSuelta("E8 (otra cuenta)", nitFichaSinGuion, empresa.id);
 
     await crearFacturaDeProveedor(db, suelta.id, "FE-9191", 90_000n);
 
@@ -403,7 +410,7 @@ describe("D · ficha suelta con el mismo NIT base SÍ choca (coherente con ficha
     const empresa = await crearEmpresa("E9 BASES DISTINTAS REVERSO", nitEmpresaConGuion);
     const nitFichaSinGuion = `${nitE2}15`;
     await crearFichaPropia("E9 (ficha propia)", nitFichaSinGuion, empresa.id);
-    const suelta = await crearFichaSuelta("E9 (otra cuenta)", nitFichaSinGuion);
+    const suelta = await crearFichaSuelta("E9 (otra cuenta)", nitFichaSinGuion, empresa.id);
 
     await registrarMovimientoCuenta({
       empresaId: empresa.id,

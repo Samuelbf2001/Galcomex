@@ -3,7 +3,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { asegurarBeneficiarioDeEmpresa } from "@/lib/beneficiarios/service";
+import { confirmaOtraFicha, respuestaErrorFicha } from "@/lib/beneficiarios/http";
+import { asegurarBeneficiarioDeEmpresa, eliminarFichasSinUsoDeEmpresa } from "@/lib/beneficiarios/service";
+import { bloquearNit, verificarNitEmpresaLibre } from "@/lib/empresas/nit";
 import { prisma } from "@/lib/db/prisma";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
@@ -82,13 +84,21 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const { tarifas, ...clienteData } = payload;
 
     const updated = await prisma.$transaction(async (tx) => {
+      // Candado por NIT antes de tocar la fila (mismo orden que el alta de fichas).
+      const actual = await tx.cliente.findUnique({ where: { id }, select: { nit: true } });
+      await bloquearNit(tx, clienteData.nit ?? actual?.nit);
+      if (clienteData.nit !== undefined) {
+        await verificarNitEmpresaLibre(tx, clienteData.nit, id);
+      }
       const nextCliente = await tx.cliente.update({
         where: { id },
         data: clienteData,
       });
 
       if (nextCliente.esProveedor) {
-        await asegurarBeneficiarioDeEmpresa(tx, nextCliente);
+        await asegurarBeneficiarioDeEmpresa(tx, nextCliente, {
+          confirmarOtraFicha: confirmaOtraFicha(request.nextUrl),
+        });
       }
 
       if (tarifas) {
@@ -112,6 +122,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     if (error instanceof ZodError) {
       return validationError(error);
     }
+
+    const errorFicha = respuestaErrorFicha(error);
+    if (errorFicha) return errorFicha;
 
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -147,13 +160,21 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     const { tarifas, ...cliente } = payload;
 
     const updated = await prisma.$transaction(async (tx) => {
+      // Candado por NIT antes de tocar la fila (mismo orden que el alta de fichas).
+      const actual = await tx.cliente.findUnique({ where: { id }, select: { nit: true } });
+      await bloquearNit(tx, cliente.nit ?? actual?.nit);
+      if (cliente.nit !== undefined) {
+        await verificarNitEmpresaLibre(tx, cliente.nit, id);
+      }
       const nextCliente = await tx.cliente.update({
         where: { id },
         data: cliente,
       });
 
       if (nextCliente.esProveedor) {
-        await asegurarBeneficiarioDeEmpresa(tx, nextCliente);
+        await asegurarBeneficiarioDeEmpresa(tx, nextCliente, {
+          confirmarOtraFicha: confirmaOtraFicha(request.nextUrl),
+        });
       }
 
       if (tarifas) {
@@ -178,6 +199,9 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       return validationError(error);
     }
 
+    const errorFicha = respuestaErrorFicha(error);
+    if (errorFicha) return errorFicha;
+
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2025"
@@ -198,15 +222,24 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
 
   try {
     const { id } = await context.params;
-    await prisma.cliente.delete({ where: { id } });
+    // Fase 3: la ficha de pago ya no queda suelta al borrar su empresa (FK
+    // Restrict): se borra con ella si no tiene uso; si tiene pagos o
+    // facturas, la empresa no se borra (EMPRESA_CON_PAGOS).
+    await prisma.$transaction(async (tx) => {
+      await eliminarFichasSinUsoDeEmpresa(tx, id, session.user.id);
+      await tx.cliente.delete({ where: { id } });
+    });
     return new NextResponse(null, { status: 204 });
   } catch (error) {
+    const errorFicha = respuestaErrorFicha(error);
+    if (errorFicha) return errorFicha;
+
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2003"
     ) {
       return NextResponse.json(
-        { error: "No se puede borrar un cliente con tramites asociados" },
+        { error: "No se puede borrar: la empresa tiene trámites, anticipos, facturas u otros registros asociados." },
         { status: 409 },
       );
     }

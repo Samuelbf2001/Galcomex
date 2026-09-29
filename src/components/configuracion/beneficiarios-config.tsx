@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -133,6 +134,8 @@ export function BeneficiariosConfig() {
   }
 
   const sinNit = beneficiarios.filter((b) => !b.nit).length;
+  // Fase 3: todo proveedor pertenece a una empresa (salvo la ficha del socio).
+  const sinEmpresa = beneficiarios.filter((b) => !b.empresa && !b.esFichaSocio).length;
 
   function renderEditor(b: BeneficiarioRow, field: Campo) {
     if (!edit || edit.id !== b.id || edit.field !== field) return null;
@@ -206,12 +209,26 @@ export function BeneficiariosConfig() {
             {puedeEditar ? " Haz clic en un nombre o NIT para editarlo." : ""}
           </p>
         </div>
-        {sinNit > 0 && (
-          <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
-            {sinNit} sin NIT
-          </span>
-        )}
+        <div className="flex gap-2">
+          {sinEmpresa > 0 && (
+            <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+              {sinEmpresa} sin empresa
+            </span>
+          )}
+          {sinNit > 0 && (
+            <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+              {sinNit} sin NIT
+            </span>
+          )}
+        </div>
       </div>
+
+      {sinEmpresa > 0 ? (
+        <p role="status" className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {sinEmpresa === 1 ? "Hay 1 proveedor" : `Hay ${sinEmpresa} proveedores`} sin empresa. Todo proveedor debe
+          pertenecer a una empresa: mientras no la tenga, sus datos no se pueden editar.
+        </p>
+      ) : null}
 
       {errorGuardado ? (
         <p role="alert" className="text-sm text-red-600">
@@ -220,7 +237,7 @@ export function BeneficiariosConfig() {
       ) : null}
 
       {loadState === "loading" ? (
-        <TableSkeleton rows={6} cols={5} rowHeight={37} />
+        <TableSkeleton rows={6} cols={6} rowHeight={37} />
       ) : loadState === "error" ? (
         <ModuleState
           type="error"
@@ -234,6 +251,7 @@ export function BeneficiariosConfig() {
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
                 <th className="border-b border-slate-200 px-4 py-2">Nombre</th>
+                <th className="border-b border-slate-200 px-4 py-2">Empresa</th>
                 <th className="border-b border-slate-200 px-4 py-2">NIT</th>
                 <th className="border-b border-slate-200 px-4 py-2">Banco</th>
                 <th className="border-b border-slate-200 px-4 py-2">Nombre corto (factura de venta)</th>
@@ -243,7 +261,7 @@ export function BeneficiariosConfig() {
             <tbody>
               {beneficiarios.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-4 text-center text-slate-400">
+                  <td colSpan={6} className="px-4 py-4 text-center text-slate-400">
                     <ModuleState type="empty" title="No hay beneficiarios registrados" detail="Los proveedores y beneficiarios que registres aparecerán aquí para completar sus datos." />
                   </td>
                 </tr>
@@ -267,6 +285,21 @@ export function BeneficiariosConfig() {
                       ) : (
                         <span>{b.nombre}</span>
                       ))}
+                  </td>
+
+                  {/* Empresa (fase 3) */}
+                  <td className="px-4 py-2 text-sm">
+                    {b.empresa ? (
+                      <Link href={`/clientes/${b.empresa.id}`} className="text-cyan-700 hover:underline">
+                        {b.empresa.nombre}
+                      </Link>
+                    ) : b.esFichaSocio ? (
+                      <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600" title="Ficha de pago del socio: no es una empresa">
+                        Socio
+                      </span>
+                    ) : (
+                      <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">Sin empresa</span>
+                    )}
                   </td>
 
                   {/* NIT (sin DV) + DV */}

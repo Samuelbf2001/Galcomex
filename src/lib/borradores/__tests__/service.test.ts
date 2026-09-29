@@ -30,6 +30,7 @@ import {
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { calcularSaldoLMInterno } from "@/lib/calculations/cruce-lm";
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
@@ -132,7 +133,7 @@ async function cleanupTestData() {
     where: { tramiteId: { in: tramiteIds } },
   });
   await prisma.beneficiario.deleteMany({
-    where: { nit: { startsWith: TEST_PREFIX } },
+    where: { OR: [{ nit: { startsWith: TEST_PREFIX } }, { empresaId: { in: clienteIds } }] },
   });
 
   const testAnticipos = await prisma.anticipo.findMany({
@@ -392,11 +393,11 @@ async function crearFacturaProveedorTest(
 
 /** Beneficiario (proveedor) del pago en bloque; nit prefijado para la limpieza. */
 async function crearBeneficiarioTest(): Promise<string> {
-  const b = await prisma.beneficiario.create({
-    data: {
-      nombre: "ASCINTER VITEST",
-      nit: `${TEST_PREFIX}-${runId}-${Math.random().toString(36).slice(2)}`,
-    },
+  // Fase 3: la ficha lleva su empresa solo-proveedora (mismo NIT prefijado, así
+  // `cleanupTestData` borra las fichas primero y las empresas después).
+  const b = await crearFichaConEmpresaTest({
+    nombre: "ASCINTER VITEST",
+    nit: `${TEST_PREFIX}-${runId}-${Math.random().toString(36).slice(2)}`,
   });
   return b.id;
 }

@@ -17,6 +17,17 @@ import {
   numeroFacturaVisible,
 } from "@/lib/cxp/saldos";
 import { prisma } from "@/lib/db/prisma";
+import { bloquearNit, buscarEmpresaPorNit, buscarEmpresaPorNombre, esNitUtil } from "@/lib/empresas/nit";
+
+import {
+  EmpresaConPagosError,
+  FichaSinEmpresaError,
+  FichaSinNitError,
+  FichaSocioConEmpresaError,
+  NitDelSocioError,
+  NitDeOtraEmpresaError,
+  PosibleEmpresaDuplicadaError,
+} from "./errores";
 
 export type { Beneficiario };
 
@@ -26,32 +37,81 @@ type Tx = Prisma.TransactionClient;
  * Una empresa marcada como proveedor necesita su ficha de pago (`Beneficiario`)
  * enlazada por `empresaId`: sin ese puente no aparece en el libro de pagos, en
  * las facturas de proveedor ni en la punta proveedor de la cuenta corriente.
- * Idempotente: reutiliza la ficha ya enlazada, enlaza una existente con el
- * mismo NIT (CxP v2: mismo NIT base, con o sin DV) o crea una nueva. Devuelve
- * la ficha resultante.
+ * Idempotente: reutiliza la ficha ya enlazada, enlaza una suelta con el mismo
+ * NIT (CxP v2: mismo NIT base, con o sin DV) o crea una nueva. Devuelve la
+ * ficha resultante.
+ *
+ * Fase 3 (sin repetidos): antes de crear una ficha nueva revisa que el NIT no
+ * sea ya el de un proveedor de OTRA empresa (`NIT_DE_OTRA_EMPRESA`) ni se
+ * parezca al de otra ficha — el mismo número con el DV pegado sin guion o sin
+ * su último dígito (`POSIBLE_BENEFICIARIO_DUPLICADO`, salvo
+ * `confirmarOtraFicha`). Un NIT provisional ("PENDIENTE-…") no se copia a la
+ * ficha: iría a Siigo como NIT del tercero.
  */
 export async function asegurarBeneficiarioDeEmpresa(
   tx: Prisma.TransactionClient,
   empresa: { id: string; nombre: string; nit: string },
+  opciones: { confirmarOtraFicha?: boolean } = {},
 ): Promise<Beneficiario> {
-  const enlazado = await tx.beneficiario.findFirst({ where: { empresaId: empresa.id } });
+  const enlazado = await tx.beneficiario.findFirst({ where: { empresaId: empresa.id }, orderBy: { createdAt: "asc" } });
   if (enlazado) return enlazado;
 
-  const nit = empresa.nit.trim();
-  const base = nitBaseDe(nit);
-  const porNit = nit
-    ? await tx.beneficiario.findFirst({
-        where: base !== null ? { nitBase: base, empresaId: null } : { nit, empresaId: null },
-        orderBy: { createdAt: "asc" },
-      })
-    : null;
-  if (porNit) {
-    return tx.beneficiario.update({ where: { id: porNit.id }, data: { empresaId: empresa.id } });
+  const nombre = empresa.nombre.trim();
+  const texto = empresa.nit.trim();
+  if (!esNitUtil(texto)) {
+    // Provisional ("PENDIENTE-…") o sin sentido ("N/A", "0"): la ficha va sin NIT.
+    return tx.beneficiario.create({ data: { nombre, nit: null, empresaId: empresa.id } });
   }
 
-  return tx.beneficiario.create({
-    data: { nombre: empresa.nombre.trim(), nit: nit || null, empresaId: empresa.id },
+  const { nit, nitBase } = resolverNitFicha(texto, null);
+  // Misma serialización que el alta de fichas con ese NIT.
+  await bloquearNit(tx, texto);
+
+  const mismas = await tx.beneficiario.findMany({
+    where: nitBase !== null ? { nitBase } : { nit },
+    include: { empresa: { select: { id: true, nombre: true } } },
+    orderBy: { createdAt: "asc" },
   });
+  const delSocio = mismas.find((f) => f.esFichaSocio);
+  if (delSocio) {
+    throw new NitDelSocioError(resumen(delSocio));
+  }
+  const suelta = mismas.find((f) => f.empresaId === null);
+  if (suelta) {
+    return tx.beneficiario.update({ where: { id: suelta.id }, data: { empresaId: empresa.id } });
+  }
+  const deOtra = mismas.find((f) => f.empresa !== null && f.empresa.id !== empresa.id);
+  if (deOtra?.empresa) {
+    throw new NitDeOtraEmpresaError({
+      fichaId: deOtra.id,
+      fichaNombre: deOtra.nombre,
+      nit: deOtra.nit,
+      empresaId: deOtra.empresa.id,
+      empresaNombre: deOtra.empresa.nombre,
+    });
+  }
+
+  if (nitBase !== null && !opciones.confirmarOtraFicha) {
+    const parecidos = candidatosNitParecido(nitBase).filter((c) => c !== nitBase);
+    const existentes =
+      parecidos.length === 0
+        ? []
+        : await tx.beneficiario.findMany({
+            where: { nitBase: { in: parecidos } },
+            select: { id: true, nombre: true, nit: true },
+            orderBy: { createdAt: "asc" },
+          });
+    if (existentes.length > 0) {
+      throw new PosibleBeneficiarioDuplicadoError(existentes.map(resumen));
+    }
+  }
+
+  return tx.beneficiario.create({ data: { nombre, nit, empresaId: empresa.id } });
+}
+
+/** Una empresa con ficha de pago es proveedora: se marca si aún no lo estaba. */
+async function marcarEmpresaProveedora(tx: Tx, empresaId: string): Promise<void> {
+  await tx.cliente.updateMany({ where: { id: empresaId, esProveedor: false }, data: { esProveedor: true } });
 }
 
 /**
@@ -223,6 +283,16 @@ async function validarNitFicha(
 
   const excluir = i.excluirId ? { id: { not: i.excluirId } } : {};
 
+  // Fase 3: el NIT del socio no se repite ni con «otra cuenta» de ADMIN (el
+  // socio no es una empresa, decisión de Ernesto 26-sep-2026).
+  const delSocio = await tx.beneficiario.findFirst({
+    where: { nitBase: i.nitBase, esFichaSocio: true, ...excluir },
+    select: { id: true, nombre: true, nit: true },
+  });
+  if (delSocio) {
+    throw new NitDelSocioError(resumen(delSocio));
+  }
+
   if (!i.permitirMismoNit) {
     const mismo = await tx.beneficiario.findFirst({
       where: { nitBase: i.nitBase, ...excluir },
@@ -327,10 +397,16 @@ function textoOpcional(v: string | null | undefined): string | null {
 
 // ─── API pública ──────────────────────────────────────────────────────────────
 
-export async function listarBeneficiarios(query?: string, empresaId?: string): Promise<Beneficiario[]> {
+/** Ficha con el nombre de su empresa (para mostrar a quién pertenece). */
+export type BeneficiarioConEmpresa = Prisma.BeneficiarioGetPayload<{
+  include: { empresa: { select: { id: true; nombre: true } } };
+}>;
+
+export async function listarBeneficiarios(query?: string, empresaId?: string): Promise<BeneficiarioConEmpresa[]> {
   const q = query?.trim();
   const digitos = q ? q.replace(/[^0-9]/g, "") : "";
   return prisma.beneficiario.findMany({
+    include: { empresa: { select: { id: true, nombre: true } } },
     where: {
       // Fichas de pago enlazadas a una empresa (puente Beneficiario.empresaId, M5).
       ...(empresaId ? { empresaId } : {}),
@@ -350,21 +426,37 @@ export async function listarBeneficiarios(query?: string, empresaId?: string): P
   });
 }
 
+/**
+ * Alta de ficha de pago. Fase 3: toda ficha pertenece a una empresa.
+ *  - Con `empresaId`: se enlaza a esa empresa (su NIT debe ser el de la empresa).
+ *  - Sin `empresaId`: se busca la empresa con el mismo NIT; si no existe, se
+ *    crea en la misma transacción una empresa solo-proveedor (no sale en los
+ *    selectores de clientes) con el nombre y el NIT de la ficha. Sin NIT no se
+ *    puede (`FICHA_SIN_NIT`): no habría con qué evitar un proveedor repetido.
+ * La empresa escogida o encontrada queda marcada como proveedora.
+ */
 export async function crearBeneficiario(
   input: CrearBeneficiarioInput,
   usuarioId: string,
   opciones: OpcionesFicha = {},
-): Promise<Beneficiario> {
-  const { nit, nitBase } = resolverNitFicha(input.nit, input.dv);
-  const empresaId = input.empresaId ?? null;
+): Promise<Beneficiario & { empresaCreada: boolean }> {
+  const resuelto = resolverNitFicha(input.nit, input.dv);
+  // Un NIT provisional o sin sentido ("PENDIENTE-…", "N/A", "0") no identifica a
+  // nadie: no se guarda (iría a Siigo) ni sirve para buscar la empresa.
+  const nitUtil = resuelto.nit !== null && esNitUtil(resuelto.nit);
+  const nit = nitUtil ? resuelto.nit : null;
+  const nitBase = nitUtil ? resuelto.nitBase : null;
 
   return prisma.$transaction(async (tx) => {
-    // Serializa altas con el mismo NIT base (dos pantallas creando la misma ficha a la vez).
-    if (nitBase !== null) {
-      await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${`beneficiario-nit:${nitBase}`}))`);
-    }
+    // Serializa altas con el mismo NIT (dos pantallas creando la misma ficha, o
+    // la misma empresa proveedora, a la vez). NIT extranjero: por el texto.
+    await bloquearNit(tx, nit);
+    let empresaId = input.empresaId ?? null;
     if (empresaId) {
       await validarEmpresaParaEnlazar(tx, empresaId);
+    } else {
+      if (nit === null) throw new FichaSinNitError();
+      empresaId = (await buscarEmpresaPorNit(tx, nit))?.id ?? null;
     }
     await validarNitFicha(tx, {
       nitBase,
@@ -372,6 +464,61 @@ export async function crearBeneficiario(
       permitirMismoNit: opciones.permitirMismoNit ?? false,
       confirmarOtraFicha: input.confirmarOtraFicha ?? false,
     });
+
+    // Una empresa = una ficha, salvo «otra cuenta del mismo proveedor» (ADMIN).
+    // Cubre la ficha sin NIT de una empresa con NIT (caso CEVA), que la regla
+    // del NIT base no ve.
+    if (empresaId && !opciones.permitirMismoNit) {
+      const yaTiene = await tx.beneficiario.findFirst({
+        where: { empresaId },
+        select: { id: true, nombre: true, nit: true },
+        orderBy: { createdAt: "asc" },
+      });
+      if (yaTiene) throw new BeneficiarioExisteError(resumen(yaTiene));
+    }
+
+    // Empresa nueva: antes, aviso si ya hay una con el mismo nombre (la de NIT
+    // provisional, como ASCINTER, no se encuentra por NIT).
+    if (!empresaId && !input.confirmarOtraFicha) {
+      const mismoNombre = await buscarEmpresaPorNombre(tx, input.nombre);
+      if (mismoNombre) {
+        const suyas = await tx.beneficiario.findMany({
+          where: { empresaId: mismoNombre.id },
+          select: { id: true, nombre: true, nit: true },
+          orderBy: { createdAt: "asc" },
+        });
+        if (suyas.length > 0) throw new PosibleBeneficiarioDuplicadoError(suyas.map(resumen));
+        throw new PosibleEmpresaDuplicadaError(mismoNombre);
+      }
+    }
+
+    let empresaCreada = false;
+    if (empresaId) {
+      await marcarEmpresaProveedora(tx, empresaId);
+    } else {
+      const empresa = await tx.cliente.create({
+        data: {
+          nombre: input.nombre.trim(),
+          // `nit` no es null aquí (FICHA_SIN_NIT arriba).
+          nit: nit!,
+          tipo: "PROPIO",
+          esCliente: false,
+          esProveedor: true,
+          manejaAnticipo: false,
+        },
+      });
+      empresaId = empresa.id;
+      empresaCreada = true;
+      await tx.auditLog.create({
+        data: {
+          entidad: "Cliente",
+          entidadId: empresa.id,
+          accion: "CREATE_EMPRESA_PROVEEDORA_DESDE_FICHA",
+          usuarioId,
+          despues: normalizeSerializable(empresa),
+        },
+      });
+    }
 
     const beneficiario = await tx.beneficiario.create({
       data: {
@@ -395,11 +542,12 @@ export async function crearBeneficiario(
           ...beneficiario,
           ...(input.confirmarOtraFicha ? { confirmoOtraFicha: true } : {}),
           ...(opciones.permitirMismoNit ? { otraCuentaMismoProveedor: true } : {}),
+          ...(empresaCreada ? { empresaCreada: true } : {}),
         }),
       },
     });
 
-    return beneficiario;
+    return { ...beneficiario, empresaCreada };
   });
 }
 
@@ -426,6 +574,15 @@ export async function actualizarBeneficiario(
   const empresaFinal = input.empresaId !== undefined ? input.empresaId : existe.empresaId;
   const cambiaEmpresa = empresaFinal !== existe.empresaId;
 
+  // Fase 3: toda ficha queda con empresa, salvo la del socio, que nunca la tiene.
+  // (La BD lo exige con el CHECK `beneficiario_empresa_o_socio`; aquí se
+  // responde con un mensaje claro en vez del error de la BD.)
+  if (existe.esFichaSocio) {
+    if (empresaFinal) throw new FichaSocioConEmpresaError();
+  } else if (!empresaFinal) {
+    throw new FichaSinEmpresaError();
+  }
+
   try {
     return await prisma.$transaction(async (tx) => {
       if (cambiaNitBase && nitBaseFinal !== null) {
@@ -433,6 +590,7 @@ export async function actualizarBeneficiario(
       }
       if (cambiaEmpresa && empresaFinal) {
         await validarEmpresaParaEnlazar(tx, empresaFinal);
+        await marcarEmpresaProveedora(tx, empresaFinal);
       }
       if (cambiaNitBase || cambiaEmpresa) {
         await validarNitFicha(tx, {
@@ -493,7 +651,11 @@ export async function actualizarBeneficiario(
  * sin adivinar el DV) o crea una nueva con el nombre y el NIT de la empresa.
  * Deja `AuditLog` `ENLAZAR_BENEFICIARIO_EMPRESA`.
  */
-export async function enlazarBeneficiarioEmpresa(empresaId: string, usuarioId: string): Promise<Beneficiario> {
+export async function enlazarBeneficiarioEmpresa(
+  empresaId: string,
+  usuarioId: string,
+  opciones: { confirmarOtraFicha?: boolean } = {},
+): Promise<Beneficiario> {
   return prisma.$transaction(async (tx) => {
     const empresa = await tx.cliente.findUnique({
       where: { id: empresaId },
@@ -511,7 +673,7 @@ export async function enlazarBeneficiarioEmpresa(empresaId: string, usuarioId: s
       // Misma serialización que el alta de fichas con ese NIT base.
       await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${`beneficiario-nit:${base}`}))`);
     }
-    const beneficiario = await asegurarBeneficiarioDeEmpresa(tx, empresa);
+    const beneficiario = await asegurarBeneficiarioDeEmpresa(tx, empresa, opciones);
 
     await tx.auditLog.create({
       data: {
@@ -525,4 +687,46 @@ export async function enlazarBeneficiarioEmpresa(empresaId: string, usuarioId: s
 
     return beneficiario;
   });
+}
+
+/**
+ * Antes de borrar una empresa (DELETE /api/clientes/[id]): sus datos de pago
+ * sin uso se borran con ella; si alguno ya tiene pagos o facturas de
+ * proveedor, la empresa no se borra (`EMPRESA_CON_PAGOS`). La FK de la ficha
+ * es `Restrict` y las de pagos/facturas hacia la ficha son `SetNull`: sin esta
+ * revisión, borrar una ficha usada dejaría esa plata sin proveedor.
+ */
+export async function eliminarFichasSinUsoDeEmpresa(tx: Tx, empresaId: string, usuarioId: string): Promise<void> {
+  // FOR UPDATE: una factura o un pago nuevo hacia estas fichas espera a que
+  // termine el borrado (su FK toma KEY SHARE sobre la ficha), así que no puede
+  // colarse entre el conteo y el DELETE y quedar sin proveedor.
+  await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "beneficiario" WHERE "empresaId" = ${empresaId} FOR UPDATE`);
+  const fichas = await tx.beneficiario.findMany({ where: { empresaId } });
+  if (fichas.length === 0) return;
+
+  const ids = fichas.map((f) => f.id);
+  const [facturas, pagos, pagosBanco, bloques, parametros] = await Promise.all([
+    tx.facturaProveedor.count({ where: { beneficiarioId: { in: ids } } }),
+    tx.pagoTramiteBeneficiario.count({ where: { beneficiarioId: { in: ids } } }),
+    tx.pagoTramite.count({ where: { bancoBeneficiarioId: { in: ids } } }),
+    tx.pagoGrupo.count({ where: { beneficiarioId: { in: ids } } }),
+    // Referencias por id sin FK: SIIGO_BENEFICIARIO_BANCOLOMBIA_ID.
+    tx.parametro.count({ where: { valor: { in: ids } } }),
+  ]);
+  if (facturas + pagos + pagosBanco + bloques + parametros > 0 || ids.includes("beneficiario-banco-occidente")) {
+    throw new EmpresaConPagosError();
+  }
+
+  await tx.beneficiario.deleteMany({ where: { id: { in: ids } } });
+  for (const ficha of fichas) {
+    await tx.auditLog.create({
+      data: {
+        entidad: "Beneficiario",
+        entidadId: ficha.id,
+        accion: "DELETE_BENEFICIARIO_CON_EMPRESA",
+        usuarioId,
+        antes: normalizeSerializable(ficha),
+      },
+    });
+  }
 }

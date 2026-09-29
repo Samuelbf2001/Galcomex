@@ -20,6 +20,7 @@ import {
   runId,
   TEST_PREFIX,
 } from "@/lib/cxp/__tests__/fixtures/almacarga";
+import { borrarFichasYEmpresasTest, crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import {
   actualizarBeneficiario,
   asegurarBeneficiarioDeEmpresa,
@@ -102,12 +103,18 @@ describe("crearBeneficiario / actualizarBeneficiario — CA-19, CA-41", () => {
         .catch(() => undefined);
       const fichas = await prisma.beneficiario.findMany({
         where: { nombre: { startsWith: NOMBRE } },
-        select: { id: true },
+        select: { id: true, empresaId: true },
       });
       await prisma.auditLog
         .deleteMany({ where: { entidad: "Beneficiario", entidadId: { in: fichas.map((f) => f.id) } } })
         .catch(() => undefined);
-      await prisma.beneficiario.deleteMany({ where: { nombre: { startsWith: NOMBRE } } }).catch(() => undefined);
+      // Fase 3: `crearBeneficiario` sin empresa crea una empresa solo-proveedora
+      // (con su AuditLog); las fichas se borran primero y sus empresas después.
+      const empresasDeFichas = fichas.flatMap((f) => (f.empresaId ? [f.empresaId] : []));
+      await prisma.auditLog
+        .deleteMany({ where: { entidad: "Cliente", entidadId: { in: [...empresasDeFichas, ...empresas] } } })
+        .catch(() => undefined);
+      await borrarFichasYEmpresasTest({ nombre: { startsWith: NOMBRE } }).catch(() => undefined);
       await prisma.cliente.deleteMany({ where: { id: { in: empresas } } }).catch(() => undefined);
     }
     await liberarBdAlmacarga();
@@ -159,7 +166,7 @@ describe("crearBeneficiario / actualizarBeneficiario — CA-19, CA-41", () => {
     // Al revés: ya existe una ficha con el DV pegado (10 dígitos) y se escribe el NIT sin DV.
     const base2 = baseAleatoria();
     const dv2 = dvNit(base2);
-    const pegadaVieja = await prisma.beneficiario.create({ data: { nombre: `${NOMBRE} PEGADA VIEJA`, nit: `${base2}${dv2}` } });
+    const pegadaVieja = await crearFichaConEmpresaTest({ nombre: `${NOMBRE} PEGADA VIEJA`, nit: `${base2}${dv2}` });
     const alReves = await crearBeneficiario({ nombre: `${NOMBRE} SIN DV`, nit: base2 }, db.userId).catch((e: unknown) => e);
     expect(alReves).toBeInstanceOf(PosibleBeneficiarioDuplicadoError);
     expect((alReves as PosibleBeneficiarioDuplicadoError).existentes.map((e) => e.id)).toEqual([pegadaVieja.id]);
@@ -229,7 +236,7 @@ describe("crearBeneficiario / actualizarBeneficiario — CA-19, CA-41", () => {
     const base = baseAleatoria();
     const malo = (dvNit(base) + 1) % 10;
     // Ficha vieja con DV mal digitado (escrita antes de CxP v2).
-    const vieja = await prisma.beneficiario.create({ data: { nombre: `${NOMBRE} VIEJA`, nit: `${base}-${malo}` } });
+    const vieja = await crearFichaConEmpresaTest({ nombre: `${NOMBRE} VIEJA`, nit: `${base}-${malo}` });
 
     const a = await actualizarBeneficiario(vieja.id, { nit: base, dv: malo, banco: "BANCOLOMBIA" }, db.userId);
     expect(a.banco).toBe("BANCOLOMBIA");
@@ -270,18 +277,21 @@ describe("crearBeneficiario / actualizarBeneficiario — CA-19, CA-41", () => {
     expect(bDespues.nitBase).toBeNull();
   });
 
-  it("asegurarBeneficiarioDeEmpresa enlaza la ficha suelta con el mismo NIT base (con o sin DV)", async (ctx) => {
+  it("asegurarBeneficiarioDeEmpresa reutiliza la ficha con el mismo NIT base (con o sin DV) y no crea otra", async (ctx) => {
     ensureDb(ctx);
     const base = baseAleatoria();
     const dv = dvNit(base);
-    const suelta = await prisma.beneficiario.create({ data: { nombre: `${NOMBRE} SUELTA`, nit: base } });
+    // Fase 3: ya no se pueden crear fichas sueltas (la BD las rechaza); la ficha
+    // nace enlazada a su empresa, con el NIT sin DV mientras la empresa lo trae con DV.
     const empresa = await prisma.cliente.create({
-      data: { nombre: `${NOMBRE} EMP SUELTA`, nit: `${base}-${dv}`, esCliente: false, esProveedor: true },
+      data: { nombre: `${NOMBRE} EMP ENLAZADA`, nit: `${base}-${dv}`, esCliente: false, esProveedor: true },
     });
     empresas.push(empresa.id);
+    const enlazada = await crearFichaConEmpresaTest({ nombre: `${NOMBRE} ENLAZADA`, nit: base, empresaId: empresa.id });
 
     const ficha = await prisma.$transaction((tx) => asegurarBeneficiarioDeEmpresa(tx, empresa));
-    expect(ficha.id).toBe(suelta.id);
+    expect(ficha.id).toBe(enlazada.id);
     expect(ficha.empresaId).toBe(empresa.id);
+    expect(await prisma.beneficiario.count({ where: { nitBase: base } })).toBe(1);
   });
 });

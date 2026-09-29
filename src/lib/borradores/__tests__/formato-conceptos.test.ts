@@ -24,6 +24,7 @@ import {
   runId,
   TEST_PREFIX,
 } from "@/lib/cxp/__tests__/fixtures/almacarga";
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { conceptoLineaTercero, lineasTercerosDesdeFacturas } from "@/lib/borradores/formato-conceptos";
 import { prisma } from "@/lib/db/prisma";
 
@@ -110,13 +111,13 @@ describe("lineasTercerosDesdeFacturas (BD) — CA-27 y R13", () => {
   });
 
   async function fichaAlmacarga(): Promise<string> {
-    const b = await prisma.beneficiario.create({
-      data: {
-        nombre: 'ALMACENADORA DE CARGA "ALMACARGA" S.A.S',
-        nit: `${TEST_PREFIX}-ben-fc-${fichas.length}-${runId}`,
-        nombreCorto: "ALMACARGA",
-        numFacturaConEspacio: true,
-      },
+    // Fase 3: la ficha lleva su empresa (cuyo NIT lleva el prefijo de prueba, así
+    // `cleanupTestData` la borra después de las fichas).
+    const b = await crearFichaConEmpresaTest({
+      nombre: 'ALMACENADORA DE CARGA "ALMACARGA" S.A.S',
+      nit: `${TEST_PREFIX}-ben-fc-${fichas.length}-${runId}`,
+      nombreCorto: "ALMACARGA",
+      numFacturaConEspacio: true,
     });
     fichas.push(b.id);
     return b.id;

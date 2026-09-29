@@ -12,6 +12,7 @@ import "dotenv/config";
 import { AgenciaAduanas, CanalPago, CategoriaDocumento, Ciudad, EstadoFacturaProveedor, Rol, TipoCliente, TipoRecaudo } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { FacturaDeOtroDoError, FacturaSinSaldoError, MontoExcedeSaldoError } from "@/lib/cxp/errores";
 import { cargarContextoDos } from "@/lib/cxp/pagabilidad-bd";
 import { prisma } from "@/lib/db/prisma";
@@ -137,17 +138,17 @@ async function cleanupTestData() {
   await prisma.tramiteDO.deleteMany({
     where: { id: { in: tramiteIds } },
   });
+  // Beneficiarios de prueba (pago multi-DO) — el pivot pago_tramite_beneficiario
+  // ya fue borrado en cascada al eliminar pagoTramite arriba. Fase 3: la FK
+  // ficha → empresa es Restrict, así que las fichas se borran ANTES que las empresas.
+  await prisma.beneficiario.deleteMany({
+    where: { OR: [{ nit: { startsWith: TEST_PREFIX } }, { empresaId: { in: clienteIds } }] },
+  });
   await prisma.cliente.deleteMany({
     where: { id: { in: clienteIds } },
   });
   await prisma.user.deleteMany({
     where: { id: { in: userIds } },
-  });
-
-  // Beneficiarios de prueba (pago multi-DO) — el pivot pago_tramite_beneficiario
-  // ya fue borrado en cascada al eliminar pagoTramite arriba.
-  await prisma.beneficiario.deleteMany({
-    where: { nit: { startsWith: TEST_PREFIX } },
   });
 }
 
@@ -266,11 +267,10 @@ async function crearFacturaProveedorTest(
  * Crea un Beneficiario de prueba (nit prefijado con TEST_PREFIX para limpieza).
  */
 async function crearBeneficiarioTest(nombre: string): Promise<string> {
-  const b = await prisma.beneficiario.create({
-    data: {
-      nombre,
-      nit: `${TEST_PREFIX}-${runId}-${Math.random().toString(36).slice(2)}`,
-    },
+  // Fase 3: la ficha lleva su empresa (mismo NIT con prefijo de prueba, que borra `cleanupTestData`).
+  const b = await crearFichaConEmpresaTest({
+    nombre,
+    nit: `${TEST_PREFIX}-${runId}-${Math.random().toString(36).slice(2)}`,
   });
   return b.id;
 }

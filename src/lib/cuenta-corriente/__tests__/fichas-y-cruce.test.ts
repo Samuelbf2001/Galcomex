@@ -30,6 +30,7 @@ import {
   runId,
   TEST_PREFIX,
 } from "@/lib/cxp/__tests__/fixtures/almacarga";
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { getEstadoCuentaProveedor } from "@/lib/cxp/estado-cuenta";
 import {
   CompensacionInvalidaError,
@@ -172,8 +173,9 @@ describe("A · cuenta corriente y estado de cuenta suman las mismas fichas", () 
     const propia = await prisma.beneficiario.create({
       data: { nombre: "COLDEX (cuenta principal)", nit: `${nitColdex}-1`, empresaId: coldex.id },
     });
-    // «Otra ficha» creada por el ADMIN con el mismo NIT: nace sin empresa.
-    const suelta = await prisma.beneficiario.create({ data: { nombre: "COLDEX (otra cuenta)", nit: nitColdex } });
+    // «Otra ficha» creada por el ADMIN con el mismo NIT, sin indicar empresa
+    // (fase 3: la ayuda la enlaza a la empresa que tenga ese NIT exacto).
+    const suelta = await crearFichaConEmpresaTest({ nombre: "COLDEX (otra cuenta)", nit: nitColdex });
     const deOtra = await prisma.beneficiario.create({
       data: { nombre: "OTRA (su cuenta)", nit: `${nitColdex}-2`, empresaId: otra.id },
     });
@@ -208,7 +210,13 @@ describe("A · cuenta corriente y estado de cuenta suman las mismas fichas", () 
     const db = ensureDb(ctx);
     const empresa = await crearEmpresa("ASCINTER FICHAS", nitAscinter, ["cuenta_corriente"]);
     await nosDebe(db, empresa.id, 1_000_000n);
-    const suelta = await prisma.beneficiario.create({ data: { nombre: "ASCINTER (otra cuenta)", nit: `${nitAscinter}-3` } });
+    // Fase 3: la «otra cuenta» es de la MISMA empresa (dos empresas con el mismo
+    // NIT base ya no se suman en la cuenta del proveedor).
+    const suelta = await crearFichaConEmpresaTest({
+      nombre: "ASCINTER (otra cuenta)",
+      nit: `${nitAscinter}-3`,
+      empresaId: empresa.id,
+    });
     const f = await factura(db, suelta.id, "AS-840004", 300_000n, false);
 
     const antes = await getCuentaCorriente(empresa.id);

@@ -33,6 +33,7 @@ import {
   TEST_PREFIX,
   type Fixture,
 } from "@/lib/cxp/__tests__/fixtures/almacarga";
+import { borrarFichasYEmpresasTest, crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import {
   DoConFacturasPendientesError,
   FacturaConPagosError,
@@ -65,13 +66,12 @@ let fichas = 0;
 /** Ficha de pago nueva (NIT con letras → llave `BEN:<id>`, aislada de las demás pruebas). */
 async function nuevaFicha(nombre = "ALMACARGA", extra: { nombreCorto?: string; numFacturaConEspacio?: boolean } = {}) {
   fichas += 1;
-  const ficha = await prisma.beneficiario.create({
-    data: {
-      nombre,
-      nit: `${TEST_PREFIX}-ben-p2-${fichas}-${runId}`,
-      nombreCorto: extra.nombreCorto ?? null,
-      numFacturaConEspacio: extra.numFacturaConEspacio ?? false,
-    },
+  // Fase 3: la ficha lleva su empresa (mismo NIT con prefijo de prueba, que borra `cleanupTestData`).
+  const ficha = await crearFichaConEmpresaTest({
+    nombre,
+    nit: `${TEST_PREFIX}-ben-p2-${fichas}-${runId}`,
+    nombreCorto: extra.nombreCorto ?? null,
+    numFacturaConEspacio: extra.numFacturaConEspacio ?? false,
   });
   return ficha.id;
 }
@@ -321,8 +321,13 @@ describe("CxP facturas de proveedor Almacarga — PRD-ALMACARGA-CXP-PROVEEDOR §
       const tramiteB = await crearTramiteTest(db);
       // NIT colombiano ficticio por corrida (no choca con datos reales): "base" y "base-DV".
       const base = String(700_000_000 + Math.floor(Math.random() * 99_999_999));
-      const cuenta1 = await prisma.beneficiario.create({ data: { nombre: `${TEST_PREFIX} PROV NIT 1`, nit: base } });
-      const cuenta2 = await prisma.beneficiario.create({ data: { nombre: `${TEST_PREFIX} PROV NIT 2`, nit: `${base}-1` } });
+      // Fase 3: las dos cuentas son del mismo proveedor, o sea de la misma empresa.
+      const cuenta1 = await crearFichaConEmpresaTest({ nombre: `${TEST_PREFIX} PROV NIT 1`, nit: base });
+      const cuenta2 = await crearFichaConEmpresaTest({
+        nombre: `${TEST_PREFIX} PROV NIT 2`,
+        nit: `${base}-1`,
+        empresaId: cuenta1.empresaId,
+      });
       try {
         await crearFacturaAlmacargaTest(db, tramiteA, `${runId}-NIT-1`, 10_000n, cuenta1.id);
         await expect(
@@ -330,7 +335,7 @@ describe("CxP facturas de proveedor Almacarga — PRD-ALMACARGA-CXP-PROVEEDOR §
         ).rejects.toBeInstanceOf(FacturaDuplicadaError);
       } finally {
         await prisma.facturaProveedor.deleteMany({ where: { beneficiarioId: { in: [cuenta1.id, cuenta2.id] } } });
-        await prisma.beneficiario.deleteMany({ where: { id: { in: [cuenta1.id, cuenta2.id] } } });
+        await borrarFichasYEmpresasTest({ id: { in: [cuenta1.id, cuenta2.id] } });
       }
     });
 

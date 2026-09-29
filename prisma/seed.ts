@@ -254,14 +254,52 @@ async function main() {
     });
   }
 
-  // Beneficiario Banco de Occidente (tercero del GMF en todas las facturas)
+  // Beneficiario Banco de Occidente (tercero del GMF en todas las facturas).
+  // Fase 3: toda ficha de pago pertenece a una empresa. La empresa (solo
+  // proveedora) se busca por su NIT: en producción ya existe (fase 2, 25-sep)
+  // y el seed no la toca.
+  // Nunca se mueve la ficha de empresa: si ya tiene una, se respeta. Si no,
+  // se busca la empresa por NIT base (con o sin DV) y solo se crea si no hay.
+  const fichaBanco = await prisma.beneficiario.findUnique({
+    where: { id: "beneficiario-banco-occidente" },
+    select: { empresaId: true },
+  });
+  let bancoOccidenteId = fichaBanco?.empresaId ?? null;
+  if (!bancoOccidenteId) {
+    const candidatas = await prisma.cliente.findMany({
+      where: { nit: { startsWith: "890300279" } },
+      select: { id: true, nit: true },
+      orderBy: { createdAt: "asc" },
+    });
+    const existente = candidatas.find((c) => /^890300279(\s*-\s*\d)?$/.test(c.nit.trim()));
+    bancoOccidenteId =
+      existente?.id ??
+      (
+        await prisma.cliente.create({
+          data: {
+            nombre: "Banco de Occidente S.A.",
+            nit: "890300279",
+            tipo: "PROPIO",
+            esCliente: false,
+            esProveedor: true,
+            manejaAnticipo: false,
+          },
+          select: { id: true },
+        })
+      ).id;
+  }
   await prisma.beneficiario.upsert({
     where: { id: "beneficiario-banco-occidente" },
-    update: { nombre: "Banco de Occidente S.A.", nit: "890300279" },
+    update: {
+      nombre: "Banco de Occidente S.A.",
+      nit: "890300279",
+      ...(fichaBanco?.empresaId ? {} : { empresaId: bancoOccidenteId }),
+    },
     create: {
       id: "beneficiario-banco-occidente",
       nombre: "Banco de Occidente S.A.",
       nit: "890300279",
+      empresaId: bancoOccidenteId,
     },
   });
 

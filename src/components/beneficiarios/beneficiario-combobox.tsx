@@ -190,6 +190,12 @@ export function BeneficiarioCombobox(props: Props) {
 
   async function handleConfirmCreate(opts?: { confirmarOtraFicha?: boolean; otraCuentaMismoProveedor?: boolean }) {
     if (!createNombre.trim() || creating || !puedeCrear) return;
+    // Fase 3: un proveedor nuevo crea también su empresa, y el NIT es lo que
+    // evita repetirlo (el servidor responde FICHA_SIN_NIT si falta).
+    if (!createNit.trim()) {
+      setCreateError("Escribe el NIT del proveedor (o su identificación, si es extranjero).");
+      return;
+    }
     setCreating(true);
     setCreateError(null);
     try {
@@ -204,7 +210,11 @@ export function BeneficiarioCombobox(props: Props) {
         [...prev, nuevo].sort((a, b) => a.nombre.localeCompare(b.nombre)),
       );
       seleccionarExistente(nuevo);
-      toast({ title: "Beneficiario creado", description: nuevo.nombre, variant: "success" });
+      toast({
+        title: "Proveedor creado",
+        description: nuevo.empresaCreada ? `${nuevo.nombre} (se creó también su empresa)` : nuevo.nombre,
+        variant: "success",
+      });
     } catch (e) {
       // CA-19: ya existe una ficha con ese NIT base → se usa directamente.
       if (e instanceof BeneficiarioApiError && e.codigo === "BENEFICIARIO_EXISTE") {
@@ -336,7 +346,7 @@ export function BeneficiarioCombobox(props: Props) {
           {/* Formulario de creación inline */}
           {creatingForm ? (
             <div className="border-b border-slate-100 px-3 py-3 space-y-2">
-              <p className="text-xs font-medium text-slate-600">Nuevo beneficiario</p>
+              <p className="text-xs font-medium text-slate-600">Nuevo proveedor (se crea también su empresa si no existe)</p>
               <input
                 ref={createNombreRef}
                 value={createNombre}
@@ -349,8 +359,8 @@ export function BeneficiarioCombobox(props: Props) {
                 <input
                   value={createNit}
                   onChange={(e) => setCreateNit(e.target.value)}
-                  placeholder="NIT sin DV (opcional)"
-                  aria-label="NIT del nuevo beneficiario, sin dígito de verificación (opcional)"
+                  placeholder="NIT sin DV *"
+                  aria-label="NIT del nuevo beneficiario, sin dígito de verificación (obligatorio)"
                   className="h-8 flex-1 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
                 />
                 <input

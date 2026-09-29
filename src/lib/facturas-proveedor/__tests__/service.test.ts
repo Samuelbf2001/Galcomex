@@ -39,6 +39,7 @@ import {
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { FacturaConPagosError, FacturaDuplicadaError } from "@/lib/cxp/errores";
 import { prisma } from "@/lib/db/prisma";
 import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
@@ -144,9 +145,12 @@ async function cleanupTestData() {
   // ítems se van en cascada al borrar el tarifario.
   await prisma.tarifario.deleteMany({ where: { empresaId: { in: clienteIds } } });
   await prisma.anticipo.deleteMany({ where: { clienteId: { in: clienteIds } } });
+  // Fase 3: la FK ficha → empresa es Restrict, así que las fichas se borran ANTES que las empresas.
+  await prisma.beneficiario.deleteMany({
+    where: { OR: [{ nit: { startsWith: TEST_PREFIX } }, { empresaId: { in: clienteIds } }] },
+  });
   await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
-  await prisma.beneficiario.deleteMany({ where: { nit: { startsWith: TEST_PREFIX } } });
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -222,8 +226,10 @@ let fichaCounter = 0;
 /** Ficha de pago nueva (NIT con letras → llave propia, sin cruces entre casos). */
 async function nuevaFicha(nombre = "Proveedor Test SA"): Promise<string> {
   fichaCounter += 1;
-  const b = await prisma.beneficiario.create({
-    data: { nombre, nit: `${TEST_PREFIX}-ben-${fichaCounter}-${runId.slice(-8)}` },
+  // Fase 3: la ficha lleva su empresa (mismo NIT con prefijo de prueba, que borra `cleanupTestData`).
+  const b = await crearFichaConEmpresaTest({
+    nombre,
+    nit: `${TEST_PREFIX}-ben-${fichaCounter}-${runId.slice(-8)}`,
   });
   return b.id;
 }

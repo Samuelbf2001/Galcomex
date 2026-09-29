@@ -933,8 +933,22 @@ model Beneficiario {
   /// Ficha de empresa a la que corresponde este beneficiario (M5). Permite
   /// cruzar en una sola cuenta corriente lo que se le paga como proveedor y lo
   /// que nos debe como cliente.
+  ///
+  /// Fase 3 (plan Empresa + Datos de pago): OBLIGATORIA salvo en la ficha del
+  /// socio (`esFichaSocio`). La BD lo exige con el CHECK
+  /// `beneficiario_empresa_o_socio` (creado NOT VALID: las fichas sueltas
+  /// viejas siguen existiendo, pero toda ficha nueva o editada debe cumplirlo).
+  /// `Restrict`: una empresa con datos de pago no se borra en silencio.
   empresaId String?
-  empresa   Cliente? @relation("BeneficiarioEmpresa", fields: [empresaId], references: [id], onDelete: SetNull)
+  empresa   Cliente? @relation("BeneficiarioEmpresa", fields: [empresaId], references: [id], onDelete: Restrict)
+  /// Ficha de pago del socio (Luis Martínez, flujo SOCIO_LM): la única que vive
+  /// sin empresa, a propósito (decisión de Ernesto, 26-sep-2026). Índice único
+  /// parcial: solo puede haber una.
+  /// OJO: el CHECK `beneficiario_empresa_o_socio` y el índice parcial
+  /// `beneficiario_una_ficha_socio` viven solo en la migración
+  /// 20260930090000 (Prisma no los modela). Si `prisma migrate dev` propone
+  /// borrarlos (DROP INDEX / DROP CONSTRAINT), quítalo del SQL generado.
+  esFichaSocio Boolean @default(false)
 
   // ── CxP v2 ────────────────────────────────────────────────────────────────
   /// Nombre como sale en la línea de terceros de la factura de venta

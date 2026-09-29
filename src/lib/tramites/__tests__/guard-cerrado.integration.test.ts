@@ -41,6 +41,7 @@ vi.mock("@/lib/storage/service", async (importOriginal) => {
 });
 
 import { aplicarAnticipo, eliminarAplicacion } from "@/lib/anticipos/service";
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { crearLineaManual } from "@/lib/borradores/lineas-service";
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -149,9 +150,12 @@ async function cleanupTestData() {
 
   await prisma.checklistItem.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
   await prisma.tramiteDO.deleteMany({ where: { id: { in: tramiteIds } } });
+  // Fase 3: la FK ficha → empresa es Restrict, así que las fichas se borran ANTES que las empresas.
+  await prisma.beneficiario.deleteMany({
+    where: { OR: [{ nit: { startsWith: TEST_PREFIX } }, { empresaId: { in: clienteIds } }] },
+  });
   await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
-  await prisma.beneficiario.deleteMany({ where: { nit: { startsWith: TEST_PREFIX } } });
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -247,8 +251,10 @@ async function aplicarAnticipoDirecto(db: Fixture, tramiteId: string, monto: big
 }
 
 async function crearBeneficiarioTest(nombre: string): Promise<string> {
-  const b = await prisma.beneficiario.create({
-    data: { nombre, nit: `${TEST_PREFIX}-${runId}-${Math.random().toString(36).slice(2)}` },
+  // Fase 3: la ficha lleva su empresa (mismo NIT con prefijo de prueba, que borra `cleanupTestData`).
+  const b = await crearFichaConEmpresaTest({
+    nombre,
+    nit: `${TEST_PREFIX}-${runId}-${Math.random().toString(36).slice(2)}`,
   });
   return b.id;
 }

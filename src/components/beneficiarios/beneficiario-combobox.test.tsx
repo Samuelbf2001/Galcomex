@@ -73,6 +73,10 @@ async function intentarCrear(onChange: (b: unknown) => void) {
   await act(async () => {
     buscar.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   });
+  // Fase 3: el proveedor nuevo crea también su empresa, así que el NIT es obligatorio.
+  const nit = container.querySelector('input[placeholder="NIT sin DV *"]') as HTMLInputElement;
+  expect(nit).not.toBeNull();
+  await act(async () => escribir(nit, EXISTENTE.nit ?? ""));
   const crear = [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Crear");
   expect(crear).toBeDefined();
   await act(async () => crear!.click());

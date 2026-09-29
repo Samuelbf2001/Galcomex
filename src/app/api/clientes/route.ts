@@ -3,7 +3,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
+import { confirmaOtraFicha, respuestaErrorFicha } from "@/lib/beneficiarios/http";
 import { asegurarBeneficiarioDeEmpresa } from "@/lib/beneficiarios/service";
+import { bloquearNit, verificarNitEmpresaLibre } from "@/lib/empresas/nit";
 import { prisma } from "@/lib/db/prisma";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
@@ -102,6 +104,10 @@ export async function POST(request: NextRequest) {
     const { tarifas, ...cliente } = payload;
 
     const created = await prisma.$transaction(async (tx) => {
+      // Fase 3: el mismo NIT con o sin DV sería la misma empresa repetida.
+      // Candado por NIT primero (mismo orden que el alta de fichas: NIT → fila).
+      await bloquearNit(tx, cliente.nit);
+      await verificarNitEmpresaLibre(tx, cliente.nit);
       const nuevo = await tx.cliente.create({
         data: {
           ...cliente,
@@ -114,7 +120,9 @@ export async function POST(request: NextRequest) {
 
       // Una empresa proveedora necesita su ficha de pago desde el primer día.
       if (nuevo.esProveedor) {
-        await asegurarBeneficiarioDeEmpresa(tx, nuevo);
+        await asegurarBeneficiarioDeEmpresa(tx, nuevo, {
+          confirmarOtraFicha: confirmaOtraFicha(request.nextUrl),
+        });
       }
 
       return nuevo;
@@ -125,6 +133,9 @@ export async function POST(request: NextRequest) {
     if (error instanceof ZodError) {
       return validationError(error);
     }
+
+    const errorFicha = respuestaErrorFicha(error);
+    if (errorFicha) return errorFicha;
 
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&

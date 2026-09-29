@@ -22,6 +22,7 @@ import "dotenv/config";
 import { CanalPago, Ciudad, Rol, TipoAjusteFacturaProveedor, TipoCliente } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { esErrorSobreaplicacion } from "@/lib/cxp/errores";
 import { dvNit, nitBaseDe, normalizarNumeroFactura } from "@/lib/cxp/saldos";
 import { prisma } from "@/lib/db/prisma";
@@ -35,6 +36,7 @@ let motivoOmision = "BD local Postgres no disponible para las pruebas de trigger
 let userId = "";
 let clienteId = "";
 let numeroDo = 0;
+let numeroEmpresa = 0;
 /** Fichas con NIT numérico (no llevan el prefijo): se borran por id. */
 const beneficiariosCreados: string[] = [];
 
@@ -117,7 +119,20 @@ async function crearDo(): Promise<string> {
 }
 
 async function crearFicha(nombre: string, nit: string | null) {
-  const b = await prisma.beneficiario.create({ data: { nombre: `${PREFIJO} ${nombre}`, nit } });
+  // Fase 3: toda ficha lleva empresa. La empresa (solo-proveedora) usa un NIT con
+  // el prefijo de prueba, así `limpiar` la borra (después de las fichas: FK Restrict);
+  // la ficha conserva su NIT numérico, que es lo que prueban los triggers.
+  numeroEmpresa += 1;
+  const empresa = await prisma.cliente.create({
+    data: {
+      nombre: `${PREFIJO} empresa ${numeroEmpresa}`,
+      nit: `${PREFIJO}-emp-${runId}-${numeroEmpresa}`,
+      esCliente: false,
+      esProveedor: true,
+      manejaAnticipo: false,
+    },
+  });
+  const b = await crearFichaConEmpresaTest({ nombre: `${PREFIJO} ${nombre}`, nit, empresaId: empresa.id });
   beneficiariosCreados.push(b.id);
   return b;
 }

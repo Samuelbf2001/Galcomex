@@ -18,6 +18,7 @@ import "dotenv/config";
 import { AgenciaAduanas, CanalPago, Ciudad, EstadoTramite, Rol, TipoCliente, TipoRecaudo } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import {
   claveBloqueHistorico,
   clasificarCartera,
@@ -520,7 +521,8 @@ async function crearCtx(): Promise<Ctx> {
       conciliacionPendiente: true,
     },
   });
-  const tampa = await prisma.beneficiario.create({ data: { nombre: `${PREFIJO} TAMPA CARGO`, nit: `${PREFIJO}-tampa-${runId}` } });
+  // Fase 3: la ficha de Tampa lleva su empresa solo-proveedora (NIT con el prefijo de prueba, que `limpiar` borra después de las fichas).
+  const tampa = await crearFichaConEmpresaTest({ nombre: `${PREFIJO} TAMPA CARGO`, nit: `${PREFIJO}-tampa-${runId}` });
 
   const numeros = { A: baseDo + 69, B: baseDo + 226, C: baseDo + 238, D: baseDo + 99, E: baseDo + 255 };
   const tramites = {} as Ctx["tramites"];

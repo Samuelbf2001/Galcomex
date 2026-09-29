@@ -141,8 +141,10 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!dbConnected) return;
 
-  // Limpieza en orden de dependencias (FK: tarifas→clientes)
+  // Limpieza en orden de dependencias (FK: tarifas→clientes). Fase 3: las fichas
+  // de pago (`beneficiario`) van ANTES que sus empresas (FK Restrict).
   if (createdClienteIds.length > 0) {
+    await prisma.beneficiario.deleteMany({ where: { empresaId: { in: createdClienteIds } } });
     await prisma.tarifaCliente.deleteMany({
       where: { clienteId: { in: createdClienteIds } },
     });

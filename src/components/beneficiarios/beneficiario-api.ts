@@ -18,6 +18,12 @@ export type BeneficiarioRow = {
   numFacturaConEspacio: boolean;
   /** RF-23: su cartera aún no se cruzó contra el Excel de Camila. */
   conciliacionPendiente: boolean;
+  /** Empresa a la que pertenece (fase 3: obligatoria salvo en la ficha del socio). */
+  empresa: { id: string; nombre: string } | null;
+  /** Ficha de pago del socio: la única que vive sin empresa, a propósito. */
+  esFichaSocio: boolean;
+  /** Solo en la respuesta del alta: se creó también su empresa (solo proveedora). */
+  empresaCreada?: boolean;
 };
 
 export type BeneficiarioResumen = { id: string; nombre: string; nit: string | null };
@@ -51,6 +57,12 @@ function mapBeneficiario(b: Record<string, unknown>): BeneficiarioRow {
     nombreCorto: typeof b.nombreCorto === "string" ? b.nombreCorto : null,
     numFacturaConEspacio: b.numFacturaConEspacio === true,
     conciliacionPendiente: b.conciliacionPendiente === true,
+    empresa:
+      isRecord(b.empresa) && typeof b.empresa.id === "string"
+        ? { id: b.empresa.id, nombre: String(b.empresa.nombre ?? "") }
+        : null,
+    esFichaSocio: b.esFichaSocio === true,
+    ...(b.empresaCreada === true ? { empresaCreada: true } : {}),
   };
 }
 

@@ -412,7 +412,8 @@ export async function fichasDeEmpresa(db: Db, empresaId: string, nitEmpresa: str
     bases.size === 0
       ? []
       : await db.beneficiario.findMany({
-          where: { nitBase: { in: [...bases] }, OR: [{ empresaId: null }, { empresaId }] },
+          // La ficha del socio (suelta a propósito) nunca es de una empresa.
+          where: { nitBase: { in: [...bases] }, OR: [{ empresaId: null, esFichaSocio: false }, { empresaId }] },
           select: fichaSelect,
         });
   const porId = new Map<string, FichaDelProveedor>();
@@ -420,12 +421,38 @@ export async function fichasDeEmpresa(db: Db, empresaId: string, nitEmpresa: str
   return [...porId.values()].sort((a, b) => a.nombre.localeCompare(b.nombre) || a.id.localeCompare(b.id));
 }
 
-/** La ficha + las que comparten su NIT base (misma llave de proveedor). */
+/**
+ * La ficha + las que comparten su NIT base (misma llave de proveedor) y son de
+ * la MISMA empresa, o sueltas (fase 3, hallazgo de «ascinter»: antes juntaba
+ * por NIT base aunque las fichas fueran de dos empresas distintas). La ficha
+ * del socio nunca se junta con otra.
+ */
 export async function fichasHermanas(db: Db, beneficiarioId: string): Promise<FichaDelProveedor[]> {
-  const ficha = await db.beneficiario.findUnique({ where: { id: beneficiarioId }, select: fichaSelect });
+  const ficha = await db.beneficiario.findUnique({
+    where: { id: beneficiarioId },
+    select: { ...fichaSelect, empresaId: true, esFichaSocio: true },
+  });
   if (!ficha) return [];
-  if (!ficha.nitBase) return [ficha];
-  const hermanas = await db.beneficiario.findMany({ where: { nitBase: ficha.nitBase }, select: fichaSelect });
+  const { esFichaSocio, ...propia } = ficha;
+  if (!ficha.nitBase || esFichaSocio) return [propia];
+  // Ficha suelta: se junta con las de la empresa que la reclama (mismo NIT
+  // base), como en `fichasDeEmpresa`, solo si esa empresa es UNA.
+  let empresaId = ficha.empresaId;
+  if (!empresaId) {
+    const dueñas = await db.beneficiario.findMany({
+      where: { nitBase: ficha.nitBase, empresaId: { not: null } },
+      select: { empresaId: true },
+      distinct: ["empresaId"],
+    });
+    if (dueñas.length === 1) empresaId = dueñas[0].empresaId;
+  }
+  const hermanas = await db.beneficiario.findMany({
+    where: {
+      nitBase: ficha.nitBase,
+      OR: [{ id: beneficiarioId }, { empresaId: null, esFichaSocio: false }, ...(empresaId ? [{ empresaId }] : [])],
+    },
+    select: fichaSelect,
+  });
   return hermanas.sort((a, b) => (a.id === beneficiarioId ? -1 : b.id === beneficiarioId ? 1 : a.id.localeCompare(b.id)));
 }
 
