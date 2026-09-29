@@ -1,10 +1,11 @@
 import "dotenv/config";
 
-import { AgenciaAduanas, Ciudad, EstadoTramite, Rol, TipoCliente } from "@prisma/client";
+import { AgenciaAduanas, Ciudad, EstadoBorrador, EstadoTramite, Rol, SiigoEnvioEstado, TipoCliente } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { generarBorrador } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
+import { deshacerLiquidacion } from "@/lib/comisiones/deshacer-liquidacion";
 import { ComisionYaLiquidadaError, liquidarComisiones } from "@/lib/comisiones/liquidacion";
 import {
   comisionesDeEmpresa,
@@ -526,6 +527,211 @@ describe("B10 — facturar comisiones de LTRANS (Postgres)", () => {
       expect(despues.unidades).toBe(fila.unidades); // ni editada ni borrada
       expect(despues.liquidacionTramiteId).toBe(otros.tramiteId);
     }
+  });
+
+  // ─── M3 · deshacer una liquidación ──────────────────────────────────────────
+
+  /** Tres DOs (5 + 7 contenedores + 1 carga suelta = 13 → 1.170.000) ya facturados en un «Otros». */
+  async function liquidacionDeTrece(empresaId: string) {
+    const f = fx!;
+    const filas = [
+      await comisionEnNuevoDo(empresaId, { numContenedores: 5 }),
+      await comisionEnNuevoDo(empresaId, { numContenedores: 7 }),
+      await comisionEnNuevoDo(empresaId, { suelta: true }),
+    ];
+    const r = await liquidarComisiones({ empresaId, comisionIds: filas.map((x) => x.comisionId), usuarioId: f.adminId });
+    return { filas, r };
+  }
+
+  /** El «Otros» mandado a facturar, con su borrador ya generado. */
+  async function borradorDelOtros(tramiteId: string) {
+    const f = fx!;
+    await prisma.tramiteDO.update({ where: { id: tramiteId }, data: { estado: EstadoTramite.ENVIADO_A_FACTURAR } });
+    return generarBorrador({ tramiteId, usuarioId: f.adminId });
+  }
+
+  it("M3 · deshacer y volver a liquidar da el mismo total; el «Otros» anulado queda cerrado, sin valor y sin borrador", async (ctx) => {
+    const f = ensureDb(ctx);
+    const { filas, r } = await liquidacionDeTrece(f.ltransDeshacerId);
+    expect(r.total).toBe($(1_170_000));
+    const borrador = await borradorDelOtros(r.tramiteId);
+    expect(borrador.totalFacturaLineas).toBe($(1_170_000 + 222_300)); // + IVA 19 %
+
+    const antes = await comisionesDeEmpresa(f.ltransDeshacerId);
+    expect(antes.filas).toEqual([]);
+    expect(antes.facturadas).toHaveLength(3);
+    expect(antes.facturadas[0]!.otros).toMatchObject({ id: r.tramiteId, deshacible: true, motivoNoDeshacible: null });
+
+    const resultado = await deshacerLiquidacion({
+      empresaId: f.ltransDeshacerId,
+      tramiteId: r.tramiteId,
+      motivo: "  Faltó incluir un DO en la liquidación  ",
+      usuarioId: f.adminId,
+    });
+    expect(resultado).toMatchObject({
+      tramiteId: r.tramiteId,
+      comisiones: 3,
+      unidades: 13,
+      valorAnulado: $(1_170_000),
+      borradoresEliminados: 1,
+    });
+
+    // Las comisiones vuelven a "por facturar" con las mismas unidades.
+    const ficha = await comisionesDeEmpresa(f.ltransDeshacerId);
+    expect(ficha.facturadas).toEqual([]);
+    expect(ficha.filas.map((x) => x.comisionId).sort()).toEqual(filas.map((x) => x.comisionId).sort());
+    expect(ficha.totales).toEqual({ unidades: 13, subtotal: $(1_170_000), iva: $(222_300), total: $(1_392_300) });
+    const ligadas = await prisma.comisionTramite.findMany({
+      where: { empresaId: f.ltransDeshacerId },
+      select: { liquidacionTramiteId: true, liquidadaEn: true },
+    });
+    for (const l of ligadas) expect(l).toEqual({ liquidacionTramiteId: null, liquidadaEn: null });
+
+    // El «Otros» queda a la vista pero inservible: sin valor, cerrado, con la nota, sin borrador.
+    const anulado = await prisma.tramiteDO.findUniqueOrThrow({ where: { id: r.tramiteId } });
+    expect(anulado.valorServicio).toBeNull();
+    expect(anulado.estado).toBe(EstadoTramite.CERRADO);
+    expect(anulado.comentarios).toBe("ANULADO: Faltó incluir un DO en la liquidación");
+    expect(anulado.referenciaExterna).toMatch(/^\(ANULADO\) COMISIÓN POR CONTENEDOR — 13 contenedores/);
+    expect(await prisma.borradorFactura.count({ where: { tramiteId: r.tramiteId } })).toBe(0);
+    const log = await prisma.estadoLog.findFirst({ where: { tramiteId: r.tramiteId }, orderBy: { createdAt: "desc" } });
+    expect(log).toMatchObject({ estadoAntes: EstadoTramite.ENVIADO_A_FACTURAR, estadoDes: EstadoTramite.CERRADO });
+    // Y no hay forma de cobrarlo: un borrador nuevo sobre el «Otros» anulado se rechaza.
+    await expect(generarBorrador({ tramiteId: r.tramiteId, usuarioId: f.adminId })).rejects.toMatchObject({ status: 409 });
+
+    // AuditLog con el motivo, el valor anulado y el borrador eliminado.
+    const auditoria = await prisma.auditLog.findMany({
+      where: { entidad: "Cliente", entidadId: f.ltransDeshacerId, accion: "DESHACER_LIQUIDACION" },
+    });
+    expect(auditoria).toHaveLength(1);
+    expect(auditoria[0]).toMatchObject({ usuarioId: f.adminId, tramiteId: r.tramiteId });
+    expect(auditoria[0]!.antes).toMatchObject({ valorServicio: "1170000" });
+    expect(auditoria[0]!.despues).toMatchObject({ motivo: "Faltó incluir un DO en la liquidación", valorServicio: null });
+
+    // Volver a liquidar las mismas comisiones: otro «Otros», el MISMO total.
+    const otra = await liquidarComisiones({
+      empresaId: f.ltransDeshacerId,
+      comisionIds: filas.map((x) => x.comisionId),
+      usuarioId: f.adminId,
+    });
+    expect(otra.total).toBe(r.total);
+    expect(otra.unidades).toBe(13);
+    expect(otra.tramiteId).not.toBe(r.tramiteId);
+    expect(otra.consecutivo).not.toBe(r.consecutivo);
+    // Y el nuevo sí se puede facturar: da lo mismo que el primero.
+    const nuevoBorrador = await borradorDelOtros(otra.tramiteId);
+    expect(nuevoBorrador.totalFacturaLineas).toBe(borrador.totalFacturaLineas);
+  });
+
+  it("M3 · con un borrador EN_REVISION también se puede deshacer (se elimina); con APROBADO o FACTURADO no (409) y no cambia nada", async (ctx) => {
+    const f = ensureDb(ctx);
+
+    // EN_REVISION: se descarta.
+    const enRevision = await liquidacionDeTrece(f.ltransDeshacerId);
+    const b1 = await borradorDelOtros(enRevision.r.tramiteId);
+    await prisma.borradorFactura.update({ where: { id: b1.id }, data: { estado: EstadoBorrador.EN_REVISION } });
+    await expect(
+      deshacerLiquidacion({
+        empresaId: f.ltransDeshacerId,
+        tramiteId: enRevision.r.tramiteId,
+        motivo: "Se creó con el valor equivocado",
+        usuarioId: f.adminId,
+      }),
+    ).resolves.toMatchObject({ borradoresEliminados: 1 });
+    expect(await prisma.borradorFactura.count({ where: { id: b1.id } })).toBe(0);
+
+    // APROBADO y FACTURADO: se frena.
+    for (const estado of [EstadoBorrador.APROBADO, EstadoBorrador.FACTURADO]) {
+      const { r } = await liquidacionDeTrece(f.ltransDeshacerId);
+      const borrador = await borradorDelOtros(r.tramiteId);
+      await prisma.borradorFactura.update({ where: { id: borrador.id }, data: { estado } });
+
+      const ficha = await comisionesDeEmpresa(f.ltransDeshacerId);
+      const facturada = ficha.facturadas.find((x) => x.otros.id === r.tramiteId)!;
+      expect(facturada.otros.deshacible, estado).toBe(false);
+      expect(facturada.otros.motivoNoDeshacible, estado).toContain("factura aprobada o emitida");
+
+      await expect(
+        deshacerLiquidacion({
+          empresaId: f.ltransDeshacerId,
+          tramiteId: r.tramiteId,
+          motivo: "Quiero deshacerlo aunque ya está aprobado",
+          usuarioId: f.adminId,
+        }),
+        estado,
+      ).rejects.toMatchObject({
+        name: "DeshacerLiquidacionImposibleError",
+        status: 409,
+        codigo: "DESHACER_LIQUIDACION_IMPOSIBLE",
+      });
+
+      // Nada cambió: comisiones ligadas, valor intacto, borrador en pie, estado sin tocar.
+      const ligadas = await prisma.comisionTramite.count({ where: { liquidacionTramiteId: r.tramiteId } });
+      expect(ligadas, estado).toBe(3);
+      const otros = await prisma.tramiteDO.findUniqueOrThrow({ where: { id: r.tramiteId } });
+      expect(otros.valorServicio, estado).toBe($(1_170_000));
+      expect(otros.estado, estado).toBe(EstadoTramite.ENVIADO_A_FACTURAR);
+      expect(await prisma.borradorFactura.count({ where: { id: borrador.id, estado } }), estado).toBe(1);
+    }
+  });
+
+  it("M3 · sin motivo válido 422; otra empresa o «Otros» ya deshecho 404; enviado a Siigo, ya facturado o con pagos → 409", async (ctx) => {
+    const f = ensureDb(ctx);
+    const { r } = await liquidacionDeTrece(f.ltransDeshacerId);
+    const deshacer = (over: Partial<Parameters<typeof deshacerLiquidacion>[0]> = {}) =>
+      deshacerLiquidacion({
+        empresaId: f.ltransDeshacerId,
+        tramiteId: r.tramiteId,
+        motivo: "Motivo suficiente para el historial",
+        usuarioId: f.adminId,
+        ...over,
+      });
+
+    // Motivo vacío o de menos de 10 caracteres.
+    await expect(deshacer({ motivo: "" })).rejects.toMatchObject({ status: 422 });
+    await expect(deshacer({ motivo: "  corto  " })).rejects.toMatchObject({ status: 422 });
+    // Otra empresa (LTRANS intenta deshacer la de otra) o un «Otros» que no existe.
+    await expect(deshacer({ empresaId: f.ltransCarreraId })).rejects.toMatchObject({ status: 404 });
+    await expect(deshacer({ tramiteId: "no-existe" })).rejects.toMatchObject({ status: 404 });
+
+    // Enviado a Siigo (allá puede haber un borrador de factura): no.
+    const borrador = await borradorDelOtros(r.tramiteId);
+    await prisma.borradorFactura.update({
+      where: { id: borrador.id },
+      data: { siigoEnvioEstado: SiigoEnvioEstado.INCIERTO },
+    });
+    await expect(deshacer()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("Siigo") });
+    // ERROR = Siigo la rechazó sin crearla: se puede deshacer.
+    await prisma.borradorFactura.update({
+      where: { id: borrador.id },
+      data: { siigoEnvioEstado: SiigoEnvioEstado.ERROR },
+    });
+    await prisma.tramiteDO.update({ where: { id: r.tramiteId }, data: { estado: EstadoTramite.FACTURADO } });
+    // Marcado como facturado (aunque no haya factura emitida): no.
+    await expect(deshacer()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("facturado o pagado") });
+    await prisma.tramiteDO.update({ where: { id: r.tramiteId }, data: { estado: EstadoTramite.ENVIADO_A_FACTURAR } });
+
+    // Ahora sí; y una segunda vez ya no hay comisiones ligadas (404).
+    await expect(deshacer()).resolves.toMatchObject({ comisiones: 3, borradoresEliminados: 1 });
+    await expect(deshacer()).rejects.toMatchObject({ name: "LiquidacionNoEncontradaError", status: 404 });
+  });
+
+  it("M3 · dos personas deshaciendo lo mismo a la vez: una lo hace, la otra 404", async (ctx) => {
+    const f = ensureDb(ctx);
+    const { r } = await liquidacionDeTrece(f.ltransDeshacerId);
+    const input = {
+      empresaId: f.ltransDeshacerId,
+      tramiteId: r.tramiteId,
+      motivo: "Deshacer en simultáneo desde dos pantallas",
+      usuarioId: f.adminId,
+    };
+    const resultados = await Promise.allSettled([deshacerLiquidacion(input), deshacerLiquidacion(input)]);
+    expect(resultados.filter((x) => x.status === "fulfilled")).toHaveLength(1);
+    const fallida = resultados.find((x): x is PromiseRejectedResult => x.status === "rejected");
+    expect(fallida?.reason).toMatchObject({ status: 404 });
+    expect(
+      await prisma.auditLog.count({ where: { entidad: "Cliente", accion: "DESHACER_LIQUIDACION", tramiteId: r.tramiteId } }),
+    ).toBe(1);
   });
 });
 

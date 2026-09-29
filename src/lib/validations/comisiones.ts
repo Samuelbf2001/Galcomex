@@ -39,3 +39,18 @@ export const liquidarComisionesSchema = z.object({
 });
 
 export type LiquidarComisionesPayload = z.infer<typeof liquidarComisionesSchema>;
+
+/**
+ * `DELETE /api/clientes/[id]/comisiones/liquidaciones/[tramiteId]` (M3): deshacer
+ * una liquidación de comisiones. Solo ADMIN; el motivo (≥ 10 caracteres) queda en
+ * el AuditLog y en los comentarios del «Otros» anulado.
+ */
+export const deshacerLiquidacionSchema = z.object({
+  motivo: z
+    .string({ error: "Escribe el motivo de deshacer la liquidación." })
+    .trim()
+    .min(10, "El motivo debe tener al menos 10 caracteres.")
+    .max(500, "El motivo es demasiado largo (máximo 500 caracteres)."),
+});
+
+export type DeshacerLiquidacionPayload = z.infer<typeof deshacerLiquidacionSchema>;

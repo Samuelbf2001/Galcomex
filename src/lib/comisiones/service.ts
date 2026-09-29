@@ -32,6 +32,7 @@ import {
   valorUnitarioDe,
   type TotalesComision,
 } from "@/lib/comisiones/calculo";
+import { impedimentoParaDeshacer } from "@/lib/comisiones/deshacer-reglas";
 
 export class ComisionInvalidaError extends Error {
   public readonly status = 422;
@@ -386,8 +387,18 @@ export interface FilaComisionFacturada {
   empresaDo: string;
   unidades: number;
   liquidadaEn: Date | null;
-  /** El «Otros» a nombre de la empresa donde se facturó. */
-  otros: { id: string; consecutivo: string; estado: string; valorServicio: bigint | null };
+  /**
+   * El «Otros» a nombre de la empresa donde se facturó. `deshacible` = se puede
+   * deshacer la liquidación (M3); si no, `motivoNoDeshacible` dice por qué.
+   */
+  otros: {
+    id: string;
+    consecutivo: string;
+    estado: string;
+    valorServicio: bigint | null;
+    deshacible: boolean;
+    motivoNoDeshacible: string | null;
+  };
 }
 
 export interface ComisionesDeEmpresa {
@@ -417,7 +428,16 @@ export async function comisionesDeEmpresa(empresaId: string): Promise<Comisiones
         unidades: true,
         liquidadaEn: true,
         liquidacion: {
-          select: { id: true, consecutivo: true, estado: true, valorServicio: true },
+          select: {
+            id: true,
+            consecutivo: true,
+            estado: true,
+            valorServicio: true,
+            borradores: { select: { estado: true, siigoEnvioEstado: true, siigoDraftId: true } },
+            _count: {
+              select: { pagos: true, aplicacionesAnticipo: true, facturasProveedor: true, movimientosCuenta: true },
+            },
+          },
         },
         tramite: {
           select: {
@@ -436,26 +456,38 @@ export async function comisionesDeEmpresa(empresaId: string): Promise<Comisiones
 
   const valorUnitario = valorUnitarioDe(capacidades);
   const porFacturar = registros.filter((r) => !r.liquidacion);
-  const facturadas: FilaComisionFacturada[] = registros.flatMap((r) =>
-    r.liquidacion
-      ? [
-          {
-            comisionId: r.id,
-            tramiteId: r.tramite.id,
-            consecutivo: r.tramite.consecutivo,
-            empresaDo: r.tramite.cliente.nombre,
-            unidades: r.unidades,
-            liquidadaEn: r.liquidadaEn,
-            otros: {
-              id: r.liquidacion.id,
-              consecutivo: r.liquidacion.consecutivo,
-              estado: r.liquidacion.estado,
-              valorServicio: r.liquidacion.valorServicio,
-            },
-          },
-        ]
-      : [],
-  );
+  const facturadas: FilaComisionFacturada[] = registros.flatMap((r) => {
+    const otros = r.liquidacion;
+    if (!otros) return [];
+    // M3: la misma regla que aplica el servicio que deshace (`deshacer-reglas.ts`).
+    const motivoNoDeshacible = impedimentoParaDeshacer({
+      estado: otros.estado,
+      borradores: otros.borradores,
+      movimientos:
+        otros._count.pagos +
+        otros._count.aplicacionesAnticipo +
+        otros._count.facturasProveedor +
+        otros._count.movimientosCuenta,
+    });
+    return [
+      {
+        comisionId: r.id,
+        tramiteId: r.tramite.id,
+        consecutivo: r.tramite.consecutivo,
+        empresaDo: r.tramite.cliente.nombre,
+        unidades: r.unidades,
+        liquidadaEn: r.liquidadaEn,
+        otros: {
+          id: otros.id,
+          consecutivo: otros.consecutivo,
+          estado: otros.estado,
+          valorServicio: otros.valorServicio,
+          deshacible: motivoNoDeshacible === null,
+          motivoNoDeshacible,
+        },
+      },
+    ];
+  });
   const filas = porFacturar.map((r) => ({
     comisionId: r.id,
     tramiteId: r.tramite.id,

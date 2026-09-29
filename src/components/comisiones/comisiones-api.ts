@@ -61,7 +61,15 @@ export type FilaComisionFacturadaRow = {
   empresaDo: string;
   unidades: number;
   liquidadaEn: string | null;
-  otros: { id: string; consecutivo: string; estado: string; valorServicio: string | null };
+  otros: {
+    id: string;
+    consecutivo: string;
+    estado: string;
+    valorServicio: string | null;
+    /** M3: se puede deshacer la liquidación (si no, `motivoNoDeshacible` dice por qué). */
+    deshacible: boolean;
+    motivoNoDeshacible: string | null;
+  };
 };
 
 export type ComisionesEmpresaRow = {
@@ -222,6 +230,8 @@ export async function fetchComisionesEmpresa(
               consecutivo: str(o.consecutivo),
               estado: str(o.estado),
               valorServicio: typeof o.valorServicio === "string" ? o.valorServicio : null,
+              deshacible: o.deshacible === true,
+              motivoNoDeshacible: typeof o.motivoNoDeshacible === "string" ? o.motivoNoDeshacible : null,
             },
           };
         })
@@ -246,6 +256,37 @@ export async function facturarComisiones(
     tramiteId: str(r.tramiteId),
     consecutivo: str(r.consecutivo),
     total: str(r.total, "0"),
+    unidades: num(r.unidades),
+  };
+}
+
+export type DeshacerLiquidacionRow = {
+  tramiteId: string;
+  consecutivo: string;
+  /** Comisiones que vuelven a "por facturar". */
+  comisiones: number;
+  unidades: number;
+};
+
+/**
+ * M3 — deshacer una liquidación (solo ADMIN): las comisiones vuelven a "por
+ * facturar" y el «Otros» queda anulado. El motivo (≥ 10 caracteres) queda en el
+ * historial.
+ */
+export async function deshacerLiquidacionComisiones(
+  empresaId: string,
+  tramiteId: string,
+  motivo: string,
+): Promise<DeshacerLiquidacionRow> {
+  const b = await request(
+    `/api/clientes/${encodeURIComponent(empresaId)}/comisiones/liquidaciones/${encodeURIComponent(tramiteId)}`,
+    { method: "DELETE", body: JSON.stringify({ motivo }) },
+  );
+  const r = isRecord(b) ? b : {};
+  return {
+    tramiteId: str(r.tramiteId),
+    consecutivo: str(r.consecutivo),
+    comisiones: num(r.comisiones),
     unidades: num(r.unidades),
   };
 }

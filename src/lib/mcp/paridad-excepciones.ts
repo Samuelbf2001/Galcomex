@@ -193,6 +193,13 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/clientes/[param]/comisiones/liquidar",
     "Facturar comisiones por contenedor (crea un «Otros» a nombre de la empresa que paga): tool comisiones_facturar se agrega al MCP compartido tras desplegar B",
   ),
+  // M3 (revisión INTEG-B): deshacer la liquidación. Tool comisiones_deshacer al MCP
+  // compartido después de desplegar; borrar esta línea entonces.
+  pendiente(
+    "DELETE",
+    "/api/clientes/[param]/comisiones/liquidaciones/[param]",
+    "Deshacer una liquidación de comisiones (las comisiones vuelven a por facturar y el «Otros» queda anulado, solo ADMIN con motivo): tool comisiones_deshacer se agrega al MCP compartido tras desplegar",
+  ),
 
   // Diseño B — B7, cotización / solicitud de fondos por DO (2026-09-29). Las
   // tools tramite_cotizacion_ver / tramite_cotizacion_pdf se agregan al MCP

@@ -410,9 +410,18 @@ sin código por empresa (`src/lib/comisiones/liquidacion.ts`, `liquidarComisione
   facturar (cada fila trae `comisionId`) y agrega `facturadas` (con el «Otros»: consecutivo,
   estado, valor total; sin subtotal por fila, por si el valor por contenedor cambia después).
   `GET /api/tramites/[id]/comisiones` marca `facturadaEn` en cada comisión.
-- **Deshacer una liquidación NO está** (el diseño lo dejaba "si cabe"): si el «Otros» se descarta, sus comisiones
-  quedan ligadas y no se pueden volver a facturar; hoy se corrige con datos. Fase siguiente:
-  `DELETE /api/clientes/[id]/comisiones/liquidaciones/[tramiteId]` (ADMIN, motivo, solo sin borrador APROBADO/FACTURADO).
+- **Deshacer una liquidación (M3, revisión INTEG-B):** `DELETE /api/clientes/[id]/comisiones/liquidaciones/[tramiteId]`
+  (solo ADMIN, cuerpo `{ motivo }` ≥ 10 caracteres; `src/lib/comisiones/deshacer-liquidacion.ts`). En una transacción con
+  candado: las comisiones vuelven a "por facturar" (mismas unidades; volver a liquidar da el mismo total), los borradores
+  del «Otros» en BORRADOR/EN_REVISION se eliminan y el «Otros» queda anulado, sin borrarlo: `valorServicio` null, estado
+  CERRADO (bloqueo total, reabrir es solo ADMIN), «ANULADO: motivo» en comentarios y «(ANULADO)» en la referencia;
+  AuditLog `DESHACER_LIQUIDACION` (antes = valor, comisiones y borradores eliminados; después = motivo). Se frena (409
+  `DESHACER_LIQUIDACION_IMPOSIBLE`) con borrador APROBADO/FACTURADO, envío a Siigo, «Otros» FACTURADO/PAGADO o pagos,
+  anticipos, facturas de proveedor o movimientos de cuenta (`deshacer-reglas.ts`, pura); `GET .../comisiones` marca cada
+  «Otros» de `facturadas` con `deshacible` y `motivoNoDeshacible`. UI: botón «Deshacer» + motivo en la página, bloque «Ya facturadas».
+- **Carreras (B3):** al liquidar, dentro de la transacción se vuelven a sumar las unidades ligadas y, si no coinciden con lo
+  cobrado, 409 `COMISION_CAMBIO_AL_LIQUIDAR` (sin DO huérfano); editar/quitar una comisión usa `updateMany`/`deleteMany`
+  con `liquidacionTramiteId: null` (409 si otra persona la facturó en el medio).
 - **API:** `POST /api/clientes/[id]/comisiones/liquidar` (solo ADMIN) `{ comisionIds, ciudad? }` → 201
   `{ tramiteId, consecutivo, total, unidades, valorUnitario }`. Paridad MCP: `pendiente`
   (tool `comisiones_facturar` al MCP compartido tras desplegar B).
