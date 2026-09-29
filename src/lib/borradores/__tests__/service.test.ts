@@ -728,11 +728,18 @@ describe("borradores service con Postgres local", () => {
     const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Tarifa", {
       tarifarioPropio: true,
     });
+    // B2 (Diseño B): la tarifa de «Otros» declara su servicio y el DO busca por el suyo.
+    await prisma.conceptoVenta.upsert({
+      where: { codigo: "PLAN_VALLEJO" },
+      update: { nombre: "Programa Plan Vallejo", aplicaIva: true },
+      create: { codigo: "PLAN_VALLEJO", nombre: "Programa Plan Vallejo", aplicaIva: true },
+    });
     await prisma.tarifario.create({
       data: {
         empresaId: empresa.id,
         nombre: "Tarifa OTROS vitest",
         alcance: "OTROS",
+        conceptoServicioCodigo: "PLAN_VALLEJO",
         estado: EstadoTarifario.VIGENTE,
         vigenteDesde: new Date(Date.now() - 30 * 86_400_000),
         vigenteHasta: new Date(Date.now() + 30 * 86_400_000),
@@ -754,7 +761,7 @@ describe("borradores service con Postgres local", () => {
         },
       },
     });
-    const otro = await crearOtroTest(empresa.id, db.userId);
+    const otro = await crearOtroTest(empresa.id, db.userId, { conceptoServicioCodigo: "PLAN_VALLEJO" });
 
     const borrador = await generarBorrador({ tramiteId: otro.id, usuarioId: db.userId });
 
@@ -771,11 +778,18 @@ describe("borradores service con Postgres local", () => {
     const empresa = await crearEmpresaFlujoCorto("Cliente Vitest FC Pendiente", {
       tarifarioPropio: true,
     });
+    // B2 (Diseño B): la tarifa de «Otros» declara su servicio y el DO busca por el suyo.
+    await prisma.conceptoVenta.upsert({
+      where: { codigo: "PLAN_VALLEJO" },
+      update: { nombre: "Programa Plan Vallejo", aplicaIva: true },
+      create: { codigo: "PLAN_VALLEJO", nombre: "Programa Plan Vallejo", aplicaIva: true },
+    });
     await prisma.tarifario.create({
       data: {
         empresaId: empresa.id,
         nombre: "Tarifa OTROS con pendiente vitest",
         alcance: "OTROS",
+        conceptoServicioCodigo: "PLAN_VALLEJO",
         estado: EstadoTarifario.VIGENTE,
         vigenteDesde: new Date(Date.now() - 30 * 86_400_000),
         vigenteHasta: new Date(Date.now() + 30 * 86_400_000),
@@ -808,7 +822,7 @@ describe("borradores service con Postgres local", () => {
       },
     });
     // El OTRO no trae numContenedores: el ítem "Por contenedor" queda pendiente.
-    const otro = await crearOtroTest(empresa.id, db.userId);
+    const otro = await crearOtroTest(empresa.id, db.userId, { conceptoServicioCodigo: "PLAN_VALLEJO" });
 
     await expect(
       generarBorrador({ tramiteId: otro.id, usuarioId: db.userId }),

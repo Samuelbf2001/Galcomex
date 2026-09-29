@@ -28,7 +28,7 @@ export class ValorServicioRequeridoError extends Error {
   public readonly status = 422;
   public readonly codigo = "VALOR_SERVICIO_REQUERIDO" as const;
   constructor() {
-    super("Escribe el servicio, el concepto y el valor antes de mandarlo a facturar.");
+    super("Escoge el servicio del DO. Si ese servicio no tiene tarifa para esta empresa, escribe el valor a mano.");
     this.name = "ValorServicioRequeridoError";
   }
 }

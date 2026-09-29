@@ -57,6 +57,16 @@ function causaPendiente(v: unknown): CausaPendienteRow {
   return v === "COSTO_PROVEEDOR" || v === "TARIFARIO" ? v : "BASE_DO";
 }
 
+/** Campos de la base de cálculo del DO (espejo de `CampoBaseTarifa` en `lib/tarifas/campos-tarifa.ts`). */
+export type CampoBaseTarifa = "valorCif" | "tipoCarga" | "numContenedores" | "numDeclaraciones" | "numDocumentos" | "numItems";
+
+/**
+ * B2 — qué le pide la tarifa al DO: campos de la base de cálculo, códigos de los
+ * eventos que cobra y si resta la agencia de aduanas. El panel de un DO de
+ * «Otros» muestra solo esto.
+ */
+export type CamposTarifaRow = { base: CampoBaseTarifa[]; eventos: string[]; agencia: boolean };
+
 export type PropuestaTarifaRow = {
   tarifario: { id: string; nombre: string; version: number; alcance: string; vigenteDesde: string; vigenteHasta: string } | null;
   motivo: string | null;
@@ -70,6 +80,8 @@ export type PropuestaTarifaRow = {
     totalConIva: string;
   } | null;
   contexto: AtributosTramite & { eventos: { codigo: string; cantidad: number }[] };
+  /** B2 — solo cuando hay tarifa vigente; null/ausente = no hay tarifa (o respuesta vieja). */
+  camposTarifa?: CamposTarifaRow | null;
 };
 
 export class EventosApiError extends Error {
@@ -146,6 +158,11 @@ export async function guardarAtributosTramite(tramiteId: string, atributos: Part
   await request(`/api/tramites/${encodeURIComponent(tramiteId)}`, { method: "PATCH", body: JSON.stringify(atributos) });
 }
 
+/** B2 — agencia de aduanas del DO (la tarifa de «Otros» le resta su agenciamiento). Mismo PATCH del DO, con su AuditLog. */
+export async function guardarAgenciaTramite(tramiteId: string, agenciaAduanas: string): Promise<void> {
+  await request(`/api/tramites/${encodeURIComponent(tramiteId)}`, { method: "PATCH", body: JSON.stringify({ agenciaAduanas }) });
+}
+
 function normalizeContexto(v: unknown): PropuestaTarifaRow["contexto"] {
   const c = isRecord(v) ? v : {};
   const tipoCarga = str(c.tipoCarga);
@@ -216,5 +233,19 @@ export async function fetchPropuestaTarifa(tramiteId: string, signal?: AbortSign
         }
       : null,
     contexto: normalizeContexto(p.contexto),
+    camposTarifa: normalizeCamposTarifa(p.camposTarifa),
+  };
+}
+
+const CAMPOS_BASE_VALIDOS: readonly string[] = ["valorCif", "tipoCarga", "numContenedores", "numDeclaraciones", "numDocumentos", "numItems"];
+
+function normalizeCamposTarifa(v: unknown): CamposTarifaRow | null {
+  if (!isRecord(v)) return null;
+  return {
+    base: Array.isArray(v.base)
+      ? v.base.filter((c): c is CampoBaseTarifa => typeof c === "string" && CAMPOS_BASE_VALIDOS.includes(c))
+      : [],
+    eventos: Array.isArray(v.eventos) ? v.eventos.filter((e): e is string => typeof e === "string") : [],
+    agencia: v.agencia === true,
   };
 }

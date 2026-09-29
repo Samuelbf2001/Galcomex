@@ -446,14 +446,14 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
 
     it("segunda copia al mismo (empresa, alcance): la siguiente versión", async (ctx) => {
       const db = ensureDb(ctx);
-      const origen = await crearTarifarioBorradorTest(db.clienteOrigenId, db.adminId, "OTROS");
+      const origen = await crearTarifarioBorradorTest(db.clienteOrigenId, db.adminId, "EXPORTACION");
       await agregarItemTarifario(origen.id, itemPayload({ concepto: CODIGO_ACTIVO_1 }), db.adminId);
 
       const primera = await crearTarifarioDesde(
         {
           origenTarifarioId: origen.id,
           empresaId: db.clienteDestinoId,
-          alcance: "OTROS",
+          alcance: "EXPORTACION",
           vigenteDesde: new Date("2027-01-01T00:00:00.000Z"),
           vigenteHasta: new Date("2027-12-31T00:00:00.000Z"),
         },
@@ -463,7 +463,7 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
         {
           origenTarifarioId: origen.id,
           empresaId: db.clienteDestinoId,
-          alcance: "OTROS",
+          alcance: "EXPORTACION",
           vigenteDesde: new Date("2028-01-01T00:00:00.000Z"),
           vigenteHasta: new Date("2028-12-31T00:00:00.000Z"),
         },
@@ -560,7 +560,7 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
 
     it("excluirEmpresaId quita los tarifarios de esa empresa", async (ctx) => {
       const db = ensureDb(ctx);
-      const tarifario = await crearTarifarioBorradorTest(db.clienteOrigenId, db.adminId, "OTROS");
+      const tarifario = await crearTarifarioBorradorTest(db.clienteOrigenId, db.adminId, "EXPORTACION");
 
       const conTodos = await listarTarifariosLigero();
       expect(conTodos.some((t) => t.id === tarifario.id)).toBe(true);

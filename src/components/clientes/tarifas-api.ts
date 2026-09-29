@@ -97,6 +97,9 @@ export type TarifarioRow = {
   alcance: string;
   /** B3 — vacío = general (cualquier ciudad sin tarifario propio). */
   ciudades: Ciudad[];
+  /** B2 — servicio de «Otros» que cobra (código y nombre); null en los demás alcances y en tarifas anteriores. */
+  conceptoServicioCodigo: string | null;
+  conceptoServicioNombre: string | null;
   vigenteDesde: string;
   vigenteHasta: string;
   estado: EstadoTarifario;
@@ -153,6 +156,9 @@ export type TarifarioLigero = {
   estado: EstadoTarifario;
   /** BAJO 4/5 (revisión de código, 28-sep-2026) — para prellenar los chips al copiar. */
   ciudades: Ciudad[];
+  /** B2 — servicio de «Otros» que cobra; null en los demás alcances. */
+  conceptoServicioCodigo: string | null;
+  conceptoServicioNombre: string | null;
   items: number;
 };
 
@@ -258,6 +264,8 @@ function normalizeTarifario(row: unknown): TarifarioRow | null {
     nombre: str(row.nombre),
     alcance: str(row.alcance, "TRAMITE"),
     ciudades: normalizeCiudades(row.ciudades),
+    conceptoServicioCodigo: strOrNull(row.conceptoServicioCodigo),
+    conceptoServicioNombre: isRecord(row.conceptoServicio) ? strOrNull(row.conceptoServicio.nombre) : null,
     vigenteDesde: str(row.vigenteDesde),
     vigenteHasta: str(row.vigenteHasta),
     estado: str(row.estado, "BORRADOR") as EstadoTarifario,
@@ -321,6 +329,12 @@ export type NuevoTarifarioForm = {
   alcance?: string;
   /** B3 — vacío u omitido = general. */
   ciudades?: Ciudad[];
+  /**
+   * B2 — servicio (código del concepto de venta) que cobra una tarifa de «Otros».
+   * Obligatorio en los alcances de flujo corto; `null` en los demás. Omitido al
+   * copiar de otra empresa = se copia el del origen.
+   */
+  conceptoServicioCodigo?: string | null;
   vigenteDesde: string;
   vigenteHasta: string;
   notas?: string | null;
@@ -342,6 +356,8 @@ export async function actualizarTarifario(
     alcance?: string;
     /** B3 — solo se puede editar en BORRADOR (el servicio lo exige). */
     ciudades?: Ciudad[];
+    /** B2 — servicio de «Otros»; solo en BORRADOR. */
+    conceptoServicioCodigo?: string | null;
     vigenteDesde?: string;
     vigenteHasta?: string;
     notas?: string | null;
@@ -364,6 +380,8 @@ export type DuplicarTarifarioForm = {
   nombre?: string;
   /** B3 — si no se manda, se copian las ciudades del tarifario de origen (R4). */
   ciudades?: Ciudad[];
+  /** B2 — si no se manda, se copia el servicio del origen; así se recarga una DUTA vieja con su servicio. */
+  conceptoServicioCodigo?: string | null;
   vigenteDesde: string;
   vigenteHasta: string;
   incrementoPct?: number;
@@ -422,8 +440,26 @@ function normalizeTarifarioLigero(row: unknown): TarifarioLigero | null {
     version: typeof row.version === "number" ? row.version : 1,
     estado: str(row.estado, "BORRADOR") as EstadoTarifario,
     ciudades: normalizeCiudades(row.ciudades),
+    conceptoServicioCodigo: strOrNull(row.conceptoServicioCodigo),
+    conceptoServicioNombre: strOrNull(row.conceptoServicioNombre),
     items: typeof row.items === "number" ? row.items : 0,
   };
+}
+
+/**
+ * B2 (Diseño B) — alcances (línea de servicio) de los tipos de trámite de flujo
+ * corto, p. ej. `["OTROS"]`. Una tarifa de esos alcances tiene que decir qué
+ * servicio cobra. Lo dice `GET /api/tipos-tramite` (`flujoCorto` + `lineaServicio`),
+ * sin hardcodear el código «OTRO».
+ */
+export async function fetchAlcancesFlujoCorto(signal?: AbortSignal): Promise<string[]> {
+  const body = await request("/api/tipos-tramite", { signal });
+  const tipos = isRecord(body) && Array.isArray(body.tipos) ? body.tipos : [];
+  const alcances = tipos
+    .filter(isRecord)
+    .filter((t) => t.flujoCorto === true && typeof t.lineaServicio === "string")
+    .map((t) => String(t.lineaServicio));
+  return [...new Set(alcances)];
 }
 
 /** Catálogo ligero de tarifarios de TODAS las empresas, para "Copiar la tarifa de otra empresa" (B2). */

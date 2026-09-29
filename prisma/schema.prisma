@@ -1603,6 +1603,13 @@ model Tarifario {
   /// que no tenga su propio tarifario VIGENTE en fecha. Una ciudad con
   /// tarifario propio NUNCA cae al general en silencio (ver `tarifarioVigenteDe`).
   ciudades     Ciudad[]        @default([])
+  /// B2 (Diseño B): solo en alcances de flujo corto («Otros servicios»): el
+  /// servicio (concepto de venta) que cobra esta tarifa — DUTA, NACIONALIZACION_ZF…
+  /// Un DO de «Otros» busca su tarifa por empresa + alcance + ciudad + ESTE
+  /// servicio (`TramiteDO.conceptoServicioCodigo`), así varias tarifas de «Otros»
+  /// conviven sin pisarse. NULL en los demás alcances y en tarifas anteriores.
+  conceptoServicioCodigo String?
+  conceptoServicio       ConceptoVenta? @relation("TarifarioServicio", fields: [conceptoServicioCodigo], references: [codigo], onDelete: SetNull)
   vigenteDesde DateTime
   vigenteHasta DateTime
   estado       EstadoTarifario @default(BORRADOR)
@@ -1622,6 +1629,7 @@ model Tarifario {
 
   @@unique([empresaId, alcance, version])
   @@index([empresaId, estado])
+  @@index([empresaId, alcance, conceptoServicioCodigo])
   @@map("tarifario")
 }
 
@@ -1728,6 +1736,8 @@ model ConceptoVenta {
   /// DOs de flujo corto (OTRO) que escribieron este concepto a mano en
   /// `TramiteDO.valorServicio` (revisión de Ernesto, 26-sep-2026).
   tramitesServicio TramiteDO[] @relation("TramiteConceptoServicio")
+  /// B2 (Diseño B): tarifarios de «Otros» que cobran este servicio.
+  tarifariosServicio Tarifario[] @relation("TarifarioServicio")
 
   @@index([activo, orden])
   @@map("concepto_venta")

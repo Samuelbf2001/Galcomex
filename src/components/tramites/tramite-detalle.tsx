@@ -1223,6 +1223,7 @@ function TabResumen({
         onRefresh={onRefresh}
         camposBaseCalculo={tramite.tipoTramite?.camposBaseCalculo ?? null}
         usaEventos={tramite.tipoTramite?.usaEventos ?? true}
+        flujoCorto={tramite.tipoTramite?.flujoCorto ?? false}
         checklistItems={tramite.checklistItems}
       />
 

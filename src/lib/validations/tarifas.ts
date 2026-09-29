@@ -226,6 +226,16 @@ export const tarifaItemUpdateSchema = z.object(tarifaItemCampos).partial();
 
 const fechaSchema = z.coerce.date();
 
+/** B2 — código del concepto de venta (MAYÚSCULAS, dígitos y guion bajo). Vacío/nulo = sin servicio. */
+const conceptoServicioSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(60)
+  .regex(/^[A-Z0-9_]+$/, "Usa el código del concepto en MAYÚSCULAS (p. ej. NACIONALIZACION_ZF)")
+  .optional()
+  .nullable();
+
 /** B3 — ciudades a las que aplica el tarifario. Vacío = general. Máx. 5 (una por ciudad del enum), sin repetidos. */
 const ciudadesSchema = z
   .array(z.nativeEnum(Ciudad))
@@ -247,6 +257,13 @@ export const tarifarioSchema = z
      * copiar las ciudades del origen (R4).
      */
     ciudades: ciudadesSchema.optional(),
+    /**
+     * B2 (Diseño B) — servicio (código del concepto de venta) que cobra una
+     * tarifa de «Otros servicios»: DUTA, NACIONALIZACION_ZF… Obligatorio en
+     * los alcances de flujo corto y prohibido en los demás (lo valida el
+     * servicio, que sabe qué alcances son de flujo corto).
+     */
+    conceptoServicioCodigo: conceptoServicioSchema,
     vigenteDesde: fechaSchema,
     vigenteHasta: fechaSchema,
     notas: z.string().trim().max(1_000).optional().nullable(),
@@ -278,6 +295,8 @@ export const tarifarioUpdateSchema = z
     alcance: z.enum(ALCANCES_TARIFARIO).optional(),
     /** B3 — solo se edita en BORRADOR (el servicio lo exige). */
     ciudades: ciudadesSchema.optional(),
+    /** B2 — servicio de «Otros»; solo se edita en BORRADOR (igual que alcance y ciudades). */
+    conceptoServicioCodigo: conceptoServicioSchema,
     vigenteDesde: fechaSchema.optional(),
     vigenteHasta: fechaSchema.optional(),
     notas: z.string().trim().max(1_000).optional().nullable(),
@@ -296,6 +315,8 @@ export const tarifarioDuplicarSchema = z
     nombre: z.string().trim().min(1).max(120).optional(),
     /** B3 — si no viene, `duplicarTarifario` copia las ciudades del origen. */
     ciudades: ciudadesSchema.optional(),
+    /** B2 — si no viene, se copia el servicio del origen; `null` lo quita. Así se recarga la DUTA vieja con su servicio. */
+    conceptoServicioCodigo: conceptoServicioSchema,
     vigenteDesde: fechaSchema,
     vigenteHasta: fechaSchema,
     /** Incremento porcentual (5.29 = IPC 5,29 %). Se redondea a `redondeoA`. */

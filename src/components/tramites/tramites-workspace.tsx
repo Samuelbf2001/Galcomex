@@ -989,6 +989,9 @@ export function CreateTramiteDialog({
                     </option>
                   ))}
                 </select>
+                <span className="block text-xs text-slate-500">
+                  Si la empresa tiene tarifa para este servicio, deja el valor vacío y se calcula solo.
+                </span>
               </label>
               <label className="space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">Valor sin IVA</span>

@@ -297,6 +297,29 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   `src/lib/tarifas/espejo-por-proveedor.ts` (llamado desde `calcularLineasTarifa`);
   los ítems espejo viejos (solo `conceptoCosto`) no cambian. Dorado:
   DO.CTG26-0148 / FV-2-18521 = 150.000 + 419.000 → total 5.082.367 sin correcciones.
+- **«Otros servicios» con tarifa por servicio (B2, Diseño B, 29-sep-2026):**
+  `Tarifario.conceptoServicioCodigo` (FK a `concepto_venta.codigo`): una tarifa
+  de un alcance de flujo corto (`lineaServicio` de algún `TipoTramite` con
+  `flujoCorto`, hoy `OTROS`) declara qué SERVICIO cobra (DUTA,
+  NACIONALIZACION_ZF…; obligatorio y concepto activo — en los demás alcances va
+  vacío). Un DO de flujo corto busca su tarifa por empresa + alcance + ciudad +
+  el servicio del DO (`TramiteDO.conceptoServicioCodigo`;
+  `tarifarioVigenteDe(…, servicio)`: `undefined` = sin filtro, como las
+  llamadas viejas; `null` = solo tarifas sin servicio, lo que usan
+  importación y clasificación), así que DUTA y nacionalización conviven y
+  publicar una reemplaza solo a la de su servicio (los choques de ciudad,
+  también por servicio). Un «Otros» sin tarifa de su servicio y sin valor a
+  mano da 422 `VALOR_SERVICIO_REQUERIDO` (nunca el precio de otro servicio); una
+  tarifa de «Otros» vieja sin servicio deja de aplicar hasta duplicarla con
+  servicio. `propuestaParaTramite` devuelve `camposTarifa`
+  (`src/lib/tarifas/campos-tarifa.ts`, puro: qué campos de la base, eventos y
+  agencia pide la tarifa) y el panel del DO de «Otros»
+  (`seccion-eventos-tramite.tsx`, prop `flujoCorto`) muestra SOLO eso, más
+  contenedores y tipo de carga si la empresa exige contenedores (comisión
+  LTRANS); la agencia se escoge ahí mismo (`PATCH /api/tramites/[id]`). Los
+  tipos OTRO/CLASIFICACION/IMPORTACION no cambian su configuración (el seed la
+  reescribe en cada despliegue). Dorados: DO.26-0171 = 407.000 (total
+  472.730), DO.26-0130 = 539.000 (626.048), DUTA = 380.000 (441.370).
 
 ## Anticipo por factura (B8, Diseño A, 27-sep-2026) — no se descuenta dos veces
 

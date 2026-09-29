@@ -31,6 +31,7 @@ import {
   eliminarTarifario,
   etiquetaCiudad,
   etiquetaEstado,
+  fetchAlcancesFlujoCorto,
   fetchEventosCatalogo,
   fetchPlantillas,
   fetchTarifarios,
@@ -145,12 +146,50 @@ function CiudadesChips({ value, onChange }: { value: Ciudad[]; onChange: (v: Ciu
   );
 }
 
+/**
+ * B2 (Diseño B) — «Servicio que cobra» una tarifa de «Otros servicios». Solo
+ * aparece (y es obligatorio) cuando el alcance es el de un tipo de flujo corto
+ * (`alcancesFlujoCorto`, lo dice `GET /api/tipos-tramite`): así DUTA y
+ * nacionalización conviven como tarifas distintas de la misma empresa.
+ */
+function ServicioSelect({
+  value,
+  onChange,
+  conceptos,
+}: {
+  value: string;
+  onChange: (codigo: string) => void;
+  conceptos: ConceptoVentaRow[];
+}) {
+  return (
+    <label className="block space-y-1">
+      <span className={LABEL}>Servicio que cobra *</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} required className={INPUT}>
+        <option value="">Elige el servicio…</option>
+        {conceptos.map((c) => (
+          <option key={c.codigo} value={c.codigo}>
+            {c.nombre}
+          </option>
+        ))}
+      </select>
+      <p className="text-xs text-slate-500">
+        Un DO de «Otros» busca su tarifa por este servicio: DUTA, nacionalización, etc. conviven sin pisarse.
+        Si el servicio no tiene tarifa, el DO se factura con el valor que escribas a mano.
+      </p>
+    </label>
+  );
+}
+
 function NuevoTarifarioModal({
   clienteId,
+  conceptos,
+  alcancesFlujoCorto,
   onClose,
   onCreated,
 }: {
   clienteId: string;
+  conceptos: ConceptoVentaRow[];
+  alcancesFlujoCorto: string[];
   onClose: () => void;
   onCreated: (t: TarifarioRow) => void;
 }) {
@@ -160,6 +199,7 @@ function NuevoTarifarioModal({
   const [origenId, setOrigenId] = useState("");
   const [nombre, setNombre] = useState("");
   const [alcance, setAlcance] = useState("TRAMITE");
+  const [servicio, setServicio] = useState("");
   const [ciudades, setCiudades] = useState<Ciudad[]>([]);
   const [desde, setDesde] = useState(hoyIso());
   const [hasta, setHasta] = useState(unAnioDespues(hoyIso()));
@@ -183,6 +223,7 @@ function NuevoTarifarioModal({
     if (valorCombinado === "") {
       setPlantilla("");
       setOrigenId("");
+      setServicio("");
       setCiudades([]);
       return;
     }
@@ -193,6 +234,7 @@ function NuevoTarifarioModal({
     if (tipo === "plantilla") {
       setPlantilla(valor);
       setOrigenId("");
+      setServicio("");
       setCiudades([]);
       const p = plantillas.find((x) => x.codigo === valor);
       if (p) {
@@ -206,6 +248,8 @@ function NuevoTarifarioModal({
       if (t) {
         setNombre(t.nombre);
         setAlcance(t.alcance);
+        // B2: la tarifa copiada trae su servicio (se puede cambiar antes de crear).
+        setServicio(t.conceptoServicioCodigo ?? "");
         // BAJO 4 (revisión de código, 28-sep-2026): prellenar los chips con
         // las ciudades del origen (antes se copiaban sin que el usuario las
         // viera ni pudiera cambiarlas).
@@ -225,6 +269,8 @@ function NuevoTarifarioModal({
         origenTarifarioId: origenId || undefined,
         nombre: nombre.trim() || undefined,
         alcance,
+        // B2: en «Otros» el servicio es obligatorio; en los demás alcances va vacío.
+        conceptoServicioCodigo: alcancesFlujoCorto.includes(alcance) ? servicio || undefined : null,
         // BAJO 4 — siempre lo que el usuario ve y puede editar en los chips
         // (nacen prellenados con las del origen; el usuario manda).
         ciudades,
@@ -301,6 +347,10 @@ function NuevoTarifarioModal({
           </label>
         </div>
 
+        {alcancesFlujoCorto.includes(alcance) ? (
+          <ServicioSelect value={servicio} onChange={setServicio} conceptos={conceptos} />
+        ) : null}
+
         <CiudadesChips value={ciudades} onChange={setCiudades} />
         {origenSel ? (
           <p className="-mt-2 text-xs text-slate-500">
@@ -331,7 +381,19 @@ function NuevoTarifarioModal({
 
 // ─── Modal: duplicar ──────────────────────────────────────────────────────────
 
-function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: TarifarioRow; onClose: () => void; onCreated: (t: TarifarioRow) => void }) {
+function DuplicarModal({
+  tarifario,
+  conceptos,
+  alcancesFlujoCorto,
+  onClose,
+  onCreated,
+}: {
+  tarifario: TarifarioRow;
+  conceptos: ConceptoVentaRow[];
+  alcancesFlujoCorto: string[];
+  onClose: () => void;
+  onCreated: (t: TarifarioRow) => void;
+}) {
   const siguienteDesde = (() => {
     let d: Date;
     try {
@@ -344,6 +406,9 @@ function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: Tarifario
   })();
   const [nombre, setNombre] = useState(tarifario.nombre);
   const [ciudades, setCiudades] = useState<Ciudad[]>(tarifario.ciudades);
+  // B2: nace con el servicio del origen; una DUTA vieja (sin servicio) obliga a escoger uno (D6).
+  const [servicio, setServicio] = useState(tarifario.conceptoServicioCodigo ?? "");
+  const pideServicio = alcancesFlujoCorto.includes(tarifario.alcance);
   const [desde, setDesde] = useState(siguienteDesde);
   const [hasta, setHasta] = useState(unAnioDespues(siguienteDesde));
   const [incremento, setIncremento] = useState("");
@@ -365,6 +430,7 @@ function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: Tarifario
         await duplicarTarifario(tarifario.id, {
           nombre: nombre.trim() || undefined,
           ciudades,
+          ...(pideServicio ? { conceptoServicioCodigo: servicio || undefined } : {}),
           vigenteDesde: desde,
           vigenteHasta: hasta,
           incrementoPct: pct,
@@ -394,6 +460,7 @@ function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: Tarifario
             <input type="date" value={hasta} min={desde} onChange={(e) => setHasta(e.target.value)} required className={INPUT} />
           </label>
         </div>
+        {pideServicio ? <ServicioSelect value={servicio} onChange={setServicio} conceptos={conceptos} /> : null}
         <CiudadesChips value={ciudades} onChange={setCiudades} />
         <label className="block space-y-1">
           <span className={LABEL}>Incremento % (opcional, redondea a miles)</span>
@@ -1131,6 +1198,14 @@ function TarjetaTarifario({
             >
               {tarifario.ciudades.length === 0 ? "General" : tarifario.ciudades.map(etiquetaCiudad).join(" + ")}
             </span>
+            {tarifario.conceptoServicioCodigo ? (
+              <span
+                className="border border-cyan-200 bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-cyan-800"
+                title="Un DO de «Otros» con este servicio usa esta tarifa"
+              >
+                Servicio: {tarifario.conceptoServicioNombre ?? tarifario.conceptoServicioCodigo}
+              </span>
+            ) : null}
           </div>
           <p className="mt-0.5 text-xs text-slate-500">
             {alcanceLabel(tarifario.alcance)} · {formatFecha(tarifario.vigenteDesde)} → {formatFecha(tarifario.vigenteHasta)} · {tarifario.items.length} ítems
@@ -1273,6 +1348,8 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
   const [tarifarios, setTarifarios] = useState<TarifarioRow[]>([]);
   const [eventos, setEventos] = useState<EventoCatalogoRow[]>([]);
   const [conceptos, setConceptos] = useState<ConceptoVentaRow[]>([]);
+  // B2: alcances de los tipos de flujo corto («Otros»): sus tarifas llevan servicio.
+  const [alcancesFlujoCorto, setAlcancesFlujoCorto] = useState<string[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -1286,10 +1363,12 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
       fetchTarifarios(clienteId, controller.signal),
       fetchEventosCatalogo(controller.signal).catch(() => []),
       fetchConceptosVenta(controller.signal).catch(() => []),
+      fetchAlcancesFlujoCorto(controller.signal).catch(() => [] as string[]),
     ])
-      .then(([lista, cat, conceptosCat]) => {
+      .then(([lista, cat, conceptosCat, alcancesCorto]) => {
         setTarifarios(lista);
         setEventos(cat);
+        setAlcancesFlujoCorto(alcancesCorto);
         // Alta/edición MANUAL de ítems solo puede usar conceptos ACTIVOS (B1).
         setConceptos(conceptosCat.filter((c) => c.activo));
         setLoadState("ready");
@@ -1327,7 +1406,7 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
     const ciudadesTexto = t.ciudades.length === 0 ? "general (todas las ciudades sin tarifario propio)" : t.ciudades.map(etiquetaCiudad).join(" + ");
     const ok = await confirmar({
       title: `Publicar "${t.nombre}" v${t.version}`,
-      description: `Queda vigente y reemplaza al tarifario vigente anterior de este alcance y estas ciudades (${ciudadesTexto}). Los borradores de factura nuevos de esta empresa lo usarán.`,
+      description: `Queda vigente y reemplaza al tarifario vigente anterior de este alcance${t.conceptoServicioCodigo ? `, este servicio (${t.conceptoServicioNombre ?? t.conceptoServicioCodigo})` : ""} y estas ciudades (${ciudadesTexto}). Los borradores de factura nuevos de esta empresa lo usarán.`,
       confirmText: "Publicar",
     });
     if (!ok) return;
@@ -1435,6 +1514,8 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
       {modal?.tipo === "nuevo" ? (
         <NuevoTarifarioModal
           clienteId={clienteId}
+          conceptos={conceptos}
+          alcancesFlujoCorto={alcancesFlujoCorto}
           onClose={() => setModal(null)}
           onCreated={(t) => {
             setTarifarios((prev) => [t, ...prev]);
@@ -1447,6 +1528,8 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
       {modal?.tipo === "duplicar" ? (
         <DuplicarModal
           tarifario={modal.tarifario}
+          conceptos={conceptos}
+          alcancesFlujoCorto={alcancesFlujoCorto}
           onClose={() => setModal(null)}
           onCreated={(t) => {
             setTarifarios((prev) => [t, ...prev]);

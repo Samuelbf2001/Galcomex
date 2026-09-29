@@ -28,6 +28,7 @@ import { prisma } from "@/lib/db/prisma";
 import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import { plantillaPorCodigo } from "@/lib/tarifas/plantillas";
 import { agenciamientoEstandarDe } from "@/lib/tarifas/agenciamiento";
+import { camposQuePideTarifa, type CamposTarifa } from "@/lib/tarifas/campos-tarifa";
 import {
   calcularLineasTarifa,
   vigenteEn,
@@ -163,6 +164,24 @@ const ETIQUETA_CIUDAD: Record<string, string> = {
 
 export function etiquetaCiudad(ciudad: Ciudad): string {
   return ETIQUETA_CIUDAD[ciudad] ?? ciudad;
+}
+
+/** B2 — una tarifa de «Otros servicios» tiene que decir qué servicio cobra (DUTA, nacionalización…). */
+export class TarifarioServicioRequeridoError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super("Di qué servicio de «Otros» cobra esta tarifa, p. ej. DUTA o Nacionalización.");
+    this.name = "TarifarioServicioRequeridoError";
+  }
+}
+
+/** B2 — el servicio solo existe en las tarifas de «Otros servicios» (alcances de flujo corto). */
+export class TarifarioServicioNoAplicaError extends Error {
+  public readonly status = 422;
+  constructor(alcance: string) {
+    super(`El servicio solo aplica a las tarifas de «Otros servicios»; una tarifa de ${alcance} no lo lleva. Déjalo vacío.`);
+    this.name = "TarifarioServicioNoAplicaError";
+  }
 }
 
 /**
@@ -321,6 +340,8 @@ function itemCreateData(
 
 const tarifarioInclude = {
   items: { orderBy: [{ orden: "asc" }, { concepto: "asc" }] },
+  /** B2 — el servicio de «Otros» que cobra la tarifa (código y nombre), si lo hay. */
+  conceptoServicio: { select: { codigo: true, nombre: true } },
   empresa: { select: { id: true, nombre: true, nit: true } },
   creadoPor: { select: { name: true } },
 } satisfies Prisma.TarifarioInclude;
@@ -370,6 +391,15 @@ export async function getTarifario(id: string): Promise<TarifarioConItems> {
  * marcado VIGENTE pero ya fuera de fecha NO cuenta: el sistema avisa en vez
  * de facturar con precios viejos.
  *
+ * B2 (Diseño B) — `servicio` opcional, para los alcances de flujo corto
+ * («Otros servicios»): la tarifa se busca también por el servicio del DO
+ * (`TramiteDO.conceptoServicioCodigo`), así DUTA y nacionalización conviven.
+ *   - `undefined` (llamadas viejas: requisitos, «hay tarifa de esta línea»):
+ *     sin filtro por servicio, como siempre.
+ *   - `null`: solo tarifas SIN servicio (todas las de importación y clasificación).
+ *   - un código: solo las tarifas de ese servicio. Una tarifa de «Otros» sin
+ *     servicio (la DUTA vieja) deja de aplicar hasta recargarla con servicio.
+ *
  * B3 (R1) — `ciudad` opcional:
  *   - Sin `ciudad` (`undefined`): comportamiento de hoy, cualquier VIGENTE en
  *     fecha (llamadas viejas, requisitos sin ciudad).
@@ -391,9 +421,10 @@ export async function tarifarioVigenteDe(
   // último día de vigencia. Ver `lib/tiempo/bogota.ts`.
   fecha: Date = fechaCalendarioBogota(),
   ciudad?: Ciudad | null,
+  servicio?: string | null,
 ): Promise<TarifarioConItems | null> {
   const vigentes = await prisma.tarifario.findMany({
-    where: { empresaId, alcance, estado: EstadoTarifario.VIGENTE },
+    where: { empresaId, alcance, estado: EstadoTarifario.VIGENTE, ...filtroServicio(servicio) },
     include: tarifarioInclude,
     orderBy: { version: "desc" },
   });
@@ -407,6 +438,11 @@ export async function tarifarioVigenteDe(
     return especializados.find((t) => vigenteEn(t, fecha)) ?? null;
   }
   return vigentes.filter((t) => t.ciudades.length === 0).find((t) => vigenteEn(t, fecha)) ?? null;
+}
+
+/** B2 — filtro por servicio de `tarifarioVigenteDe` (ver su documentación): `undefined` = sin filtro. */
+function filtroServicio(servicio: string | null | undefined): { conceptoServicioCodigo?: string | null } {
+  return servicio === undefined ? {} : { conceptoServicioCodigo: servicio };
 }
 
 /** `vigenteDesde` ya llegó (día calendario, comparación inclusiva). */
@@ -426,16 +462,36 @@ export async function motivoSinTarifarioVigente(
   alcance: string,
   ciudad?: Ciudad | null,
   fecha: Date = fechaCalendarioBogota(),
+  servicio?: string | null,
 ): Promise<{ ciudadFueraDeFecha: boolean }> {
   if (!ciudad) return { ciudadFueraDeFecha: false };
   const especializados = await prisma.tarifario.findMany({
-    where: { empresaId, alcance, estado: EstadoTarifario.VIGENTE, ciudades: { has: ciudad } },
+    where: { empresaId, alcance, estado: EstadoTarifario.VIGENTE, ciudades: { has: ciudad }, ...filtroServicio(servicio) },
     select: { vigenteDesde: true },
   });
   return { ciudadFueraDeFecha: especializados.some((t) => yaIniciado(t, fecha)) };
 }
 
 // ─── Mutaciones ───────────────────────────────────────────────────────────────
+
+/**
+ * B2 — el servicio de una tarifa de «Otros»: obligatorio (y un concepto de
+ * venta ACTIVO) cuando el `alcance` es la línea de servicio de algún tipo de
+ * trámite de flujo corto; prohibido en cualquier otro alcance. Sin ramas por
+ * el código «OTRO» (invariante 7): la llave es la bandera `flujoCorto`.
+ * Devuelve el código a guardar (`null` si no aplica).
+ */
+async function servicioValidoDeTarifa(alcance: string, servicio: string | null | undefined): Promise<string | null> {
+  const codigo = servicio?.trim() || null;
+  const esFlujoCorto = (await prisma.tipoTramite.count({ where: { lineaServicio: alcance, flujoCorto: true } })) > 0;
+  if (!esFlujoCorto) {
+    if (codigo) throw new TarifarioServicioNoAplicaError(alcance);
+    return null;
+  }
+  if (!codigo) throw new TarifarioServicioRequeridoError();
+  await conceptoVentaActivoDe(codigo);
+  return codigo;
+}
 
 export interface CrearTarifarioInput extends TarifarioPayload {
   empresaId: string;
@@ -451,6 +507,7 @@ export async function crearTarifario(input: CrearTarifarioInput): Promise<Tarifa
   const nombre = input.nombre ?? plantilla?.nombre;
   if (!nombre) throw new TarifarioSinNombreError();
   const alcance = input.alcance ?? plantilla?.alcance ?? "TRAMITE";
+  const conceptoServicioCodigo = await servicioValidoDeTarifa(alcance, input.conceptoServicioCodigo);
   const items: TarifaItemPayload[] =
     input.items.length > 0 ? input.items : (plantilla?.items ?? []).map((it) => tarifaItemSchema.parse(it));
   const notas =
@@ -466,6 +523,7 @@ export async function crearTarifario(input: CrearTarifarioInput): Promise<Tarifa
         nombre,
         alcance,
         ciudades: input.ciudades ?? [],
+        conceptoServicioCodigo,
         vigenteDesde: input.vigenteDesde,
         vigenteHasta: input.vigenteHasta,
         notas,
@@ -498,9 +556,22 @@ export async function actualizarTarifario(
   const antes = await getTarifario(id);
   if (
     antes.estado !== EstadoTarifario.BORRADOR &&
-    (payload.alcance || payload.vigenteDesde || payload.vigenteHasta || payload.ciudades !== undefined)
+    (payload.alcance ||
+      payload.vigenteDesde ||
+      payload.vigenteHasta ||
+      payload.ciudades !== undefined ||
+      payload.conceptoServicioCodigo !== undefined)
   ) {
     throw new TarifarioNoEditableError(antes.estado);
+  }
+
+  // B2 — si cambia el alcance o el servicio, la combinación resultante tiene que ser válida.
+  let conceptoServicioCodigo: string | null | undefined;
+  if (payload.alcance !== undefined || payload.conceptoServicioCodigo !== undefined) {
+    conceptoServicioCodigo = await servicioValidoDeTarifa(
+      payload.alcance ?? antes.alcance,
+      payload.conceptoServicioCodigo !== undefined ? payload.conceptoServicioCodigo : antes.conceptoServicioCodigo,
+    );
   }
 
   return prisma.$transaction(async (tx) => {
@@ -510,6 +581,7 @@ export async function actualizarTarifario(
         nombre: payload.nombre,
         alcance: payload.alcance,
         ciudades: payload.ciudades,
+        conceptoServicioCodigo,
         vigenteDesde: payload.vigenteDesde,
         vigenteHasta: payload.vigenteHasta,
         notas: payload.notas,
@@ -574,9 +646,17 @@ export async function cambiarEstadoTarifario(
       // R2 (B3): reemplaza solo los VIGENTE del mismo conjunto de ciudades. Si
       // otro VIGENTE comparte una ciudad con un conjunto DISTINTO, no se puede
       // publicar en silencio: hay que vencerlo o publicar con las mismas ciudades.
+      // B2: y solo entre tarifas del MISMO servicio de «Otros»: publicar la nacionalización
+      // no reemplaza a la DUTA (misma empresa y alcance, otro servicio).
       const antesSet = new Set(antes.ciudades);
       const otrosVigentes = await tx.tarifario.findMany({
-        where: { empresaId: antes.empresaId, alcance: antes.alcance, estado: EstadoTarifario.VIGENTE, id: { not: id } },
+        where: {
+          empresaId: antes.empresaId,
+          alcance: antes.alcance,
+          conceptoServicioCodigo: antes.conceptoServicioCodigo,
+          estado: EstadoTarifario.VIGENTE,
+          id: { not: id },
+        },
         select: { id: true, nombre: true, ciudades: true },
       });
 
@@ -612,7 +692,12 @@ export async function cambiarEstadoTarifario(
         accion: estado === "VIGENTE" ? "PUBLICAR_TARIFARIO" : "VENCER_TARIFARIO",
         usuarioId,
         antes: { estado: antes.estado },
-        despues: { estado: despues.estado, ciudades: despues.ciudades, idsReemplazados },
+        despues: {
+          estado: despues.estado,
+          ciudades: despues.ciudades,
+          conceptoServicioCodigo: despues.conceptoServicioCodigo,
+          idsReemplazados,
+        },
       },
     });
 
@@ -704,6 +789,11 @@ export async function duplicarTarifario(
   if (empresaId !== origen.empresaId) await exigirCapacidadTarifario(empresaId);
 
   const items = copiarItemsDeTarifario(origen.items, payload.incrementoPct, payload.redondeoA);
+  // B2: copia el servicio del origen salvo que el payload lo cambie (o lo quite con null).
+  const conceptoServicioCodigo = await servicioValidoDeTarifa(
+    origen.alcance,
+    payload.conceptoServicioCodigo !== undefined ? payload.conceptoServicioCodigo : origen.conceptoServicioCodigo,
+  );
 
   return prisma.$transaction(async (tx) => {
     const version = await siguienteVersion(tx, empresaId, origen.alcance);
@@ -715,6 +805,7 @@ export async function duplicarTarifario(
         // B3 (R4): copia las ciudades del origen salvo que el payload las cambie
         // (así se hace "Duplicar para Bogotá").
         ciudades: payload.ciudades ?? origen.ciudades,
+        conceptoServicioCodigo,
         vigenteDesde: payload.vigenteDesde,
         vigenteHasta: payload.vigenteHasta,
         notas:
@@ -753,6 +844,8 @@ export interface CrearTarifarioDesdeInput {
   alcance?: string;
   /** B3 (R4) — si falta, se copian las ciudades del tarifario de ORIGEN. */
   ciudades?: Ciudad[];
+  /** B2 — si falta, se copia el servicio del tarifario de ORIGEN. */
+  conceptoServicioCodigo?: string | null;
   vigenteDesde: Date;
   vigenteHasta: Date;
   notas?: string | null;
@@ -776,6 +869,10 @@ export async function crearTarifarioDesde(
   // F7: sin `alcance` en el payload, se hereda el del tarifario de ORIGEN —
   // copiar una tarifa de CLASIFICACION no puede terminar por defecto en TRAMITE.
   const alcance = input.alcance ?? origen.alcance;
+  const conceptoServicioCodigo = await servicioValidoDeTarifa(
+    alcance,
+    input.conceptoServicioCodigo !== undefined ? input.conceptoServicioCodigo : origen.conceptoServicioCodigo,
+  );
   const notas = input.notas ?? `Copiado de ${origen.empresa.nombre} · ${origen.nombre} v${origen.version}`;
 
   return prisma.$transaction(async (tx) => {
@@ -787,6 +884,7 @@ export async function crearTarifarioDesde(
         alcance,
         // B3 (R4): sin ciudades en el payload, copia las del origen.
         ciudades: input.ciudades ?? origen.ciudades,
+        conceptoServicioCodigo,
         vigenteDesde: input.vigenteDesde,
         vigenteHasta: input.vigenteHasta,
         notas,
@@ -828,6 +926,9 @@ export interface TarifarioLigero {
   version: number;
   estado: EstadoTarifario;
   ciudades: Ciudad[];
+  /** B2 — servicio de «Otros» que cobra (código y nombre); null en los demás alcances. */
+  conceptoServicioCodigo: string | null;
+  conceptoServicioNombre: string | null;
   items: number;
 }
 
@@ -844,6 +945,8 @@ export async function listarTarifariosLigero(
       version: true,
       estado: true,
       ciudades: true,
+      conceptoServicioCodigo: true,
+      conceptoServicio: { select: { nombre: true } },
       empresa: { select: { nombre: true } },
       _count: { select: { items: true } },
     },
@@ -859,6 +962,8 @@ export async function listarTarifariosLigero(
     version: f.version,
     estado: f.estado,
     ciudades: f.ciudades,
+    conceptoServicioCodigo: f.conceptoServicioCodigo,
+    conceptoServicioNombre: f.conceptoServicio?.nombre ?? null,
     items: f._count.items,
   }));
 }
@@ -1026,6 +1131,12 @@ export interface PropuestaTarifa {
   tarifarioPropio: boolean;
   resultado: ResultadoTarifa | null;
   contexto: ContextoTramite;
+  /**
+   * B2 — qué le pide la tarifa al DO (campos de la base de cálculo, eventos y
+   * agencia). Solo cuando hay tarifa; el panel de un DO de «Otros» muestra
+   * únicamente esto.
+   */
+  camposTarifa?: CamposTarifa;
 }
 
 /** Contexto del motor más la orden de compra del cliente (no entra al cálculo). */
@@ -1139,8 +1250,9 @@ export async function propuestaParaTramite(
     select: {
       clienteId: true,
       ciudad: true,
+      conceptoServicioCodigo: true,
       cliente: { select: { nombre: true } },
-      tipoTramite: { select: { lineaServicio: true } },
+      tipoTramite: { select: { lineaServicio: true, flujoCorto: true } },
     },
   });
   if (!tramite) throw new TarifarioNoEncontradoError(tramiteId);
@@ -1158,21 +1270,44 @@ export async function propuestaParaTramite(
   }
 
   const alcance = tramite.tipoTramite.lineaServicio;
-  const vigente = await tarifarioVigenteDe(tramite.clienteId, alcance, fecha, tramite.ciudad);
-  if (!vigente) {
-    const { ciudadFueraDeFecha } = await motivoSinTarifarioVigente(tramite.clienteId, alcance, tramite.ciudad, fecha);
+
+  // B2 — en un tipo de flujo corto («Otros») la tarifa se busca por el SERVICIO del DO
+  // (su concepto de venta): DUTA y nacionalización conviven y una licencia sin tarifa
+  // ya no toma el precio de la DUTA en silencio. Los demás tipos: solo tarifas sin servicio.
+  const flujoCorto = tramite.tipoTramite.flujoCorto;
+  const servicio = flujoCorto ? tramite.conceptoServicioCodigo : null;
+  if (flujoCorto && !servicio) {
     return {
       tarifario: null,
-      motivo: ciudadFueraDeFecha
-        ? `El tarifario de ${etiquetaCiudad(tramite.ciudad!)} está fuera de fecha`
-        : `${tramite.cliente.nombre} no tiene un tarifario vigente para ${alcance.toLowerCase()} en esta fecha`,
+      motivo: "Escoge el servicio (concepto de venta) del DO: con él se busca su tarifa",
       tarifarioPropio: true,
       resultado: null,
       contexto,
     };
   }
 
-  const resultado = calcularLineasTarifa(vigente.items.map(itemCalculableDe), contexto);
+  const vigente = await tarifarioVigenteDe(tramite.clienteId, alcance, fecha, tramite.ciudad, servicio);
+  if (!vigente) {
+    const { ciudadFueraDeFecha } = await motivoSinTarifarioVigente(
+      tramite.clienteId,
+      alcance,
+      tramite.ciudad,
+      fecha,
+      servicio,
+    );
+    return {
+      tarifario: null,
+      motivo: ciudadFueraDeFecha
+        ? `El tarifario de ${etiquetaCiudad(tramite.ciudad!)} está fuera de fecha`
+        : `${tramite.cliente.nombre} no tiene un tarifario vigente para ${alcance.toLowerCase()}${servicio ? ` (servicio ${servicio})` : ""} en esta fecha`,
+      tarifarioPropio: true,
+      resultado: null,
+      contexto,
+    };
+  }
+
+  const itemsCalculables = vigente.items.map(itemCalculableDe);
+  const resultado = calcularLineasTarifa(itemsCalculables, contexto);
 
   return {
     tarifario: {
@@ -1187,6 +1322,7 @@ export async function propuestaParaTramite(
     tarifarioPropio: true,
     resultado,
     contexto,
+    camposTarifa: camposQuePideTarifa(itemsCalculables),
   };
 }
 

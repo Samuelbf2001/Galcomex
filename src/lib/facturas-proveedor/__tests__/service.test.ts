@@ -879,12 +879,19 @@ describe("solicitarFacturacion — servicio suelto (OTRO, decisión de Ernesto 2
   // ─── M-N1 · un ítem pendiente tampoco deja pasar por esta ruta ───────────
   it("con tarifa OTROS vigente pero con un ítem pendiente (por contenedor) → 422 TarifaIncompletaError, sin avanzar de estado", async (ctx) => {
     const db = ensureDb(ctx);
+    // B2 (Diseño B): la tarifa de «Otros» declara su servicio y el DO busca por el suyo.
+    await prisma.conceptoVenta.upsert({
+      where: { codigo: "PLAN_VALLEJO" },
+      update: { nombre: "Programa Plan Vallejo", aplicaIva: true },
+      create: { codigo: "PLAN_VALLEJO", nombre: "Programa Plan Vallejo", aplicaIva: true },
+    });
     const cliente = await crearClienteFlujoCorto("TarifaPendiente", true, true);
     await prisma.tarifario.create({
       data: {
         empresaId: cliente.id,
         nombre: "Tarifa OTROS pendiente vitest",
         alcance: "OTROS",
+        conceptoServicioCodigo: "PLAN_VALLEJO",
         estado: EstadoTarifario.VIGENTE,
         vigenteDesde: new Date(Date.now() - 30 * 86_400_000),
         vigenteHasta: new Date(Date.now() + 30 * 86_400_000),
@@ -916,7 +923,7 @@ describe("solicitarFacturacion — servicio suelto (OTRO, decisión de Ernesto 2
         },
       },
     });
-    const otro = await crearOtro(cliente.id, db);
+    const otro = await crearOtro(cliente.id, db, { conceptoServicioCodigo: "PLAN_VALLEJO" });
 
     await expect(solicitarFacturacion(otro.id, db.userId)).rejects.toMatchObject({
       name: "TarifaIncompletaError",

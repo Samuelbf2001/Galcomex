@@ -10,6 +10,7 @@ import { RolProvider } from "@/lib/auth/rol-context";
 
 import {
   camposBaseCalculoVisibles,
+  camposVisiblesFlujoCorto,
   muestraListaEventos,
   SeccionEventosTramite,
 } from "./seccion-eventos-tramite";
@@ -24,6 +25,7 @@ vi.mock("@/components/clientes/tarifas-api", async (original) => ({
 vi.mock("@/components/tramites/eventos-api", () => ({
   fetchEventosTramite: vi.fn(),
   fetchPropuestaTarifa: vi.fn(),
+  guardarAgenciaTramite: vi.fn(),
   guardarAtributosTramite: vi.fn(),
   guardarEventosTramite: vi.fn(),
 }));
@@ -35,7 +37,7 @@ vi.mock("@/components/ui/toast", () => ({
 
 import { fetchCapacidades } from "@/components/clientes/capacidades-api";
 import { fetchEventosCatalogo } from "@/components/clientes/tarifas-api";
-import { fetchEventosTramite, fetchPropuestaTarifa } from "@/components/tramites/eventos-api";
+import { fetchEventosTramite, fetchPropuestaTarifa, guardarAgenciaTramite } from "@/components/tramites/eventos-api";
 
 function capacidad(codigo: string, habilitado: boolean): CapacidadRow {
   return {
@@ -264,5 +266,162 @@ describe("SeccionEventosTramite — documentos que exige un evento (revisión 24
 
     expect(container.textContent).toContain("Falta 1 documento");
     expect(container.querySelector("input[type=file]")).toBeNull();
+  });
+});
+
+// ─── B2 (Diseño B): un DO de «Otros servicios» muestra solo lo que pide su tarifa ─────────────────
+
+const EVENTOS_OTROS: EventoCatalogoRow[] = [
+  { codigo: "REVISION_DESPACHO", nombre: "Revisión e inventario en despacho", descripcion: null, documentosRequeridos: [], permiteCantidad: false },
+  { codigo: "CONTENEDOR_ABIERTO", nombre: "Contenedor abierto", descripcion: null, documentosRequeridos: [], permiteCantidad: false },
+];
+
+function propuestaConTarifa(campos: PropuestaTarifaRow["camposTarifa"], agencia: string | null = null): PropuestaTarifaRow {
+  return {
+    tarifario: { id: "t-1", nombre: "Nacionalización ZF 2026", version: 1, alcance: "OTROS", vigenteDesde: "2026-01-01", vigenteHasta: "2026-12-31" },
+    motivo: null,
+    tarifarioPropio: true,
+    resultado: { lineas: [], pendientes: [], manuales: [], total: "0", totalConIva: "0" },
+    contexto: { ...PROPUESTA_SIN_TARIFARIO.contexto, agenciamiento: { agencia, valor: agencia ? "145000" : null } },
+    camposTarifa: campos,
+  };
+}
+
+const NACIONALIZACION: NonNullable<PropuestaTarifaRow["camposTarifa"]> = {
+  base: ["valorCif", "tipoCarga", "numDeclaraciones", "numDocumentos"],
+  eventos: ["REVISION_DESPACHO"],
+  agencia: true,
+};
+
+describe("camposVisiblesFlujoCorto — función pura", () => {
+  it("solo lo que pide la tarifa; sin tarifa no hay campos", () => {
+    expect([...camposVisiblesFlujoCorto(NACIONALIZACION, false)].sort()).toEqual(
+      ["numDeclaraciones", "numDocumentos", "tipoCarga", "valorCif"].sort(),
+    );
+    expect([...camposVisiblesFlujoCorto(null, false)]).toEqual([]);
+    expect([...camposVisiblesFlujoCorto(undefined, false)]).toEqual([]);
+    expect([...camposVisiblesFlujoCorto({ base: [], eventos: [], agencia: false }, false)]).toEqual([]);
+  });
+
+  it("si la empresa exige contenedores (LTRANS, Polyrec ZF) suma contenedores y tipo de carga, para la comisión de una DUTA", () => {
+    expect([...camposVisiblesFlujoCorto(null, true)].sort()).toEqual(["numContenedores", "tipoCarga"]);
+    expect([...camposVisiblesFlujoCorto(NACIONALIZACION, true)].sort()).toEqual(
+      ["numContenedores", "numDeclaraciones", "numDocumentos", "tipoCarga", "valorCif"].sort(),
+    );
+  });
+
+  it("no toca camposBaseCalculoVisibles: OTRO sigue sin mostrar ningún campo por su tipo", () => {
+    expect([...camposBaseCalculoVisibles([], true)]).toEqual([]);
+  });
+});
+
+describe("SeccionEventosTramite — «Otros servicios» con tarifa de nacionalización (B2)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchEventosCatalogo).mockResolvedValue(EVENTOS_OTROS);
+  });
+
+  it("muestra CIF, tipo de carga, declaraciones, documentos, la inspección y la agencia; nada más", async () => {
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue(propuestaConTarifa(NACIONALIZACION));
+    await montar({ camposBaseCalculo: [], usaEventos: false, flujoCorto: true });
+
+    const texto = container.textContent ?? "";
+    expect(texto).toContain("Valor CIF (COP)");
+    expect(texto).toContain("Tipo de carga");
+    expect(texto).toContain("Declaraciones");
+    expect(texto).toContain("Documentos revisados");
+    expect(texto).toContain("Revisión e inventario en despacho");
+    expect(texto).toContain("Agencia de aduanas (se resta su servicio)");
+    // Lo de una importación que esta tarifa no usa.
+    expect(texto).not.toContain("Contenedores");
+    expect(texto).not.toContain("Ítems clasificados");
+    expect(texto).not.toContain("Contenedor abierto");
+  });
+
+  it("escoger la agencia guarda el cambio en el DO (mismo PATCH, con su AuditLog) y refresca la propuesta", async () => {
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue(propuestaConTarifa(NACIONALIZACION));
+    vi.mocked(guardarAgenciaTramite).mockResolvedValue(undefined);
+    await montar({ camposBaseCalculo: [], usaEventos: false, flujoCorto: true });
+
+    const select = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === "COLDEX"),
+    )!;
+    expect(select.value).toBe("");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, "COLDEX");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(guardarAgenciaTramite).toHaveBeenCalledWith("tramite-1", "COLDEX");
+    // 1 carga inicial + 1 refresco después de guardar.
+    expect(vi.mocked(fetchPropuestaTarifa).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("con la agencia ya escogida, el selector la muestra", async () => {
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue(propuestaConTarifa(NACIONALIZACION, "COLDEX"));
+    await montar({ camposBaseCalculo: [], usaEventos: false, flujoCorto: true });
+    const select = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === "COLDEX"),
+    )!;
+    expect(select.value).toBe("COLDEX");
+  });
+
+  it("DUTA (todo fijo): no pide nada del DO ni usa eventos, y sin botón de guardar", async () => {
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue(propuestaConTarifa({ base: [], eventos: [], agencia: false }));
+    await montar({ camposBaseCalculo: [], usaEventos: false, flujoCorto: true });
+
+    const texto = container.textContent ?? "";
+    expect(texto).toContain("Este servicio se factura por su valor: no necesita base de cálculo.");
+    expect(texto).toContain("La tarifa de este servicio no usa eventos.");
+    expect(texto).not.toContain("Valor CIF (COP)");
+    expect(texto).not.toContain("Agencia de aduanas");
+    expect(texto).not.toContain("Guardar base de cálculo");
+  });
+
+  it("N8 — Plan Vallejo con valor a mano (servicio sin tarifa): el panel no muestra campos nuevos", async () => {
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue(PROPUESTA_SIN_TARIFARIO);
+    await montar({ camposBaseCalculo: [], usaEventos: false, flujoCorto: true });
+
+    const texto = container.textContent ?? "";
+    expect(texto).toContain("Este servicio se factura por su valor: no necesita base de cálculo.");
+    expect(texto).not.toContain("Valor CIF (COP)");
+    expect(texto).not.toContain("Declaraciones");
+    expect(texto).not.toContain("Documentos revisados");
+    expect(texto).not.toContain("Agencia de aduanas");
+    expect(texto).not.toContain("Guardar base de cálculo");
+  });
+
+  it("LTRANS (exige contenedores): una DUTA muestra contenedores y tipo de carga para la comisión, sin la alarma de «falta el número»", async () => {
+    vi.mocked(fetchCapacidades).mockResolvedValue([
+      capacidad("tarifario_propio", true),
+      capacidad("eventos_facturables", true),
+      capacidad("contenedores_obligatorio", true),
+    ]);
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue(propuestaConTarifa({ base: [], eventos: [], agencia: false }));
+    await montar({ camposBaseCalculo: [], usaEventos: false, flujoCorto: true });
+
+    const texto = container.textContent ?? "";
+    expect(texto).toContain("Contenedores");
+    expect(texto).toContain("Tipo de carga");
+    expect(texto).not.toContain("Falta el número de contenedores");
+    expect(texto).not.toContain("Valor CIF (COP)");
+  });
+
+  it("el REVISOR ve los campos pero no puede cambiar la agencia", async () => {
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue(propuestaConTarifa(NACIONALIZACION));
+    await montar({ camposBaseCalculo: [], usaEventos: false, flujoCorto: true, puedeEditar: false });
+    const select = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === "COLDEX"),
+    )!;
+    expect(select.disabled).toBe(true);
+  });
+
+  it("una importación (flujoCorto ausente) sigue igual: los seis campos y todos los eventos", async () => {
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue(propuestaConTarifa(NACIONALIZACION));
+    await montar({ camposBaseCalculo: null, usaEventos: true });
+    const texto = container.textContent ?? "";
+    expect(texto).toContain("Contenedores");
+    expect(texto).toContain("Ítems clasificados");
+    expect(texto).toContain("Contenedor abierto");
+    expect(texto).not.toContain("Agencia de aduanas (se resta su servicio)");
   });
 });

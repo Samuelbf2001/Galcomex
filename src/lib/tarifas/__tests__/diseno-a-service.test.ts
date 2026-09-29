@@ -282,7 +282,7 @@ describe("Diseño A — B3 (tarifario por ciudad): servicio", () => {
       empresaId: db.clienteId,
       usuarioId: db.adminId,
       nombre: `General ${runId}`,
-      alcance: "OTROS",
+      alcance: "EXPORTACION",
       vigenteDesde: new Date("2026-01-01"),
       vigenteHasta: new Date("2026-12-31"),
       notas: null,
@@ -294,7 +294,7 @@ describe("Diseño A — B3 (tarifario por ciudad): servicio", () => {
       empresaId: db.clienteId,
       usuarioId: db.adminId,
       nombre: `Bogotá ${runId}`,
-      alcance: "OTROS",
+      alcance: "EXPORTACION",
       ciudades: [Ciudad.BGT],
       vigenteDesde: new Date("2026-01-01"),
       vigenteHasta: new Date("2026-12-31"),
@@ -303,13 +303,13 @@ describe("Diseño A — B3 (tarifario por ciudad): servicio", () => {
     });
     await cambiarEstadoTarifario(bogota.id, "VIGENTE", db.adminId);
 
-    const paraBgt = await tarifarioVigenteDe(db.clienteId, "OTROS", new Date("2026-06-01"), Ciudad.BGT);
+    const paraBgt = await tarifarioVigenteDe(db.clienteId, "EXPORTACION", new Date("2026-06-01"), Ciudad.BGT);
     expect(paraBgt?.id).toBe(bogota.id);
 
-    const paraOtra = await tarifarioVigenteDe(db.clienteId, "OTROS", new Date("2026-06-01"), Ciudad.CTG);
+    const paraOtra = await tarifarioVigenteDe(db.clienteId, "EXPORTACION", new Date("2026-06-01"), Ciudad.CTG);
     expect(paraOtra?.id).toBe(general.id);
 
-    const sinCiudad = await tarifarioVigenteDe(db.clienteId, "OTROS", new Date("2026-06-01"));
+    const sinCiudad = await tarifarioVigenteDe(db.clienteId, "EXPORTACION", new Date("2026-06-01"));
     // Comportamiento de hoy: cualquier VIGENTE en fecha (mayor versión primero).
     expect([general.id, bogota.id]).toContain(sinCiudad?.id);
   });

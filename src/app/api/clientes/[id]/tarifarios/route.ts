@@ -46,6 +46,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
             alcance: payload.alcance,
             // B3 (R4): sin `ciudades` en el body, se copian las del origen.
             ciudades: payload.ciudades,
+            // B2: sin servicio en el body, se copia el del tarifario de ORIGEN.
+            conceptoServicioCodigo: payload.conceptoServicioCodigo,
             vigenteDesde: payload.vigenteDesde,
             vigenteHasta: payload.vigenteHasta,
             notas: payload.notas,

@@ -9,9 +9,11 @@ import { ModuleState } from "@/components/layout/module-state";
 import {
   fetchEventosTramite,
   fetchPropuestaTarifa,
+  guardarAgenciaTramite,
   guardarAtributosTramite,
   guardarEventosTramite,
   type AtributosTramite,
+  type CamposTarifaRow,
   type EventoTramiteRow,
   type PropuestaTarifaRow,
   type TipoCarga,
@@ -94,6 +96,35 @@ export function camposBaseCalculoVisibles(
 }
 
 /**
+ * B2 (Diseño B) — qué campos de la base de cálculo muestra un DO de FLUJO CORTO
+ * («Otros servicios»). Su tipo dice `camposBaseCalculo = []` (Plan Vallejo y
+ * sellos son de valor a mano y no piden nada), pero cuando su servicio tiene una
+ * tarifa (nacionalización, DUTA) el panel muestra SOLO lo que esa tarifa pide.
+ * Si la empresa exige contenedores (LTRANS, Polyrec ZF), también los contenedores
+ * y el tipo de carga: con ellos se registra la comisión por contenedor de una
+ * DUTA. Función PURA; no toca `camposBaseCalculoVisibles` (los demás tipos siguen igual).
+ */
+export function camposVisiblesFlujoCorto(
+  camposTarifa: CamposTarifaRow | null | undefined,
+  empresaExigeContenedores: boolean,
+): Set<CampoBaseCalculo> {
+  const visibles = new Set<CampoBaseCalculo>(camposTarifa?.base ?? []);
+  if (empresaExigeContenedores) {
+    visibles.add("numContenedores");
+    visibles.add("tipoCarga");
+  }
+  return visibles;
+}
+
+/** Agencias de aduanas que se pueden escoger (mismas que el formulario de creación del DO). */
+const AGENCIAS_ADUANAS: { value: string; label: string }[] = [
+  { value: "COLDEX", label: "Coldex" },
+  { value: "MOVIADUANAS", label: "Moviaduanas" },
+  { value: "AR_LOGISTY", label: "AR Logisty" },
+  { value: "CORTES", label: "Cortes" },
+];
+
+/**
  * Muestra la lista de eventos del catálogo: el tipo de trámite debe usarlos
  * (`usaEventos`, false en CLASIFICACION) Y la empresa debe tener la
  * capacidad `eventos_facturables` encendida — las dos condiciones, no una en
@@ -119,6 +150,7 @@ export function SeccionEventosTramite({
   onRefresh,
   camposBaseCalculo,
   usaEventos,
+  flujoCorto = false,
   checklistItems = [],
 }: {
   tramiteId: string;
@@ -129,6 +161,11 @@ export function SeccionEventosTramite({
   camposBaseCalculo?: string[] | null;
   /** El tipo de trámite usa la lista de eventos (M4). Ausente = true (histórico). */
   usaEventos?: boolean | null;
+  /**
+   * B2 — el tipo de trámite es de flujo corto («Otros servicios»): el panel muestra
+   * solo lo que pide la tarifa del servicio del DO (`camposTarifa`), no la base de una importación.
+   */
+  flujoCorto?: boolean;
   /** Checklist del DO: de aquí salen los documentos que exige cada evento marcado. */
   checklistItems?: ChecklistItem[];
 }) {
@@ -144,6 +181,7 @@ export function SeccionEventosTramite({
   const [form, setForm] = useState<FormAtributos | null>(null);
   const [guardandoAtributos, setGuardandoAtributos] = useState(false);
   const [guardandoEvento, setGuardandoEvento] = useState<string | null>(null);
+  const [guardandoAgencia, setGuardandoAgencia] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -233,6 +271,22 @@ export function SeccionEventosTramite({
     }
   }
 
+  /** B2 — la tarifa de «Otros» resta el agenciamiento de la agencia del DO: se escoge aquí. */
+  async function cambiarAgencia(agencia: string) {
+    if (!agencia || guardandoAgencia) return;
+    setGuardandoAgencia(true);
+    try {
+      await guardarAgenciaTramite(tramiteId, agencia);
+      toast({ title: "Agencia de aduanas guardada", variant: "success" });
+      await refrescarPropuesta();
+      onRefresh?.();
+    } catch (caught) {
+      toast({ title: "No se pudo guardar la agencia", description: describirError(caught), variant: "error" });
+    } finally {
+      setGuardandoAgencia(false);
+    }
+  }
+
   function toggleEvento(ev: EventoCatalogoRow) {
     const ya = marcados.find((m) => m.codigo === ev.codigo);
     const siguiente = ya
@@ -254,11 +308,25 @@ export function SeccionEventosTramite({
   const resultado = propuesta?.resultado ?? null;
   // M4: el tipo de trámite decide el universo de campos/eventos; las
   // capacidades de la empresa siguen gobernando CIF y eventos como siempre.
-  const campos = camposBaseCalculoVisibles(camposBaseCalculo, aplica.cif || aplica.tarifario);
-  const muestraEventos = muestraListaEventos(usaEventos, aplica.eventos);
+  // B2: en un DO de flujo corto manda lo que pide la tarifa de su servicio.
+  const camposTarifa = propuesta?.camposTarifa ?? null;
+  const campos = flujoCorto
+    ? camposVisiblesFlujoCorto(camposTarifa, aplica.contenedores)
+    : camposBaseCalculoVisibles(camposBaseCalculo, aplica.cif || aplica.tarifario);
+  // En flujo corto solo se listan los eventos que la tarifa cobra (más los que ya estén marcados).
+  const catalogoVisible = flujoCorto
+    ? catalogo.filter((ev) => camposTarifa?.eventos.includes(ev.codigo) || marcados.some((m) => m.codigo === ev.codigo))
+    : catalogo;
+  const muestraEventos = flujoCorto
+    ? aplica.eventos && catalogoVisible.length > 0
+    : muestraListaEventos(usaEventos, aplica.eventos);
+  const pideAgencia = flujoCorto && camposTarifa?.agencia === true;
+  const sinNadaQuePedir = flujoCorto && campos.size === 0 && !pideAgencia && !aplica.oc;
   // D3: la empresa exige contenedores y el DO guardado no los tiene (ni es carga suelta).
+  // (En flujo corto los contenedores no son obligatorios: solo se registran para la comisión.)
   const guardado = propuesta?.contexto;
   const faltanContenedores =
+    !flujoCorto &&
     aplica.contenedores &&
     campos.has("numContenedores") &&
     guardado !== undefined &&
@@ -286,7 +354,13 @@ export function SeccionEventosTramite({
           <div className="grid gap-5 lg:grid-cols-2">
             {/* Atributos */}
             <div>
-              <p className="mb-2 text-xs text-slate-500">Lo que el tarifario necesita para calcular. Vacío = todavía no se sabe.</p>
+              <p className="mb-2 text-xs text-slate-500">
+                {sinNadaQuePedir
+                  ? "Este servicio se factura por su valor: no necesita base de cálculo."
+                  : flujoCorto
+                    ? "Lo que la tarifa de este servicio necesita para calcular. Vacío = todavía no se sabe."
+                    : "Lo que el tarifario necesita para calcular. Vacío = todavía no se sabe."}
+              </p>
               {faltanContenedores ? (
                 <p role="alert" className="mb-3 border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
                   Falta el número de contenedores (sale del BL). Esta empresa lo exige: sin él no se calcula la comisión ni el cobro por contenedor. Si es carga suelta, elige «Carga suelta» en Tipo de carga.
@@ -294,21 +368,21 @@ export function SeccionEventosTramite({
               ) : null}
               <div className="grid grid-cols-2 gap-3">
                 {campos.has("valorCif") ? (
-                  <>
-                    <label className="block space-y-1">
-                      <span className={LABEL}>Valor CIF (COP)</span>
-                      <CampoMoneda value={form.valorCif} onValueChange={(digitos) => setForm({ ...form, valorCif: digitos })} disabled={!puedeEditar} className={INPUT} placeholder="300000000" />
-                    </label>
-                    <label className="block space-y-1">
-                      <span className={LABEL}>Tipo de carga</span>
-                      <select value={form.tipoCarga} onChange={(e) => setForm({ ...form, tipoCarga: e.target.value as TipoCarga | "" })} disabled={!puedeEditar} className={INPUT}>
-                        <option value="">—</option>
-                        <option value="SUELTA">Carga suelta</option>
-                        <option value="CONTENEDOR_20">Contenedor 20′</option>
-                        <option value="CONTENEDOR_40">Contenedor 40′ / HQ</option>
-                      </select>
-                    </label>
-                  </>
+                  <label className="block space-y-1">
+                    <span className={LABEL}>Valor CIF (COP)</span>
+                    <CampoMoneda value={form.valorCif} onValueChange={(digitos) => setForm({ ...form, valorCif: digitos })} disabled={!puedeEditar} className={INPUT} placeholder="300000000" />
+                  </label>
+                ) : null}
+                {campos.has("tipoCarga") ? (
+                  <label className="block space-y-1">
+                    <span className={LABEL}>Tipo de carga</span>
+                    <select value={form.tipoCarga} onChange={(e) => setForm({ ...form, tipoCarga: e.target.value as TipoCarga | "" })} disabled={!puedeEditar} className={INPUT}>
+                      <option value="">—</option>
+                      <option value="SUELTA">Carga suelta</option>
+                      <option value="CONTENEDOR_20">Contenedor 20′</option>
+                      <option value="CONTENEDOR_40">Contenedor 40′ / HQ</option>
+                    </select>
+                  </label>
                 ) : null}
                 {campos.has("numContenedores") ? (
                   <label className="block space-y-1">
@@ -334,6 +408,27 @@ export function SeccionEventosTramite({
                     <input value={form.numItems} onChange={(e) => setForm({ ...form, numItems: e.target.value.replace(/\D/g, "") })} inputMode="numeric" disabled={!puedeEditar} className={INPUT} />
                   </label>
                 ) : null}
+                {pideAgencia ? (
+                  <label className="col-span-2 block space-y-1">
+                    <span className={LABEL}>Agencia de aduanas (se resta su servicio)</span>
+                    <select
+                      value={guardado?.agenciamiento?.agencia ?? ""}
+                      onChange={(e) => void cambiarAgencia(e.target.value)}
+                      disabled={!puedeEditar || guardandoAgencia}
+                      className={INPUT}
+                    >
+                      <option value="">Escoge la agencia…</option>
+                      {AGENCIAS_ADUANAS.map((a) => (
+                        <option key={a.value} value={a.value}>
+                          {a.label}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="block text-xs text-slate-500">
+                      La agencia le factura directo al cliente; la tarifa le resta ese valor a lo que cobra Galcomex.
+                    </span>
+                  </label>
+                ) : null}
                 {aplica.oc ? (
                   <>
                     <label className="block space-y-1">
@@ -348,7 +443,7 @@ export function SeccionEventosTramite({
                   </>
                 ) : null}
               </div>
-              {puedeEditar ? (
+              {puedeEditar && !sinNadaQuePedir && (campos.size > 0 || aplica.oc) ? (
                 <button type="button" onClick={() => void guardarAtributos()} disabled={guardandoAtributos} className="mt-3 inline-flex h-9 items-center gap-1.5 border border-slate-950 bg-slate-950 px-3 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50">
                   {guardandoAtributos ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Save className="h-3.5 w-3.5" aria-hidden="true" />}
                   Guardar base de cálculo
@@ -362,12 +457,14 @@ export function SeccionEventosTramite({
                 {muestraEventos
                   ? "Lo circunstancial: se marca solo si pasó. Al marcarlo entran sus documentos al checklist y su cobro al tarifario."
                   : aplica.eventos
-                    ? "Este tipo de trámite no usa eventos."
+                    ? flujoCorto && camposTarifa
+                      ? "La tarifa de este servicio no usa eventos."
+                      : "Este tipo de trámite no usa eventos."
                     : "Esta empresa no tiene encendidos los eventos facturables (ficha, pestaña Funciones)."}
               </p>
               {muestraEventos ? (
                 <ul className="divide-y divide-slate-100 border border-slate-200">
-                  {catalogo.map((ev) => {
+                  {catalogoVisible.map((ev) => {
                     const marcado = marcados.find((m) => m.codigo === ev.codigo);
                     const ocupado = guardandoEvento === ev.codigo;
                     return (
