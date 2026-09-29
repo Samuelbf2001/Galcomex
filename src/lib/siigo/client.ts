@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { centavosDeNumero, DineroInvalidoError, enteroNoDinero, type Centavos } from "@/lib/dinero";
+
 // ─── Errores ──────────────────────────────────────────────────────────────────
 
 export class SiigoConfigError extends Error {
@@ -250,7 +252,10 @@ export interface SiigoFacturaItemDto {
   /** Descripción libre — se mapea al concepto de la línea */
   description: string;
   quantity: number;
-  /** Precio unitario en COP (entero, sin decimales) */
+  /**
+   * Precio unitario en PESOS con hasta 2 decimales (502801.45). Se arma SOLO con
+   * `numeroDeCentavos` del núcleo de dinero (fase centavos, A.7).
+   */
   price: number;
   /** IDs de impuestos Siigo aplicables a la línea (ej. IVA en línea de comisión) */
   taxes?: Array<{ id: number }>;
@@ -281,7 +286,11 @@ export interface SiigoFacturaPostDto {
   /** Observaciones (comentariosCabecera unidos por saltos de línea) */
   observations?: string;
   items: SiigoFacturaItemDto[];
-  /** Forma de pago — para crédito basta con id + value */
+  /**
+   * Forma de pago — para crédito basta con id + value. `value` en PESOS con
+   * hasta 2 decimales (`numeroDeCentavos`); debe cuadrar al centavo con
+   * Σ ítems + IVA − retenciones (`verificarCuadreSiigo`).
+   */
   payments: Array<{ id: number; value: number; due_date?: string }>;
   /**
    * Retenciones a nivel de factura (ReteIVA, ReteICA, autorretención) por id de
@@ -380,7 +389,151 @@ const siigoInvoiceGetSchema = z.object({
   // Algunos endpoints devuelven el consecutivo en `prefix` + `consecutive`.
   prefix: z.string().optional(),
   consecutive: z.union([z.string(), z.number()]).optional(),
+  // Montos que liquidó Siigo, en PESOS con hasta 2 decimales (fase centavos,
+  // lectura nueva v1.1 D.4). Se toleran ausentes (null) y se normalizan a
+  // centavos con `centavosDeNumero` sin redondear.
+  total: z.number().nullable().optional(),
+  items: z
+    .array(
+      z.object({
+        price: z.number().nullable().optional(),
+        quantity: z.number().nullable().optional(),
+        total: z.number().nullable().optional(),
+        taxes: z
+          .array(
+            z.object({
+              type: z.string().nullable().optional(),
+              value: z.number().nullable().optional(),
+            }),
+          )
+          .nullable()
+          .optional(),
+      }),
+    )
+    .nullable()
+    .optional(),
+  payments: z
+    .array(z.object({ value: z.number().nullable().optional() }))
+    .nullable()
+    .optional(),
+  retentions: z
+    .array(
+      z.object({
+        type: z.string().nullable().optional(),
+        value: z.number().nullable().optional(),
+      }),
+    )
+    .nullable()
+    .optional(),
 });
+
+type SiigoInvoiceGetRaw = z.infer<typeof siigoInvoiceGetSchema>;
+
+/** Montos de una factura leída de Siigo, en CENTAVOS (null = Siigo no lo devolvió). */
+export interface MontosFacturaSiigo {
+  /** `total` de la factura (lo que el cliente debe pagar). */
+  totalCentavos: Centavos | null;
+  /** Σ `items[].taxes[].value` con `type = "IVA"`. */
+  ivaCentavos: Centavos | null;
+  /** Σ `retentions[].value` (ReteIVA, ReteICA…). */
+  retencionesCentavos: Centavos | null;
+  /**
+   * Σ `items[].price × quantity` (subtotal antes de impuestos). Informativo: no
+   * entra en `compararMontosSiigo`; null si algún ítem no se lee al centavo
+   * (p. ej. precio unitario con 6 decimales editado en el portal).
+   */
+  subtotalCentavos: Centavos | null;
+  /** Σ `payments[].value`. Informativo, igual que el subtotal (null si no se lee al centavo). */
+  pagosCentavos: Centavos | null;
+}
+
+/**
+ * Pesos (`number` de Siigo) → centavos. Más de 2 decimales ⇒ error visible
+ * (`SiigoApiError` 502) nombrando el campo: nunca se redondea en silencio.
+ */
+function centavosSiigo(valor: number, campo: string): Centavos {
+  try {
+    return centavosDeNumero(valor, { redondear: false });
+  } catch (err) {
+    if (err instanceof DineroInvalidoError) {
+      throw new SiigoApiError(
+        `Siigo devolvió en «${campo}» un monto que no se puede leer al centavo (${String(valor)}): ${err.message}`,
+        502,
+      );
+    }
+    throw err;
+  }
+}
+
+/** Como `centavosSiigo`, pero para montos INFORMATIVOS: null si no se leen al centavo (no bloquea). */
+function centavosSiigoInformativo(valor: number): Centavos | null {
+  try {
+    return centavosDeNumero(valor, { redondear: false });
+  } catch (err) {
+    if (err instanceof DineroInvalidoError) return null;
+    throw err;
+  }
+}
+
+/**
+ * Normaliza los montos de la respuesta de `GET /v1/invoices/{id}` a centavos.
+ * Estrictos (error visible si no se leen al centavo) SOLO los que compara
+ * `compararMontosSiigo` (D-7): total, IVA y retenciones. Subtotal y pagos son
+ * informativos: un precio unitario con más decimales (el superior editó en el
+ * portal, o IVA incluido) no debe tumbar la sincronización si el total cuadra.
+ */
+export function montosFacturaSiigo(raw: SiigoInvoiceGetRaw): MontosFacturaSiigo {
+  const totalCentavos =
+    typeof raw.total === "number" ? centavosSiigo(raw.total, "total") : null;
+
+  let ivaCentavos: Centavos | null = null;
+  let subtotalCentavos: Centavos | null = null;
+  if (raw.items) {
+    let iva = 0n;
+    let subtotal: Centavos | null = 0n;
+    raw.items.forEach((item, i) => {
+      if (typeof item.price === "number" && subtotal !== null) {
+        const cantidad = typeof item.quantity === "number" ? item.quantity : 1;
+        // Subtotal: price × quantity. Con cantidades no enteras o un precio
+        // que no se lee al centavo se usa el `total` del ítem (lo que liquidó
+        // Siigo) si viene; si tampoco se lee, el subtotal queda null.
+        const precio = centavosSiigoInformativo(item.price);
+        const totalItem = typeof item.total === "number" ? centavosSiigoInformativo(item.total) : null;
+        if (precio !== null && Number.isSafeInteger(cantidad) && cantidad >= 0) {
+          subtotal += precio * enteroNoDinero(cantidad);
+        } else if (totalItem !== null) {
+          subtotal += totalItem;
+        } else {
+          subtotal = null;
+        }
+      }
+      (item.taxes ?? []).forEach((tax, j) => {
+        if (tax.type?.toUpperCase() === "IVA" && typeof tax.value === "number") {
+          iva += centavosSiigo(tax.value, `items[${i}].taxes[${j}].value`);
+        }
+      });
+    });
+    ivaCentavos = iva;
+    subtotalCentavos = subtotal;
+  }
+
+  const retencionesCentavos = raw.retentions
+    ? raw.retentions.reduce(
+        (s, r, i) => s + (typeof r.value === "number" ? centavosSiigo(r.value, `retentions[${i}].value`) : 0n),
+        0n,
+      )
+    : null;
+
+  const pagosCentavos = raw.payments
+    ? raw.payments.reduce<Centavos | null>((s, p) => {
+        if (s === null || typeof p.value !== "number") return s;
+        const v = centavosSiigoInformativo(p.value);
+        return v === null ? null : s + v;
+      }, 0n)
+    : null;
+
+  return { totalCentavos, ivaCentavos, retencionesCentavos, subtotalCentavos, pagosCentavos };
+}
 
 export interface SiigoInvoiceGetResponse {
   id: string;
@@ -394,6 +547,8 @@ export interface SiigoInvoiceGetResponse {
   stampStatus: string | null;
   /** CUFE/CUDE de DIAN cuando ya fue estampada. */
   cufe: string | null;
+  /** Montos que liquidó Siigo, en centavos (fase centavos, D.4). */
+  montos: MontosFacturaSiigo;
 }
 
 export async function getInvoiceById(
@@ -442,5 +597,6 @@ export async function getInvoiceById(
     date: parsed.date,
     stampStatus: parsed.stamp?.status ?? null,
     cufe: parsed.stamp?.cufe ?? parsed.stamp?.cude ?? null,
+    montos: montosFacturaSiigo(parsed),
   };
 }

@@ -11,6 +11,7 @@
 import { EstadoBorrador, Prisma, SeccionLinea } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 
 import { FORMATO_CONCEPTOS_IVA } from "./formato-conceptos";
@@ -84,13 +85,20 @@ export class FacturaNoRepercutibleError extends Error {
   }
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(
-    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
-  ) as Prisma.InputJsonValue;
+/**
+ * Se lanza al intentar asignar a una línea un `siigoProductoId` que ya no
+ * existe en el catálogo local (borrado o nunca sincronizado). Sin este check,
+ * el `connect` de Prisma revienta con P2025 (500 sin explicar la causa).
+ */
+export class ProductoSiigoNoEncontradoError extends Error {
+  public readonly status = 422;
+  constructor() {
+    super("El producto SIIGO elegido ya no existe; sincroniza el catálogo.");
+    this.name = "ProductoSiigoNoEncontradoError";
+  }
 }
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 const ESTADOS_EDITABLES: EstadoBorrador[] = [
   EstadoBorrador.BORRADOR,
@@ -212,6 +220,7 @@ type CrearLineaInput = {
   borradorId: string;
   concepto: string;
   numSoporte?: string | null;
+  /** Centavos. */
   valor: bigint;
   observacion?: string | null;
   seccion?: SeccionLinea;
@@ -256,7 +265,7 @@ export async function crearLineaManual(input: CrearLineaInput) {
         borradorId,
         concepto,
         numSoporte: numSoporteFinal ?? undefined,
-        valor,
+        valorCentavos: valor,
         observacion: observacion ?? undefined,
         orden,
         origen: "MANUAL",
@@ -292,6 +301,7 @@ type ActualizarLineaInput = {
   lineaId: string;
   concepto?: string;
   numSoporte?: string | null;
+  /** Centavos. */
   valor?: bigint;
   observacion?: string | null;
   seccion?: SeccionLinea;
@@ -339,14 +349,22 @@ export async function actualizarLinea(input: ActualizarLineaInput) {
     const data: Prisma.LineaRevisionUpdateInput = {};
     if (input.concepto !== undefined) data.concepto = input.concepto;
     if (input.numSoporte !== undefined) data.numSoporte = input.numSoporte;
-    if (input.valor !== undefined) data.valor = input.valor;
+    if (input.valor !== undefined) data.valorCentavos = input.valor;
     if (input.observacion !== undefined) data.observacion = input.observacion;
     if (input.seccion !== undefined) data.seccion = input.seccion;
     if (input.siigoProductoId !== undefined) {
-      data.siigoProducto =
-        input.siigoProductoId === null
-          ? { disconnect: true }
-          : { connect: { id: input.siigoProductoId } };
+      if (input.siigoProductoId === null) {
+        data.siigoProducto = { disconnect: true };
+      } else {
+        const producto = await tx.siigoProducto.findUnique({
+          where: { id: input.siigoProductoId },
+          select: { id: true },
+        });
+        if (!producto) {
+          throw new ProductoSiigoNoEncontradoError();
+        }
+        data.siigoProducto = { connect: { id: input.siigoProductoId } };
+      }
     }
     if (input.nitTercero !== undefined) data.nitTercero = input.nitTercero;
     if (input.aplicaIva !== undefined) data.aplicaIva = input.aplicaIva;

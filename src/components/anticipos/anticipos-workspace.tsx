@@ -24,6 +24,8 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
+import { centavosDeTexto, formatoPesos, textoCanonicoDeCentavos, textoDeCentavos } from "@/lib/dinero";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import {
   TIPOS_RECAUDO,
   type AnticipoRow,
@@ -52,26 +54,34 @@ import {
 
 type LoadState = "loading" | "ready" | "error";
 
+/**
+ * Lee el texto canónico que entrega `CampoMoneda` (pesos, hasta 2 decimales)
+ * y devuelve el mismo texto canónico si es válido y > 0; null si no.
+ */
 function parseBigIntInput(raw: string): string | null {
-  const cleaned = raw.replace(/\./g, "").replace(/,/g, "").replace(/\$/g, "").replace(/COP/g, "").trim();
-  if (!cleaned || cleaned === "-") return null;
+  const limpio = raw.trim();
+  if (!limpio || limpio === "-") return null;
   try {
-    const v = BigInt(cleaned);
-    if (v <= 0n) return null;
-    return v.toString();
+    const c = centavosDeTexto(limpio);
+    return c > 0n ? textoCanonicoDeCentavos(c) : null;
   } catch {
     return null;
   }
 }
 
-function saldoColorClass(restanteStr: string): string {
+/** Centavos de un pesos-texto (API o canónico); 0n si viene vacío o dañado. */
+function centavosSeguro(raw: string): bigint {
   try {
-    const n = BigInt(restanteStr);
-    if (n > 0n) return "text-emerald-700 font-semibold";
-    return "text-slate-500";
+    return centavosDeTexto(raw);
   } catch {
-    return "text-slate-500";
+    return 0n;
   }
+}
+
+function saldoColorClass(restanteStr: string): string {
+  const n = centavosSeguro(restanteStr);
+  if (n > 0n) return "text-emerald-700 font-semibold";
+  return "text-slate-500";
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +158,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
     if (!fecha) { setError("La fecha es obligatoria."); return; }
 
     const montoBig = parseBigIntInput(montoRaw);
-    if (!montoBig) { setError("El monto debe ser un número entero mayor a 0."); return; }
+    if (!montoBig) { setError("El monto debe ser mayor a 0."); return; }
 
     if (!soporteKey) {
       setError("Adjunta el comprobante del anticipo antes de continuar.");
@@ -167,7 +177,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
       });
       toast({
         title: "Anticipo registrado",
-        description: `${formatCOP(montoBig)} · ${clientes.find((c) => c.id === clienteId)?.nombre ?? ""}`,
+        description: `${formatCOP(anticipo.monto)} · ${clientes.find((c) => c.id === clienteId)?.nombre ?? ""}`,
         variant: "success",
       });
       onCreated(anticipo);
@@ -225,7 +235,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
                 name="fecha"
                 type="date"
                 required
-                defaultValue={new Date().toISOString().slice(0, 10)}
+                defaultValue={hoyBogotaISO()}
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
@@ -242,14 +252,14 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
               <optgroup label="Digital">
                 {TIPOS_RECAUDO.filter((t) => t.grupo === "DIGITAL").map((t) => (
                   <option key={t.value} value={t.value}>
-                    {t.label} (${new Intl.NumberFormat("es-CO").format(Number(t.costoFijo ?? "0"))})
+                    {t.label} ({formatoPesos(centavosDeTexto(t.costoFijo ?? "0"))})
                   </option>
                 ))}
               </optgroup>
               <optgroup label="Físico">
                 {TIPOS_RECAUDO.filter((t) => t.grupo === "FISICO").map((t) => (
                   <option key={t.value} value={t.value}>
-                    {t.label} (${new Intl.NumberFormat("es-CO").format(Number(t.costoFijo ?? "0"))})
+                    {t.label} ({formatoPesos(centavosDeTexto(t.costoFijo ?? "0"))})
                   </option>
                 ))}
               </optgroup>
@@ -341,11 +351,11 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [montoRaw, setMontoRaw] = useState("");
-  const restante = BigInt(anticipo.restante);
+  const restante = centavosSeguro(anticipo.restante);
 
   // Calcular restante en vivo mientras el usuario escribe
   const montoIngresado = parseBigIntInput(montoRaw);
-  const montoValido = montoIngresado ? BigInt(montoIngresado) : 0n;
+  const montoValido = montoIngresado ? centavosSeguro(montoIngresado) : 0n;
   const restantePostAplicacion = restante - montoValido;
   const sobreAplicando = montoValido > 0n && restantePostAplicacion < 0n;
 
@@ -373,7 +383,7 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
       });
       toast({
         title: "Anticipo aplicado",
-        description: `${formatCOP(montoBig)} a ${tramites.find((t) => t.id === tramiteId)?.consecutivo ?? "DO"}`,
+        description: `${formatCOP(result.montoAplicado)} a ${tramites.find((t) => t.id === tramiteId)?.consecutivo ?? "DO"}`,
         variant: "success",
       });
       onApplied(anticipo.id, result);
@@ -427,7 +437,7 @@ function AplicarAnticipoModal({ anticipo, tramites, onClose, onApplied }: Aplica
               <p className={`text-xs ${sobreAplicando ? "text-rose-600 font-medium" : "text-slate-500"}`}>
                 {sobreAplicando
                   ? `Excede el saldo. Disponible: ${formatCOP(anticipo.restante)}`
-                  : `Restante tras aplicar: ${formatCOP(restantePostAplicacion.toString())}`}
+                  : `Restante tras aplicar: ${formatoPesos(restantePostAplicacion)}`}
               </p>
             ) : null}
           </label>
@@ -618,9 +628,9 @@ function AnticipoFila({
               <button
                 type="button"
                 onClick={() => onAplicar(anticipo)}
-                disabled={BigInt(anticipo.restante) <= 0n}
+                disabled={centavosSeguro(anticipo.restante) <= 0n}
                 title={
-                  BigInt(anticipo.restante) <= 0n
+                  centavosSeguro(anticipo.restante) <= 0n
                     ? "Este anticipo ya no tiene saldo disponible"
                     : "Aplicar parte del anticipo a un DO"
                 }
@@ -779,9 +789,9 @@ export function AnticiposWorkspace() {
 
   // Estadísticas
   const stats = useMemo(() => {
-    const total = anticipos.reduce((s, a) => s + BigInt(a.monto), 0n);
-    const aplicado = anticipos.reduce((s, a) => s + BigInt(a.aplicado), 0n);
-    const restante = anticipos.reduce((s, a) => s + BigInt(a.restante), 0n);
+    const total = anticipos.reduce((s, a) => s + centavosSeguro(a.monto), 0n);
+    const aplicado = anticipos.reduce((s, a) => s + centavosSeguro(a.aplicado), 0n);
+    const restante = anticipos.reduce((s, a) => s + centavosSeguro(a.restante), 0n);
     return { total, aplicado, restante };
   }, [anticipos]);
 
@@ -800,8 +810,9 @@ export function AnticiposWorkspace() {
       prev.map((a) => {
         if (a.id !== anticipoId) return a;
         const tramite = tramites.find((t) => t.id === desglose.tramiteId);
-        const aplicadoNuevo = (BigInt(a.aplicado) + BigInt(desglose.montoAplicado)).toString();
-        const restanteNuevo = (BigInt(a.monto) - BigInt(aplicadoNuevo)).toString();
+        const aplicadoCentavos = centavosSeguro(a.aplicado) + centavosSeguro(desglose.montoAplicado);
+        const aplicadoNuevo = textoDeCentavos(aplicadoCentavos);
+        const restanteNuevo = textoDeCentavos(centavosSeguro(a.monto) - aplicadoCentavos);
         return {
           ...a,
           aplicado: aplicadoNuevo,
@@ -843,9 +854,10 @@ export function AnticiposWorkspace() {
         prev.map((a) => {
           if (a.id !== anticipoId) return a;
           const ap = a.aplicaciones.find((x) => x.aplicacionId === aplicacionId);
-          const monto = ap ? BigInt(ap.montoAplicado) : 0n;
-          const aplicadoNuevo = (BigInt(a.aplicado) - monto).toString();
-          const restanteNuevo = (BigInt(a.monto) - BigInt(aplicadoNuevo)).toString();
+          const monto = ap ? centavosSeguro(ap.montoAplicado) : 0n;
+          const aplicadoCentavos = centavosSeguro(a.aplicado) - monto;
+          const aplicadoNuevo = textoDeCentavos(aplicadoCentavos);
+          const restanteNuevo = textoDeCentavos(centavosSeguro(a.monto) - aplicadoCentavos);
           return {
             ...a,
             aplicado: aplicadoNuevo,
@@ -946,9 +958,9 @@ export function AnticiposWorkspace() {
       {loadState === "ready" && (
         <div className="grid grid-cols-3 gap-4">
           {[
-            { label: "Total recibido", value: stats.total.toString(), color: "text-slate-900" },
-            { label: "Aplicado a DOs", value: stats.aplicado.toString(), color: "text-slate-700" },
-            { label: "Saldo disponible", value: stats.restante.toString(), color: "text-emerald-700" },
+            { label: "Total recibido", value: textoDeCentavos(stats.total), color: "text-slate-900" },
+            { label: "Aplicado a DOs", value: textoDeCentavos(stats.aplicado), color: "text-slate-700" },
+            { label: "Saldo disponible", value: textoDeCentavos(stats.restante), color: "text-emerald-700" },
           ].map((s) => (
             <div key={s.label} className="border border-slate-200 bg-white px-4 py-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{s.label}</p>

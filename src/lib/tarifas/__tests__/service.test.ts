@@ -20,6 +20,7 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { setCapacidadesEmpresa } from "@/lib/capacidades/service";
+import { pesos } from "@/lib/dinero";
 import { prisma } from "@/lib/db/prisma";
 import { ALCANCES_TARIFARIO, type TarifaItemPayload } from "@/lib/validations/tarifas";
 
@@ -30,6 +31,7 @@ import {
   actualizarItemTarifario,
   crearTarifario,
   crearTarifarioDesde,
+  duplicarTarifario,
   listarTarifariosLigero,
   tarifarioVigenteDe,
 } from "../service";
@@ -190,7 +192,7 @@ function itemPayload(
     disparador: DisparadorTarifa.SIEMPRE,
     eventoCodigo: null,
     unidad: UnidadTarifa.TRAMITE,
-    valor: 100_000n,
+    valor: pesos(100_000),
     valorAdicional: null,
     porcentajeBps: null,
     minimos: null,
@@ -348,7 +350,7 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
           tipoCalculo: TipoCalculoTarifa.FIJO,
           disparador: DisparadorTarifa.SIEMPRE,
           unidad: UnidadTarifa.TRAMITE,
-          valor: 50_000n,
+          valorCentavos: pesos(50_000),
           aplicaIva: true,
         },
       });
@@ -368,7 +370,7 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
       const origen = await crearTarifarioBorradorTest(db.clienteOrigenId, db.adminId, "EXPORTACION");
       await agregarItemTarifario(
         origen.id,
-        itemPayload({ concepto: CODIGO_ACTIVO_1, nombrePublico: "Ítem A", valor: 111_000n, orden: 10 }),
+        itemPayload({ concepto: CODIGO_ACTIVO_1, nombrePublico: "Ítem A", valor: pesos(111_000), orden: 10 }),
         db.adminId,
       );
       const origenConItems = await agregarItemTarifario(
@@ -378,7 +380,7 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
           nombrePublico: "Ítem B",
           tipoCalculo: TipoCalculoTarifa.POR_UNIDAD,
           unidad: UnidadTarifa.DOCUMENTO,
-          valor: 22_000n,
+          valor: pesos(22_000),
           orden: 20,
         }),
         db.adminId,
@@ -406,9 +408,9 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
 
       const a = nuevo.items.find((i) => i.concepto === CODIGO_ACTIVO_1);
       const b = nuevo.items.find((i) => i.concepto === CODIGO_ACTIVO_2);
-      expect(a?.valor).toBe(111_000n);
+      expect(a?.valorCentavos).toBe(pesos(111_000));
       expect(a?.nombrePublico).toBe("Ítem A");
-      expect(b?.valor).toBe(22_000n);
+      expect(b?.valorCentavos).toBe(pesos(22_000));
       expect(b?.unidad).toBe("DOCUMENTO");
       // Todos los campos se copian salvo los ids.
       expect(nuevo.items.every((i) => !origenConItems.items.some((oi) => oi.id === i.id))).toBe(true);
@@ -509,6 +511,88 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
       );
 
       expect(nuevo.alcance).toBe("PLAN_VALLEJO");
+    });
+  });
+
+  // ─── Fase centavos: duplicar con IPC (A.6) y JSON canónicos ──────────────────
+
+  describe("duplicarTarifario con IPC — fase centavos (A.6, E.2.2)", () => {
+    it("$100.000 + IPC 5,29 % a $1.000 = $105.000 en valor, en un mínimo y en un tramo", async (ctx) => {
+      const db = ensureDb(ctx);
+      const origen = await crearTarifarioBorradorTest(db.clienteOrigenId, db.adminId, "TRAMITE");
+      await agregarItemTarifario(
+        origen.id,
+        itemPayload({
+          concepto: CODIGO_ACTIVO_1,
+          tipoCalculo: TipoCalculoTarifa.PORCENTAJE_MIN,
+          valor: pesos(100_000),
+          porcentajeBps: 37,
+          minimos: { SUELTA: "100000", CONTENEDOR_20: "100000.45" },
+        }),
+        db.adminId,
+      );
+      await agregarItemTarifario(
+        origen.id,
+        itemPayload({
+          concepto: CODIGO_ACTIVO_2,
+          tipoCalculo: TipoCalculoTarifa.POR_TRAMO,
+          unidad: UnidadTarifa.CONTENEDOR,
+          valor: 0n,
+          tramos: [{ hasta: null, valor: "100000" }],
+        }),
+        db.adminId,
+      );
+
+      const nuevo = await duplicarTarifario(
+        origen.id,
+        {
+          vigenteDesde: new Date("2027-01-01T00:00:00.000Z"),
+          vigenteHasta: new Date("2027-12-31T00:00:00.000Z"),
+          incrementoPct: 5.29,
+          redondeoA: 1_000,
+        },
+        db.adminId,
+      );
+
+      const pct = nuevo.items.find((i) => i.concepto === CODIGO_ACTIVO_1);
+      const tramo = nuevo.items.find((i) => i.concepto === CODIGO_ACTIVO_2);
+      expect(pct?.valorCentavos).toBe(10_500_000n); // 105.000, no 105.290
+      // Mínimos y tramos: PESOS texto canónico (sin ".00"), también el que tenía centavos
+      expect(pct?.minimos).toEqual({ SUELTA: "105000", CONTENEDOR_20: "105000" });
+      expect(tramo?.tramos).toEqual([{ hasta: null, valor: "105000" }]);
+    });
+
+    it("sin incremento: copia exacta, también con centavos", async (ctx) => {
+      const db = ensureDb(ctx);
+      const origen = await crearTarifarioBorradorTest(db.clienteOrigenId, db.adminId, "TRAMITE");
+      await agregarItemTarifario(
+        origen.id,
+        itemPayload({ concepto: CODIGO_ACTIVO_1, valor: 10_000_045n, minimos: null }),
+        db.adminId,
+      );
+      const nuevo = await duplicarTarifario(
+        origen.id,
+        {
+          vigenteDesde: new Date("2027-01-01T00:00:00.000Z"),
+          vigenteHasta: new Date("2027-12-31T00:00:00.000Z"),
+          redondeoA: 1_000,
+        },
+        db.adminId,
+      );
+      expect(nuevo.items[0]?.valorCentavos).toBe(10_000_045n);
+    });
+
+    it("AuditLog del ítem guarda PESOS texto canónico (\"100000\"), sin sufijo Centavos", async (ctx) => {
+      const db = ensureDb(ctx);
+      const origen = await crearTarifarioBorradorTest(db.clienteOrigenId, db.adminId, "TRAMITE");
+      const conItem = await agregarItemTarifario(origen.id, itemPayload({ concepto: CODIGO_ACTIVO_1 }), db.adminId);
+      const item = conItem.items[0]!;
+      const log = await prisma.auditLog.findFirst({
+        where: { entidad: "TarifaItem", entidadId: item.id },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(log?.despues).toMatchObject({ valor: "100000" });
+      expect(JSON.stringify(log?.despues)).not.toContain("Centavos");
     });
   });
 

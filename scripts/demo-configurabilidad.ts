@@ -37,6 +37,7 @@ import {
   registrarMovimientoCuenta,
 } from "../src/lib/cuenta-corriente/service";
 import { prisma } from "../src/lib/db/prisma";
+import { formatoPesos, pesos } from "../src/lib/dinero";
 import { crearFacturaProveedor } from "../src/lib/facturas-proveedor/service";
 import { createTramite, transitionTramite } from "../src/lib/tramites/service";
 import type { ConfigReglaAgencia } from "../src/lib/tramites/reglas";
@@ -490,11 +491,23 @@ async function main() {
   // ── 7. Facturas que no se le cobran al cliente ─────────────────────────────
   paso(7, "Factura de proveedor que el cliente no debe ver");
 
+  // CxP v2 (R7): toda factura de proveedor nace con su ficha de pago. La ficha
+  // apunta a la empresa: es el puente hacia la cuenta corriente (paso 9).
+  const ascinterId = ids.get("ascinter")!;
+  const beneficiarioAscinter = await prisma.beneficiario.create({
+    data: {
+      nombre: `${PREFIJO_NOMBRE}ASCINTER`,
+      nit: `${PREFIJO_NIT}007`,
+      empresaId: ascinterId,
+    },
+  });
+
   const transporte = await crearFacturaProveedor({
     tramiteId: importacion.id,
+    beneficiarioId: beneficiarioAscinter.id,
     proveedorNombre: `${PREFIJO_NOMBRE}ASCINTER`,
     numFactura: "DEMO-TRANSP-001",
-    valor: 1_200_000n,
+    valor: pesos(1_200_000),
     fecha: new Date(),
     concepto: "Transporte",
     repercutible: true,
@@ -504,9 +517,10 @@ async function main() {
 
   const asesoria = await crearFacturaProveedor({
     tramiteId: importacion.id,
+    beneficiarioId: beneficiarioAscinter.id,
     proveedorNombre: `${PREFIJO_NOMBRE}ASCINTER`,
     numFactura: "DEMO-ASESORIA-001",
-    valor: 250_000n,
+    valor: pesos(250_000),
     fecha: new Date(),
     concepto: "Asesoría",
     repercutible: false,
@@ -515,21 +529,22 @@ async function main() {
   ok(`${asesoria.numFactura} · asesoría · repercutible = ${asesoria.repercutible}`);
 
   const cruce = calcularCruceFacturas(
-    [transporte, asesoria],
+    [transporte, asesoria].map((f) => ({ ...f, valor: f.valorCentavos })),
     [
-      { facturaId: transporte.id, pago: { valor: 1_200_000n } },
-      { facturaId: asesoria.id, pago: { valor: 250_000n } },
+      // CxP v2: el cruce suma el monto aplicado a cada factura (no el valor del pago).
+      { facturaId: transporte.id, monto: pesos(1_200_000) },
+      { facturaId: asesoria.id, monto: pesos(250_000) },
     ],
-    [{ facturaId: transporte.id, linea: { valor: 1_200_000n } }],
+    [{ facturaId: transporte.id, linea: { valor: pesos(1_200_000) } }],
   );
 
   tabla(
     ["FACTURA", "PAGADO", "FACTURADO", "DIFERENCIA", "¿ALERTA?"],
     cruce.map((f) => [
       f.numFactura,
-      f.montoPagado,
-      f.montoFacturado,
-      f.diferencia,
+      formatoPesos(f.montoPagado),
+      formatoPesos(f.montoFacturado),
+      formatoPesos(f.diferencia),
       f.esDesviacion
         ? "SÍ"
         : f.repercutible
@@ -555,31 +570,16 @@ async function main() {
   // ── 9. Cuenta corriente de una contraparte que es las dos cosas ────────────
   paso(9, "Cuenta corriente: cliente y proveedor en un solo saldo");
 
-  const ascinterId = ids.get("ascinter")!;
-
-  // El puente hacia el lado proveedor: la ficha de pago apunta a la empresa.
-  const beneficiarioAscinter = await prisma.beneficiario.create({
-    data: {
-      nombre: `${PREFIJO_NOMBRE}ASCINTER`,
-      nit: `${PREFIJO_NIT}007`,
-      empresaId: ascinterId,
-    },
-  });
-
-  await prisma.facturaProveedor.updateMany({
-    where: { id: { in: [transporte.id, asesoria.id] } },
-    data: { beneficiarioId: beneficiarioAscinter.id },
-  });
-
+  // El puente hacia el lado proveedor: la ficha de pago (paso 7) apunta a la empresa.
   const cuentaAscinter = await getCuentaCorriente(ascinterId);
   tabla(
     ["EMPRESA", "NOS DEBE", "LE DEBEMOS", "SALDO CRUZADO"],
     [
       [
         "ASCINTER",
-        cuentaAscinter.totalACargo.toString(),
-        cuentaAscinter.totalAFavor.toString(),
-        cuentaAscinter.neto.toString(),
+        formatoPesos(cuentaAscinter.totalACargo),
+        formatoPesos(cuentaAscinter.totalAFavor),
+        formatoPesos(cuentaAscinter.neto),
       ],
     ],
   );
@@ -597,14 +597,14 @@ async function main() {
     origen: OrigenMovimientoCuenta.CARGO_MANUAL,
     lineaServicio: "TRAMITE",
     concepto: "Servicios aduaneros + quincenas del mes",
-    valor: 4_000_000n,
+    valor: pesos(4_000_000),
     fecha: new Date(),
     usuarioId,
   });
 
   const cuentaColdex = await getCuentaCorriente(ids.get("coldex")!);
   ok(
-    `COLDEX: cargo manual de 4.000.000 registrado. Saldo cruzado ${cuentaColdex.neto}. ` +
+    `COLDEX: cargo manual de 4.000.000 registrado. Saldo cruzado ${formatoPesos(cuentaColdex.neto)}. ` +
       describirNeto(cuentaColdex.neto, "COLDEX"),
   );
 
@@ -616,7 +616,7 @@ async function main() {
     origen: OrigenMovimientoCuenta.COMISION,
     lineaServicio: "COMISION",
     concepto: "Comisión por 3 contenedores de Polired",
-    valor: 135_000n,
+    valor: pesos(135_000),
     fecha: new Date(),
     tramiteId: importacion.id,
     usuarioId,

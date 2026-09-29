@@ -9,8 +9,11 @@
  *     paralelo con `Promise.all`.
  *   - Los totales (saldo neto por cliente, anticipos con saldo, cartera
  *     vencida) se agregan en Postgres en vez de traer todas las filas y
- *     sumarlas en memoria. Todo el dinero se castea a `::bigint` en SQL y se
- *     convierte con `BigInt(...)`: cero flotantes.
+ *     sumarlas en memoria. Todo el dinero se castea a `::bigint` en SQL
+ *     (int8 → `bigint` de JS sin conversión): cero flotantes.
+ *   - Fase centavos: los montos son CENTAVOS de COP y viajan como `bigint`;
+ *     el serializador único de la respuesta los emite en pesos texto con 2
+ *     decimales ("-20000000.00"). Nada de `.toString()` aquí.
  *   - Las listas "pendientes de facturar" y "cartera vencida" se limitan a
  *     LIMITE_LISTAS_DASHBOARD filas; el total real viaja en los contadores
  *     `cantidadPendientesFacturar` / `cantidadFacturasVencidas`.
@@ -65,7 +68,8 @@ export type ClienteSaldoNeto = {
 export type ClienteAlertaCarteraRow = {
   clienteId: string;
   clienteNombre: string;
-  saldoNeto: string; // BigInt as string
+  /** Centavos (la respuesta lo emite como pesos texto). */
+  saldoNeto: bigint;
 };
 
 /**
@@ -84,11 +88,11 @@ export function seleccionarClientesEnAlertaCartera(
     .map((c) => ({
       clienteId: c.clienteId,
       clienteNombre: c.clienteNombre,
-      saldoNeto: c.saldoNeto.toString(),
+      saldoNeto: c.saldoNeto,
     }));
 }
 
-/** Fila cruda del agregado SQL; `saldoNeto` llega como int8 (bigint). */
+/** Fila cruda del agregado SQL; `saldoNeto` llega como int8 (bigint, centavos). */
 type SaldoNetoClienteDbRow = {
   clienteId: string;
   clienteNombre: string;
@@ -116,15 +120,15 @@ export async function getSaldosNetoPorCliente(): Promise<ClienteSaldoNeto[]> {
       )::bigint AS "saldoNeto"
     FROM cliente c
     LEFT JOIN (
-      SELECT "clienteId", SUM("saldoAFavorCliente" - "saldoACargoCliente") AS saldo
+      SELECT "clienteId", SUM("saldoAFavorClienteCentavos" - "saldoACargoClienteCentavos") AS saldo
       FROM factura
       GROUP BY "clienteId"
     ) f ON f."clienteId" = c.id
     LEFT JOIN (
       SELECT
         fa."clienteId",
-        SUM(CASE WHEN pf.tipo = ${TipoPagoFactura.ABONO}::"TipoPagoFactura" THEN pf.monto ELSE 0 END) AS abonos,
-        SUM(CASE WHEN pf.tipo = ${TipoPagoFactura.DEVOLUCION}::"TipoPagoFactura" THEN pf.monto ELSE 0 END) AS devoluciones
+        SUM(CASE WHEN pf.tipo = ${TipoPagoFactura.ABONO}::"TipoPagoFactura" THEN pf."montoCentavos" ELSE 0 END) AS abonos,
+        SUM(CASE WHEN pf.tipo = ${TipoPagoFactura.DEVOLUCION}::"TipoPagoFactura" THEN pf."montoCentavos" ELSE 0 END) AS devoluciones
       FROM pago_factura pf
       JOIN factura fa ON fa.id = pf."facturaId"
       WHERE pf.destino = ${DestinoPago.CLIENTE}::"DestinoPago"
@@ -136,7 +140,7 @@ export async function getSaldosNetoPorCliente(): Promise<ClienteSaldoNeto[]> {
   return rows.map((row) => ({
     clienteId: row.clienteId,
     clienteNombre: row.clienteNombre,
-    saldoNeto: BigInt(row.saldoNeto),
+    saldoNeto: row.saldoNeto,
   }));
 }
 
@@ -179,14 +183,16 @@ export type CarteraVencidaRow = {
   clienteNombre: string;
   tramiteId: string;
   borradorId: string;
-  saldoACargoCliente: string; // BigInt as string
+  /** Centavos (la respuesta lo emite como pesos texto). */
+  saldoACargoCliente: bigint;
   fechaFactura: string;       // ISO date string
   diasAntiguedad: number;
 };
 
 export type AnticiposConSaldoResumen = {
   cantidad: number;
-  totalRestante: string;      // BigInt as string
+  /** Centavos (la respuesta lo emite como pesos texto). */
+  totalRestante: bigint;
 };
 
 export type ActividadRecienteRow = {
@@ -211,8 +217,8 @@ export type DashboardData = {
   carteraVencida: CarteraVencidaRow[];
   /** Total real de facturas vencidas (la lista puede estar recortada). */
   cantidadFacturasVencidas: number;
-  /** Σ saldoACargoCliente de TODAS las facturas vencidas. BigInt as string. */
-  totalCarteraVencida: string;
+  /** Σ saldoACargoCliente de TODAS las facturas vencidas, en centavos. */
+  totalCarteraVencida: bigint;
   anticiposConSaldo: AnticiposConSaldoResumen;
   actividadReciente: ActividadRecienteRow[];
   /** Clientes con saldo neto de cartera por debajo de UMBRAL_ALERTA_CARTERA_CLIENTE. */
@@ -367,7 +373,7 @@ async function getCarteraVencida(hoy: Date): Promise<{
   totalCarteraVencida: bigint;
 }> {
   const whereVencidas: Prisma.FacturaWhereInput = {
-    saldoACargoCliente: { gt: 0n },
+    saldoACargoClienteCentavos: { gt: 0n },
     fechaPagoCliente: null,
   };
 
@@ -377,7 +383,7 @@ async function getCarteraVencida(hoy: Date): Promise<{
       select: {
         id: true,
         numSiigo: true,
-        saldoACargoCliente: true,
+        saldoACargoClienteCentavos: true,
         fecha: true,
         clienteId: true,
         cliente: { select: { nombre: true } },
@@ -389,7 +395,7 @@ async function getCarteraVencida(hoy: Date): Promise<{
     }),
     prisma.factura.aggregate({
       where: whereVencidas,
-      _sum: { saldoACargoCliente: true },
+      _sum: { saldoACargoClienteCentavos: true },
       _count: { id: true },
     }),
   ]);
@@ -407,7 +413,7 @@ async function getCarteraVencida(hoy: Date): Promise<{
       clienteNombre: f.cliente.nombre,
       tramiteId: f.borrador.tramiteId,
       borradorId: f.borradorId,
-      saldoACargoCliente: f.saldoACargoCliente.toString(),
+      saldoACargoCliente: f.saldoACargoClienteCentavos,
       fechaFactura: f.fecha.toISOString(),
       diasAntiguedad,
     };
@@ -416,7 +422,7 @@ async function getCarteraVencida(hoy: Date): Promise<{
   return {
     carteraVencida,
     cantidadFacturasVencidas: agregado._count.id,
-    totalCarteraVencida: agregado._sum.saldoACargoCliente ?? 0n,
+    totalCarteraVencida: agregado._sum.saldoACargoClienteCentavos ?? 0n,
   };
 }
 
@@ -427,7 +433,8 @@ type AnticiposConSaldoDbRow = {
 
 /**
  * Anticipos con saldo restante > 0 (monto − Σ montoAplicado), contados y
- * sumados en Postgres. No filtra por estado del anticipo (igual que antes).
+ * sumados en Postgres (centavos, `::bigint`). No filtra por estado del
+ * anticipo (igual que antes).
  */
 export async function getAnticiposConSaldo(): Promise<AnticiposConSaldoResumen> {
   const [row] = await prisma.$queryRaw<AnticiposConSaldoDbRow[]>`
@@ -435,10 +442,10 @@ export async function getAnticiposConSaldo(): Promise<AnticiposConSaldoResumen> 
       COUNT(*)::int AS cantidad,
       COALESCE(SUM(t.restante), 0)::bigint AS "totalRestante"
     FROM (
-      SELECT a.monto - COALESCE(ap.aplicado, 0) AS restante
+      SELECT a."montoCentavos" - COALESCE(ap.aplicado, 0) AS restante
       FROM anticipo a
       LEFT JOIN (
-        SELECT "anticipoId", SUM("montoAplicado") AS aplicado
+        SELECT "anticipoId", SUM("montoAplicadoCentavos") AS aplicado
         FROM aplicacion_anticipo
         GROUP BY "anticipoId"
       ) ap ON ap."anticipoId" = a.id
@@ -448,7 +455,7 @@ export async function getAnticiposConSaldo(): Promise<AnticiposConSaldoResumen> 
 
   return {
     cantidad: row ? Number(row.cantidad) : 0,
-    totalRestante: (row ? BigInt(row.totalRestante) : 0n).toString(),
+    totalRestante: row ? row.totalRestante : 0n,
   };
 }
 
@@ -523,7 +530,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     cantidadPendientesConAlerta: pendientes.cantidadPendientesConAlerta,
     carteraVencida: cartera.carteraVencida,
     cantidadFacturasVencidas: cartera.cantidadFacturasVencidas,
-    totalCarteraVencida: cartera.totalCarteraVencida.toString(),
+    totalCarteraVencida: cartera.totalCarteraVencida,
     anticiposConSaldo,
     actividadReciente,
     alertasCartera,

@@ -26,6 +26,7 @@ import {
   type OverrideCapacidad,
 } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 
 export class EmpresaNoEncontradaError extends Error {
   public readonly status = 404;
@@ -41,12 +42,6 @@ export class CapacidadDesconocidaError extends Error {
     super(`La capacidad ${codigo} no existe en el catálogo`);
     this.name = "CapacidadDesconocidaError";
   }
-}
-
-function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(
-    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
-  ) as Prisma.InputJsonValue;
 }
 
 /** Narrowing de `Prisma.JsonValue` a la forma de config que espera el resolver. */

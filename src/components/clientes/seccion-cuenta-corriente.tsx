@@ -21,33 +21,48 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
-import { hoyBogota } from "@/lib/cuenta-corriente/hoy-bogota";
+import { centavosDeTexto, formatoPesos } from "@/lib/dinero";
+import { aFechaCalendario, hoyBogotaISO } from "@/lib/tiempo/bogota";
 import { nombreCortoEmpresa } from "@/lib/cuenta-corriente/nombre-corto";
 
+/** Pesos-texto (API o canónico, tolerante) → "$ 502.801,45" (D-5: centavos solo si existen). */
 function formatCOP(valor: string): string {
-  let entero: bigint;
   try {
-    entero = BigInt(valor);
+    return formatoPesos(centavosDeTexto(valor));
   } catch {
     return valor;
   }
-
-  const negativo = entero < 0n;
-  const absoluto = (negativo ? -entero : entero).toString();
-  const conSeparadores = absoluto.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-
-  return `${negativo ? "−" : ""}$ ${conSeparadores}`;
 }
 
+/** Centavos de un pesos-texto (API o canónico); 0n si viene vacío o dañado. */
+function centavosSeguro(raw: string): bigint {
+  try {
+    return centavosDeTexto(raw);
+  } catch {
+    return 0n;
+  }
+}
+
+const FORMATO_FECHA_CUENTA = new Intl.DateTimeFormat("es-CO", {
+  timeZone: "UTC",
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+});
+
+/**
+ * Día de un asiento. Convención de CxP v2 (§D.7): una fecha-calendario
+ * (00:00 UTC) se muestra en UTC; cualquier otro instante (p. ej. los
+ * movimientos que la rama Coldex ancló a mediodía de Bogotá) se lleva a su día
+ * en Bogotá con `aFechaCalendario`. Así nunca sale el día anterior.
+ */
 function formatFecha(iso: string): string {
   if (!iso) return "—";
-  const fecha = new Date(iso);
-  if (Number.isNaN(fecha.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  }).format(fecha);
+  try {
+    return FORMATO_FECHA_CUENTA.format(aFechaCalendario(iso));
+  } catch {
+    return "—";
+  }
 }
 
 const ETIQUETA_FUENTE: Record<string, string> = {
@@ -108,8 +123,10 @@ function MovimientoModal({
       origen: String(datos.get("origen") ?? "CARGO_MANUAL") as NuevoMovimiento["origen"],
       lineaServicio: String(datos.get("lineaServicio") ?? "TRAMITE"),
       concepto: String(datos.get("concepto") ?? ""),
-      valor: String(datos.get("valor") ?? "0").replace(/\D/g, ""),
-      // Día del calendario tal cual: el servidor lo ancla al mediodía de Bogotá.
+      // `valor` viene del <input type="hidden"> de CampoMoneda: ya es
+      // pesos-texto canónico ("4000000", "502801.45"), listo para la API.
+      valor: String(datos.get("valor") ?? "0"),
+      // Día del calendario tal cual (AAAA-MM-DD): el servidor lo guarda a 00:00 UTC (§D.7).
       fecha: String(datos.get("fecha") ?? ""),
     };
 
@@ -224,7 +241,7 @@ function MovimientoModal({
               name="fecha"
               type="date"
               required
-              defaultValue={hoyBogota()}
+              defaultValue={hoyBogotaISO()}
               className={claseCampo(false)}
             />
           </label>
@@ -340,7 +357,25 @@ type LoadState = "loading" | "ready" | "error" | "sin-permiso";
  * Cuenta corriente de la contraparte (M5): junta en un solo saldo lo que la
  * empresa nos debe como cliente y lo que le debemos como proveedor.
  */
-export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
+export function SeccionCuentaCorriente({
+  clienteId,
+  proveedorPuro = false,
+  refreshToken = 0,
+  onCambio,
+}: {
+  clienteId: string;
+  /**
+   * §D.1: para un proveedor puro (esProveedor && !esCliente) la cuenta
+   * corriente solo se muestra si ADEMÁS tiene la función "cargos manuales"
+   * encendida (si no, repetiría el estado de cuenta del proveedor sin
+   * aportar nada nuevo).
+   */
+  proveedorPuro?: boolean;
+  /** Cambia cuando el estado de cuenta del proveedor movió un saldo (pago/anulación): recarga. */
+  refreshToken?: number;
+  /** Se llama tras un cruce o al deshacerlo: la ficha lo usa para refrescar el estado de cuenta del proveedor también. */
+  onCambio?: () => void;
+}) {
   // GET /api/clientes/[id]/cuenta → ADMIN y REVISOR; POST → solo ADMIN.
   const puedeVer = usePermiso(["ADMIN", "REVISOR"]);
   const puedeRegistrar = useEsAdmin();
@@ -369,6 +404,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
     try {
       const actualizada = await eliminarCompensacion(clienteId, compensacionId);
       if (actualizada) setCuenta(actualizada);
+      onCambio?.();
       toast({ title: "Cruce deshecho", variant: "success" });
     } catch (caught) {
       toast({ title: "No se pudo deshacer", description: describirError(caught), variant: "error" });
@@ -400,7 +436,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
       });
 
     return () => controller.abort();
-  }, [clienteId, reloadKey, puedeVer]);
+  }, [clienteId, reloadKey, refreshToken, puedeVer]);
 
   function recargar() {
     setLoadState("loading");
@@ -408,13 +444,18 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
     setReloadKey((k) => k + 1);
   }
 
-  // Función `cuenta_corriente` apagada (empresa que solo es cliente): la sección
-  // no se muestra, porque repetiría la cartera. Mientras carga tampoco, para no
-  // mostrar y quitar un esqueleto en cada ficha que no la usa.
+  // `habilitada` = `cuenta_corriente` O «Registrar facturas por fuera de
+  // trámites» (`cargos_manuales_contraparte`, rama Coldex). Apagadas las dos
+  // (empresa que solo es cliente) la sección no se muestra, porque repetiría la
+  // cartera. Mientras carga tampoco, para no mostrar y quitar un esqueleto en
+  // cada ficha que no la usa. Para un proveedor puro, además exige
+  // `permiteCargosManuales` (§D.1): con solo `cuenta_corriente` ya tiene su
+  // propio estado de cuenta y esto solo repetiría lo mismo.
   if (loadState === "sin-permiso" || loadState === "loading") return null;
   if (loadState === "ready" && cuenta && !cuenta.habilitada) return null;
+  if (loadState === "ready" && cuenta && proveedorPuro && !cuenta.permiteCargosManuales) return null;
 
-  const neto = cuenta ? BigInt(cuenta.neto) : 0n;
+  const neto = cuenta ? centavosSeguro(cuenta.neto) : 0n;
   const visibles =
     cuenta && !verTodo ? cuenta.movimientos.slice(0, 12) : (cuenta?.movimientos ?? []);
   const corto = cuenta ? nombreCortoEmpresa(cuenta.empresa.nombre) : "";
@@ -444,9 +485,9 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
             <button
               type="button"
               onClick={() => setCruceAbierto(true)}
-              disabled={!cuenta || BigInt(cuenta.maximoCompensable) <= 0n}
+              disabled={!cuenta || centavosSeguro(cuenta.maximoCompensable) <= 0n}
               title={
-                cuenta && BigInt(cuenta.maximoCompensable) <= 0n
+                cuenta && centavosSeguro(cuenta.maximoCompensable) <= 0n
                   ? "Para cruzar, la empresa tiene que debernos y nosotros deberle a la vez"
                   : undefined
               }
@@ -617,6 +658,7 @@ export function SeccionCuentaCorriente({ clienteId }: { clienteId: string }) {
           onClose={() => setCruceAbierto(false)}
           onGuardado={(actualizada) => {
             setCuenta(actualizada);
+            onCambio?.();
             toast({ title: "Saldos cruzados", variant: "success" });
           }}
         />

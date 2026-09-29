@@ -7,6 +7,11 @@
  *
  * El parser es PURO filesystem → DTO. No toca la BD.
  *
+ * Dinero (fase centavos): todo `bigint` del DTO = CENTAVOS de COP. Cada celda
+ * se lee con `centavosDeNumero` del núcleo: 502801.45 → 50280145n. Una celda con
+ * más de 2 decimales (p. ej. una fórmula sin redondear) es un error visible con
+ * su dirección ("I23"), nunca se redondea en silencio.
+ *
  * Uso:
  *   import { parseBorradorLucho } from "@/lib/excel/borrador-lucho";
  *   const parseado = parseBorradorLucho("ruta/al/archivo.xls");
@@ -14,6 +19,8 @@
 
 import * as fs from "node:fs";
 import * as XLSX from "xlsx";
+
+import { centavosDeNumero, DineroInvalidoError } from "@/lib/dinero";
 
 // El build ESM de xlsx (usado por `import * as XLSX from "xlsx"`) no detecta
 // `fs` automáticamente como sí lo hacía el build CJS de la versión anterior:
@@ -203,9 +210,28 @@ function cellNumber(ws: Worksheet, address: string): number | null {
   return null;
 }
 
-function toCOP(value: number | null): bigint {
+/** Error de lectura de dinero de una celda del Excel de Lucho (con su dirección). */
+export class CeldaDineroInvalidaError extends Error {
+  readonly celda: string;
+  constructor(celda: string, valor: number, detalle: string) {
+    super(`Celda ${celda} del Excel: el valor ${String(valor)} no se puede leer al centavo (${detalle}).`);
+    this.name = "CeldaDineroInvalidaError";
+    this.celda = celda;
+  }
+}
+
+/**
+ * Número de una celda (pesos) → centavos. Vacío → 0n (como antes). Más de 2
+ * decimales ⇒ `CeldaDineroInvalidaError` con la dirección de la celda.
+ */
+export function centavosDeCelda(value: number | null, celda: string): bigint {
   if (value === null || !Number.isFinite(value)) return 0n;
-  return BigInt(Math.round(value));
+  try {
+    return centavosDeNumero(value);
+  } catch (err) {
+    if (err instanceof DineroInvalidoError) throw new CeldaDineroInvalidaError(celda, value, err.message);
+    throw err;
+  }
 }
 
 function cellFgColor(cell: Cell): string | null {
@@ -525,7 +551,7 @@ export function parseBorradorLucho(
 
       terceros.push({
         concepto,
-        valor: toCOP(Math.abs(valorNum)),
+        valor: centavosDeCelda(Math.abs(valorNum), `I${r}`),
         esPse,
         es4x1000: es4x,
         proveedorNombre: provNombre,
@@ -539,7 +565,7 @@ export function parseBorradorLucho(
   let totalTerceros: bigint;
   if (filaTotalTerceros !== null) {
     const v = cellNumber(ws, `I${filaTotalTerceros}`);
-    totalTerceros = toCOP(v);
+    totalTerceros = centavosDeCelda(v, `I${filaTotalTerceros}`);
   } else {
     totalTerceros = terceros.reduce((s, t) => s + t.valor, 0n);
   }
@@ -560,7 +586,7 @@ export function parseBorradorLucho(
 
       operacionales.push({
         concepto,
-        valor: toCOP(Math.abs(valorNum)),
+        valor: centavosDeCelda(Math.abs(valorNum), `I${r}`),
         fila: r,
       });
     }
@@ -572,7 +598,7 @@ export function parseBorradorLucho(
   let iva = 0n;
   if (filaIva !== null) {
     const v = cellNumber(ws, `I${filaIva}`);
-    iva = toCOP(v);
+    iva = centavosDeCelda(v, `I${filaIva}`);
   }
 
   // ── Retenciones ───────────────────────────────────────────────────────────
@@ -587,7 +613,7 @@ export function parseBorradorLucho(
 
     retenciones.push({
       concepto,
-      valor: toCOP(Math.abs(valorNum)),
+      valor: centavosDeCelda(Math.abs(valorNum), `I${r}`),
       fila: r,
     });
   }
@@ -601,17 +627,17 @@ export function parseBorradorLucho(
 
   if (filaTotalFactura !== null) {
     const tfVal = cellNumber(ws, `I${filaTotalFactura}`);
-    totalFactura = toCOP(tfVal);
+    totalFactura = centavosDeCelda(tfVal, `I${filaTotalFactura}`);
 
     const antiVal = cellNumber(ws, `I${filaTotalFactura + 1}`);
-    anticipo = toCOP(antiVal);
+    anticipo = centavosDeCelda(antiVal, `I${filaTotalFactura + 1}`);
 
     // Saldo: en el Excel es negativo cuando es a favor
     // La celda puede tener formato "(X.XXX.XXX)" que xlsx parsea como negativo
     const saldoVal = cellNumber(ws, `I${filaTotalFactura + 2}`);
     if (saldoVal !== null) {
       // Negative = a favor del cliente → store as positive
-      saldoAFavor = toCOP(Math.abs(saldoVal));
+      saldoAFavor = centavosDeCelda(Math.abs(saldoVal), `I${filaTotalFactura + 2}`);
     }
   }
 
@@ -643,7 +669,7 @@ export function parseBorradorLucho(
  * 1. terceros + operacionales + IVA − retenciones = totalFactura
  * 2. anticipo − totalFactura = saldoAFavor
  *
- * Retorna un arreglo de discrepancias (vacío = cuadra al peso).
+ * Retorna un arreglo de discrepancias (vacío = cuadra al centavo).
  */
 export function reconciliar(p: BorradorLuchoParseado): ResultadoReconciliacion {
   const discrepancias: Discrepancia[] = [];

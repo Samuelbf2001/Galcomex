@@ -14,14 +14,15 @@ import { useCallback, useEffect, useState } from "react";
 import { ModuleState } from "@/components/layout/module-state";
 import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import {
   type FilaIngreso,
   type TipoIngreso,
   IngresosApiError,
   fetchIngresos,
-  formatCOP,
   formatDate,
 } from "@/components/ingresos/ingresos-api";
+import { centavosDeTextoApi, formatoPesos } from "@/lib/dinero";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -54,8 +55,8 @@ function tipoBadge(tipo: TipoIngreso): React.ReactNode {
 }
 
 function montoCell(fila: FilaIngreso): React.ReactNode {
-  const n = BigInt(fila.montoConSigno);
-  const label = formatCOP(fila.monto);
+  const n = centavosDeTextoApi(fila.montoConSigno);
+  const label = formatoPesos(centavosDeTextoApi(fila.monto));
   if (n >= 0n) {
     return <span className="text-emerald-700 font-semibold">+{label}</span>;
   }
@@ -74,20 +75,20 @@ function referenciaCell(fila: FilaIngreso): React.ReactNode {
 }
 
 function saldoCorridoCell(valor: string): React.ReactNode {
-  const n = BigInt(valor);
-  const label = formatCOP(valor);
+  const n = centavosDeTextoApi(valor);
+  const label = formatoPesos(n);
   const colorClass =
     n > 0n ? "text-emerald-700" : n < 0n ? "text-rose-600" : "text-slate-500";
   return <span className={`font-semibold ${colorClass}`}>{label}</span>;
 }
 
-/** Primer y último día del mes en curso (YYYY-MM-DD, zona local). */
+/** Primer y último día del mes en curso (YYYY-MM-DD), según el día calendario en Bogotá. */
 function rangoMesActual(): { desde: string; hasta: string } {
-  const hoy = new Date();
-  const anio = hoy.getFullYear();
-  const mes = hoy.getMonth();
+  const [anioStr, mesStr] = hoyBogotaISO().split("-");
+  const anio = Number(anioStr);
+  const mes = Number(mesStr) - 1; // 0-indexado, como Date.UTC
   const pad = (n: number) => String(n).padStart(2, "0");
-  const ultimoDia = new Date(anio, mes + 1, 0).getDate();
+  const ultimoDia = new Date(Date.UTC(anio, mes + 1, 0)).getUTCDate();
   return {
     desde: `${anio}-${pad(mes + 1)}-01`,
     hasta: `${anio}-${pad(mes + 1)}-${pad(ultimoDia)}`,
@@ -238,13 +239,13 @@ export function IngresosWorkspace() {
   // ── Totales ──────────────────────────────────────────────────────────────
 
   const totalEntradas = filas
-    .filter((f) => BigInt(f.montoConSigno) > 0n)
-    .reduce((acc, f) => acc + BigInt(f.monto), 0n);
+    .filter((f) => centavosDeTextoApi(f.montoConSigno) > 0n)
+    .reduce((acc, f) => acc + centavosDeTextoApi(f.monto), 0n);
   const totalSalidas = filas
-    .filter((f) => BigInt(f.montoConSigno) < 0n)
-    .reduce((acc, f) => acc + BigInt(f.monto), 0n);
+    .filter((f) => centavosDeTextoApi(f.montoConSigno) < 0n)
+    .reduce((acc, f) => acc + centavosDeTextoApi(f.monto), 0n);
   const saldoFinal =
-    filas.length > 0 ? BigInt(filas[filas.length - 1]!.saldoCorrido) : 0n;
+    filas.length > 0 ? centavosDeTextoApi(filas[filas.length - 1]!.saldoCorrido) : 0n;
 
   const esMesActual = desde === mesActual.desde && hasta === mesActual.hasta;
   const rangoActivo =
@@ -392,7 +393,7 @@ export function IngresosWorkspace() {
               Total entradas
             </p>
             <p className="mt-1 text-xl font-bold text-emerald-700">
-              +{formatCOP(totalEntradas.toString())}
+              +{formatoPesos(totalEntradas)}
             </p>
             <p className="mt-0.5 text-xs text-slate-500">
               Anticipos + abonos en el período
@@ -403,7 +404,7 @@ export function IngresosWorkspace() {
               Total salidas
             </p>
             <p className="mt-1 text-xl font-bold text-violet-700">
-              -{formatCOP(totalSalidas.toString())}
+              -{formatoPesos(totalSalidas)}
             </p>
             <p className="mt-0.5 text-xs text-slate-500">
               Devoluciones en el período
@@ -422,7 +423,7 @@ export function IngresosWorkspace() {
                     : "text-slate-500"
               }`}
             >
-              {formatCOP(saldoFinal.toString())}
+              {formatoPesos(saldoFinal)}
             </p>
             <p className="mt-0.5 text-xs text-slate-500">
               {clienteId ? (

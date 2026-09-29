@@ -33,6 +33,8 @@ import { EnlaceCliente } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
+import { centavosDeTexto, formatoPesos, textoCanonicoDeCentavos } from "@/lib/dinero";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -69,20 +71,27 @@ function isRecordUnknown(value: unknown): value is Record<string, unknown> {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Lee el texto canónico que entrega `CampoMoneda` (pesos, hasta 2 decimales)
+ * y devuelve el mismo texto canónico si es válido y > 0; null si no.
+ */
 function parseBigIntInput(raw: string): string | null {
-  const cleaned = raw
-    .replace(/\./g, "")
-    .replace(/,/g, "")
-    .replace(/\$/g, "")
-    .replace(/COP/g, "")
-    .trim();
-  if (!cleaned || cleaned === "-") return null;
+  const limpio = raw.trim();
+  if (!limpio || limpio === "-") return null;
   try {
-    const v = BigInt(cleaned);
-    if (v <= 0n) return null;
-    return v.toString();
+    const c = centavosDeTexto(limpio);
+    return c > 0n ? textoCanonicoDeCentavos(c) : null;
   } catch {
     return null;
+  }
+}
+
+/** Centavos de un pesos-texto (API o canónico); 0n si viene vacío o dañado. */
+function centavosSeguro(raw: string): bigint {
+  try {
+    return centavosDeTexto(raw);
+  } catch {
+    return 0n;
   }
 }
 
@@ -155,14 +164,14 @@ export function RegistrarAnticipoTramiteModal({
     !aplicarTodo &&
     montoBig !== null &&
     montoAplicarBig !== null &&
-    BigInt(montoAplicarBig) > BigInt(montoBig);
+    centavosSeguro(montoAplicarBig) > centavosSeguro(montoBig);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
 
     if (!montoBig) {
-      setError("El monto debe ser un número entero mayor a 0.");
+      setError("El monto debe ser mayor a 0.");
       return;
     }
 
@@ -221,7 +230,7 @@ export function RegistrarAnticipoTramiteModal({
 
       toast({
         title: "Anticipo registrado y aplicado",
-        description: `${formatCOP(montoAplicar)} aplicados a este DO.`,
+        description: `${formatoPesos(centavosSeguro(montoAplicar))} aplicados a este DO.`,
         variant: "success",
       });
       onDone();
@@ -270,7 +279,7 @@ export function RegistrarAnticipoTramiteModal({
                 name="fecha"
                 type="date"
                 required
-                defaultValue={new Date().toISOString().slice(0, 10)}
+                defaultValue={hoyBogotaISO()}
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
@@ -287,14 +296,14 @@ export function RegistrarAnticipoTramiteModal({
               <optgroup label="Digital">
                 {TIPOS_RECAUDO.filter((t) => t.grupo === "DIGITAL").map((t) => (
                   <option key={t.value} value={t.value}>
-                    {t.label} (${new Intl.NumberFormat("es-CO").format(Number(t.costoFijo ?? "0"))})
+                    {t.label} ({formatoPesos(centavosDeTexto(t.costoFijo ?? "0"))})
                   </option>
                 ))}
               </optgroup>
               <optgroup label="Físico">
                 {TIPOS_RECAUDO.filter((t) => t.grupo === "FISICO").map((t) => (
                   <option key={t.value} value={t.value}>
-                    {t.label} (${new Intl.NumberFormat("es-CO").format(Number(t.costoFijo ?? "0"))})
+                    {t.label} ({formatoPesos(centavosDeTexto(t.costoFijo ?? "0"))})
                   </option>
                 ))}
               </optgroup>
@@ -443,10 +452,10 @@ function AplicarExistenteModal({
   }
 
   const selected = anticipos.find((a) => a.id === selectedId) ?? null;
-  const restante = selected ? BigInt(selected.restante) : 0n;
+  const restante = selected ? centavosSeguro(selected.restante) : 0n;
   const montoBig = parseBigIntInput(montoRaw);
   const sobreAplicando =
-    montoBig !== null && selected !== null && BigInt(montoBig) > restante;
+    montoBig !== null && selected !== null && centavosSeguro(montoBig) > restante;
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -474,7 +483,7 @@ function AplicarExistenteModal({
       });
       toast({
         title: "Anticipo aplicado",
-        description: `${formatCOP(montoBig)} aplicados a este DO.`,
+        description: `${formatoPesos(centavosSeguro(montoBig))} aplicados a este DO.`,
         variant: "success",
       });
       onDone();

@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
+import { textoDeCentavos } from "@/lib/dinero";
+import { CLAVES_PROTEGIDAS } from "@/lib/parametros/claves";
 import { BeneficiariosConfig } from "@/components/configuracion/beneficiarios-config";
 import { MatricesConfig } from "@/components/configuracion/matrices-config";
 import { ParametrosConfig } from "@/components/configuracion/parametros-config";
@@ -25,11 +27,15 @@ export default async function ConfiguracionPage() {
         "SIIGO_FORMA_PAGO_DEFAULT_ID",
         "SIIGO_PRODUCTO_4X1000_ID",
         "SIIGO_PRODUCTO_COSTOS_BANCARIOS_ID",
+        // Claves protegidas (A.4): `DINERO_UNIDAD_BD` no se edita desde la
+        // tabla genérica — solo la escriben la migración y su reversa (SQL).
+        ...CLAVES_PROTEGIDAS,
       ] } },
       orderBy: { clave: "asc" },
     }),
     // BigInt no serializa entre Server Component y Client Component: se
-    // convierte costoFijo a string más abajo (igual que jsonResponse en las APIs).
+    // convierte costoFijoCentavos a pesos texto (2 decimales, igual que
+    // `textoDeCentavos` en las respuestas de la API) más abajo.
     prisma.matrizRecaudo.findMany({ orderBy: { tipoRecaudo: "asc" } }),
     prisma.matrizPago.findMany({ orderBy: { canalPago: "asc" } }),
   ]);
@@ -44,13 +50,13 @@ export default async function ConfiguracionPage() {
     tipoRecaudo: m.tipoRecaudo,
     grupo: m.grupo,
     descripcion: m.descripcion,
-    costoFijo: m.costoFijo.toString(),
+    costoFijo: textoDeCentavos(m.costoFijoCentavos),
   }));
   const matrizPago = matrizPagoRaw.map((m) => ({
     id: m.id,
     canalPago: m.canalPago,
     descripcion: m.descripcion,
-    costoFijo: m.costoFijo.toString(),
+    costoFijo: textoDeCentavos(m.costoFijoCentavos),
   }));
 
   return (

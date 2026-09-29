@@ -25,6 +25,7 @@ import "dotenv/config";
 
 import type { CodigoCapacidad } from "../src/lib/capacidades/catalogo";
 import { setCapacidadesEmpresa } from "../src/lib/capacidades/service";
+import { formatoPesos } from "../src/lib/dinero";
 import { prisma } from "../src/lib/db/prisma";
 import { marcarEventosTramite } from "../src/lib/eventos/service";
 import { CONCEPTOS_VENTA_DEMO, PLANTILLAS_TARIFARIO } from "../src/lib/tarifas/plantillas";
@@ -39,7 +40,8 @@ const nota = (t: string) => console.log(`      ${t}`);
 function titulo(t: string) {
   console.log(`\n${"─".repeat(78)}\n${t}\n${"─".repeat(78)}`);
 }
-const cop = (v: bigint) => `$ ${v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
+/** Centavos → "$ 502.801,45" (fase centavos: el motor devuelve centavos). */
+const cop = (v: bigint) => formatoPesos(v);
 
 async function usuarioAdmin(): Promise<string> {
   const camila = await prisma.user.findFirst({ where: { email: "camila@galcomex.com" }, select: { id: true } });

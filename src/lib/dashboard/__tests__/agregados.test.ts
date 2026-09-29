@@ -55,11 +55,11 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
         nombre: true,
         facturas: {
           select: {
-            saldoAFavorCliente: true,
-            saldoACargoCliente: true,
+            saldoAFavorClienteCentavos: true,
+            saldoACargoClienteCentavos: true,
             pagos: {
               where: { destino: DestinoPago.CLIENTE },
-              select: { tipo: true, monto: true },
+              select: { tipo: true, montoCentavos: true },
             },
           },
         },
@@ -71,15 +71,15 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
       const saldoNeto = cliente.facturas.reduce((acc, f) => {
         const abonos = f.pagos
           .filter((p) => p.tipo === TipoPagoFactura.ABONO)
-          .reduce((sum, p) => sum + p.monto, 0n);
+          .reduce((sum, p) => sum + p.montoCentavos, 0n);
         const devoluciones = f.pagos
           .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
-          .reduce((sum, p) => sum + p.monto, 0n);
+          .reduce((sum, p) => sum + p.montoCentavos, 0n);
         return (
           acc +
           calcularSaldoNeto({
-            saldoAFavor: f.saldoAFavorCliente,
-            saldoACargo: f.saldoACargoCliente,
+            saldoAFavor: f.saldoAFavorClienteCentavos,
+            saldoACargo: f.saldoACargoClienteCentavos,
             abonos,
             devoluciones,
           })
@@ -103,14 +103,14 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
     requiereDb(ctx);
 
     const anticipos = await prisma.anticipo.findMany({
-      select: { monto: true, aplicaciones: { select: { montoAplicado: true } } },
+      select: { montoCentavos: true, aplicaciones: { select: { montoAplicadoCentavos: true } } },
     });
 
     let cantidad = 0;
     let totalRestante = 0n;
     for (const anticipo of anticipos) {
-      const aplicado = anticipo.aplicaciones.reduce((sum, ap) => sum + ap.montoAplicado, 0n);
-      const restante = anticipo.monto - aplicado;
+      const aplicado = anticipo.aplicaciones.reduce((sum, ap) => sum + ap.montoAplicadoCentavos, 0n);
+      const restante = anticipo.montoCentavos - aplicado;
       if (restante > 0n) {
         cantidad += 1;
         totalRestante += restante;
@@ -119,7 +119,7 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
 
     const resumen = await getAnticiposConSaldo();
     expect(resumen.cantidad).toBe(cantidad);
-    expect(resumen.totalRestante).toBe(totalRestante.toString());
+    expect(resumen.totalRestante).toBe(totalRestante);
   });
 
   it("pendientes de facturar y cartera vencida: página recortada + contadores/totales completos", async (ctx) => {
@@ -158,13 +158,13 @@ describe("dashboard: agregados SQL vs referencia en memoria", () => {
 
     // ── Cartera vencida ─────────────────────────────────────────────────────
     const vencidasRef = await prisma.factura.findMany({
-      where: { saldoACargoCliente: { gt: 0n }, fechaPagoCliente: null },
-      select: { id: true, saldoACargoCliente: true },
+      where: { saldoACargoClienteCentavos: { gt: 0n }, fechaPagoCliente: null },
+      select: { id: true, saldoACargoClienteCentavos: true },
       orderBy: [{ fecha: "asc" }, { id: "asc" }],
     });
-    const totalRef = vencidasRef.reduce((sum, f) => sum + f.saldoACargoCliente, 0n);
+    const totalRef = vencidasRef.reduce((sum, f) => sum + f.saldoACargoClienteCentavos, 0n);
 
-    expect(data.totalCarteraVencida).toBe(totalRef.toString());
+    expect(data.totalCarteraVencida).toBe(totalRef);
     expect(data.cantidadFacturasVencidas).toBe(vencidasRef.length);
     expect(data.carteraVencida.map((f) => f.id)).toEqual(
       vencidasRef.slice(0, LIMITE_LISTAS_DASHBOARD).map((f) => f.id),

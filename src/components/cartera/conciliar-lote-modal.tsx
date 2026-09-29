@@ -7,6 +7,8 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
+import { centavosDeTexto, formatoPesos, textoCanonicoDeCentavos } from "@/lib/dinero";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 import {
   CarteraApiError,
@@ -44,9 +46,10 @@ type FilaDerivada = {
   resultado: ConciliarLoteItemResultUi | null;
 };
 
+/** Centavos de un pesos-texto (API o canónico); 0n si viene vacío o dañado. */
 function safeBigInt(value: string): bigint {
   try {
-    return BigInt(value);
+    return centavosDeTexto(value);
   } catch {
     return 0n;
   }
@@ -76,14 +79,6 @@ function filaDesdeFactura(
   };
 }
 
-function todayISO(): string {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 type UploadState = "idle" | "uploading" | "done" | "error";
 
 // ─── Componente ──────────────────────────────────────────────────────────────
@@ -101,7 +96,7 @@ export function ConciliarLoteModal({
   );
 
   // Formulario único del lote
-  const [fecha, setFecha] = useState<string>(todayISO);
+  const [fecha, setFecha] = useState<string>(hoyBogotaISO);
   const [opcionRecaudoPago, setOpcionRecaudoPago] = useState<string>(
     "RECAUDO:BANCOLOMBIA",
   );
@@ -224,7 +219,7 @@ export function ConciliarLoteModal({
       .join(" y ");
     const ok = await confirmar({
       title: `¿Registrar el pago de ${filasActivas.length} trámite${filasActivas.length !== 1 ? "s" : ""}?`,
-      description: `Se registrarán ${detalle} con fecha ${fecha}, por un neto de ${formatCOP(totalNetoConsolidado.toString())}. Cada movimiento queda en la cartera de su factura.`,
+      description: `Se registrarán ${detalle} con fecha ${fecha}, por un neto de ${formatoPesos(totalNetoConsolidado)}. Cada movimiento queda en la cartera de su factura.`,
       confirmText: "Registrar pago",
     });
     if (!ok) return;
@@ -240,7 +235,7 @@ export function ConciliarLoteModal({
         facturaId: fila.facturaId,
         destino,
         tipo: fila.tipo as "ABONO" | "DEVOLUCION",
-        monto: fila.monto.toString(),
+        monto: textoCanonicoDeCentavos(fila.monto),
         fecha,
         tipoRecaudo: isRecaudo ? (value as TipoRecaudo) : undefined,
         canalPago: !isRecaudo ? (value as CanalPago) : undefined,
@@ -269,7 +264,7 @@ export function ConciliarLoteModal({
       } else {
         toast({
           title: "Lote conciliado",
-          description: `${result.ok} pago${result.ok !== 1 ? "s" : ""} registrado${result.ok !== 1 ? "s" : ""} · ${formatCOP(totalNetoConsolidado.toString())}`,
+          description: `${result.ok} pago${result.ok !== 1 ? "s" : ""} registrado${result.ok !== 1 ? "s" : ""} · ${formatoPesos(totalNetoConsolidado)}`,
           variant: "success",
         });
       }
@@ -291,7 +286,7 @@ export function ConciliarLoteModal({
 
   // Banner del saldo consolidado — el monto destacado es el NETO algebraico
   // del grupo (lo que efectivamente cambia de manos).
-  const saldoMontoStr = formatCOP(totalNetoConsolidado.toString());
+  const saldoMontoStr = formatoPesos(totalNetoConsolidado);
 
   const partyDestinoLabel = destino === "CLIENTE" ? "cliente" : "socio LM";
   const partyDestinoLabelCap = destino === "CLIENTE" ? "Cliente" : "Socio LM";
@@ -602,7 +597,7 @@ export function ConciliarLoteModal({
 
                     <td className="px-3 py-2 text-right whitespace-nowrap">
                       <span className={`font-semibold ${saldoColor}`}>
-                        {formatCOP(fila.monto.toString())}
+                        {formatoPesos(fila.monto)}
                       </span>
                     </td>
 
@@ -615,7 +610,7 @@ export function ConciliarLoteModal({
                     </td>
 
                     <td className="px-3 py-2 text-right whitespace-nowrap font-mono text-xs">
-                      {fila.tipo ? formatCOP(fila.monto.toString()) : "—"}
+                      {fila.tipo ? formatoPesos(fila.monto) : "—"}
                     </td>
 
                     {resumen ? (
@@ -663,7 +658,7 @@ export function ConciliarLoteModal({
                           : "text-slate-600"
                     }`}
                   >
-                    {formatCOP(totalNetoConsolidado.toString())}
+                    {formatoPesos(totalNetoConsolidado)}
                   </td>
                   {resumen ? <td /> : null}
                 </tr>

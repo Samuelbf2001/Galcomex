@@ -10,6 +10,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z, ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
+import { dineroSchema } from "@/lib/dinero";
 import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import {
@@ -22,10 +23,9 @@ type RouteContext = {
   params: Promise<{ canalPago: string }>;
 };
 
+/** Pesos de entrada ("3900" o "3900.50"); el servicio recibe centavos. */
 const bodySchema = z.object({
-  costoFijo: z.coerce
-    .bigint()
-    .refine((valor) => valor >= 0n, { message: "El costo no puede ser negativo" }),
+  costoFijo: dineroSchema.refine((valor) => valor >= 0n, { message: "El costo no puede ser negativo" }),
 });
 
 export async function PATCH(request: NextRequest, context: RouteContext) {

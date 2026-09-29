@@ -15,10 +15,15 @@
  * `ensureLineasFijas` es idempotente: para cada concepto con valor > 0 que NO
  * tenga línea, crea una nueva con `siigoProductoId` resuelto desde parámetros.
  * Las líneas existentes nunca se sobreescriben (preserva ediciones previas).
+ *
+ * Fase centavos: todos los valores en CENTAVOS (`valorCentavos`,
+ * `comisionCentavos`…). El IVA de la comisión va AL PESO, mitad hacia arriba
+ * (diseño A.6 / D-1) vía `porcentajeDe` del núcleo.
  */
 
 import { type Prisma, SeccionLinea, TipoCliente } from "@prisma/client";
 
+import { porcentajeDe, type Centavos } from "@/lib/dinero";
 import { prisma } from "@/lib/db/prisma";
 
 type Tx = Prisma.TransactionClient;
@@ -135,11 +140,12 @@ function productoFijoIdPara(
   }
 }
 
+/** Centavos. */
 interface ValoresLineasFijas {
-  comision: bigint;
-  ivaComision: bigint;
-  costosBancarios: bigint;
-  impuesto4x1000: bigint;
+  comision: Centavos;
+  ivaComision: Centavos;
+  costosBancarios: Centavos;
+  impuesto4x1000: Centavos;
 }
 
 function valorPara(tipo: TipoFija, valores: ValoresLineasFijas): bigint {
@@ -178,7 +184,7 @@ export function definirLineasFijasParaCreate(
   tipoCliente?: TipoCliente,
 ): Array<{
   concepto: string;
-  valor: bigint;
+  valorCentavos: Centavos;
   orden: number;
   seccion: SeccionLinea;
   tipoFija: TipoFija;
@@ -192,7 +198,7 @@ export function definirLineasFijasParaCreate(
     })
     .map((def) => ({
       concepto: def.concepto,
-      valor: valorPara(def.tipoFija, valores),
+      valorCentavos: valorPara(def.tipoFija, valores),
       orden: def.orden,
       seccion: def.seccion,
       tipoFija: def.tipoFija,
@@ -219,10 +225,10 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
     where: { id: borradorId },
     select: {
       formatoFactura: true,
-      comision: true,
-      ivaComision: true,
-      costosBancarios: true,
-      impuesto4x1000: true,
+      comisionCentavos: true,
+      ivaComisionCentavos: true,
+      costosBancariosCentavos: true,
+      impuesto4x1000Centavos: true,
       tramite: { select: { cliente: { select: { tipo: true } } } },
       lineasRevision: {
         where: { tipoFija: { not: null } },
@@ -247,10 +253,10 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
 
   const productos = await resolverProductosLineasFijas(tx);
   const valores: ValoresLineasFijas = {
-    comision: borrador.comision,
-    ivaComision: borrador.ivaComision,
-    costosBancarios: borrador.costosBancarios,
-    impuesto4x1000: borrador.impuesto4x1000,
+    comision: borrador.comisionCentavos,
+    ivaComision: borrador.ivaComisionCentavos,
+    costosBancarios: borrador.costosBancariosCentavos,
+    impuesto4x1000: borrador.impuesto4x1000Centavos,
   };
 
   const aCrear = DEFS.filter((def) => {
@@ -265,7 +271,7 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
     data: aCrear.map((def) => ({
       borradorId,
       concepto: def.concepto,
-      valor: valorPara(def.tipoFija, valores),
+      valorCentavos: valorPara(def.tipoFija, valores),
       orden: def.orden,
       origen: "AUTO" as const,
       seccion: def.seccion,
@@ -279,8 +285,9 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
  * Reemplaza el valor de las líneas COMISION + IVA_COMISION (o las crea si no
  * existen). Usado por `actualizarComisionBorrador` desde el editor.
  *
- * El IVA se calcula como `comision * tasaIva / 100n` (BigInt, truncado), idéntico
- * al cálculo del motor histórico.
+ * El IVA se calcula como `comision × tasaIva / 100` AL PESO, mitad hacia arriba
+ * (A.6 / D-1; idéntico al truncado histórico cuando la comisión es múltiplo de
+ * 100 pesos), la misma regla que el motor (`calcularBorrador`).
  *
  * Para SOCIO_LM: solo actualiza/crea IVA_COMISION (la COMISION no va a la factura
  * del cliente — es deducción interna). El campo `comision` del borrador se actualiza
@@ -289,7 +296,7 @@ export async function ensureLineasFijas(tx: Tx, borradorId: string): Promise<voi
 export async function actualizarLineasComision(
   tx: Tx,
   borradorId: string,
-  nuevaComision: bigint,
+  nuevaComision: Centavos,
   tasaIva: bigint,
 ): Promise<void> {
   // Determinar si el trámite es SOCIO_LM para filtrar la línea COMISION.
@@ -298,7 +305,7 @@ export async function actualizarLineasComision(
     select: { tramite: { select: { cliente: { select: { tipo: true } } } } },
   });
   const esSocioLM = borrador.tramite.cliente.tipo === TipoCliente.SOCIO_LM;
-  const nuevoIva = (nuevaComision * tasaIva) / 100n;
+  const nuevoIva = porcentajeDe(nuevaComision, tasaIva, 100n, { precision: "PESO" });
   const productos = await resolverProductosLineasFijas(tx);
 
   for (const tipo of ["COMISION", "IVA_COMISION"] as const) {
@@ -322,14 +329,14 @@ export async function actualizarLineasComision(
     if (existente) {
       await tx.lineaRevision.update({
         where: { id: existente.id },
-        data: { valor },
+        data: { valorCentavos: valor },
       });
     } else {
       await tx.lineaRevision.create({
         data: {
           borradorId,
           concepto: def.concepto,
-          valor,
+          valorCentavos: valor,
           orden: def.orden,
           origen: "AUTO",
           seccion: def.seccion,

@@ -1,16 +1,20 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
-import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
+import { respuestaErrorPagos } from "@/lib/pagos/respuesta-error";
 import { listarPagosGlobal } from "@/lib/pagos/service";
 import { listarPagosQuerySchema } from "@/lib/validations/pagos";
 
 /**
- * GET /api/pagos — vista global de pagos de todos los trámites.
- * La creación/edición/borrado sigue ocurriendo en /api/tramites/[id]/pagos,
- * que ya resuelve costoBancario, orden y AuditLog.
+ * GET /api/pagos — vista global de pagos de todos los trámites (módulo Pagos).
+ *
+ * Filtros (query): clienteId, tramiteId, canalPago, proveedorEmpresaId,
+ * beneficiarioId (proveedor: pagos a sus fichas ∪ pagos que cubren sus
+ * facturas), soloSinFecha (alias heredado `solo_pendientes` / `soloPendientes`).
+ * Con proveedor devuelve también `resumenProveedor` (misma cifra que la ficha),
+ * salvo a OPERATIVO, que no ve los totales del proveedor (D-6/R16).
+ * La creación/edición/borrado sigue en /api/tramites/[id]/pagos y /api/pagos/multi.
  */
 export async function GET(request: NextRequest) {
   const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO"]);
@@ -20,22 +24,23 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const q = request.nextUrl.searchParams;
     const params = listarPagosQuerySchema.parse({
-      clienteId: request.nextUrl.searchParams.get("clienteId") ?? undefined,
-      tramiteId: request.nextUrl.searchParams.get("tramiteId") ?? undefined,
-      canalPago: request.nextUrl.searchParams.get("canalPago") ?? undefined,
-      soloPendientes:
-        request.nextUrl.searchParams.get("solo_pendientes") ?? undefined,
+      clienteId: q.get("clienteId") ?? undefined,
+      tramiteId: q.get("tramiteId") ?? undefined,
+      canalPago: q.get("canalPago") ?? undefined,
+      soloPendientes: q.get("solo_pendientes") ?? q.get("soloPendientes") ?? undefined,
+      soloSinFecha: q.get("soloSinFecha") ?? q.get("solo_sin_fecha") ?? undefined,
+      proveedorEmpresaId: q.get("proveedorEmpresaId") ?? undefined,
+      beneficiarioId: q.get("beneficiarioId") ?? undefined,
     });
 
-    const result = await listarPagosGlobal(params);
+    const result = await listarPagosGlobal(params, { rol: session.user.rol });
 
     return jsonResponse(result);
   } catch (error) {
-    if (error instanceof ZodError) {
-      return validationError(error);
-    }
-
+    const respuesta = respuestaErrorPagos(error);
+    if (respuesta) return respuesta;
     throw error;
   }
 }

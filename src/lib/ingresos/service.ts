@@ -7,7 +7,7 @@
  *   - PagoFactura DEVOLUCION → salida (negativo)
  *
  * Ordenada por fecha ASC, con saldo de caja corrido por cliente.
- * Rol ADMIN/REVISOR.
+ * Rol ADMIN/REVISOR. Montos en CENTAVOS de COP (el serializador de la respuesta los emite en pesos texto).
  */
 
 import { TipoPagoFactura } from "@prisma/client";
@@ -104,8 +104,8 @@ export async function getIngresos(input: GetIngresosInput = {}): Promise<FilaIng
       referencia,
       tramiteId: primeraAplicacion?.tramiteId ?? null,
       borradorId: null,
-      montoConSigno: a.monto,
-      monto: a.monto,
+      montoConSigno: a.montoCentavos,
+      monto: a.montoCentavos,
       canalPago: a.tipoRecaudo,
       verificadoBanco: a.verificadoBanco,
       fecha: a.fecha,
@@ -122,8 +122,8 @@ export async function getIngresos(input: GetIngresosInput = {}): Promise<FilaIng
       referencia: p.factura.numSiigo,
       tramiteId: p.factura.borrador?.tramiteId ?? null,
       borradorId: p.factura.borradorId,
-      montoConSigno: esEntrada ? p.monto : -p.monto,
-      monto: p.monto,
+      montoConSigno: esEntrada ? p.montoCentavos : -p.montoCentavos,
+      monto: p.montoCentavos,
       // canalPago ahora es nullable; tipoRecaudo es la alternativa para recaudos
       canalPago: p.canalPago ?? p.tipoRecaudo ?? null,
       verificadoBanco: p.verificadoBanco,

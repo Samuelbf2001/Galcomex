@@ -12,6 +12,7 @@
 import { CategoriaDocumento, type Documento, Prisma, type Rol } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 import {
   createPresignedDownloadUrl,
   esClaveSegura,
@@ -165,12 +166,6 @@ function matchesCategoria(descripcion: string, categoria: CategoriaDocumento): b
   const keywords = CATEGORIA_KEYWORDS[categoria] ?? [];
   const lower = descripcion.toLowerCase();
   return keywords.some((kw) => lower.includes(kw));
-}
-
-function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(
-    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
-  ) as Prisma.InputJsonValue;
 }
 
 /**

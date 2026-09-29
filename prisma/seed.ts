@@ -4,15 +4,21 @@ import { hashPassword } from "better-auth/crypto";
 import { CAPACIDADES } from "../src/lib/capacidades/catalogo";
 import { sembrarConceptosVenta } from "../src/lib/catalogos/seed-conceptos";
 import { prisma } from "../src/lib/db/prisma";
+import { pesos } from "../src/lib/dinero";
 
+// Fase centavos (DISENO-CENTAVOS.md §D.2): toda columna bigint de dinero está en
+// CENTAVOS de COP. Los montos se escriben en pesos con `pesos(1_950)` (= 195_000n
+// centavos): nunca literales bigint sueltos, que en una BD nueva quedarían como
+// $19,50. Los textos de Parametro y capacidades siguen en PESOS texto canónico.
+// La marca DINERO_UNIDAD_BD = CENTAVOS la escribe la migración, no la semilla.
 async function main() {
   // Matriz de recaudo (tipos de recaudo del cliente → Galcomex)
-  const matrizRecaudo: { tipoRecaudo: TipoRecaudo; grupo: string; descripcion: string; costoFijo: bigint }[] = [
-    { tipoRecaudo: "BANCOLOMBIA",  grupo: "DIGITAL", descripcion: "Bancolombia (digital)",      costoFijo: 1950n  },
-    { tipoRecaudo: "OTROS_BANCOS", grupo: "DIGITAL", descripcion: "Otros Bancos (digital)",     costoFijo: 2200n  },
-    { tipoRecaudo: "SUCURSAL",     grupo: "FISICO",  descripcion: "Sucursal Bancolombia",        costoFijo: 11290n },
-    { tipoRecaudo: "CORRESPONSAL", grupo: "FISICO",  descripcion: "Corresponsal Bancolombia",    costoFijo: 6190n  },
-    { tipoRecaudo: "CAJERO",       grupo: "FISICO",  descripcion: "Cajero Bancolombia",          costoFijo: 5200n  },
+  const matrizRecaudo: { tipoRecaudo: TipoRecaudo; grupo: string; descripcion: string; costoFijoCentavos: bigint }[] = [
+    { tipoRecaudo: "BANCOLOMBIA",  grupo: "DIGITAL", descripcion: "Bancolombia (digital)",      costoFijoCentavos: pesos(1_950)  },
+    { tipoRecaudo: "OTROS_BANCOS", grupo: "DIGITAL", descripcion: "Otros Bancos (digital)",     costoFijoCentavos: pesos(2_200)  },
+    { tipoRecaudo: "SUCURSAL",     grupo: "FISICO",  descripcion: "Sucursal Bancolombia",        costoFijoCentavos: pesos(11_290) },
+    { tipoRecaudo: "CORRESPONSAL", grupo: "FISICO",  descripcion: "Corresponsal Bancolombia",    costoFijoCentavos: pesos(6_190)  },
+    { tipoRecaudo: "CAJERO",       grupo: "FISICO",  descripcion: "Cajero Bancolombia",          costoFijoCentavos: pesos(5_200)  },
   ];
 
   for (const item of matrizRecaudo) {
@@ -26,10 +32,10 @@ async function main() {
   }
 
   // Matriz de pago (canales de pago Galcomex → proveedor)
-  const matrizPago: { canalPago: CanalPago; descripcion: string; costoFijo: bigint }[] = [
-    { canalPago: "TRANSF_BANCOLOMBIA",  descripcion: "Transferencia Bancolombia",  costoFijo: 3900n },
-    { canalPago: "PSE",                 descripcion: "PSE",                        costoFijo: 0n    },
-    { canalPago: "TRANSF_OTROS_BANCOS", descripcion: "Transferencia Otros Bancos", costoFijo: 7300n },
+  const matrizPago: { canalPago: CanalPago; descripcion: string; costoFijoCentavos: bigint }[] = [
+    { canalPago: "TRANSF_BANCOLOMBIA",  descripcion: "Transferencia Bancolombia",  costoFijoCentavos: pesos(3_900) },
+    { canalPago: "PSE",                 descripcion: "PSE",                        costoFijoCentavos: pesos(0)     },
+    { canalPago: "TRANSF_OTROS_BANCOS", descripcion: "Transferencia Otros Bancos", costoFijoCentavos: pesos(7_300) },
   ];
 
   for (const item of matrizPago) {

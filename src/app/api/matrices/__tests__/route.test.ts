@@ -147,7 +147,7 @@ describe("PATCH /api/matrices/recaudo/[tipoRecaudo]", () => {
       tipoRecaudo: "CAJERO",
       grupo: "FISICO",
       descripcion: "Cajero",
-      costoFijo: 5_000n,
+      costoFijoCentavos: 500_000n,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
@@ -158,11 +158,11 @@ describe("PATCH /api/matrices/recaudo/[tipoRecaudo]", () => {
     expect(res.status).toBe(200);
     expect(actualizarCostoRecaudo).toHaveBeenCalledWith(
       "CAJERO",
-      5_000n,
+      500_000n, // centavos (fase centavos)
       "user-test-id",
     );
     const body = await res.json();
-    expect(body.matrizRecaudo.costoFijo).toBe("5000");
+    expect(body.matrizRecaudo.costoFijo).toBe("5000.00");
   });
 });
 
@@ -220,7 +220,7 @@ describe("PATCH /api/matrices/pago/[canalPago]", () => {
       id: "1",
       canalPago: "PSE",
       descripcion: "PSE",
-      costoFijo: 0n,
+      costoFijoCentavos: 0n,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
@@ -231,6 +231,27 @@ describe("PATCH /api/matrices/pago/[canalPago]", () => {
     expect(res.status).toBe(200);
     expect(actualizarCostoPago).toHaveBeenCalledWith("PSE", 0n, "user-test-id");
     const body = await res.json();
-    expect(body.matrizPago.costoFijo).toBe("0");
+    expect(body.matrizPago.costoFijo).toBe("0.00");
+  });
+
+  it("ADMIN con centavos (\"3900.50\") → centavos exactos; formato es-CO o miles → 400", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(asSession("ADMIN"));
+    vi.mocked(actualizarCostoPago).mockResolvedValue({
+      id: "1",
+      canalPago: "PSE",
+      descripcion: "PSE",
+      costoFijoCentavos: 390_050n,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    const ok = await pagoPATCH(makeRequest("/api/matrices/pago/PSE", { costoFijo: "3900.50" }), pagoCtx("PSE"));
+    expect(ok.status).toBe(200);
+    expect(actualizarCostoPago).toHaveBeenCalledWith("PSE", 390_050n, "user-test-id");
+    expect((await ok.json()).matrizPago.costoFijo).toBe("3900.50");
+    vi.mocked(actualizarCostoPago).mockClear();
+    for (const malo of ["3.900", "3900,50", "3900.505"]) {
+      const res = await pagoPATCH(makeRequest("/api/matrices/pago/PSE", { costoFijo: malo }), pagoCtx("PSE"));
+      expect(res.status).toBe(400);
+    }
+    expect(actualizarCostoPago).not.toHaveBeenCalled();
   });
 });

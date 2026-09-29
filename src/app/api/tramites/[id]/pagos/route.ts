@@ -1,24 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { ZodError } from "zod";
 
 import { requireRole } from "@/lib/auth/session";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
-import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
-import {
-  FacturaProveedorNoEncontradaError,
-  FacturaProveedorNoModificableError,
-} from "@/lib/facturas-proveedor/service";
-import {
-  DocumentoDeOtroTramiteError,
-  DocumentoNoEncontradoParaPagoError,
-  MatrizCanalNoEncontradoError,
-  PagoFacturaDeOtroTramiteError,
-  SinAnticipoAplicadoError,
-  crearPago,
-  getLibroPagos,
-  getPagoConBeneficiario,
-} from "@/lib/pagos/service";
+import { respuestaErrorPagos } from "@/lib/pagos/respuesta-error";
+import { crearPago, getLibroPagos, getPagoConBeneficiario } from "@/lib/pagos/service";
 import { crearPagoSchema } from "@/lib/validations/pagos";
 
 type RouteContext = {
@@ -47,6 +33,14 @@ export async function GET(_request: NextRequest, context: RouteContext) {
   return jsonResponse(libro);
 }
 
+/**
+ * POST /api/tramites/[id]/pagos — pago suelto del DO (CxP v2, §B.3).
+ * Con `aplicaciones` (Σ montos = valor) o la entrada heredada
+ * `facturaProveedorIds` (reparto FIFO). 201 con `{ pago }`; 200 con
+ * `{ pago, repetido: true }` si la `claveIdempotencia` ya se registró.
+ * Errores con `{ error, codigo, detalles? }` (FACTURA_SIN_SALDO 409,
+ * MONTO_EXCEDE_SALDO 409, FACTURA_DE_OTRO_PROVEEDOR 422, SIN_ANTICIPO 422…).
+ */
 export async function POST(request: NextRequest, context: RouteContext) {
   const session = await requireRole(["ADMIN", "OPERATIVO"]);
 
@@ -65,43 +59,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
     });
     const pago = await getPagoConBeneficiario(creado.id);
 
-    return jsonResponse({ pago }, { status: 201 });
+    return jsonResponse({ pago, repetido: creado.repetido }, { status: creado.repetido ? 200 : 201 });
   } catch (error) {
-    if (error instanceof ZodError) {
-      return validationError(error);
-    }
-
-    if (error instanceof MatrizCanalNoEncontradoError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-
-    if (error instanceof FacturaProveedorNoEncontradaError) {
-      return NextResponse.json({ error: error.message }, { status: 404 });
-    }
-
-    if (error instanceof FacturaProveedorNoModificableError) {
-      return NextResponse.json({ error: error.message }, { status: 422 });
-    }
-
-    if (error instanceof PagoFacturaDeOtroTramiteError) {
-      return NextResponse.json({ error: error.message }, { status: 422 });
-    }
-
-    if (error instanceof SinAnticipoAplicadoError) {
-      return NextResponse.json({ error: error.message }, { status: 422 });
-    }
-
-    if (
-      error instanceof DocumentoNoEncontradoParaPagoError ||
-      error instanceof DocumentoDeOtroTramiteError
-    ) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
-    }
-
-    if (isDomainError(error)) {
-      return domainErrorResponse(error);
-    }
-
+    const respuesta = respuestaErrorPagos(error);
+    if (respuesta) return respuesta;
     throw error;
   }
 }

@@ -33,7 +33,6 @@ import {
   fetchPlantillas,
   fetchTarifarios,
   fetchTarifariosLigero,
-  formatCOP,
   formatFecha,
   type DisparadorTarifa,
   type EventoCatalogoRow,
@@ -50,13 +49,15 @@ import {
   type ConceptoVentaRow,
 } from "@/components/configuracion/catalogos/catalogos-api";
 import { ModuleState } from "@/components/layout/module-state";
-import { CampoMoneda } from "@/components/ui/campo-moneda";
+import { CampoMoneda, useErroresMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin } from "@/lib/auth/rol-context";
+import { centavosDeTexto, formatoPesos } from "@/lib/dinero";
 import { ejemploTramo } from "@/lib/tarifas/motor";
+import { aFechaCalendario, fechaCalendarioAInput, hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -89,15 +90,19 @@ function soloDigitos(raw: string): string {
 }
 
 function hoyIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return hoyBogotaISO();
 }
 
 function unAnioDespues(desde: string): string {
-  const d = new Date(`${desde}T00:00:00.000Z`);
-  if (Number.isNaN(d.getTime())) return "";
+  let d: Date;
+  try {
+    d = aFechaCalendario(desde);
+  } catch {
+    return "";
+  }
   d.setUTCFullYear(d.getUTCFullYear() + 1);
   d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return fechaCalendarioAInput(d);
 }
 
 // ─── Modal: nuevo tarifario ───────────────────────────────────────────────────
@@ -273,10 +278,14 @@ function NuevoTarifarioModal({
 
 function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: TarifarioRow; onClose: () => void; onCreated: (t: TarifarioRow) => void }) {
   const siguienteDesde = (() => {
-    const d = new Date(tarifario.vigenteHasta);
-    if (Number.isNaN(d.getTime())) return hoyIso();
+    let d: Date;
+    try {
+      d = aFechaCalendario(tarifario.vigenteHasta);
+    } catch {
+      return hoyIso();
+    }
     d.setUTCDate(d.getUTCDate() + 1);
-    return d.toISOString().slice(0, 10);
+    return fechaCalendarioAInput(d);
   })();
   const [nombre, setNombre] = useState(tarifario.nombre);
   const [desde, setDesde] = useState(siguienteDesde);
@@ -342,7 +351,7 @@ function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: Tarifario
 
 // ─── Modal: ítem ──────────────────────────────────────────────────────────────
 
-type ItemFormState = {
+export type ItemFormState = {
   concepto: string;
   nombrePublico: string;
   siigoCodigo: string;
@@ -378,7 +387,7 @@ function estadoDesdeItem(item: TarifaItemRow | null, orden: number): ItemFormSta
     disparador: item?.disparador ?? "SIEMPRE",
     eventoCodigo: item?.eventoCodigo ?? "",
     unidad: item?.unidad ?? "TRAMITE",
-    valor: item?.valor && item.valor !== "0" ? item.valor : "",
+    valor: item?.valor && !esCeroPesos(item.valor) ? item.valor : "",
     valorAdicional: item?.valorAdicional ?? "",
     porcentaje: item?.porcentajeBps ? (item.porcentajeBps / 100).toString().replace(".", ",") : "",
     minSuelta: item?.minimos?.SUELTA ?? "",
@@ -394,7 +403,52 @@ function estadoDesdeItem(item: TarifaItemRow | null, orden: number): ItemFormSta
   };
 }
 
-function formDesdeEstado(s: ItemFormState): TarifaItemForm {
+/** "0", "0.00" (la API manda 2 decimales desde la fase centavos) → true. */
+function esCeroPesos(texto: string): boolean {
+  try {
+    return centavosDeTexto(texto) === 0n;
+  } catch {
+    return false;
+  }
+}
+
+/** El campo «Valor» / «Valor del primero» está en pantalla para este tipo de cálculo. */
+function usaValorPrincipal(tipo: TipoCalculoTarifa): boolean {
+  return tipo !== "PORCENTAJE_MIN" && tipo !== "ESPEJO_DE_COSTO" && tipo !== "POR_TRAMO";
+}
+
+/** Nombres de los CampoMoneda del ítem (clave en `useErroresMoneda`). */
+export const CAMPO_ITEM = {
+  valor: "Valor",
+  valorAdicional: "Cada adicional",
+  minSuelta: "Mínimo carga suelta",
+  min20: "Mínimo contenedor 20′",
+  min40: "Mínimo contenedor 40′ / HQ",
+  escala: (i: number) => `Escala ${i + 1}`,
+} as const;
+
+/**
+ * Primer monto mal escrito entre los campos que ESTÁN en pantalla para el tipo
+ * de cálculo elegido (un error de un campo que se ocultó al cambiar de tipo no
+ * bloquea). Sin esto, un mínimo mal escrito se quitaba del ítem y un «Valor del
+ * primero» mal escrito se guardaba como $0 (hallazgo de revisión centavos).
+ */
+export function errorMontoItem(s: ItemFormState, errores: Readonly<Record<string, string>>): string | null {
+  const visibles: string[] = [];
+  if (usaValorPrincipal(s.tipoCalculo)) visibles.push(CAMPO_ITEM.valor);
+  if (s.tipoCalculo === "PRIMERO_MAS_ADICIONAL") visibles.push(CAMPO_ITEM.valorAdicional);
+  if (s.tipoCalculo === "PORCENTAJE_MIN") visibles.push(CAMPO_ITEM.minSuelta, CAMPO_ITEM.min20, CAMPO_ITEM.min40);
+  if (s.tipoCalculo === "POR_TRAMO") s.tramos.forEach((_, i) => visibles.push(CAMPO_ITEM.escala(i)));
+  for (const campo of visibles) {
+    if (errores[campo]) return `${campo}: ${errores[campo]}`;
+  }
+  if (usaValorPrincipal(s.tipoCalculo) && s.valor.trim() === "") {
+    return `${CAMPO_ITEM.valor}: escribe el valor en pesos`;
+  }
+  return null;
+}
+
+export function formDesdeEstado(s: ItemFormState): TarifaItemForm {
   const pct = s.porcentaje.trim() ? Number(s.porcentaje.replace(",", ".")) : NaN;
   const minimos = s.tipoCalculo === "PORCENTAJE_MIN"
     ? {
@@ -411,7 +465,9 @@ function formDesdeEstado(s: ItemFormState): TarifaItemForm {
     disparador: s.disparador,
     eventoCodigo: s.disparador === "EVENTO" ? s.eventoCodigo || null : null,
     unidad: s.unidad,
-    valor: s.valor || "0",
+    // Solo es "0" cuando el tipo no usa «Valor» (el campo no está en pantalla);
+    // si está en pantalla y vacío, `errorMontoItem` ya frenó el guardado.
+    valor: usaValorPrincipal(s.tipoCalculo) ? s.valor : "0",
     valorAdicional: s.tipoCalculo === "PRIMERO_MAS_ADICIONAL" ? s.valorAdicional || null : null,
     porcentajeBps: s.tipoCalculo === "PORCENTAJE_MIN" && !Number.isNaN(pct) ? Math.round(pct * 100) : null,
     minimos: minimos && Object.keys(minimos).length ? minimos : null,
@@ -605,6 +661,7 @@ function ItemModal({
   // lo puede volver a rellenar; si lo editó a mano, se respeta (B1).
   const nombrePublicoAutoRef = useRef(item?.nombrePublico ?? "");
   const set = <K extends keyof ItemFormState>(k: K, v: ItemFormState[K]) => setS((prev) => ({ ...prev, [k]: v }));
+  const erroresMoneda = useErroresMoneda();
 
   const conceptoSel = conceptos.find((c) => c.codigo === s.concepto) ?? null;
 
@@ -631,6 +688,11 @@ function ItemModal({
 
     if (!conceptoSel) {
       setError("Elige un concepto del catálogo antes de guardar.");
+      return;
+    }
+    const errorMonto = errorMontoItem(s, erroresMoneda.errores);
+    if (errorMonto) {
+      setError(errorMonto);
       return;
     }
     if (s.tipoCalculo === "POR_TRAMO") {
@@ -660,6 +722,9 @@ function ItemModal({
     setS((prev) => ({ ...prev, tramos: prev.tramos.map((t, j) => (j === i ? { ...t, [campo]: v } : t)) }));
   }
   function quitarTramo(i: number) {
+    // Las escalas se renumeran: se olvidan sus errores (el campo que siga mal
+    // escrito vuelve a marcarse al tocarlo y el formulario nativo lo frena).
+    s.tramos.forEach((_, j) => erroresMoneda.quitar(CAMPO_ITEM.escala(j)));
     setS((prev) => ({ ...prev, tramos: prev.tramos.filter((_, j) => j !== i) }));
   }
   function agregarTramo() {
@@ -740,13 +805,13 @@ function ItemModal({
           {s.tipoCalculo !== "PORCENTAJE_MIN" && s.tipoCalculo !== "ESPEJO_DE_COSTO" && s.tipoCalculo !== "POR_TRAMO" ? (
             <label className="block space-y-1">
               <span className={LABEL}>{s.tipoCalculo === "PRIMERO_MAS_ADICIONAL" ? "Valor del primero (COP) *" : "Valor (COP) *"}</span>
-              <CampoMoneda value={s.valor} onValueChange={(v) => set("valor", v)} required className={INPUT} placeholder="100.000" />
+              <CampoMoneda value={s.valor} onValueChange={(v, d) => { set("valor", v); erroresMoneda.registrar(CAMPO_ITEM.valor, d); }} required className={INPUT} placeholder="100.000" />
             </label>
           ) : null}
           {s.tipoCalculo === "PRIMERO_MAS_ADICIONAL" ? (
             <label className="block space-y-1">
               <span className={LABEL}>Cada adicional (COP) *</span>
-              <CampoMoneda value={s.valorAdicional} onValueChange={(v) => set("valorAdicional", v)} required className={INPUT} placeholder="180.000" />
+              <CampoMoneda value={s.valorAdicional} onValueChange={(v, d) => { set("valorAdicional", v); erroresMoneda.registrar(CAMPO_ITEM.valorAdicional, d); }} required className={INPUT} placeholder="180.000" />
             </label>
           ) : null}
           {usaUnidad ? (
@@ -771,15 +836,15 @@ function ItemModal({
               <div className="sm:col-span-2 grid gap-3 sm:grid-cols-3">
                 <label className="block space-y-1">
                   <span className={LABEL}>Mínimo carga suelta</span>
-                  <CampoMoneda value={s.minSuelta} onValueChange={(v) => set("minSuelta", v)} className={INPUT} placeholder="370.000" />
+                  <CampoMoneda value={s.minSuelta} onValueChange={(v, d) => { set("minSuelta", v); erroresMoneda.registrar(CAMPO_ITEM.minSuelta, d); }} className={INPUT} placeholder="370.000" />
                 </label>
                 <label className="block space-y-1">
                   <span className={LABEL}>Mínimo contenedor 20′</span>
-                  <CampoMoneda value={s.min20} onValueChange={(v) => set("min20", v)} className={INPUT} placeholder="498.000" />
+                  <CampoMoneda value={s.min20} onValueChange={(v, d) => { set("min20", v); erroresMoneda.registrar(CAMPO_ITEM.min20, d); }} className={INPUT} placeholder="498.000" />
                 </label>
                 <label className="block space-y-1">
                   <span className={LABEL}>Mínimo contenedor 40′ / HQ</span>
-                  <CampoMoneda value={s.min40} onValueChange={(v) => set("min40", v)} className={INPUT} placeholder="554.000" />
+                  <CampoMoneda value={s.min40} onValueChange={(v, d) => { set("min40", v); erroresMoneda.registrar(CAMPO_ITEM.min40, d); }} className={INPUT} placeholder="554.000" />
                 </label>
               </div>
             </>
@@ -818,7 +883,10 @@ function ItemModal({
                           <td className="px-2 py-1.5">
                             <CampoMoneda
                               value={t.valor}
-                              onValueChange={(v) => setTramo(i, "valor", v)}
+                              onValueChange={(v, d) => {
+                                setTramo(i, "valor", v);
+                                erroresMoneda.registrar(CAMPO_ITEM.escala(i), d);
+                              }}
                               className={INPUT}
                               placeholder="250.000"
                               aria-label={`Escala ${i + 1}: precio por unidad en COP`}
@@ -863,7 +931,7 @@ function ItemModal({
                 </label>
                 <p className="mt-1.5 text-sm font-medium text-slate-800">
                   {ejemplo
-                    ? `Escala ${ejemplo.rango} → ${ejemplo.cantidad} × ${formatCOP(ejemplo.valorUnitario.toString())} = ${formatCOP(ejemplo.total.toString())}`
+                    ? `Escala ${ejemplo.rango} → ${ejemplo.cantidad} × ${formatoPesos(ejemplo.valorUnitario)} = ${formatoPesos(ejemplo.total)}`
                     : "Completa las escalas y una cantidad para ver el ejemplo."}
                 </p>
               </div>

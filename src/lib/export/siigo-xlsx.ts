@@ -7,11 +7,18 @@
  *
  * Reglas:
  * - Función pura sobre DTOs; NO accede a BD.
- * - Montos BigInt → Number SOLO en celdas numéricas (COP enteros < 2^53, safe).
- * - Celdas de valor usan XLSX tipo "n" (número), nunca texto formateado.
+ * - Dinero: los DTO traen CENTAVOS (`bigint`). La celda lleva PESOS con 2
+ *   decimales (`numeroDeCentavos`, 50280145n → 502801.45) y formato
+ *   "#,##0.00" (fase centavos, A.7). Nunca texto formateado.
+ * - Celdas de valor usan XLSX tipo "n" (número).
  */
 
 import * as XLSX from "xlsx";
+
+import { numeroDeCentavos } from "@/lib/dinero";
+
+/** Formato de celda de dinero: siempre 2 decimales (D-5). */
+export const FORMATO_CELDA_DINERO = "#,##0.00";
 
 // ─── Tipos de entrada ─────────────────────────────────────────────────────────
 
@@ -71,9 +78,9 @@ export interface CarteraClienteDto {
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
-/** Crea una celda numérica explícita (type "n"). Conversión BigInt→number segura (COP < 2^53). */
-function numCell(value: bigint): XLSX.CellObject {
-  return { t: "n", v: Number(value) };
+/** Celda de dinero: centavos → pesos con 2 decimales (type "n", formato "#,##0.00"). */
+function numCell(centavos: bigint): XLSX.CellObject {
+  return { t: "n", v: numeroDeCentavos(centavos), z: FORMATO_CELDA_DINERO };
 }
 
 /** Crea una celda de texto (type "s"). */

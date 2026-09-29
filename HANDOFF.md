@@ -6,6 +6,8 @@
 > 3. `CLAUDE.md` — arquitectura, invariantes, parámetros (incluye Banco de Occidente NIT 890300279 fijo para 4x1000) y casos dorados (BUN26-0026 PROPIO, BAQ-18453 SOCIO_LM).
 >
 > El cuerpo histórico de este HANDOFF (abajo) describe el estado en Sprint 3 y NO refleja todo lo construido después (entidad `FacturaProveedor`, `PagoFactura` con devoluciones, integración Siigo API, flujo SOCIO_LM, etc.).
+>
+> **Fase centavos (2026-09):** el dinero ya no es BigInt en pesos sino BigInt en **CENTAVOS** (columnas `…Centavos`), y todo texto de dinero (API, MCP, JSON guardados, `Parametro`) son **pesos** con punto decimal y hasta 2 decimales (`"502801.45"`; la API responde siempre con 2). Solo `src/lib/dinero` convierte, formatea y redondea. Los ejemplos de abajo (`150_000n`, `z.coerce.bigint()`, `(comision * 19n) / 100n`) quedaron obsoletos: la guía vigente es `docs/DINERO-CENTAVOS.md`.
 
 ---
 
@@ -101,7 +103,7 @@ Botón "Generar borrador" en el detalle del DO → vista previa con líneas, com
 - Auth: `requireRole([...])` de `src/lib/auth/session.ts` (devuelve `NextResponse` en fallo).
 - JSON con BigInt: `jsonResponse(...)` de `src/lib/http/json.ts`.
 - Errores Zod: `validationError(...)` de `src/lib/http/errors.ts`.
-- Dinero en Zod: `z.coerce.bigint().refine(v => v >= 0n)`.
+- Dinero en Zod: `dineroSchema` / `dineroPositivoSchema` de `@/lib/dinero` (texto en pesos → centavos). *(Antes de la fase centavos: `z.coerce.bigint()`.)*
 - Concurrencia: `pg_advisory_xact_lock(hashtext(${lockKey}))` dentro de `prisma.$transaction` (ver `tramites/service.ts`, `anticipos/service.ts`).
 - Tests de integración: patrón de `src/lib/tramites/__tests__/service.test.ts` (TEST_PREFIX único, cleanup, `ensureDb` con skip si no hay BD, gated en `DATABASE_URL`).
 
@@ -109,11 +111,11 @@ Botón "Generar borrador" en el detalle del DO → vista previa con líneas, com
 
 ## Contexto que NO puedes olvidar
 
-### 1. Dinero = BigInt siempre
+### 1. Dinero = BigInt siempre (en CENTAVOS desde la fase centavos)
 ```typescript
-// ✅ CORRECTO
-const comision = 150_000n;
-const iva = (comision * 19n) / 100n; // 28500n
+// ✅ CORRECTO (centavos; redondeo solo con el núcleo @/lib/dinero)
+const comision = pesos(150_000); // 15_000_000n centavos
+const iva = porcentajeDe(comision, 19n, 100n, { precision: "PESO" }); // 2_850_000n = $ 28.500
 
 // ❌ NUNCA HACER ESTO
 const comision = 150000;

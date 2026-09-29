@@ -15,13 +15,18 @@ import { getTarifario } from "@/lib/tarifas/service";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
+/**
+ * Tramos guardados (JSON, pesos en texto: "300000" o "300000.45"). El valor se
+ * pasa tal cual: el PDF lo lee con `centavosDeTexto` y un texto ilegible es
+ * error visible (antes `/^\d+$/` omitía en silencio un tramo con decimales).
+ */
 function tramosDe(json: unknown): TarifaItemPdfDto["tramos"] {
   if (!Array.isArray(json)) return null;
   const out: NonNullable<TarifaItemPdfDto["tramos"]> = [];
   for (const t of json) {
     if (!t || typeof t !== "object") continue;
     const { hasta, valor } = t as Record<string, unknown>;
-    if (typeof valor === "string" && /^\d+$/.test(valor) && (hasta === null || typeof hasta === "number")) {
+    if (typeof valor === "string" && (hasta === null || typeof hasta === "number")) {
       out.push({ hasta: hasta as number | null, valor });
     }
   }
@@ -68,8 +73,9 @@ export async function GET(_request: NextRequest, context: RouteContext) {
         tipoCalculo: i.tipoCalculo,
         disparador: i.disparador,
         unidad: i.unidad,
-        valor: i.valor,
-        valorAdicional: i.valorAdicional,
+        // Centavos de COP.
+        valor: i.valorCentavos,
+        valorAdicional: i.valorAdicionalCentavos,
         porcentajeBps: i.porcentajeBps,
         minimos: minimosDe(i.minimos),
         conceptoCosto: i.conceptoCosto,

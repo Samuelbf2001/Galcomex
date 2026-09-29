@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchClientes, type ClienteRow } from "@/components/clientes/clientes-api";
 import {
   type EstadoHoja,
+  formatoMontoReconciliacion,
   importarGrupoEPapis,
   type ResultadoHoja,
   type ResultadoImport,
@@ -554,10 +555,10 @@ function FilaHoja({ hoja }: { hoja: ResultadoHoja }) {
                     <tr key={`${fila.concepto}-${idx}`} className="border-b border-slate-100">
                       <td className="px-3 py-2 text-slate-700">{fila.concepto}</td>
                       <td className="px-3 py-2 text-right font-mono text-slate-700">
-                        {fila.sistema}
+                        {formatoMontoReconciliacion(fila.sistema)}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-slate-700">
-                        {fila.excel}
+                        {formatoMontoReconciliacion(fila.excel)}
                       </td>
                       <td className="px-3 py-2 text-center">
                         {fila.ok ? (

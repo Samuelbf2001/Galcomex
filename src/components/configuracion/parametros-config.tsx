@@ -7,6 +7,7 @@ import { patchJson } from "@/components/configuracion/respuesta-api";
 import { ModuleState } from "@/components/layout/module-state";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { describirError, useToast } from "@/components/ui/toast";
+import { centavosDeTexto, formatoPesos } from "@/lib/dinero";
 
 export type ParametroRow = {
   id: string;
@@ -25,6 +26,16 @@ function esParametroMonedaCOP(clave: string): boolean {
   return clave === "COMISION_LM" || clave.startsWith("UMBRAL_");
 }
 
+/** Muestra un parámetro de dinero formateado ("$ 150.000"); el resto tal cual (tasas, texto). */
+function valorMostrado(p: ParametroRow): string {
+  if (!esParametroMonedaCOP(p.clave)) return p.valor;
+  try {
+    return formatoPesos(centavosDeTexto(p.valor));
+  } catch {
+    return p.valor;
+  }
+}
+
 /**
  * Único parámetro de moneda que legítimamente admite negativos: el umbral de
  * cartera dispara la alerta cuando el saldo neto del cliente cae por debajo
@@ -32,6 +43,16 @@ function esParametroMonedaCOP(clave: string): boolean {
  */
 function permiteNegativoParametro(clave: string): boolean {
   return clave === "UMBRAL_ALERTA_CARTERA_CLIENTE";
+}
+
+/** La comisión LM va en pesos enteros (diseño centavos A.8); los umbrales admiten centavos. */
+function permiteCentavosParametro(clave: string): boolean {
+  return clave !== "COMISION_LM";
+}
+
+/** Texto para el aviso de «guardado»: dinero en es-CO ("$ 500.000,50"), el resto tal cual. */
+export function textoAvisoParametro(clave: string, valor: string): string {
+  return valorMostrado({ id: "", clave, valor, descripcion: null });
 }
 
 /**
@@ -55,22 +76,30 @@ export function ParametrosConfig({
   const [valor, setValor] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Mensaje del CampoMoneda si lo escrito no es un monto válido (no es lo mismo que vacío). */
+  const [errorMonto, setErrorMonto] = useState<string | null>(null);
 
   function abrir(p: ParametroRow) {
     setEditando(p.clave);
     setValor(p.valor);
     setError(null);
+    setErrorMonto(null);
   }
 
   function cerrar() {
     setEditando(null);
     setValor("");
     setError(null);
+    setErrorMonto(null);
   }
 
   async function guardar(clave: string) {
     if (guardando) return;
     setError(null);
+    if (errorMonto) {
+      setError(errorMonto);
+      return;
+    }
     const trimmed = valor.trim();
     if (trimmed.length === 0) {
       setError("El valor no puede estar vacío");
@@ -87,7 +116,7 @@ export function ParametrosConfig({
       setParametros((prev) =>
         prev.map((p) => (p.clave === clave ? { ...p, valor: trimmed } : p)),
       );
-      toast({ title: "Parámetro guardado", description: `${clave} = ${trimmed}`, variant: "success" });
+      toast({ title: "Parámetro guardado", description: `${clave} = ${textoAvisoParametro(clave, trimmed)}`, variant: "success" });
       cerrar();
     } catch (caught) {
       const mensaje = describirError(caught, "No fue posible guardar el parámetro");
@@ -132,12 +161,16 @@ export function ParametrosConfig({
                       {esParametroMonedaCOP(parametro.clave) ? (
                         <CampoMoneda
                           value={valor}
-                          onValueChange={setValor}
+                          onValueChange={(t, d) => {
+                            setValor(t);
+                            setErrorMonto(d.ok ? null : d.mensaje);
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") void guardar(parametro.clave);
                             if (e.key === "Escape") cerrar();
                           }}
                           permitirNegativo={permiteNegativoParametro(parametro.clave)}
+                          decimales={permiteCentavosParametro(parametro.clave)}
                           autoFocus
                           disabled={guardando}
                           aria-label={`Valor de ${parametro.clave}`}
@@ -173,7 +206,7 @@ export function ParametrosConfig({
                       ) : null}
                     </div>
                   ) : (
-                    esAdmin ? <button type="button" disabled={editando !== null} onClick={() => abrir(parametro)} aria-label={`Editar valor de ${parametro.clave}`} className="min-h-10 rounded border border-dashed border-slate-300 px-3 text-left font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60">{parametro.valor}</button> : parametro.valor
+                    esAdmin ? <button type="button" disabled={editando !== null} onClick={() => abrir(parametro)} aria-label={`Editar valor de ${parametro.clave}`} className="min-h-10 rounded border border-dashed border-slate-300 px-3 text-left font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60">{valorMostrado(parametro)}</button> : valorMostrado(parametro)
                   )}
                 </td>
                 <td className="px-4 py-3 text-slate-600">

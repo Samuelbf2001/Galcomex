@@ -1,6 +1,8 @@
 import { TipoCliente } from "@prisma/client";
 import { z } from "zod";
 
+import { dineroSchema } from "@/lib/dinero";
+
 export const tipoClienteQuerySchema = z
   .enum(["propio", "socio_lm", "PROPIO", "SOCIO_LM"])
   .optional()
@@ -15,10 +17,13 @@ export const tipoClienteQuerySchema = z
 export const tarifaClienteSchema = z.object({
   anio: z.number().int().min(2020).max(2100),
   tipo: z.enum(["por_contenedor", "fijo", "porcentaje_cif"]),
-  valor: z.coerce.bigint().refine((valor) => valor >= 0n, {
+  /** Pesos de entrada ("150000" o "150000.50"); centavos de salida (bigint). */
+  valor: dineroSchema.refine((valor) => valor >= 0n, {
     message: "La tarifa no puede ser negativa",
   }),
-});
+})
+  // Columna de Prisma: valorCentavos (una llave "valor" haría fallar el create en ejecución).
+  .transform(({ valor, ...resto }) => ({ ...resto, valorCentavos: valor }));
 
 /**
  * Forma común de los campos de un cliente, SIN `.default()`. Es la base de

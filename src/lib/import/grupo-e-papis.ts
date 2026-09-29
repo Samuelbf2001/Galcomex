@@ -11,8 +11,11 @@
  *     aplicación + pagos + borrador) y avanza el borrador a FACTURADO.
  *   - Reconcilia los conceptos clave contra las celdas del Excel a 0 pesos.
  *
- * INVARIANTE: todo el dinero es BigInt (COP enteros). El resultado se devuelve
- * por JSON, por lo que los montos de la reconciliación se serializan a string.
+ * INVARIANTE (fase centavos): todo el dinero es BigInt en CENTAVOS de COP. Las
+ * celdas del Excel (pesos, `number`) se leen con el núcleo y se llevan al PESO
+ * (libro de la era en pesos; ver `toBigInt`). Los montos de la reconciliación
+ * viajan como `bigint` y el serializador único los emite como pesos texto
+ * ("41868042.00").
  */
 
 import {
@@ -27,7 +30,9 @@ import * as XLSX from "xlsx";
 
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
+import { pesos, type Centavos } from "@/lib/dinero";
 import {
+  centavosDeCeldaEraPesos,
   listDoSheets,
   parseDoSheetFromWorkbook,
   type ParsedDoSheet,
@@ -42,10 +47,10 @@ import { transitionTramite } from "@/lib/tramites/service";
 
 export interface FilaReconciliacion {
   concepto: string;
-  /** Valor calculado/persistido por el sistema (BigInt serializado). */
-  sistema: string;
-  /** Valor leído del Excel (BigInt serializado). */
-  excel: string;
+  /** Valor calculado por el sistema, en centavos (la API lo emite "41868042.00"). */
+  sistema: Centavos;
+  /** Valor leído del Excel, en centavos (la API lo emite "41868042.00"). */
+  excel: Centavos;
   ok: boolean;
 }
 
@@ -112,11 +117,11 @@ export function mapTipoRecaudo(excel: string | null): TipoRecaudo {
  * `MatrizRecaudo`; ambos producen el mismo valor.
  */
 const COSTO_RECAUDO: Record<TipoRecaudo, bigint> = {
-  [TipoRecaudo.BANCOLOMBIA]: 1_950n,
-  [TipoRecaudo.OTROS_BANCOS]: 2_200n,
-  [TipoRecaudo.SUCURSAL]: 11_290n,
-  [TipoRecaudo.CORRESPONSAL]: 6_190n,
-  [TipoRecaudo.CAJERO]: 5_200n,
+  [TipoRecaudo.BANCOLOMBIA]: pesos(1_950),
+  [TipoRecaudo.OTROS_BANCOS]: pesos(2_200),
+  [TipoRecaudo.SUCURSAL]: pesos(11_290),
+  [TipoRecaudo.CORRESPONSAL]: pesos(6_190),
+  [TipoRecaudo.CAJERO]: pesos(5_200),
 };
 
 /**
@@ -124,18 +129,23 @@ const COSTO_RECAUDO: Record<TipoRecaudo, bigint> = {
  * El camino real lo resuelve `crearPago` desde `MatrizPago`.
  */
 const COSTO_PAGO: Record<CanalPago, bigint> = {
-  [CanalPago.TRANSF_BANCOLOMBIA]: 3_900n,
+  [CanalPago.TRANSF_BANCOLOMBIA]: pesos(3_900),
   [CanalPago.PSE]: 0n,
-  [CanalPago.TRANSF_OTROS_BANCOS]: 7_300n,
+  [CanalPago.TRANSF_OTROS_BANCOS]: pesos(7_300),
 };
 
 // ─── Helpers de parseo de celdas ────────────────────────────────────────────────
 
 const SHEET_NAME_PATTERN = /^([A-Z]{3})(\d{2})-(\d{4})$/;
 
-/** Convierte un número del Excel a BigInt (COP enteros, redondeo al entero más cercano). */
-function toBigInt(value: number | null | undefined): bigint {
-  return BigInt(Math.round(Number(value ?? 0)));
+/**
+ * Número del Excel (pesos) → centavos, AL PESO: "GRUPO E PAPIS 2026" es un
+ * libro de la era en pesos (ver `centavosDeCeldaEraPesos`: sin esto 10 de 25
+ * hojas quedarían en ERROR por fórmulas sin redondear). Un valor no numérico es
+ * error con el nombre del dato (la hoja queda en ERROR con ese motivo).
+ */
+function toBigInt(value: number | null | undefined, dato: string): bigint {
+  return centavosDeCeldaEraPesos(value, dato);
 }
 
 interface DatosHoja {
@@ -208,11 +218,11 @@ function extraerDatosHoja(parsed: ParsedDoSheet): DatosHoja {
 
   // ── Anticipos: una fila por cada renglón con monto; suma de todos ──
   const anticipoRows = parsed.advance.rows
-    .filter((r) => toBigInt(r.amount) !== 0n)
+    .filter((r) => toBigInt(r.amount, "Anticipo") !== 0n)
     .map((r) => {
       const tipoRecaudo = mapTipoRecaudo(r.collectionType);
       return {
-        monto: toBigInt(r.amount),
+        monto: toBigInt(r.amount, "Anticipo"),
         fecha: r.date ? new Date(r.date) : null,
         tipoRecaudo,
         // Solo las filas con tipo de recaudo explícito generan costo (réplica
@@ -230,7 +240,7 @@ function extraerDatosHoja(parsed: ParsedDoSheet): DatosHoja {
     return {
       concepto: String(r.concept ?? "Pago"),
       numSoporte: r.invoiceReference ? String(r.invoiceReference) : null,
-      valor: toBigInt(r.amount),
+      valor: toBigInt(r.amount, `Pago "${String(r.concept ?? "")}"`),
       canalPago,
       costoBancario: COSTO_PAGO[canalPago],
     };
@@ -240,7 +250,7 @@ function extraerDatosHoja(parsed: ParsedDoSheet): DatosHoja {
   const costoPorConcepto = new Map(
     parsed.costs.rows.map((c) => [
       String(c.concept ?? "").toUpperCase(),
-      toBigInt(c.amount),
+      toBigInt(c.amount, String(c.concept ?? "Costo")),
     ]),
   );
   const comision = costoPorConcepto.get("COMISIÓN GALCOMEX") ?? 0n;
@@ -249,7 +259,7 @@ function extraerDatosHoja(parsed: ParsedDoSheet): DatosHoja {
   const costosBancariosExcel = costoPorConcepto.get("COSTOS BANCARIOS") ?? 0n;
 
   // ── Saldo LM (B51): puede venir vacío en DOs con saldo a cargo → 0n ──
-  const montoLM = toBigInt(parsed.totals.luisMartinezBalance);
+  const montoLM = toBigInt(parsed.totals.luisMartinezBalance, "Saldo LM");
 
   const fechaFactura = fechaFacturaDeHoja(parsed);
 
@@ -267,11 +277,12 @@ function extraerDatosHoja(parsed: ParsedDoSheet): DatosHoja {
     comision,
     ivaComision,
     montoLM,
-    totalPagosExcel: toBigInt(parsed.payments.amountTotal),
+    // Σ en centavos de las filas (no la suma en coma flotante del parser).
+    totalPagosExcel: pagos.reduce((s, p) => s + p.valor, 0n),
     costosBancariosExcel,
     impuesto4x1000Excel,
-    totalFacturaExcel: toBigInt(parsed.totals.invoiceTotal),
-    saldoClienteExcel: toBigInt(parsed.totals.clientBalance),
+    totalFacturaExcel: toBigInt(parsed.totals.invoiceTotal, "Total factura"),
+    saldoClienteExcel: toBigInt(parsed.totals.clientBalance, "Saldo cliente"),
     saldoLMExcel: montoLM,
   };
 }
@@ -330,12 +341,7 @@ function construirReconciliacion(
   const reconciliacion: FilaReconciliacion[] = filas.map(([concepto, sis, exc]) => {
     const ok = sis === exc;
     if (!ok) requirioOverride = true;
-    return {
-      concepto,
-      sistema: sis.toString(),
-      excel: exc.toString(),
-      ok,
-    };
+    return { concepto, sistema: sis, excel: exc, ok };
   });
 
   return { reconciliacion, requirioOverride };
@@ -416,10 +422,10 @@ async function persistirHoja(
     const anticipo = await prisma.anticipo.create({
       data: {
         clienteId,
-        monto: row.monto,
+        montoCentavos: row.monto,
         fecha: row.fecha ?? datos.fechaFactura,
         tipoRecaudo: row.tipoRecaudo,
-        costoRecaudo: row.costoRecaudo,
+        costoRecaudoCentavos: row.costoRecaudo,
         soporteKey: `IMPORT:${datos.consecutivo}`,
         verificadoBanco: true,
       },
@@ -428,7 +434,7 @@ async function persistirHoja(
       data: {
         anticipoId: anticipo.id,
         tramiteId: tramite.id,
-        montoAplicado: row.monto,
+        montoAplicadoCentavos: row.monto,
       },
     });
   }
@@ -463,12 +469,12 @@ async function persistirHoja(
   await prisma.borradorFactura.update({
     where: { id: borrador.id },
     data: {
-      costosBancarios: datos.costosBancariosExcel,
-      impuesto4x1000: datos.impuesto4x1000Excel,
-      totalFactura: datos.totalFacturaExcel,
-      saldoAFavorCliente: saldoCliente > 0n ? saldoCliente : 0n,
-      saldoACargoCliente: saldoCliente < 0n ? -saldoCliente : 0n,
-      saldoAFavorLM: datos.saldoLMExcel,
+      costosBancariosCentavos: datos.costosBancariosExcel,
+      impuesto4x1000Centavos: datos.impuesto4x1000Excel,
+      totalFacturaCentavos: datos.totalFacturaExcel,
+      saldoAFavorClienteCentavos: saldoCliente > 0n ? saldoCliente : 0n,
+      saldoACargoClienteCentavos: saldoCliente < 0n ? -saldoCliente : 0n,
+      saldoAFavorLMCentavos: datos.saldoLMExcel,
     },
   });
 

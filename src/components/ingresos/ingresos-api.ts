@@ -1,9 +1,12 @@
 /**
  * Helpers de API para el módulo de Ingresos / Libro de bancos.
  * Consume GET /api/ingresos?clienteId=&desde=&hasta=
+ * Dinero = pesos texto con 2 decimales, siempre ("45226000.00"), tal como lo
+ * emite el servidor. Se lee con `centavosDeTextoApi` de `@/lib/dinero`.
  */
 
 import type { CanalPago } from "@/components/pagos/pagos-api";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -17,14 +20,14 @@ export type FilaIngreso = {
   tramiteId: string | null;
   /** Borrador de la factura de venta vinculada (solo ABONO/DEVOLUCION). */
   borradorId: string | null;
-  montoConSigno: string;  // BigInt as string (positivo = entrada, negativo = salida)
-  monto: string;          // BigInt as string (siempre positivo)
+  montoConSigno: string;  // pesos texto (positivo = entrada, negativo = salida)
+  monto: string;          // pesos texto (siempre positivo)
   canalPago: CanalPago | string;
   verificadoBanco: boolean;
   fecha: string;          // ISO
   clienteId: string;
   clienteNombre: string;
-  saldoCorrido: string;   // BigInt as string
+  saldoCorrido: string;   // pesos texto
 };
 
 export type IngresosData = {
@@ -122,33 +125,12 @@ export async function fetchIngresos(
 }
 
 // ─── Utilidades de formato ────────────────────────────────────────────────────
+//
+// Sin formateador local (D.1): las pantallas leen con `centavosDeTextoApi` y
+// muestran con `formatoPesos`, ambos de `@/lib/dinero`.
 
-export function formatCOP(value: string): string {
-  try {
-    const n = BigInt(value);
-    const abs = n < 0n ? -n : n;
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(abs));
-  } catch {
-    return value;
-  }
-}
-
+/** Fecha-calendario (fecha del ingreso): día guardado a 00:00 UTC, se muestra en UTC. */
 export function formatDate(isoString: string | null): string {
   if (!isoString) return "—";
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      timeZone: "America/Bogota",
-    });
-  } catch {
-    return isoString;
-  }
+  return formatFechaCalendario(isoString) || isoString;
 }

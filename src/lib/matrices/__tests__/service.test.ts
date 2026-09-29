@@ -25,6 +25,7 @@ import {
   actualizarCostoPago,
   actualizarCostoRecaudo,
 } from "../service";
+import { pesos, textoCanonicoDeCentavos } from "@/lib/dinero";
 
 const TEST_PREFIX = "vitest-matrices";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -95,15 +96,15 @@ describe("matrices service — costos bancarios con Postgres local", () => {
 
       const recaudo = await prisma.matrizRecaudo.findUnique({
         where: { tipoRecaudo: TIPO_RECAUDO_TEST },
-        select: { costoFijo: true },
+        select: { costoFijoCentavos: true },
       });
-      costoRecaudoOriginal = recaudo?.costoFijo ?? null;
+      costoRecaudoOriginal = recaudo?.costoFijoCentavos ?? null;
 
       const pago = await prisma.matrizPago.findUnique({
         where: { canalPago: CANAL_PAGO_TEST },
-        select: { costoFijo: true },
+        select: { costoFijoCentavos: true },
       });
-      costoPagoOriginal = pago?.costoFijo ?? null;
+      costoPagoOriginal = pago?.costoFijoCentavos ?? null;
     } catch (error) {
       dbUnavailableReason = `BD local Postgres no disponible: ${unavailableMessage(error)}`;
     }
@@ -116,13 +117,13 @@ describe("matrices service — costos bancarios con Postgres local", () => {
       if (costoRecaudoOriginal !== null) {
         await prisma.matrizRecaudo.update({
           where: { tipoRecaudo: TIPO_RECAUDO_TEST },
-          data: { costoFijo: costoRecaudoOriginal },
+          data: { costoFijoCentavos: costoRecaudoOriginal },
         });
       }
       if (costoPagoOriginal !== null) {
         await prisma.matrizPago.update({
           where: { canalPago: CANAL_PAGO_TEST },
-          data: { costoFijo: costoPagoOriginal },
+          data: { costoFijoCentavos: costoPagoOriginal },
         });
       }
       await cleanupTestData();
@@ -137,19 +138,19 @@ describe("matrices service — costos bancarios con Postgres local", () => {
       return;
     }
 
-    const nuevoCosto = costoRecaudoOriginal + 1_000n;
+    const nuevoCosto = costoRecaudoOriginal + pesos(1_000);
     const actualizado = await actualizarCostoRecaudo(
       TIPO_RECAUDO_TEST,
       nuevoCosto,
       db.userId,
     );
 
-    expect(actualizado.costoFijo).toBe(nuevoCosto);
+    expect(actualizado.costoFijoCentavos).toBe(nuevoCosto);
 
     const enBd = await prisma.matrizRecaudo.findUnique({
       where: { tipoRecaudo: TIPO_RECAUDO_TEST },
     });
-    expect(enBd?.costoFijo).toBe(nuevoCosto);
+    expect(enBd?.costoFijoCentavos).toBe(nuevoCosto);
 
     const auditLog = await prisma.auditLog.findFirst({
       where: { entidad: "MatrizRecaudo", entidadId: enBd!.id, usuarioId: db.userId },
@@ -158,11 +159,11 @@ describe("matrices service — costos bancarios con Postgres local", () => {
     expect(auditLog).not.toBeNull();
     expect(auditLog?.antes).toMatchObject({
       tipoRecaudo: TIPO_RECAUDO_TEST,
-      costoFijo: costoRecaudoOriginal.toString(),
+      costoFijo: textoCanonicoDeCentavos(costoRecaudoOriginal),
     });
     expect(auditLog?.despues).toMatchObject({
       tipoRecaudo: TIPO_RECAUDO_TEST,
-      costoFijo: nuevoCosto.toString(),
+      costoFijo: textoCanonicoDeCentavos(nuevoCosto),
     });
 
     // Restaurar de inmediato para no afectar otros tests de la misma corrida.
@@ -176,19 +177,19 @@ describe("matrices service — costos bancarios con Postgres local", () => {
       return;
     }
 
-    const nuevoCosto = costoPagoOriginal + 500n;
+    const nuevoCosto = costoPagoOriginal + pesos(500);
     const actualizado = await actualizarCostoPago(
       CANAL_PAGO_TEST,
       nuevoCosto,
       db.userId,
     );
 
-    expect(actualizado.costoFijo).toBe(nuevoCosto);
+    expect(actualizado.costoFijoCentavos).toBe(nuevoCosto);
 
     const enBd = await prisma.matrizPago.findUnique({
       where: { canalPago: CANAL_PAGO_TEST },
     });
-    expect(enBd?.costoFijo).toBe(nuevoCosto);
+    expect(enBd?.costoFijoCentavos).toBe(nuevoCosto);
 
     const auditLog = await prisma.auditLog.findFirst({
       where: { entidad: "MatrizPago", entidadId: enBd!.id, usuarioId: db.userId },
@@ -197,11 +198,11 @@ describe("matrices service — costos bancarios con Postgres local", () => {
     expect(auditLog).not.toBeNull();
     expect(auditLog?.antes).toMatchObject({
       canalPago: CANAL_PAGO_TEST,
-      costoFijo: costoPagoOriginal.toString(),
+      costoFijo: textoCanonicoDeCentavos(costoPagoOriginal),
     });
     expect(auditLog?.despues).toMatchObject({
       canalPago: CANAL_PAGO_TEST,
-      costoFijo: nuevoCosto.toString(),
+      costoFijo: textoCanonicoDeCentavos(nuevoCosto),
     });
 
     // Restaurar de inmediato para no afectar otros tests de la misma corrida.
@@ -212,11 +213,11 @@ describe("matrices service — costos bancarios con Postgres local", () => {
     const db = ensureDb(ctx);
 
     await expect(
-      actualizarCostoRecaudo(TIPO_RECAUDO_TEST, -1n, db.userId),
+      actualizarCostoRecaudo(TIPO_RECAUDO_TEST, -pesos(1), db.userId),
     ).rejects.toBeInstanceOf(CostoFijoNegativoError);
 
     await expect(
-      actualizarCostoPago(CANAL_PAGO_TEST, -1n, db.userId),
+      actualizarCostoPago(CANAL_PAGO_TEST, -pesos(1), db.userId),
     ).rejects.toBeInstanceOf(CostoFijoNegativoError);
   });
 
@@ -238,7 +239,7 @@ describe("matrices service — costos bancarios con Postgres local", () => {
     await prisma.matrizRecaudo.delete({ where: { tipoRecaudo: tipoBorrado } });
     try {
       await expect(
-        actualizarCostoRecaudo(tipoBorrado, 1_000n, db.userId),
+        actualizarCostoRecaudo(tipoBorrado, pesos(1_000), db.userId),
       ).rejects.toBeInstanceOf(MatrizRecaudoNoEncontradaError);
     } finally {
       await prisma.matrizRecaudo.create({
@@ -247,7 +248,7 @@ describe("matrices service — costos bancarios con Postgres local", () => {
           tipoRecaudo: original.tipoRecaudo,
           grupo: original.grupo,
           descripcion: original.descripcion,
-          costoFijo: original.costoFijo,
+          costoFijoCentavos: original.costoFijoCentavos,
         },
       });
     }
@@ -268,7 +269,7 @@ describe("matrices service — costos bancarios con Postgres local", () => {
     await prisma.matrizPago.delete({ where: { canalPago: canalBorrado } });
     try {
       await expect(
-        actualizarCostoPago(canalBorrado, 1_000n, db.userId),
+        actualizarCostoPago(canalBorrado, pesos(1_000), db.userId),
       ).rejects.toBeInstanceOf(MatrizPagoNoEncontradaError);
     } finally {
       await prisma.matrizPago.create({
@@ -276,7 +277,7 @@ describe("matrices service — costos bancarios con Postgres local", () => {
           id: original.id,
           canalPago: original.canalPago,
           descripcion: original.descripcion,
-          costoFijo: original.costoFijo,
+          costoFijoCentavos: original.costoFijoCentavos,
         },
       });
     }

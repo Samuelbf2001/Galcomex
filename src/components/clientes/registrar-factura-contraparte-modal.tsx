@@ -12,21 +12,19 @@ import {
 import { nombreCortoEmpresa } from "@/lib/cuenta-corriente/nombre-corto";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { ModalShell } from "@/components/ui/modal-shell";
-import { hoyBogota } from "@/lib/cuenta-corriente/hoy-bogota";
 import { describirError, useToast } from "@/components/ui/toast";
+import { centavosDeTexto, formatoPesos } from "@/lib/dinero";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 const CONCEPTOS_SUGERIDOS = ["Servicios aduaneros", "Quincenas", "Primas"];
 
-function formatCOP(valor: string | bigint): string {
-  let entero: bigint;
+/** Pesos-texto de la API ("7500000.00", tolerante) → "$ 7.500.000" / "$ 7.500.000,45" (fase CENTAVOS). */
+function formatCOP(valor: string): string {
   try {
-    entero = typeof valor === "bigint" ? valor : BigInt(valor);
+    return formatoPesos(centavosDeTexto(valor));
   } catch {
-    return String(valor);
+    return valor;
   }
-  const negativo = entero < 0n;
-  const absoluto = (negativo ? -entero : entero).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `${negativo ? "−" : ""}$ ${absoluto}`;
 }
 
 /**
@@ -53,7 +51,7 @@ export function RegistrarFacturaContraparteModal({
   const [concepto, setConcepto] = useState("");
   const [numeroFactura, setNumeroFactura] = useState("");
   const [valor, setValor] = useState("");
-  const [fecha, setFecha] = useState(hoyBogota());
+  const [fecha, setFecha] = useState(hoyBogotaISO());
   const [archivo, setArchivo] = useState<File | null>(null);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,9 +108,12 @@ export function RegistrarFacturaContraparteModal({
         lineaServicio: "TRAMITE",
         concepto: concepto.trim(),
         numeroFactura: numeroFactura.trim(),
-        valor: valor.replace(/\D/g, ""),
-        // Día del calendario tal cual (AAAA-MM-DD): el servidor lo ancla al
-        // mediodía de Bogotá para que no se muestre como el día anterior.
+        // CampoMoneda ya emite pesos-texto canónico ("4500000", "4500000.45"):
+        // va tal cual a la API (fase CENTAVOS). Quitarle lo que no es dígito
+        // convertiría "4500000.45" en 450.000.045 pesos (×100).
+        valor,
+        // Día del calendario tal cual (AAAA-MM-DD): el servidor lo guarda como
+        // fecha-calendario (00:00 UTC, §D.7) y se muestra en UTC.
         fecha,
         soporte,
       });

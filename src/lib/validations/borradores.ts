@@ -1,34 +1,84 @@
 /**
  * Esquemas Zod para endpoints de borradores y facturas — Galcomex
+ *
+ * Fase centavos (diseño A.2): el dinero llega en PESOS (texto "150000" /
+ * "150000.50" o number) y sale del esquema en CENTAVOS (`bigint`), con los
+ * esquemas únicos del núcleo (`@/lib/dinero`). Rechaza "150.000", "1e5" y más
+ * de 2 decimales.
  */
 
 import { CanalPago, EstadoBorrador, SeccionLinea, TipoRecaudo } from "@prisma/client";
 import { z } from "zod";
 
-/** Comisión interna Galcomex→Lucho: piso del acuerdo, valida en API y servicio. */
-export const COMISION_INTERNA_LM_MINIMO = 150_000n;
+import {
+  dineroNoNegativoSchema,
+  dineroPositivoSchema,
+  dineroSchema,
+  formatoPesos,
+  pesos,
+} from "@/lib/dinero";
+
+/** Comisión interna Galcomex→Lucho: piso del acuerdo ($150.000, en CENTAVOS), valida en API y servicio. */
+export const COMISION_INTERNA_LM_MINIMO = pesos(150_000);
 
 // ── Generar borrador ──────────────────────────────────────────────────────────
 
 export const generarBorradorPayloadSchema = z.object({
-  /** Override de comisión (COP). Si no se pasa, se usa COMISION_LM del Parametro. */
-  comision: z.coerce.bigint().positive().optional(),
-  /** Override de IVA de comisión. Si no se pasa, se calcula desde tasaIva. */
-  ivaComision: z.coerce.bigint().nonnegative().optional(),
+  /** Override de comisión (pesos → centavos). Si no se pasa, se usa COMISION_LM del Parametro. */
+  comision: dineroPositivoSchema.optional(),
+  /** Override de IVA de comisión. Si no se pasa, se calcula desde tasaIva (al peso). */
+  ivaComision: dineroNoNegativoSchema.optional(),
   /** Monto atribuible al socio LM. Si no se pasa, default 0. */
-  montoLM: z.coerce.bigint().nonnegative().optional(),
+  montoLM: dineroNoNegativoSchema.optional(),
   /** Total de retenciones (RETE IVA + RETE FTE + RETE ICA). Default 0. */
-  retenciones: z.coerce.bigint().nonnegative().optional(),
+  retenciones: dineroNoNegativoSchema.optional(),
   /** Desglose de la comisión; su suma debe igualar la comisión efectiva. */
   conceptosOperacionales: z
     .array(
       z.object({
         concepto: z.string().trim().min(1),
-        valor: z.coerce.bigint().positive(),
+        valor: dineroPositivoSchema,
       }),
     )
     .min(1)
     .optional(),
+  /**
+   * Generar con el tarifario vigente de la empresa (modal "Generar borrador").
+   * Si el servidor no puede aplicarlo (ya no hay tarifario vigente, cambió de
+   * versión, no propone líneas) responde 409 en vez de caer en silencio a la
+   * comisión por defecto. Excluye `comision` y `conceptosOperacionales`.
+   */
+  usarTarifario: z.boolean().optional(),
+  /** Tarifario que el revisor vio en la propuesta; si ya no es el que rige → 409. */
+  tarifarioId: z.string().trim().min(1).optional(),
+  /**
+   * Total del tarifario (sin IVA, pesos texto) que el revisor vio en la
+   * propuesta. Si al generar el tarifario da otro total (cambió la base del DO
+   * o un costo que un ítem ESPEJO refleja) → 409, aunque la versión sea la misma.
+   */
+  totalTarifario: dineroNoNegativoSchema.optional(),
+}).superRefine((payload, ctx) => {
+  if (payload.usarTarifario && (payload.comision !== undefined || payload.conceptosOperacionales)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["usarTarifario"],
+      message: "Con el tarifario no se manda comisión ni conceptos a mano",
+    });
+  }
+  if (payload.totalTarifario !== undefined && !payload.usarTarifario) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["totalTarifario"],
+      message: "totalTarifario solo aplica con usarTarifario: true",
+    });
+  }
+  if (payload.tarifarioId && !payload.usarTarifario) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["tarifarioId"],
+      message: "tarifarioId solo aplica con usarTarifario: true",
+    });
+  }
 });
 
 export type GenerarBorradorPayload = z.infer<typeof generarBorradorPayloadSchema>;
@@ -38,7 +88,8 @@ export type GenerarBorradorPayload = z.infer<typeof generarBorradorPayloadSchema
 export const crearLineaPayloadSchema = z.object({
   concepto: z.string().trim().min(1, "El concepto es obligatorio"),
   numSoporte: z.string().trim().min(1).optional(),
-  valor: z.coerce.bigint().positive(),
+  /** Pesos → centavos (admite centavos: "502801.45"). */
+  valor: dineroPositivoSchema,
   observacion: z.string().trim().min(1).optional(),
   /** Subsección de la factura: TERCEROS (default) u OPERACIONAL. */
   seccion: z.nativeEnum(SeccionLinea).default(SeccionLinea.TERCEROS),
@@ -58,7 +109,7 @@ export const actualizarLineaPayloadSchema = z
   .object({
     concepto: z.string().trim().min(1).optional(),
     numSoporte: z.string().trim().min(1).nullable().optional(),
-    valor: z.coerce.bigint().positive().optional(),
+    valor: dineroPositivoSchema.optional(),
     observacion: z.string().trim().min(1).nullable().optional(),
     seccion: z.nativeEnum(SeccionLinea).optional(),
     facturaIds: z.array(z.string().min(1)).optional(),
@@ -77,8 +128,8 @@ export type ActualizarLineaPayload = z.infer<typeof actualizarLineaPayloadSchema
 // ── Actualizar comisión ──────────────────────────────────────────────────────
 
 export const actualizarComisionPayloadSchema = z.object({
-  /** Nueva comisión (COP, BigInt). El IVA se recalcula desde tasaIva. */
-  comision: z.coerce.bigint().nonnegative(),
+  /** Nueva comisión (pesos → centavos). El IVA se recalcula desde tasaIva (al peso). */
+  comision: dineroNoNegativoSchema,
 });
 
 export type ActualizarComisionPayload = z.infer<typeof actualizarComisionPayloadSchema>;
@@ -87,13 +138,11 @@ export type ActualizarComisionPayload = z.infer<typeof actualizarComisionPayload
 
 export const actualizarComisionInternaLMPayloadSchema = z
   .object({
-    /** Comisión interna Galcomex→Lucho (COP, BigInt). Solo afecta el cruce interno.
-     *  Piso del acuerdo: COMISION_INTERNA_LM_MINIMO (150.000). */
-    comisionInternaLM: z.coerce
-      .bigint()
-      .refine((v) => v >= COMISION_INTERNA_LM_MINIMO, {
-        message: `La comisión interna LM no puede ser menor a ${COMISION_INTERNA_LM_MINIMO} COP`,
-      }),
+    /** Comisión interna Galcomex→Lucho (pesos → centavos). Solo afecta el cruce interno.
+     *  Piso del acuerdo: COMISION_INTERNA_LM_MINIMO ($150.000). */
+    comisionInternaLM: dineroSchema.refine((v) => v >= COMISION_INTERNA_LM_MINIMO, {
+      message: `La comisión interna LM no puede ser menor a ${formatoPesos(COMISION_INTERNA_LM_MINIMO)}`,
+    }),
     /** Tipo de pago: exactamente uno de (tipoRecaudo, canalPago) debe estar set. */
     tipoRecaudoComisionInternaLM: z.nativeEnum(TipoRecaudo).optional(),
     canalPagoComisionInternaLM: z.nativeEnum(CanalPago).optional(),

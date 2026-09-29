@@ -1,11 +1,47 @@
 import * as fs from "node:fs";
 import * as XLSX from "xlsx";
 
+import {
+  centavosDeNumero,
+  centavosDeNumeroAlPesoComoMathRound,
+  DineroInvalidoError,
+  formatoPesos,
+} from "@/lib/dinero";
+
 // El build ESM de xlsx no detecta `fs` automáticamente (ver borrador-lucho.ts);
 // sin esto `XLSX.readFile` falla con "Cannot access file" aunque el archivo exista.
 XLSX.set_fs(fs);
 
 export const DEFAULT_DO_SHEET = "BUN26-0026";
+
+/**
+ * Celda de dinero de un libro de la ERA EN PESOS (formato "GRUPO E PAPIS" /
+ * status de Lucho) → centavos, AL PESO, con la regla de antes (`Math.round`:
+ * mitad hacia +∞) y UN solo redondeo.
+ *
+ * Estos libros muestran el dinero sin decimales y así se facturó, pero varias
+ * celdas son fórmulas sin redondear (4x1000 = 122889.128) o arrastran ruido de
+ * coma flotante (-84240.80000000075). Leerlas al centavo estricto dejaría hojas
+ * en ERROR y leerlas "al centavo" cambiaría lo facturado; se llevan al peso,
+ * como se mostraban: la importación da exactamente ×100 lo de antes (D-6).
+ * Ojo: no pasar antes por el centavo (redondeo doble): 122889.496 daría
+ * 122.890 en vez de 122.889, y −1298210.5 daría −1.298.211 en vez de −1.298.210.
+ * Vacío/null → 0n. NaN o infinito ⇒ `DineroInvalidoError` con `dato`.
+ *
+ * Los Excel que sí traen centavos reales (borrador de Lucho, `borrador-lucho.ts`)
+ * NO usan esto: se leen al centavo estricto.
+ */
+export function centavosDeCeldaEraPesos(value: number | null | undefined, dato = "celda"): bigint {
+  const n = Number(value ?? 0);
+  try {
+    return centavosDeNumeroAlPesoComoMathRound(n);
+  } catch (err) {
+    if (err instanceof DineroInvalidoError) {
+      throw new DineroInvalidoError(`${dato}: el valor ${String(n)} del Excel no es un monto válido`, n);
+    }
+    throw err;
+  }
+}
 
 const DO_SHEET_PATTERN = /^[A-Z]{3}\d{2}-\d{4}$/;
 
@@ -497,5 +533,7 @@ function sumNumbers(values: Array<number | null>): number {
 }
 
 function formatNumber(value: number | null): string {
-  return value === null ? "(vacio)" : new Intl.NumberFormat("es-CO").format(value);
+  if (value === null) return "(vacio)";
+  // Resumen de texto: el número del Excel (pesos) con el formateador único del núcleo.
+  return formatoPesos(centavosDeNumero(value, { redondear: true }), { simbolo: false });
 }

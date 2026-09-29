@@ -37,6 +37,7 @@ import { AgenciaAduanas, CanalPago, Ciudad, Rol, TipoCliente, TipoRecaudo } from
 import { crearAnticipo, aplicarAnticipo } from "../src/lib/anticipos/service";
 import { generarBorrador } from "../src/lib/borradores/service";
 import { prisma } from "../src/lib/db/prisma";
+import { formatoPesos } from "../src/lib/dinero";
 import {
   parseBorradorLucho,
   reconciliar,
@@ -44,7 +45,7 @@ import {
   type LineaTercero,
 } from "../src/lib/excel/borrador-lucho";
 import { crearFacturaProveedor } from "../src/lib/facturas-proveedor/service";
-import { crearPago } from "../src/lib/pagos/service";
+import { crearPago, enlazarPagoExistente } from "../src/lib/pagos/service";
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -64,8 +65,9 @@ if (!filePath) {
 
 // ─── Utilidades ──────────────────────────────────────────────────────────────
 
+/** Centavos → "1.487.623,45" / "33.128.000" (formateador único del núcleo). */
 function fmt(n: bigint): string {
-  return new Intl.NumberFormat("es-CO").format(n);
+  return formatoPesos(n, { simbolo: false });
 }
 
 function fmtDiff(n: bigint): string {
@@ -234,7 +236,7 @@ async function main() {
   let anticipo = await prisma.anticipo.findFirst({
     where: {
       clienteId: cliente.id,
-      monto: p.anticipo,
+      montoCentavos: p.anticipo,
       soporteKey: SOPORTEKEY_MARKER,
     },
     select: { id: true },
@@ -337,6 +339,8 @@ async function main() {
       fp = await crearFacturaProveedor({
         tramiteId,
         proveedorNombre: provNombre,
+        // CxP v2 (R7): toda factura nueva lleva ficha de pago.
+        beneficiarioId: await fichaPorNombre(provNombre),
         numFactura,
         valor: t.valor,
         fecha: new Date(p.fecha),
@@ -360,11 +364,8 @@ async function main() {
       usuarioId: admin.id,
     });
 
-    // La factura tiene su pago registrado → estado PAGADA (ciclo REGISTRADA→PAGADA)
-    await prisma.facturaProveedor.update({
-      where: { id: fp.id },
-      data: { estado: "PAGADA" },
-    });
+    // CxP v2: el estado (PAGADA) lo deja `aplicarSaldo` al enlazar el pago por
+    // su monto; ya no se escribe a mano.
   }
 
   // ── 9. Generar borrador (idempotente: si ya existe uno para el DO, no duplica) ──
@@ -375,15 +376,15 @@ async function main() {
 
   if (borradorExistente) {
     console.log(
-      `≈ Borrador ya existe (${borradorExistente.estado}, total=${fmt(borradorExistente.totalFactura)}) — no se duplica`,
+      `≈ Borrador ya existe (${borradorExistente.estado}, total=${fmt(borradorExistente.totalFacturaCentavos)}) — no se duplica`,
     );
     const cuadra =
-      borradorExistente.totalFactura === p.totalFactura &&
-      borradorExistente.saldoAFavorCliente === p.saldoAFavor;
+      borradorExistente.totalFacturaCentavos === p.totalFactura &&
+      borradorExistente.saldoAFavorClienteCentavos === p.saldoAFavor;
     console.log(
       cuadra
-        ? "✅ El borrador existente cuadra al peso con el Excel.\n"
-        : `❌ El borrador existente NO cuadra (total=${fmt(borradorExistente.totalFactura)} vs Excel=${fmt(p.totalFactura)}).\n`,
+        ? "✅ El borrador existente cuadra al centavo con el Excel.\n"
+        : `❌ El borrador existente NO cuadra (total=${fmt(borradorExistente.totalFacturaCentavos)} vs Excel=${fmt(p.totalFactura)}).\n`,
     );
     if (!cuadra) process.exitCode = 1;
     await prisma.$disconnect();
@@ -410,8 +411,8 @@ async function main() {
   // El motor de cálculo usa anticipo × 0.004 para el impuesto 4x1000. En el
   // Excel de Lucho, el 4x1000 es una línea de pago a tercero (base = pagos, no anticipo).
   // Corregimos los totales del borrador con los valores exactos del Excel.
-  const totalFacturaMotor = borrador.totalFactura;
-  const saldoMotor = borrador.saldoAFavorCliente;
+  const totalFacturaMotor = borrador.totalFacturaCentavos;
+  const saldoMotor = borrador.saldoAFavorClienteCentavos;
   const necesitaCorreccion =
     totalFacturaMotor !== p.totalFactura || saldoMotor !== p.saldoAFavor;
 
@@ -422,10 +423,10 @@ async function main() {
     await prisma.borradorFactura.update({
       where: { id: borrador.id },
       data: {
-        totalFactura: p.totalFactura,
-        impuesto4x1000: p.terceros.find((t) => t.es4x1000)?.valor ?? 0n,
-        saldoAFavorCliente: p.saldoAFavor,
-        saldoACargoCliente: 0n,
+        totalFacturaCentavos: p.totalFactura,
+        impuesto4x1000Centavos: p.terceros.find((t) => t.es4x1000)?.valor ?? 0n,
+        saldoAFavorClienteCentavos: p.saldoAFavor,
+        saldoACargoClienteCentavos: 0n,
       },
     });
     console.log(`  ✓ Borrador corregido id=${borrador.id}`);
@@ -437,32 +438,32 @@ async function main() {
   const borradorFinal = await prisma.borradorFactura.findUnique({
     where: { id: borrador.id },
     select: {
-      totalFactura: true,
-      saldoAFavorCliente: true,
-      comision: true,
-      ivaComision: true,
-      impuesto4x1000: true,
-      costosBancarios: true,
-      retenciones: true,
-      totalPagos: true,
-      totalAnticipo: true,
+      totalFacturaCentavos: true,
+      saldoAFavorClienteCentavos: true,
+      comisionCentavos: true,
+      ivaComisionCentavos: true,
+      impuesto4x1000Centavos: true,
+      costosBancariosCentavos: true,
+      retencionesCentavos: true,
+      totalPagosCentavos: true,
+      totalAnticipoCentavos: true,
     },
   });
 
   if (!borradorFinal) throw new Error("No se encontró el borrador tras crearlo");
 
   const filas: Array<[string, bigint, bigint]> = [
-    ["Anticipo aplicado", borradorFinal.totalAnticipo, p.anticipo],
-    ["Total pagos (terceros)", borradorFinal.totalPagos, p.totalTerceros],
-    ["Comisión", borradorFinal.comision, p.totalOperacionales],
-    ["IVA comisión", borradorFinal.ivaComision, p.iva],
-    ["Retenciones", borradorFinal.retenciones, p.totalRetenciones],
-    ["TOTAL FACTURA", borradorFinal.totalFactura, p.totalFactura],
-    ["SALDO A FAVOR", borradorFinal.saldoAFavorCliente, p.saldoAFavor],
+    ["Anticipo aplicado", borradorFinal.totalAnticipoCentavos, p.anticipo],
+    ["Total pagos (terceros)", borradorFinal.totalPagosCentavos, p.totalTerceros],
+    ["Comisión", borradorFinal.comisionCentavos, p.totalOperacionales],
+    ["IVA comisión", borradorFinal.ivaComisionCentavos, p.iva],
+    ["Retenciones", borradorFinal.retencionesCentavos, p.totalRetenciones],
+    ["TOTAL FACTURA", borradorFinal.totalFacturaCentavos, p.totalFactura],
+    ["SALDO A FAVOR", borradorFinal.saldoAFavorClienteCentavos, p.saldoAFavor],
   ];
 
   console.log();
-  console.log("RECONCILIACIÓN SISTEMA vs EXCEL (tolerancia 0 pesos)");
+  console.log("RECONCILIACIÓN SISTEMA vs EXCEL (tolerancia 0 centavos)");
   console.log("─".repeat(72));
   console.log("Concepto".padEnd(26) + "Sistema".padStart(16) + "Excel".padStart(16) + "  OK");
   console.log("─".repeat(72));
@@ -490,7 +491,30 @@ async function main() {
   await prisma.$disconnect();
 }
 
+// ─── Helper: ficha de pago por nombre (CxP v2, R7) ─────────────────────────────
+
+/**
+ * Ficha de pago (Beneficiario) del proveedor por nombre exacto; si no existe se
+ * crea sin NIT (su llave de proveedor queda "BEN:<id>"). Solo para esta
+ * importación histórica: la pantalla exige escoger la ficha.
+ */
+async function fichaPorNombre(nombre: string): Promise<string> {
+  const limpio = nombre.trim() || "PROVEEDOR SIN NOMBRE";
+  const existente = await prisma.beneficiario.findFirst({
+    where: { nombre: limpio },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  if (existente) return existente.id;
+  const creada = await prisma.beneficiario.create({ data: { nombre: limpio }, select: { id: true } });
+  return creada.id;
+}
+
 // ─── Helper: upsert PagoTramite por (tramiteId, concepto, valor) ─────────────
+//
+// CxP v2: el pago se enlaza a su factura por MONTO a través del dominio
+// (`crearPago({ aplicaciones })` o `enlazarPagoExistente`), nunca escribiendo el
+// puente ni el estado a mano. Idempotente: un pago ya enlazado no se toca.
 
 async function upsertPagoTramite(input: {
   tramiteId: string;
@@ -506,21 +530,25 @@ async function upsertPagoTramite(input: {
     where: {
       tramiteId: input.tramiteId,
       concepto: input.concepto,
-      valor: input.valor,
+      valorCentavos: input.valor,
     },
     select: { id: true },
   });
 
   if (existing) {
-    // Already exists — link to factura via pivot if needed (idempotent)
+    // Ya existe: enlazarlo a su factura si todavía no lo está (idempotente).
     if (input.facturaProveedorId) {
-      await prisma.pagoTramiteFactura.upsert({
-        where: {
-          pagoId_facturaId: { pagoId: existing.id, facturaId: input.facturaProveedorId },
-        },
-        create: { pagoId: existing.id, facturaId: input.facturaProveedorId },
-        update: {},
+      const enlazado = await prisma.pagoTramiteFactura.findUnique({
+        where: { pagoId_facturaId: { pagoId: existing.id, facturaId: input.facturaProveedorId } },
+        select: { pagoId: true },
       });
+      if (!enlazado) {
+        await enlazarPagoExistente({
+          pagoId: existing.id,
+          aplicaciones: [{ facturaProveedorId: input.facturaProveedorId, monto: input.valor }],
+          usuarioId: input.usuarioId,
+        });
+      }
     }
     return;
   }
@@ -531,51 +559,12 @@ async function upsertPagoTramite(input: {
     valor: input.valor,
     canalPago: input.canalPago,
     numSoporte: input.numSoporte,
+    viaSocio: input.viaSocio,
+    ...(input.facturaProveedorId
+      ? { aplicaciones: [{ facturaProveedorId: input.facturaProveedorId, monto: input.valor }] }
+      : {}),
     usuarioId: input.usuarioId,
   });
-
-  // Link to FacturaProveedor if provided (crearPago doesn't set this)
-  if (input.facturaProveedorId) {
-    const pago = await prisma.pagoTramite.findFirst({
-      where: {
-        tramiteId: input.tramiteId,
-        concepto: input.concepto,
-        valor: input.valor,
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    });
-    if (pago) {
-      await prisma.pagoTramite.update({
-        where: { id: pago.id },
-        data: { viaSocio: input.viaSocio },
-      });
-      await prisma.pagoTramiteFactura.upsert({
-        where: {
-          pagoId_facturaId: { pagoId: pago.id, facturaId: input.facturaProveedorId },
-        },
-        create: { pagoId: pago.id, facturaId: input.facturaProveedorId },
-        update: {},
-      });
-    }
-  } else {
-    // Set viaSocio on the newly created pago
-    const pago = await prisma.pagoTramite.findFirst({
-      where: {
-        tramiteId: input.tramiteId,
-        concepto: input.concepto,
-        valor: input.valor,
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    });
-    if (pago && input.viaSocio) {
-      await prisma.pagoTramite.update({
-        where: { id: pago.id },
-        data: { viaSocio: input.viaSocio },
-      });
-    }
-  }
 }
 
 main().catch(async (err) => {

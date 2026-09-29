@@ -7,19 +7,26 @@ import { registrarCompensacion, type CuentaCorriente } from "@/components/client
 import { claseCampo } from "@/components/clientes/form-campos";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { ModalShell } from "@/components/ui/modal-shell";
-import { hoyBogota } from "@/lib/cuenta-corriente/hoy-bogota";
 import { describirError } from "@/components/ui/toast";
+import { centavosDeTexto, formatoPesos } from "@/lib/dinero";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
+/** Pesos-texto (API o canónico, tolerante) → "$ 502.801,45" (D-5: centavos solo si existen). */
 function formatCOP(valor: string): string {
-  let entero: bigint;
   try {
-    entero = BigInt(valor);
+    return formatoPesos(centavosDeTexto(valor));
   } catch {
     return valor;
   }
-  const negativo = entero < 0n;
-  const absoluto = (negativo ? -entero : entero).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `${negativo ? "−" : ""}$ ${absoluto}`;
+}
+
+/** Centavos de un pesos-texto (API o canónico); 0n si viene vacío o dañado. */
+function centavosSeguro(raw: string): bigint {
+  try {
+    return centavosDeTexto(raw);
+  } catch {
+    return 0n;
+  }
 }
 
 const LINEAS_SERVICIO = ["TRAMITE", "CLASIFICACION", "PLAN_VALLEJO", "OTROS", "COMISION", "ASESORIA"];
@@ -41,7 +48,7 @@ export function CompensacionModal({
   onGuardado: (cuenta: CuentaCorriente) => void;
 }) {
   const [valor, setValor] = useState(cuenta.maximoCompensable);
-  const [fecha, setFecha] = useState(hoyBogota());
+  const [fecha, setFecha] = useState(hoyBogotaISO());
   const [concepto, setConcepto] = useState("");
   const [lineaServicio, setLineaServicio] = useState("TRAMITE");
   const [facturaId, setFacturaId] = useState("");
@@ -66,7 +73,7 @@ export function CompensacionModal({
     setGuardando(true);
     try {
       const actualizada = await registrarCompensacion(clienteId, {
-        valor: facturaProveedor ? undefined : valorEfectivo.replace(/\D/g, ""),
+        valor: facturaProveedor ? undefined : valorEfectivo,
         fecha,
         concepto: concepto.trim(),
         lineaServicio,
@@ -128,7 +135,7 @@ export function CompensacionModal({
               className={claseCampo(false)}
             />
             {facturaProveedor ? <span className="text-xs text-slate-500">La factura de proveedor se cruza por su total.</span> : null}
-            {facturaVenta && BigInt(valorEfectivo || "0") > BigInt(facturaVenta.pendiente) ? (
+            {facturaVenta && centavosSeguro(valorEfectivo || "0") > centavosSeguro(facturaVenta.pendiente) ? (
               <span className="text-xs text-amber-700">La factura solo tiene pendientes {formatCOP(facturaVenta.pendiente)}.</span>
             ) : null}
           </label>

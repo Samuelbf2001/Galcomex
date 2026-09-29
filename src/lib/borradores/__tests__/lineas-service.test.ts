@@ -15,12 +15,14 @@ import {
   TipoCliente,
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { pesos } from "@/lib/dinero";
 
 import { prisma } from "@/lib/db/prisma";
 import { generarBorrador, transicionarBorrador } from "../service";
 import {
   BorradorNoEditableError,
   FacturaDeOtroTramiteError,
+  ProductoSiigoNoEncontradoError,
   actualizarLinea,
   crearLineaManual,
   eliminarLinea,
@@ -106,6 +108,8 @@ async function cleanupTestData() {
   await prisma.tramiteDO.deleteMany({ where: { id: { in: tramiteIds } } });
   await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+  // Producto Siigo de prueba (el test de asignación de producto lo crea aparte).
+  await prisma.siigoProducto.deleteMany({ where: { codigo: { startsWith: TEST_PREFIX } } });
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -168,7 +172,7 @@ async function crearFacturaProveedor(
       tramiteId,
       proveedorNombre: "Proveedor Test",
       numFactura,
-      valor,
+      valorCentavos: valor,
       fecha: new Date(`${stateYear}-02-01`),
       subidaPorId: db.userId,
     },
@@ -216,15 +220,15 @@ describe("lineas-service con Postgres local", () => {
       ivaComision: 0n,
       usuarioId: db.userId,
     });
-    expect(borrador?.totalFactura).toBe(0n);
+    expect(borrador?.totalFacturaCentavos).toBe(0n);
 
-    const fp1 = await crearFacturaProveedor(db, tramiteId, `FL-${runId}-1`, 1_000_000n);
-    const fp2 = await crearFacturaProveedor(db, tramiteId, `FL-${runId}-2`, 500_000n);
+    const fp1 = await crearFacturaProveedor(db, tramiteId, `FL-${runId}-1`, pesos(1_000_000));
+    const fp2 = await crearFacturaProveedor(db, tramiteId, `FL-${runId}-2`, pesos(500_000));
 
     const actualizado = await crearLineaManual({
       borradorId: borrador!.id,
       concepto: "Pago terceros LUTOSA",
-      valor: 1_500_000n,
+      valor: pesos(1_500_000),
       facturaIds: [fp1, fp2],
       usuarioId: db.userId,
     });
@@ -233,8 +237,8 @@ describe("lineas-service con Postgres local", () => {
     const linea = actualizado!.lineasRevision[0]!;
     expect(linea.origen).toBe("MANUAL");
     // El total se promueve a totalFactura en SOCIO_LM: Σlíneas + 0 + 0 − 0
-    expect(actualizado!.totalFacturaLineas).toBe(1_500_000n);
-    expect(actualizado!.totalFactura).toBe(1_500_000n);
+    expect(actualizado!.totalFacturaLineasCentavos).toBe(pesos(1_500_000));
+    expect(actualizado!.totalFacturaCentavos).toBe(pesos(1_500_000));
 
     // Pivot creado con ambas facturas
     const pivots = await prisma.lineaRevisionFactura.findMany({ where: { lineaId: linea.id } });
@@ -252,26 +256,26 @@ describe("lineas-service con Postgres local", () => {
     const tramiteId = await crearTramite(db, db.clientePropioId);
     const borrador = await generarBorrador({
       tramiteId,
-      comision: 150_000n,
-      ivaComision: 28_500n,
+      comision: pesos(150_000),
+      ivaComision: pesos(28_500),
       usuarioId: db.userId,
     });
     // Tras generarBorrador, las líneas (AUTO + fijas) ya rigen totalFactura,
     // así que el total inicial coincide con Σlíneas + comisión + IVA.
-    const totalAntes = borrador!.totalFactura;
-    const totalLineasAntes = borrador!.totalFacturaLineas;
+    const totalAntes = borrador!.totalFacturaCentavos;
+    const totalLineasAntes = borrador!.totalFacturaLineasCentavos;
     expect(totalAntes).toBe(totalLineasAntes);
 
     const actualizado = await crearLineaManual({
       borradorId: borrador!.id,
       concepto: "Ítem extra",
-      valor: 2_000_000n,
+      valor: pesos(2_000_000),
       usuarioId: db.userId,
     });
 
     // totalFactura se promueve también en PROPIO: suma la línea nueva al total previo
-    expect(actualizado!.totalFactura).toBe(totalAntes + 2_000_000n);
-    expect(actualizado!.totalFacturaLineas).toBe(totalLineasAntes + 2_000_000n);
+    expect(actualizado!.totalFacturaCentavos).toBe(totalAntes + pesos(2_000_000));
+    expect(actualizado!.totalFacturaLineasCentavos).toBe(totalLineasAntes + pesos(2_000_000));
   });
 
   it("rechaza vincular una factura de otro trámite", async (ctx) => {
@@ -284,13 +288,13 @@ describe("lineas-service con Postgres local", () => {
       ivaComision: 0n,
       usuarioId: db.userId,
     });
-    const fpB = await crearFacturaProveedor(db, tramiteB, `FL-${runId}-otro`, 100_000n);
+    const fpB = await crearFacturaProveedor(db, tramiteB, `FL-${runId}-otro`, pesos(100_000));
 
     await expect(
       crearLineaManual({
         borradorId: borradorA!.id,
         concepto: "Línea inválida",
-        valor: 100_000n,
+        valor: pesos(100_000),
         facturaIds: [fpB],
         usuarioId: db.userId,
       }),
@@ -309,7 +313,7 @@ describe("lineas-service con Postgres local", () => {
     const actualizado = await crearLineaManual({
       borradorId: borrador!.id,
       concepto: "Línea base",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       usuarioId: db.userId,
     });
     const lineaId = actualizado!.lineasRevision[0]!.id;
@@ -326,7 +330,7 @@ describe("lineas-service con Postgres local", () => {
     });
 
     await expect(
-      actualizarLinea({ lineaId, valor: 9_999n, usuarioId: db.userId }),
+      actualizarLinea({ lineaId, valor: pesos(9_999), usuarioId: db.userId }),
     ).rejects.toBeInstanceOf(BorradorNoEditableError);
   });
 
@@ -339,11 +343,11 @@ describe("lineas-service con Postgres local", () => {
       ivaComision: 0n,
       usuarioId: db.userId,
     });
-    const fp = await crearFacturaProveedor(db, tramiteId, `FL-${runId}-del`, 300_000n);
+    const fp = await crearFacturaProveedor(db, tramiteId, `FL-${runId}-del`, pesos(300_000));
     const actualizado = await crearLineaManual({
       borradorId: borrador!.id,
       concepto: "Línea con factura",
-      valor: 300_000n,
+      valor: pesos(300_000),
       facturaIds: [fp],
       usuarioId: db.userId,
     });
@@ -360,5 +364,81 @@ describe("lineas-service con Postgres local", () => {
 
     // Ahora la factura ya se puede borrar.
     await prisma.facturaProveedor.delete({ where: { id: fp } });
+  });
+
+  it("asigna un producto SIIGO a una línea existente sin pisar el concepto, y lo desconecta con null", async (ctx) => {
+    const db = ensureDb(ctx);
+    const producto = await prisma.siigoProducto.create({
+      data: {
+        id: `${TEST_PREFIX}-prod-${runId}`,
+        codigo: `${TEST_PREFIX}-COD-${runId}`,
+        nombre: "Producto de prueba",
+        tipo: "Product",
+        grupoContableId: 1,
+        grupoContableNombre: "Ingresos",
+        clasificacionIva: "Excluded",
+      },
+    });
+
+    const tramiteId = await crearTramite(db, db.clientePropioId);
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: 0n,
+      ivaComision: 0n,
+      usuarioId: db.userId,
+    });
+    const creado = await crearLineaManual({
+      borradorId: borrador!.id,
+      concepto: "Línea sin producto",
+      valor: pesos(500_000),
+      usuarioId: db.userId,
+    });
+    const lineaId = creado!.lineasRevision[0]!.id;
+    expect(creado!.lineasRevision[0]!.siigoProductoId).toBeNull();
+
+    const conProducto = await actualizarLinea({
+      lineaId,
+      siigoProductoId: producto.id,
+      usuarioId: db.userId,
+    });
+    const lineaConProducto = conProducto!.lineasRevision.find((l) => l.id === lineaId)!;
+    expect(lineaConProducto.siigoProductoId).toBe(producto.id);
+    // Asignar el producto nunca pisa el concepto (se sigue leyendo en la factura).
+    expect(lineaConProducto.concepto).toBe("Línea sin producto");
+
+    const sinProducto = await actualizarLinea({
+      lineaId,
+      siigoProductoId: null,
+      usuarioId: db.userId,
+    });
+    expect(
+      sinProducto!.lineasRevision.find((l) => l.id === lineaId)!.siigoProductoId,
+    ).toBeNull();
+  });
+
+  it("rechaza asignar un producto SIIGO que ya no existe en el catálogo (422)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramite(db, db.clientePropioId);
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: 0n,
+      ivaComision: 0n,
+      usuarioId: db.userId,
+    });
+    const creado = await crearLineaManual({
+      borradorId: borrador!.id,
+      concepto: "Línea",
+      valor: pesos(100_000),
+      usuarioId: db.userId,
+    });
+    const lineaId = creado!.lineasRevision[0]!.id;
+
+    await expect(
+      actualizarLinea({
+        lineaId,
+        siigoProductoId: `${TEST_PREFIX}-inexistente-${runId}`,
+        usuarioId: db.userId,
+      }),
+    ).rejects.toBeInstanceOf(ProductoSiigoNoEncontradoError);
   });
 });

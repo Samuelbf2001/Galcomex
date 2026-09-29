@@ -16,7 +16,8 @@ import * as XLSX from "xlsx";
 
 import { generarBorrador, transicionarBorrador } from "../src/lib/borradores/service";
 import { prisma } from "../src/lib/db/prisma";
-import { parseDoSheetFromWorkbook } from "../src/lib/excel/galcomex-workbook";
+import { centavosDeCeldaEraPesos, parseDoSheetFromWorkbook } from "../src/lib/excel/galcomex-workbook";
+import { formatoPesos } from "../src/lib/dinero";
 import { mapCanalPago } from "../src/lib/import/grupo-e-papis";
 import { crearPago } from "../src/lib/pagos/service";
 import { transitionTramite } from "../src/lib/tramites/service";
@@ -35,8 +36,9 @@ const CASOS: Array<{ file: string; sheet: string; facturada: boolean }> = [
   { file: "COMALI 2026.xlsm", sheet: "CTG26-0034", facturada: true },
 ];
 
+/** Celda de dinero del libro (era en pesos) → centavos al peso (ver `centavosDeCeldaEraPesos`). */
 function toBigInt(value: number | null | undefined): bigint {
-  return BigInt(Math.round(Number(value ?? 0)));
+  return centavosDeCeldaEraPesos(value);
 }
 
 async function main() {
@@ -75,16 +77,16 @@ async function main() {
         const anticipo = await prisma.anticipo.create({
           data: {
             clienteId: tramite.clienteId,
-            monto: 0n,
+            montoCentavos: 0n,
             fecha: new Date("2026-01-01"),
             tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-            costoRecaudo: 0n,
+            costoRecaudoCentavos: 0n,
             soporteKey: `IMPORT:${consecutivo} (sin anticipo en Excel)`,
             verificadoBanco: true,
           },
         });
         await prisma.aplicacionAnticipo.create({
-          data: { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicado: 0n },
+          data: { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicadoCentavos: 0n },
         });
         console.log("   anticipo $0 aplicado (marcador)");
       }
@@ -138,12 +140,12 @@ async function main() {
       await prisma.borradorFactura.update({
         where: { id: borrador.id },
         data: {
-          costosBancarios: costosBancariosExcel,
-          impuesto4x1000: impuesto4x1000Excel,
-          totalFactura: totalFacturaExcel,
-          saldoAFavorCliente: saldoCliente > 0n ? saldoCliente : 0n,
-          saldoACargoCliente: saldoCliente < 0n ? -saldoCliente : 0n,
-          saldoAFavorLM: montoLM,
+          costosBancariosCentavos: costosBancariosExcel,
+          impuesto4x1000Centavos: impuesto4x1000Excel,
+          totalFacturaCentavos: totalFacturaExcel,
+          saldoAFavorClienteCentavos: saldoCliente > 0n ? saldoCliente : 0n,
+          saldoACargoClienteCentavos: saldoCliente < 0n ? -saldoCliente : 0n,
+          saldoAFavorLMCentavos: montoLM,
         },
       });
 
@@ -161,7 +163,7 @@ async function main() {
       }
       const tr = await transitionTramite(tramite.id, EstadoTramite.FACTURADO, admin.id);
       if (!tr.ok) throw new Error(`DO → FACTURADO: ${tr.message}`);
-      console.log(`   FACTURADO ${numFacturaSiigo} — total ${totalFacturaExcel}`);
+      console.log(`   FACTURADO ${numFacturaSiigo} — total ${formatoPesos(totalFacturaExcel)}`);
     } catch (e) {
       console.log(`   ✗ ERROR: ${e instanceof Error ? e.message : e}`);
     }

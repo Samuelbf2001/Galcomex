@@ -11,20 +11,37 @@
  * cuadra y cuál no, y qué pagos quedaron sin soporte de factura.
  *
  * Función pura, sin BD; recibe los datos ya leídos por el endpoint.
+ *
+ * Fase centavos: montos en CENTAVOS (`bigint`) de entrada y de salida (la API
+ * los emite como pesos texto con 2 decimales). Los ajustes `REDONDEO` de una
+ * factura re-expresada a sus centavos reales cuentan como pagado (D-8), con
+ * nota, igual que en `cruce-facturas.ts`.
  */
+
+import type { Centavos } from "@/lib/dinero";
+
+import { notaRedondeo } from "./cruce-facturas";
 
 export type FacturaProveedorParaValidacion = {
   id: string;
   /** Clave de agrupación: beneficiarioId si existe, si no un fallback estable por nombre. */
   proveedorId: string;
   proveedorNombre: string;
-  valor: bigint;
+  /** Centavos. */
+  valor: Centavos;
 };
 
 /** Un pago vinculado a una factura de proveedor (vía pivot PagoTramiteFactura). */
 export type PagoVinculadoParaValidacion = {
   facturaId: string;
-  valor: bigint;
+  /** Centavos. */
+  valor: Centavos;
+};
+
+/** Ajuste REDONDEO de una factura (D-8): cuenta como pagado. Centavos, > 0. */
+export type AjusteRedondeoParaValidacion = {
+  facturaId: string;
+  monto: Centavos;
 };
 
 /** Un pago del trámite que NO está vinculado a ninguna factura de proveedor. */
@@ -32,16 +49,23 @@ export type PagoSueltoParaValidacion = {
   pagoId: string;
   concepto: string;
   numSoporte: string | null;
-  valor: bigint;
+  /** Centavos. */
+  valor: Centavos;
 };
 
 export type ValidacionProveedor = {
   proveedorId: string;
   proveedorNombre: string;
-  totalFacturas: string;
-  totalPagos: string;
-  /** totalFacturas − totalPagos. Positivo = facturado más de lo pagado. */
-  diferencia: string;
+  /** Centavos. */
+  totalFacturas: Centavos;
+  /** Centavos: Σ pagos vinculados + Σ ajustes REDONDEO (D-8). */
+  totalPagos: Centavos;
+  /** Centavos: totalFacturas − totalPagos. Positivo = facturado más de lo pagado. */
+  diferencia: Centavos;
+  /** Centavos: parte de `totalPagos` que viene de ajustes REDONDEO. */
+  redondeo: Centavos;
+  /** «incluye redondeo de $0,45» cuando hay REDONDEO; si no, null. */
+  nota: string | null;
   /** true cuando diferencia === 0 */
   cuadra: boolean;
 };
@@ -50,7 +74,8 @@ export type PagoSueltoRow = {
   pagoId: string;
   concepto: string;
   numSoporte: string | null;
-  valor: string;
+  /** Centavos. */
+  valor: Centavos;
 };
 
 export type ValidacionesCruce = {
@@ -68,6 +93,7 @@ export function calcularValidacionesCruce(
   facturas: FacturaProveedorParaValidacion[],
   pagosVinculados: PagoVinculadoParaValidacion[],
   pagosSueltosInput: PagoSueltoParaValidacion[],
+  ajustesRedondeo: AjusteRedondeoParaValidacion[] = [],
 ): ValidacionesCruce {
   // Σ facturas por proveedor, preservando el orden de primera aparición.
   const ordenProveedores: string[] = [];
@@ -98,16 +124,27 @@ export function calcularValidacionesCruce(
     );
   }
 
+  // Σ ajustes REDONDEO por proveedor (D-8).
+  const redondeoPorProveedor = new Map<string, bigint>();
+  for (const a of ajustesRedondeo) {
+    const proveedorId = facturaToProveedor.get(a.facturaId);
+    if (!proveedorId) continue;
+    redondeoPorProveedor.set(proveedorId, (redondeoPorProveedor.get(proveedorId) ?? 0n) + a.monto);
+  }
+
   const proveedores: ValidacionProveedor[] = ordenProveedores.map((proveedorId) => {
     const totalFacturas = totalFacturasPorProveedor.get(proveedorId) ?? 0n;
-    const totalPagos = totalPagosPorProveedor.get(proveedorId) ?? 0n;
+    const redondeo = redondeoPorProveedor.get(proveedorId) ?? 0n;
+    const totalPagos = (totalPagosPorProveedor.get(proveedorId) ?? 0n) + redondeo;
     const diferencia = totalFacturas - totalPagos;
     return {
       proveedorId,
       proveedorNombre: nombrePorProveedor.get(proveedorId) ?? "",
-      totalFacturas: totalFacturas.toString(),
-      totalPagos: totalPagos.toString(),
-      diferencia: diferencia.toString(),
+      totalFacturas,
+      totalPagos,
+      diferencia,
+      redondeo,
+      nota: notaRedondeo(redondeo),
       cuadra: diferencia === 0n,
     };
   });
@@ -116,7 +153,7 @@ export function calcularValidacionesCruce(
     pagoId: p.pagoId,
     concepto: p.concepto,
     numSoporte: p.numSoporte,
-    valor: p.valor.toString(),
+    valor: p.valor,
   }));
 
   return { proveedores, pagosSueltos };

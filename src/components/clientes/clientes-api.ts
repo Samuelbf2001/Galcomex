@@ -1,3 +1,4 @@
+import { centavosDeTextoApi, textoDeCentavos } from "@/lib/dinero";
 import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 
 export type TarifaCliente = {
@@ -200,13 +201,13 @@ function normalizeAnticipo(row: unknown): AnticipoResumen | null {
   const id = typeof row.id === "string" ? row.id : "";
   if (!id) return null;
 
-  // Calcular montoAplicado sumando aplicaciones
+  // Calcular montoAplicado sumando aplicaciones (pesos-texto de la API, 2 decimales).
   let montoAplicado = 0n;
   if (Array.isArray(row.aplicaciones)) {
     for (const ap of row.aplicaciones) {
       if (isRecord(ap) && (ap.montoAplicado !== undefined)) {
         try {
-          montoAplicado += BigInt(String(ap.montoAplicado));
+          montoAplicado += centavosDeTextoApi(String(ap.montoAplicado));
         } catch { /* noop */ }
       }
     }
@@ -218,7 +219,7 @@ function normalizeAnticipo(row: unknown): AnticipoResumen | null {
     fecha: typeof row.fecha === "string" ? row.fecha : "",
     canalPago: typeof row.canalPago === "string" ? row.canalPago : "",
     verificadoBanco: row.verificadoBanco === true,
-    montoAplicado: montoAplicado.toString(),
+    montoAplicado: textoDeCentavos(montoAplicado),
   };
 }
 

@@ -46,6 +46,7 @@ import { FORMATO_CONCEPTOS_IVA } from "@/lib/borradores/formato-conceptos";
 import { recalcularTotalBorrador } from "@/lib/borradores/recalculo";
 import { getParametrosSistema } from "@/lib/parametros/service";
 import { prisma } from "@/lib/db/prisma";
+import { formatoPesos, numeroDeCentavos, type Centavos } from "@/lib/dinero";
 
 import {
   getToken,
@@ -57,7 +58,13 @@ import {
   type SiigoFacturaPostResponse,
 } from "./client";
 import { ivaDelProducto } from "./impuestos-producto";
-import { construirItemsSiigo, identificacionSiigo, lineasQueVanComoItem } from "./items-factura";
+import {
+  construirItemsSiigo,
+  identificacionSiigo,
+  lineasQueVanComoItem,
+  mensajeCuadreSiigo,
+  verificarCuadreSiigo,
+} from "./items-factura";
 
 // ─── Resultado tipado ─────────────────────────────────────────────────────────
 
@@ -129,13 +136,6 @@ function esTimeoutOAbort(err: unknown): boolean {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function bigintToPrice(valor: bigint): number {
-  if (valor > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error(`Valor excede MAX_SAFE_INTEGER: ${valor.toString()}`);
-  }
-  return Number(valor);
-}
-
 function fechaHoy(): string {
   const hoy = new Date();
   const y = hoy.getFullYear();
@@ -145,22 +145,20 @@ function fechaHoy(): string {
 }
 
 /**
- * Formatea un BigInt de COP al estilo "$ 26.844.137,00" — igual al usado en
- * las facturas reales de Galcomex (BAQ-18582, BAQ-18575, etc.).
+ * Centavos → "$ 26.844.137,00" (siempre ",00") — igual al usado en las facturas
+ * reales de Galcomex (BAQ-18582, BAQ-18575, FV-2-18772 "$ 2.821.466,50"). En las
+ * observaciones de Siigo el espacio tras "$" es uno normal, como en las reales.
  */
-function formatCOP(valor: bigint): string {
-  const formatted = new Intl.NumberFormat("es-CO", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(valor));
-  return `$ ${formatted}`;
+function montoObservacion(valor: Centavos): string {
+  return `$ ${formatoPesos(valor, { decimales: "siempre", simbolo: false })}`;
 }
 
+/** Totales del borrador en centavos. */
 interface TotalesBorrador {
-  totalFactura: bigint;
-  totalAnticipo: bigint;
-  saldoAFavorCliente: bigint;
-  saldoACargoCliente: bigint;
+  totalFactura: Centavos;
+  totalAnticipo: Centavos;
+  saldoAFavorCliente: Centavos;
+  saldoACargoCliente: Centavos;
 }
 
 function observacionesDesdeBorrador(
@@ -190,13 +188,13 @@ function observacionesDesdeBorrador(
 
   // Bloque de totales (TOTAL FACTURA / VALOR ANTICIPO / SALDO A SU FAVOR|CARGO)
   // Replica el formato del PDF de Siigo. Tabs entre etiqueta y valor.
-  const lineaTotal = `TOTAL FACTURA \t\t\t ${formatCOP(totales.totalFactura)}`;
-  const lineaAnticipo = `VALOR ANTICIPO \t\t\t ${formatCOP(totales.totalAnticipo)}`;
+  const lineaTotal = `TOTAL FACTURA \t\t\t ${montoObservacion(totales.totalFactura)}`;
+  const lineaAnticipo = `VALOR ANTICIPO \t\t\t ${montoObservacion(totales.totalAnticipo)}`;
   const lineaSaldo =
     totales.saldoAFavorCliente > 0n
-      ? `SALDO A ${conSu ? "SU " : ""}FAVOR\t\t\t ${formatCOP(totales.saldoAFavorCliente)}`
+      ? `SALDO A ${conSu ? "SU " : ""}FAVOR\t\t\t ${montoObservacion(totales.saldoAFavorCliente)}`
       : totales.saldoACargoCliente > 0n
-        ? `SALDO A ${conSu ? "SU " : ""}CARGO\t\t\t ${formatCOP(totales.saldoACargoCliente)}`
+        ? `SALDO A ${conSu ? "SU " : ""}CARGO\t\t\t ${montoObservacion(totales.saldoACargoCliente)}`
         : null;
 
   const bloqueTotales = [lineaTotal, lineaAnticipo, lineaSaldo]
@@ -259,7 +257,7 @@ async function leerConfigSiigo(): Promise<ConfigSiigo | { error: string }> {
 
 type PagoParaNit4x1000 = {
   canalPago: string;
-  valor: bigint;
+  valorCentavos: bigint;
   bancoBeneficiario: { nit: string | null; nombre: string | null } | null;
 };
 
@@ -337,7 +335,7 @@ export async function enviarBorradorASiigo(
             orderBy: { orden: "asc" },
             select: {
               canalPago: true,
-              valor: true,
+              valorCentavos: true,
               bancoBeneficiario: { select: { nit: true, nombre: true } },
             },
           },
@@ -419,9 +417,9 @@ export async function enviarBorradorASiigo(
   // Las 4 conceptos fijos (COMISION, IVA_COMISION, COSTOS_BANCARIOS,
   // IMPUESTO_4X1000) son LineaRevision con `tipoFija`. Junto con las líneas
   // manuales TERCEROS / OPERACIONAL forman la totalidad de los items que se
-  // envían a Siigo. La invariante crítica es:
+  // envían a Siigo. La invariante crítica (comprobada en el paso 5b) es:
   //
-  //   Σ items.price = totalFactura − retenciones
+  //   Σ items.price (+ IVA por ítem − retenciones enviadas) = payments.value = totalFactura
   //
   // Por eso TODAS las líneas con valor > 0 deben tener `siigoProducto.codigo`
   // y los items se mandan SIN `taxes` auto (el IVA va como su propia línea
@@ -534,11 +532,11 @@ export async function enviarBorradorASiigo(
       return {
         ok: false,
         tipo: "config",
-        error: `No está el impuesto "IVA ${params.tasaIva}%" en el catálogo Siigo. Sincroniza los impuestos en Configuración → Siigo.`,
+        error: `No está el impuesto "IVA ${Number(params.tasaIva)}%" en el catálogo Siigo. Sincroniza los impuestos en Configuración → Siigo.`,
       };
     }
 
-    if (borrador.retenciones > 0n) {
+    if (borrador.retencionesCentavos > 0n) {
       if (borrador.reteIvaPorcentaje === null) {
         return {
           ok: false,
@@ -562,7 +560,7 @@ export async function enviarBorradorASiigo(
   const items: SiigoFacturaItemDto[] = construirItemsSiigo(
     lineasFacturables.map((l) => ({
       concepto: l.concepto,
-      valor: l.valor,
+      valorCentavos: l.valorCentavos,
       orden: l.orden,
       seccion: l.seccion,
       tipoFija: l.tipoFija,
@@ -586,10 +584,10 @@ export async function enviarBorradorASiigo(
     borrador.comentariosCabecera,
     borrador.tramite.consecutivo,
     {
-      totalFactura: borrador.totalFactura,
-      totalAnticipo: borrador.totalAnticipo,
-      saldoAFavorCliente: borrador.saldoAFavorCliente,
-      saldoACargoCliente: borrador.saldoACargoCliente,
+      totalFactura: borrador.totalFacturaCentavos,
+      totalAnticipo: borrador.totalAnticipoCentavos,
+      saldoAFavorCliente: borrador.saldoAFavorClienteCentavos,
+      saldoACargoCliente: borrador.saldoACargoClienteCentavos,
     },
     !conceptosIva,
   );
@@ -604,7 +602,8 @@ export async function enviarBorradorASiigo(
     payments: [
       {
         id: borrador.formaPagoSiigoId!,
-        value: bigintToPrice(borrador.totalFactura),
+        // Pesos con decimales (1487623.45), exactos desde los centavos.
+        value: numeroDeCentavos(borrador.totalFacturaCentavos),
         due_date: fechaEnvio,
       },
     ],
@@ -612,6 +611,31 @@ export async function enviarBorradorASiigo(
     // Crítico: queda como BORRADOR en Siigo. Un superior valida y estampa.
     stamp: { send: false },
   };
+
+  // ── 5b. Invariante de cuadre (corta el envío) ───────────────────────────────
+  // Σ ítems (+ IVA de los ítems gravados − retenciones enviadas) = payments.value
+  // al centavo, sobre el payload EXACTO. Si no cuadra, Siigo liquidaría un total
+  // distinto del borrador (o rechazaría la factura): no se envía.
+  let cuadre;
+  try {
+    cuadre = verificarCuadreSiigo(dto, {
+      tasaIva: tasaIvaFactura,
+      retencionesCentavos: borrador.retencionesCentavos,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      tipo: "validacion",
+      error: `No se pudo comprobar que la factura cuadre para SIIGO: ${err instanceof Error ? err.message : "error desconocido"}`,
+    };
+  }
+  if (!cuadre.ok) {
+    return {
+      ok: false,
+      tipo: "validacion",
+      error: mensajeCuadreSiigo(cuadre, retentions ? 0n : borrador.retencionesCentavos),
+    };
+  }
 
   // ── 6. Bajo lock: re-validar, llamar a SIIGO y guardar el id ────────────────
   // El lock se mantiene durante el POST: un envío simultáneo recibe "envío en

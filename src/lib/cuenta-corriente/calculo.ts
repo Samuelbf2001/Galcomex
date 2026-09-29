@@ -2,7 +2,7 @@
  * Cuenta corriente por contraparte — Galcomex (M5)
  *
  * FUNCIÓN PURA, SIN BD. Misma disciplina que `motor-factura.ts`: todo el dinero
- * es `BigInt` (COP enteros) y no hay un solo flotante.
+ * es `BigInt` en CENTAVOS de COP (fase centavos) y no hay un solo flotante.
  *
  * El problema que resuelve, en palabras de la reunión: Ascinter, Coldex y
  * Eltrans son cliente y proveedor a la vez. Hoy hay que mirar dos carteras

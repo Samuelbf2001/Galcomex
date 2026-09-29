@@ -1,7 +1,12 @@
 /**
  * Cliente HTTP del tarifario por empresa (M2). Mismo estilo defensivo que
  * `capacidades-api.ts`: nunca se confía en la forma del JSON.
+ * Dinero: `TarifaItemRow.valor`/`.valorAdicional` son respuesta de la API
+ * (pesos-texto, 2 decimales, fase CENTAVOS §A.2); `minimos`/`tramos[].valor`
+ * son JSON guardado (pesos-texto tolerante, sin decimales obligatorios).
  */
+
+import { centavosDeTexto, formatoPesos } from "@/lib/dinero";
 
 export type TipoCalculoTarifa =
   | "FIJO"
@@ -84,7 +89,7 @@ export type TarifarioRow = {
   items: TarifaItemRow[];
 };
 
-/** Lo que manda el formulario de ítem (dinero como string de dígitos). */
+/** Lo que manda el formulario de ítem (dinero como pesos-texto de `CampoMoneda`, hasta 2 decimales). */
 export type TarifaItemForm = {
   concepto: string;
   nombrePublico: string;
@@ -400,11 +405,14 @@ export async function fetchEventosCatalogo(signal?: AbortSignal): Promise<Evento
 
 // ─── Presentación ─────────────────────────────────────────────────────────────
 
+/** Pesos-texto (API o JSON guardado, tolerante) → "$ 502.801,45" (D-5: centavos solo si existen). */
 export function formatCOP(digits: string | null | undefined): string {
-  if (!digits) return "$ 0";
-  const neg = digits.startsWith("-");
-  const clean = digits.replace(/^-/, "").replace(/\D/g, "") || "0";
-  return `${neg ? "-" : ""}$ ${clean.replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
+  if (!digits) return formatoPesos(0n);
+  try {
+    return formatoPesos(centavosDeTexto(digits));
+  } catch {
+    return digits;
+  }
 }
 
 export function formatFecha(iso: string): string {

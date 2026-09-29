@@ -32,6 +32,7 @@ import { CLAVE_APROBADORES_PSE } from "../aprobadores";
 import { payloadNoPuedo } from "../catalogo";
 import { kapsoConfig } from "../config";
 import { estadoSolicitudPse, procesarWebhookKapso, solicitarCodigoPse } from "../pse-service";
+import { pesos } from "@/lib/dinero";
 
 const PREFIJO = "vitest-whatsapp";
 const runId = `${PREFIJO}-${Date.now()}`;
@@ -124,7 +125,7 @@ describe("pse-service contra Postgres", () => {
       consecutivo: `DO.BAQ99-${runId}`,
       usuarioId: userId,
       operador: "Karina",
-      valor: 4233902n,
+      valor: pesos(4_233_902),
       beneficiario: "Almacarga",
       concepto: "Almacenaje",
     });

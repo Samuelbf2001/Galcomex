@@ -9,9 +9,14 @@
  */
 import "dotenv/config";
 
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import {
   AgenciaAduanas,
   CanalPago,
+  CategoriaDocumento,
   Ciudad,
   EstadoBorrador,
   EstadoTramite,
@@ -20,9 +25,19 @@ import {
   TipoRecaudo,
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { formatoPesos, pesos, textoCanonicoDeCentavos } from "@/lib/dinero";
 
+import { calcularSaldoLMInterno } from "@/lib/calculations/cruce-lm";
+import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { prisma } from "@/lib/db/prisma";
-import { generarBorrador, transicionarBorrador } from "../service";
+import { getParametrosSistema } from "@/lib/parametros/service";
+import { crearPagoMultiDO } from "@/lib/pagos/service";
+import { cargarBorradoresDeTramite } from "../consulta";
+import {
+  actualizarComisionInternaLM,
+  generarBorrador,
+  transicionarBorrador,
+} from "../service";
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -104,6 +119,18 @@ async function cleanupTestData() {
   await prisma.pagoTramite.deleteMany({
     where: { tramiteId: { in: tramiteIds } },
   });
+  // Cabeceras de los pagos en bloque (CxP v2) de los usuarios de test.
+  await prisma.pagoGrupo.deleteMany({
+    where: { OR: [{ creadoPorId: { in: userIds } }, { concepto: { startsWith: TEST_PREFIX } }] },
+  });
+  // Los enlaces pago↔factura y pago↔beneficiario caen en cascada con el pago;
+  // luego las facturas y los beneficiarios del pago en bloque.
+  await prisma.facturaProveedor.deleteMany({
+    where: { tramiteId: { in: tramiteIds } },
+  });
+  await prisma.beneficiario.deleteMany({
+    where: { nit: { startsWith: TEST_PREFIX } },
+  });
 
   const testAnticipos = await prisma.anticipo.findMany({
     where: { clienteId: { in: clienteIds } },
@@ -176,7 +203,7 @@ function ensureDb(ctx: { skip: (note?: string) => void }): Fixture {
 
 let tramiteCounter = 0;
 
-async function crearTramiteTest(db: Fixture): Promise<string> {
+async function crearTramiteTest(db: Fixture, clienteId = db.clienteId): Promise<string> {
   tramiteCounter++;
   const numero = tramiteCounter;
   const tramite = await prisma.tramiteDO.create({
@@ -185,7 +212,7 @@ async function crearTramiteTest(db: Fixture): Promise<string> {
       ciudad: Ciudad.BUN,
       anio: stateYear,
       numero,
-      clienteId: db.clienteId,
+      clienteId,
       agenciaAduanas: AgenciaAduanas.COLDEX,
       creadoPorId: db.userId,
       comentarios: `${TEST_PREFIX}:${runId}`,
@@ -202,18 +229,19 @@ async function crearAnticipoYAplicar(
   tramiteId: string,
   monto: bigint,
   tipoRecaudo: TipoRecaudo,
+  clienteId = db.clienteId,
 ): Promise<void> {
   const costoRecaudo = await prisma.matrizRecaudo
-    .findUnique({ where: { tipoRecaudo }, select: { costoFijo: true } })
-    .then((r) => r?.costoFijo ?? 0n);
+    .findUnique({ where: { tipoRecaudo }, select: { costoFijoCentavos: true } })
+    .then((r) => r?.costoFijoCentavos ?? 0n);
 
   const anticipo = await prisma.anticipo.create({
     data: {
-      clienteId: db.clienteId,
-      monto,
+      clienteId,
+      montoCentavos: monto,
       fecha: new Date(`${stateYear}-01-10`),
       tipoRecaudo,
-      costoRecaudo,
+      costoRecaudoCentavos: costoRecaudo,
       verificadoBanco: true,
     },
   });
@@ -222,7 +250,7 @@ async function crearAnticipoYAplicar(
     data: {
       anticipoId: anticipo.id,
       tramiteId,
-      montoAplicado: monto,
+      montoAplicadoCentavos: monto,
     },
   });
 }
@@ -234,17 +262,172 @@ async function crearPagoTest(
   orden: number,
 ): Promise<void> {
   const costoBancario = await prisma.matrizPago
-    .findUnique({ where: { canalPago: canal }, select: { costoFijo: true } })
-    .then((r) => r?.costoFijo ?? 0n);
+    .findUnique({ where: { canalPago: canal }, select: { costoFijoCentavos: true } })
+    .then((r) => r?.costoFijoCentavos ?? 0n);
 
   await prisma.pagoTramite.create({
     data: {
       tramiteId,
-      concepto: `Pago test ${valor}`,
-      valor,
+      concepto: `Pago test ${formatoPesos(valor)}`,
+      valorCentavos: valor,
       canalPago: canal,
-      costoBancario,
+      costoBancarioCentavos: costoBancario,
       orden,
+    },
+  });
+}
+
+async function costoMatrizPago(canal: CanalPago): Promise<bigint> {
+  return prisma.matrizPago
+    .findUnique({ where: { canalPago: canal }, select: { costoFijoCentavos: true } })
+    .then((r) => r?.costoFijoCentavos ?? 0n);
+}
+
+async function costoMatrizRecaudo(tipoRecaudo: TipoRecaudo): Promise<bigint> {
+  return prisma.matrizRecaudo
+    .findUnique({ where: { tipoRecaudo }, select: { costoFijoCentavos: true } })
+    .then((r) => r?.costoFijoCentavos ?? 0n);
+}
+
+/** Factura de proveedor del trámite. `repercutible=false` = «NO SE COBRA» (asesoría). */
+async function crearFacturaProveedorTest(
+  db: Fixture,
+  tramiteId: string,
+  numFactura: string,
+  valor: bigint,
+  repercutible: boolean,
+  beneficiarioId: string | null = null,
+): Promise<string> {
+  const factura = await prisma.facturaProveedor.create({
+    data: {
+      tramiteId,
+      proveedorNombre: "ASCINTER VITEST",
+      beneficiarioId,
+      numFactura: `${numFactura}-${runId}`,
+      valorCentavos: valor,
+      fecha: new Date(`${stateYear}-01-15`),
+      repercutible,
+      subidaPorId: db.userId,
+    },
+  });
+  return factura.id;
+}
+
+/** Beneficiario (proveedor) del pago en bloque; nit prefijado para la limpieza. */
+async function crearBeneficiarioTest(): Promise<string> {
+  const b = await prisma.beneficiario.create({
+    data: {
+      nombre: "ASCINTER VITEST",
+      nit: `${TEST_PREFIX}-${runId}-${Math.random().toString(36).slice(2)}`,
+    },
+  });
+  return b.id;
+}
+
+/** Comprobante bancario del pago en bloque (CxP v2 lo exige salvo histórico). */
+async function crearComprobanteTest(db: Fixture, tramiteId: string): Promise<string> {
+  const doc = await prisma.documento.create({
+    data: {
+      tramiteId,
+      categoria: CategoriaDocumento.COMPROBANTE_BANCARIO,
+      nombreArchivo: "comprobante-vitest.pdf",
+      storageKey: `vitest/${runId}/${Math.random().toString(36).slice(2)}.pdf`,
+      mimeType: "application/pdf",
+      tamanoBytes: 1024,
+      subidoPorId: db.userId,
+    },
+  });
+  return doc.id;
+}
+
+/**
+ * Pago en bloque escrito directo en la BD, como lo deja la migración de CxP v2
+ * para un bloque anterior a v2: cabecera PagoGrupo, UN PagoTramite del DO y
+ * sus enlaces con el `monto` que la migración pudo asignar (0 = no pudo), más
+ * las filas de auditoría del bloque (`antes.montoPagadoEnGrupo`) que se pasen
+ * (p. ej. las de un bloque eliminado y rehecho, o las de antes de editarlo).
+ */
+async function crearBloqueHeredadoTest(
+  db: Fixture,
+  tramiteId: string,
+  beneficiarioId: string,
+  canal: CanalPago,
+  orden: number,
+  enlaces: { facturaId: string; monto: bigint }[],
+  auditoria: { facturaId: string; montoPagadoEnGrupo: bigint }[],
+  valor: bigint,
+): Promise<string> {
+  const grupoPagoId = randomUUID();
+  const costoBancario = await costoMatrizPago(canal);
+  await prisma.pagoGrupo.create({
+    data: {
+      id: grupoPagoId,
+      beneficiarioId,
+      concepto: `${TEST_PREFIX} bloque heredado`,
+      canalPago: canal,
+      totalAplicadoCentavos: valor,
+      costoBancarioCentavos: costoBancario,
+      costoAsumidoPor: "PRIMER_DO",
+      creadoPorId: db.userId,
+    },
+  });
+  const pago = await prisma.pagoTramite.create({
+    data: {
+      tramiteId,
+      // Concepto con el valor en pesos (texto canónico, "1300000").
+      concepto: `Pago en bloque heredado ${textoCanonicoDeCentavos(valor)}`,
+      grupoPagoId,
+      valorCentavos: valor,
+      canalPago: canal,
+      costoBancarioCentavos: costoBancario,
+      orden,
+      facturasProveedor: {
+        create: enlaces.map((e) => ({ facturaId: e.facturaId, montoCentavos: e.monto })),
+      },
+    },
+  });
+  for (const a of auditoria) {
+    await prisma.auditLog.create({
+      data: {
+        entidad: "FacturaProveedor",
+        entidadId: a.facturaId,
+        accion: "UPDATE_ESTADO",
+        usuarioId: db.userId,
+        tramiteId,
+        // Auditoría del bloque ANTERIOR a CxP v2: PESOS enteros en texto ("943000").
+        antes: { estado: "REGISTRADA", montoPagadoEnGrupo: textoCanonicoDeCentavos(a.montoPagadoEnGrupo) },
+        despues: { estado: "PAGADA" },
+      },
+    });
+  }
+  return pago.id;
+}
+
+/**
+ * Pago del libro enlazado a facturas de proveedor. Sin `montos`, cada enlace
+ * queda con monto 0: un enlace HEREDADO que la migración de CxP v2 no pudo
+ * repartir (el caso en que todavía se usa la auditoría del pago en bloque).
+ * Con `montos` (mismo orden que `facturaIds`) es un enlace de CxP v2.
+ */
+async function crearPagoEnlazadoTest(
+  tramiteId: string,
+  valor: bigint,
+  canal: CanalPago,
+  orden: number,
+  facturaIds: string[],
+  montos?: bigint[],
+): Promise<void> {
+  await prisma.pagoTramite.create({
+    data: {
+      tramiteId,
+      concepto: `Pago enlazado test ${textoCanonicoDeCentavos(valor)}`,
+      valorCentavos: valor,
+      canalPago: canal,
+      costoBancarioCentavos: await costoMatrizPago(canal),
+      orden,
+      facturasProveedor: {
+        create: facturaIds.map((facturaId, i) => ({ facturaId, montoCentavos: montos?.[i] ?? 0n })),
+      },
     },
   });
 }
@@ -290,7 +473,7 @@ describe("borradores service con Postgres local", () => {
       const tramiteId = await crearTramiteTest(db);
 
       // Anticipo: 45.226.000, canal OTRO (costoFijo=1.950)
-      await crearAnticipoYAplicar(db, tramiteId, 45_226_000n, TipoRecaudo.BANCOLOMBIA);
+      await crearAnticipoYAplicar(db, tramiteId, pesos(45_226_000), TipoRecaudo.BANCOLOMBIA);
 
       // 7 pagos según el Excel DO.BUN26-0026
       // Canales asignados para que costosBancarios = 17.550:
@@ -311,13 +494,13 @@ describe("borradores service con Postgres local", () => {
       //   15.600 / 3.900 = 4 pagos BANCOLOMBIA_TRANSFERENCIA
       //   Entonces: 4 pagos TRANSF + anticipo OTRO = 4×3.900 + 1.950 = 17.550 ✓
       const pagosConfig: Array<{ valor: bigint; canal: CanalPago }> = [
-        { valor: 1_000_000n,  canal: CanalPago.PSE },
-        { valor: 2_011_341n,  canal: CanalPago.PSE },
-        { valor: 30_854_000n, canal: CanalPago.PSE },
-        { valor: 2_216_233n,  canal: CanalPago.TRANSF_BANCOLOMBIA },
-        { valor: 760_283n,    canal: CanalPago.TRANSF_BANCOLOMBIA },
-        { valor: 175_787n,    canal: CanalPago.TRANSF_BANCOLOMBIA },
-        { valor: 3_500_000n,  canal: CanalPago.TRANSF_BANCOLOMBIA },
+        { valor: pesos(1_000_000),  canal: CanalPago.PSE },
+        { valor: pesos(2_011_341),  canal: CanalPago.PSE },
+        { valor: pesos(30_854_000), canal: CanalPago.PSE },
+        { valor: pesos(2_216_233),  canal: CanalPago.TRANSF_BANCOLOMBIA },
+        { valor: pesos(760_283),    canal: CanalPago.TRANSF_BANCOLOMBIA },
+        { valor: pesos(175_787),    canal: CanalPago.TRANSF_BANCOLOMBIA },
+        { valor: pesos(3_500_000),  canal: CanalPago.TRANSF_BANCOLOMBIA },
       ];
 
       for (let i = 0; i < pagosConfig.length; i++) {
@@ -327,9 +510,9 @@ describe("borradores service con Postgres local", () => {
       // Generar borrador con overrides del caso dorado
       const borrador = await generarBorrador({
         tramiteId,
-        comision: 200_000n,
-        ivaComision: 76_000n,   // Override manual del Excel (no es 19% × 200.000)
-        montoLM: 875_944n,
+        comision: pesos(200_000),
+        ivaComision: pesos(76_000),   // Override manual del Excel (no es 19% × 200.000)
+        montoLM: pesos(875_944),
         usuarioId: db.userId,
       });
 
@@ -343,11 +526,11 @@ describe("borradores service con Postgres local", () => {
       //              = 474.454
       // saldoFinal   = totalAnticipo − totalFactura = 45.226.000 − 474.454 = 44.751.546
       // saldoAFavorCliente = saldoFinal − montoLM   = 44.751.546 − 875.944 = 43.875.602
-      expect(borrador.totalFactura, "totalFactura").toBe(474_454n);
-      expect(borrador.saldoAFavorCliente, "saldoAFavorCliente").toBe(43_875_602n);
-      expect(borrador.saldoAFavorLM, "saldoAFavorLM").toBe(875_944n);
-      expect(borrador.impuesto4x1000, "impuesto4x1000").toBe(180_904n);
-      expect(borrador.costosBancarios, "costosBancarios").toBe(17_550n);
+      expect(borrador.totalFacturaCentavos, "totalFactura").toBe(pesos(474_454));
+      expect(borrador.saldoAFavorClienteCentavos, "saldoAFavorCliente").toBe(pesos(43_875_602));
+      expect(borrador.saldoAFavorLMCentavos, "saldoAFavorLM").toBe(pesos(875_944));
+      expect(borrador.impuesto4x1000Centavos, "impuesto4x1000").toBe(pesos(180_904));
+      expect(borrador.costosBancariosCentavos, "costosBancarios").toBe(pesos(17_550));
 
       // Verificar estado inicial
       expect(borrador.estado).toBe(EstadoBorrador.BORRADOR);
@@ -368,12 +551,12 @@ describe("borradores service con Postgres local", () => {
   it("no se puede facturar un borrador no aprobado → 422", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db);
-    await crearAnticipoYAplicar(db, tramiteId, 10_000_000n, TipoRecaudo.BANCOLOMBIA);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(10_000_000), TipoRecaudo.BANCOLOMBIA);
 
     // Crear borrador en estado BORRADOR
     const borrador = await generarBorrador({
       tramiteId,
-      comision: 150_000n,
+      comision: pesos(150_000),
       usuarioId: db.userId,
     });
 
@@ -398,11 +581,11 @@ describe("borradores service con Postgres local", () => {
   it("no se puede facturar un borrador en EN_REVISION → 422", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db);
-    await crearAnticipoYAplicar(db, tramiteId, 10_000_000n, TipoRecaudo.BANCOLOMBIA);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(10_000_000), TipoRecaudo.BANCOLOMBIA);
 
     const borrador = await generarBorrador({
       tramiteId,
-      comision: 150_000n,
+      comision: pesos(150_000),
       usuarioId: db.userId,
     });
 
@@ -433,13 +616,13 @@ describe("borradores service con Postgres local", () => {
   it("ciclo completo: BORRADOR → EN_REVISION → APROBADO → FACTURADO + Factura creada", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db);
-    await crearAnticipoYAplicar(db, tramiteId, 20_000_000n, TipoRecaudo.BANCOLOMBIA);
-    await crearPagoTest(tramiteId, 15_000_000n, CanalPago.PSE, 1);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(20_000_000), TipoRecaudo.BANCOLOMBIA);
+    await crearPagoTest(tramiteId, pesos(15_000_000), CanalPago.PSE, 1);
 
     const borrador = await generarBorrador({
       tramiteId,
-      comision: 200_000n,
-      montoLM: 100_000n,
+      comision: pesos(200_000),
+      montoLM: pesos(100_000),
       usuarioId: db.userId,
     });
 
@@ -486,12 +669,12 @@ describe("borradores service con Postgres local", () => {
   it("snapshot inmutable: tras aprobar, snapshotCalculo queda guardado en BD", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db);
-    await crearAnticipoYAplicar(db, tramiteId, 15_000_000n, TipoRecaudo.BANCOLOMBIA);
-    await crearPagoTest(tramiteId, 10_000_000n, CanalPago.PSE, 1);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(15_000_000), TipoRecaudo.BANCOLOMBIA);
+    await crearPagoTest(tramiteId, pesos(10_000_000), CanalPago.PSE, 1);
 
     const borrador = await generarBorrador({
       tramiteId,
-      comision: 150_000n,
+      comision: pesos(150_000),
       usuarioId: db.userId,
     });
 
@@ -530,11 +713,11 @@ describe("borradores service con Postgres local", () => {
   it("transición inválida (BORRADOR → APROBADO) retorna 422", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db);
-    await crearAnticipoYAplicar(db, tramiteId, 5_000_000n, TipoRecaudo.BANCOLOMBIA);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(5_000_000), TipoRecaudo.BANCOLOMBIA);
 
     const borrador = await generarBorrador({
       tramiteId,
-      comision: 150_000n,
+      comision: pesos(150_000),
       usuarioId: db.userId,
     });
 
@@ -549,5 +732,994 @@ describe("borradores service con Postgres local", () => {
     if (!result.ok) {
       expect(result.status).toBe(422);
     }
+  });
+
+  // ─── Asesoría no repercutible (caso Ascinter) ────────────────────────────
+  // Lo que Galcomex paga por facturas que NO se le cobran al cliente
+  // (repercutible=false) no entra en totalPagos, costos bancarios ni 4x1000.
+  it("asesoría no repercutible no suma en totalPagos, costos ni 4x1000", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA);
+
+    // A: pago suelto (sin factura) → cuenta completo.
+    await crearPagoTest(tramiteId, pesos(2_000_000), CanalPago.TRANSF_BANCOLOMBIA, 1);
+    // B: pago de solo asesoría → fuera (valor y costo bancario).
+    const s1 = await crearFacturaProveedorTest(db, tramiteId, "S1", pesos(500_000), false);
+    await crearPagoEnlazadoTest(tramiteId, pesos(500_000), CanalPago.TRANSF_BANCOLOMBIA, 2, [s1]);
+    // C: pago en bloque transporte 1.000.000 (se cobra) + asesoría 300.000 (no).
+    const t2 = await crearFacturaProveedorTest(db, tramiteId, "T2", pesos(1_000_000), true);
+    const s2 = await crearFacturaProveedorTest(db, tramiteId, "S2", pesos(300_000), false);
+    await crearPagoEnlazadoTest(tramiteId, pesos(1_300_000), CanalPago.TRANSF_BANCOLOMBIA, 3, [t2, s2]);
+
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      usuarioId: db.userId,
+    });
+
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoTransf = await costoMatrizPago(CanalPago.TRANSF_BANCOLOMBIA);
+    const params = await getParametrosSistema();
+    const esperado = calcularBorrador({
+      totalAnticipoAplicado: pesos(3_000_000),
+      costoRecaudoAnticipo: costoRecaudo,
+      pagos: [
+        { valor: pesos(2_000_000), costoBancario: costoTransf },
+        { valor: pesos(1_000_000), costoBancario: costoTransf },
+      ],
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      tasaIva: params.tasaIva,
+      tasa4x1000: params.tasa4x1000,
+    });
+
+    expect(borrador.totalPagosCentavos, "totalPagos").toBe(pesos(3_000_000));
+    expect(borrador.costosBancariosCentavos, "costosBancarios").toBe(costoRecaudo + 2n * costoTransf);
+    expect(borrador.impuesto4x1000Centavos, "impuesto4x1000").toBe(esperado.impuesto4x1000);
+    if (params.tasa4x1000 === 400n && costoRecaudo === pesos(1_950) && costoTransf === pesos(3_900)) {
+      expect(borrador.impuesto4x1000Centavos).toBe(pesos(12_991));
+    }
+    const lineaCostos = borrador.lineasRevision.find((l) => l.tipoFija === "COSTOS_BANCARIOS");
+    expect(lineaCostos?.valorCentavos, "línea COSTOS_BANCARIOS").toBe(costoRecaudo + 2n * costoTransf);
+    const linea4x1000 = borrador.lineasRevision.find((l) => l.tipoFija === "IMPUESTO_4X1000");
+    expect(linea4x1000?.valorCentavos, "línea IMPUESTO_4X1000").toBe(esperado.impuesto4x1000);
+  });
+
+  // ─── Abono parcial y sobrante: primero lo no cobrable, y rastro para el revisor ─
+  it("abono parcial en bloque, pago con sobrante y dos transferencias que juntas pagan de más un transporte: se cobra solo lo que no es asesoría, el sobrante lo asume Galcomex y el revisor los ve marcados", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA);
+
+    // Bloque: 500.000 al transporte (factura 1.000.000) + asesoría 300.000 = 800.000.
+    const t = await crearFacturaProveedorTest(db, tramiteId, "T-AB", pesos(1_000_000), true);
+    const s = await crearFacturaProveedorTest(db, tramiteId, "S-AB", pesos(300_000), false);
+    await crearPagoEnlazadoTest(tramiteId, pesos(800_000), CanalPago.TRANSF_BANCOLOMBIA, 1, [t, s]);
+    // Resto del transporte, enlazado solo al transporte: se cobra completo.
+    await crearPagoEnlazadoTest(tramiteId, pesos(500_000), CanalPago.TRANSF_BANCOLOMBIA, 2, [t]);
+    // Transferencia de 1.200.000 enlazada solo a una asesoría de 200.000: nada
+    // se le cobra al cliente (ni el sobrante ni la transferencia); queda
+    // marcada por si el sobrante era transporte sin factura enlazada.
+    const s2 = await crearFacturaProveedorTest(db, tramiteId, "S2-AB", pesos(200_000), false);
+    await crearPagoEnlazadoTest(tramiteId, pesos(1_200_000), CanalPago.TRANSF_BANCOLOMBIA, 3, [s2]);
+    // Otro transporte de 1.000.000 pagado con dos transferencias de 650.000
+    // enlazadas solo a él: ninguna pasa sola de la factura, pero entre las dos
+    // se le cobran 1.300.000 al cliente (¿300.000 de asesoría sin enlazar?).
+    // Se cobran completas (ningún total cambia) y las dos quedan marcadas.
+    const t3 = await crearFacturaProveedorTest(db, tramiteId, "T3-AB", pesos(1_000_000), true);
+    await crearPagoEnlazadoTest(tramiteId, pesos(650_000), CanalPago.TRANSF_BANCOLOMBIA, 4, [t3]);
+    await crearPagoEnlazadoTest(tramiteId, pesos(650_000), CanalPago.TRANSF_BANCOLOMBIA, 5, [t3]);
+
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      usuarioId: db.userId,
+    });
+
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoTransf = await costoMatrizPago(CanalPago.TRANSF_BANCOLOMBIA);
+    const params = await getParametrosSistema();
+    const esperado = calcularBorrador({
+      totalAnticipoAplicado: pesos(3_000_000),
+      costoRecaudoAnticipo: costoRecaudo,
+      // El pago de 1.200.000 (solo asesoría) no entra: ni valor ni transferencia.
+      pagos: [
+        { valor: pesos(500_000), costoBancario: costoTransf },
+        { valor: pesos(500_000), costoBancario: costoTransf },
+        { valor: pesos(650_000), costoBancario: costoTransf },
+        { valor: pesos(650_000), costoBancario: costoTransf },
+      ],
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      tasaIva: params.tasaIva,
+      tasa4x1000: params.tasa4x1000,
+    });
+
+    expect(borrador.totalPagosCentavos, "totalPagos").toBe(pesos(2_300_000));
+    expect(borrador.costosBancariosCentavos, "costosBancarios").toBe(costoRecaudo + 4n * costoTransf);
+    expect(borrador.impuesto4x1000Centavos, "impuesto4x1000").toBe(esperado.impuesto4x1000);
+    const linea4x1000 = borrador.lineasRevision.find((l) => l.tipoFija === "IMPUESTO_4X1000");
+    expect(linea4x1000?.valorCentavos, "línea IMPUESTO_4X1000").toBe(esperado.impuesto4x1000);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { entidad: "BorradorFactura", entidadId: borrador.id, accion: "CREATE" },
+      select: { despues: true },
+    });
+    const despues = audit?.despues as {
+      pagosNoCobrables?: { valor: string; costoBancario: string };
+      pagosPorRevisar?: Array<Record<string, unknown>>;
+    };
+    // 300.000 de la asesoría del bloque + 1.200.000 del pago de solo asesoría,
+    // y la transferencia de ese último pago.
+    expect(despues.pagosNoCobrables).toEqual({
+      valor: "1500000",
+      costoBancario: textoCanonicoDeCentavos(costoTransf),
+    });
+    // El pago de 500.000 enlazado solo al transporte T (1.000.000) no se marca
+    // porque, sumado con los demás pagos enlazados solo a esa factura (aquí
+    // ninguno), no pasa de su valor. Pagar menos que la factura NO basta para
+    // descartarlo: las dos transferencias de 650.000 a T3 sí se marcan.
+    expect(despues.pagosPorRevisar).toEqual([
+      expect.objectContaining({
+        valor: "800000",
+        sumaFacturas: "1300000",
+        cobrable: "500000",
+        noCobrable: "300000",
+        motivo: "ABONO_PARCIAL",
+      }),
+      expect.objectContaining({
+        valor: "1200000",
+        sumaFacturas: "200000",
+        cobrable: "0",
+        noCobrable: "1200000",
+        motivo: "SOBRANTE_NO_COBRADO",
+      }),
+      expect.objectContaining({
+        valor: "650000",
+        sumaFacturas: "1000000",
+        cobrable: "650000",
+        noCobrable: "0",
+        motivo: "SOBRANTE_COBRADO",
+      }),
+      expect.objectContaining({
+        valor: "650000",
+        sumaFacturas: "1000000",
+        cobrable: "650000",
+        noCobrable: "0",
+        motivo: "SOBRANTE_COBRADO",
+      }),
+    ]);
+
+    // Lo que ve quien revisa (GET /api/tramites/[id]/borrador): los mismos
+    // pagos marcados, con BigInt. El SOCIO nunca los recibe (ver test LM).
+    const { borradores } = await cargarBorradoresDeTramite(tramiteId, {
+      id: db.userRevisorId,
+      rol: "REVISOR",
+    });
+    const visto = borradores.find((b) => b.id === borrador.id);
+    expect(visto?.pagosPorRevisar).toEqual([
+      expect.objectContaining({ valor: pesos(800_000), cobrable: pesos(500_000), noCobrable: pesos(300_000) }),
+      expect.objectContaining({
+        valor: pesos(1_200_000),
+        sumaFacturas: pesos(200_000),
+        cobrable: 0n,
+        noCobrable: pesos(1_200_000),
+      }),
+      expect.objectContaining({ valor: pesos(650_000), cobrable: pesos(650_000), motivo: "SOBRANTE_COBRADO" }),
+      expect.objectContaining({ valor: pesos(650_000), cobrable: pesos(650_000), motivo: "SOBRANTE_COBRADO" }),
+    ]);
+  });
+
+  // ─── Pago en bloque real: montos de la auditoría → reparto exacto ─────────
+  it("pago en bloque con la asesoría neta de retención: el borrador cobra el transporte completo y no marca nada", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA);
+
+    const beneficiarioId = await crearBeneficiarioTest();
+    const t = await crearFacturaProveedorTest(db, tramiteId, "T-BQ", pesos(1_000_000), true, beneficiarioId);
+    const s = await crearFacturaProveedorTest(db, tramiteId, "S-BQ", pesos(300_000), false, beneficiarioId);
+    // Transporte completo + asesoría pagada en 288.000 (neta de retención):
+    // UN pago de 1.288.000 enlazado a las dos facturas. CxP v2 guarda el monto
+    // de cada enlace (1.000.000 / 288.000): el reparto sale de ahí.
+    const bloque = await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [
+        { facturaProveedorId: t, monto: pesos(1_000_000) },
+        { facturaProveedorId: s, monto: pesos(288_000) },
+      ],
+      canalPago: CanalPago.PSE,
+      documentoId: await crearComprobanteTest(db, tramiteId),
+      usuarioId: db.userId,
+    });
+    expect(bloque.pagos.map((p) => p.valorCentavos)).toEqual([pesos(1_288_000)]);
+
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      usuarioId: db.userId,
+    });
+
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoPse = await costoMatrizPago(CanalPago.PSE);
+    const params = await getParametrosSistema();
+    const esperado = calcularBorrador({
+      totalAnticipoAplicado: pesos(3_000_000),
+      costoRecaudoAnticipo: costoRecaudo,
+      pagos: [{ valor: pesos(1_000_000), costoBancario: costoPse }],
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      tasaIva: params.tasaIva,
+      tasa4x1000: params.tasa4x1000,
+    });
+
+    // Sin los montos del bloque se habrían cobrado 988.000 (1.288.000 − 300.000).
+    expect(borrador.totalPagosCentavos, "totalPagos").toBe(pesos(1_000_000));
+    expect(borrador.costosBancariosCentavos, "costosBancarios").toBe(costoRecaudo + costoPse);
+    expect(borrador.impuesto4x1000Centavos, "impuesto4x1000").toBe(esperado.impuesto4x1000);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { entidad: "BorradorFactura", entidadId: borrador.id, accion: "CREATE" },
+      select: { despues: true },
+    });
+    const despues = audit?.despues as {
+      pagosNoCobrables?: { valor: string; costoBancario: string };
+      pagosPorRevisar?: unknown[];
+    };
+    expect(despues.pagosNoCobrables).toEqual({ valor: "288000", costoBancario: "0" });
+    expect(despues.pagosPorRevisar).toEqual([]);
+
+    const { borradores } = await cargarBorradoresDeTramite(tramiteId, {
+      id: db.userId,
+      rol: "ADMIN",
+    });
+    expect(borradores.find((b) => b.id === borrador.id)?.pagosPorRevisar).toEqual([]);
+  });
+
+  // ─── SOCIO_LM: la comisión interna tampoco suma el costo de la asesoría ──
+  it("SOCIO_LM: actualizarComisionInternaLM no suma el costo bancario de un pago de solo asesoría", async (ctx) => {
+    const db = ensureDb(ctx);
+    const clienteLM = await prisma.cliente.create({
+      data: {
+        nombre: "Cliente Vitest Borradores LM",
+        nit: `${TEST_PREFIX}-lm-${runId}`,
+        tipo: TipoCliente.SOCIO_LM,
+      },
+    });
+    const tramiteId = await crearTramiteTest(db, clienteLM.id);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA, clienteLM.id);
+
+    await crearPagoTest(tramiteId, pesos(2_000_000), CanalPago.TRANSF_BANCOLOMBIA, 1);
+    const s1 = await crearFacturaProveedorTest(db, tramiteId, "S1-LM", pesos(500_000), false);
+    await crearPagoEnlazadoTest(tramiteId, pesos(500_000), CanalPago.TRANSF_BANCOLOMBIA, 2, [s1]);
+
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: pesos(200_000),
+      usuarioId: db.userId,
+    });
+    expect(borrador.totalPagosCentavos, "totalPagos").toBe(pesos(2_000_000));
+
+    const params = await getParametrosSistema();
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoTransf = await costoMatrizPago(CanalPago.TRANSF_BANCOLOMBIA);
+    const costoCanalComision = await costoMatrizPago(CanalPago.PSE);
+
+    const r = await actualizarComisionInternaLM(
+      borrador.id,
+      {
+        comisionInternaLM: params.comisionDefault,
+        tipoRecaudoComisionInternaLM: null,
+        canalPagoComisionInternaLM: CanalPago.PSE,
+      },
+      db.userId,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const { saldoLMInterno } = calcularSaldoLMInterno({
+      totalAnticipo: pesos(3_000_000),
+      totalPagos: pesos(2_000_000),
+      comisionInternaLM: params.comisionDefault,
+      ivaComision: borrador.ivaComisionCentavos,
+      // Solo el costo del pago suelto: el del pago de asesoría lo asume Galcomex.
+      costosBancarios: costoRecaudo + costoTransf + costoCanalComision,
+      tasa4x1000: params.tasa4x1000,
+    });
+    expect(r.borrador?.saldoLMInternoCentavos, "saldoLMInterno").toBe(saldoLMInterno);
+
+    // El SOCIO consulta el borrador de su trámite sin ver nada de la asesoría
+    // (costo interno de Galcomex); el ADMIN sí recibe la lista, aquí vacía: el
+    // pago de solo asesoría cuadra con su factura (sin marca) y, como cubre
+    // toda la asesoría del trámite, el pago suelto no puede ser asesoría sin
+    // enlazar (tampoco se marca).
+    const vistaSocio = await cargarBorradoresDeTramite(tramiteId, { id: db.userId, rol: "SOCIO" });
+    expect(vistaSocio.borradores.length).toBeGreaterThan(0);
+    expect(vistaSocio.borradores.every((b) => !("pagosPorRevisar" in b))).toBe(true);
+    const vistaAdmin = await cargarBorradoresDeTramite(tramiteId, { id: db.userId, rol: "ADMIN" });
+    expect(vistaAdmin.borradores.map((b) => b.pagosPorRevisar)).toEqual([[]]);
+  });
+
+  // ─── Hallazgo: bloque con asesoría eliminado y rehecho (auditoría ambigua) ─
+  // CxP v2 ya no deja pagarle a una factura más que su saldo; este caso solo
+  // existe en bloques ANTERIORES a v2. Se escribe directo en la BD como lo dejó
+  // la migración: (1) enlaces en 0 (no pudo repartir) → la heurística de la
+  // auditoría; (2) enlaces con el monto que la migración sí asignó (tope en el
+  // valor de la factura): en un pago MIXTO heredado ese monto es una
+  // estimación (ningún enlace lo aplicó CxP v2) y no manda → el mismo trato
+  // que (1).
+  it("bloque heredado con la asesoría pagada de más, eliminado y rehecho igual: cobra 943.000 (nunca asesoría) y queda por revisar", async (ctx) => {
+    const db = ensureDb(ctx);
+    const sinMontos = await crearTramiteTest(db);
+    const conMontos = await crearTramiteTest(db);
+    const beneficiarioId = await crearBeneficiarioTest();
+    const bloques = new Map<string, string>();
+
+    for (const tramiteId of [sinMontos, conMontos]) {
+      await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA);
+      const t = await crearFacturaProveedorTest(db, tramiteId, `T-RH-${tramiteId}`, pesos(1_000_000), true, beneficiarioId);
+      const s = await crearFacturaProveedorTest(db, tramiteId, `S-RH-${tramiteId}`, pesos(300_000), false, beneficiarioId);
+      // Transporte 943.000 + asesoría (factura 300.000) pagada en 357.000, en un
+      // bloque que se eliminó y se rehízo igual: la auditoría tiene DOS filas
+      // por factura y el libro UN solo pago (ambigua).
+      const auditoria = [
+        { facturaId: t, montoPagadoEnGrupo: pesos(943_000) },
+        { facturaId: s, montoPagadoEnGrupo: pesos(357_000) },
+      ];
+      const enlaces =
+        tramiteId === sinMontos
+          ? [
+              { facturaId: t, monto: 0n },
+              { facturaId: s, monto: 0n },
+            ]
+          : [
+              { facturaId: t, monto: pesos(943_000) },
+              { facturaId: s, monto: pesos(300_000) },
+            ];
+      bloques.set(
+        tramiteId,
+        await crearBloqueHeredadoTest(
+          db,
+          tramiteId,
+          beneficiarioId,
+          CanalPago.PSE,
+          1,
+          enlaces,
+          [...auditoria, ...auditoria],
+          pesos(1_300_000),
+        ),
+      );
+    }
+
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoPse = await costoMatrizPago(CanalPago.PSE);
+    const params = await getParametrosSistema();
+    const esperado = calcularBorrador({
+      totalAnticipoAplicado: pesos(3_000_000),
+      costoRecaudoAnticipo: costoRecaudo,
+      pagos: [{ valor: pesos(943_000), costoBancario: costoPse }],
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      tasaIva: params.tasaIva,
+      tasa4x1000: params.tasa4x1000,
+    });
+    const leer = async (borradorId: string) => {
+      const audit = await prisma.auditLog.findFirst({
+        where: { entidad: "BorradorFactura", entidadId: borradorId, accion: "CREATE" },
+        select: { despues: true },
+      });
+      return audit?.despues as {
+        resultado?: { totalFactura: string; saldoFinal: string };
+        pagosNoCobrables?: { valor: string; costoBancario: string };
+        pagosPorRevisar?: unknown[];
+      };
+    };
+
+    for (const tramiteId of [sinMontos, conMontos]) {
+      const borrador = await generarBorrador({
+        tramiteId,
+        comision: pesos(200_000),
+        ivaComision: pesos(38_000),
+        usuarioId: db.userId,
+      });
+      // Antes: 1.000.000 (57.000 de asesoría al cliente) y sin marca.
+      expect(borrador.totalPagosCentavos, "totalPagos").toBe(pesos(943_000));
+      expect(borrador.costosBancariosCentavos, "costosBancarios").toBe(costoRecaudo + costoPse);
+      expect(borrador.impuesto4x1000Centavos, "impuesto4x1000").toBe(esperado.impuesto4x1000);
+
+      const despues = await leer(borrador.id);
+      // Salida del motor tal cual (el total del borrador sale de sus líneas).
+      expect(despues.resultado?.totalFactura).toBe(textoCanonicoDeCentavos(esperado.totalFactura));
+      expect(despues.resultado?.saldoFinal).toBe(textoCanonicoDeCentavos(esperado.saldoFinal));
+      expect(despues.pagosNoCobrables).toEqual({ valor: "357000", costoBancario: "0" });
+      const pagoId = bloques.get(tramiteId);
+      expect(despues.pagosPorRevisar).toEqual([
+        {
+          pagoId,
+          concepto: "Pago en bloque heredado 1300000",
+          numSoporte: null,
+          valor: "1300000",
+          // La asesoría cuenta por lo que la auditoría le registra (357.000),
+          // también con los montos que estimó la migración (943.000 + 300.000).
+          sumaFacturas: "1357000",
+          cobrable: "943000",
+          noCobrable: "357000",
+          motivo: "BLOQUE_SIN_MONTOS",
+        },
+      ]);
+    }
+
+    const { borradores } = await cargarBorradoresDeTramite(sinMontos, {
+      id: db.userRevisorId,
+      rol: "REVISOR",
+    });
+    expect(borradores[0]?.pagosPorRevisar).toEqual([
+      expect.objectContaining({ cobrable: pesos(943_000), motivo: "BLOQUE_SIN_MONTOS" }),
+    ]);
+  });
+
+  // ─── CxP v2: el monto por enlace manda sobre la auditoría ─────────────────
+  it("bloque editado en v2 (enlaces T 900.000 / S 400.000, auditoría vieja T 1.000.000 / S 300.000, mismo total): cobra 900.000, no cobra 400.000 y no marca nada", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA);
+
+    const beneficiarioId = await crearBeneficiarioTest();
+    const t = await crearFacturaProveedorTest(db, tramiteId, "T-ED", pesos(1_000_000), true, beneficiarioId);
+    const s = await crearFacturaProveedorTest(db, tramiteId, "S-ED", pesos(400_000), false, beneficiarioId);
+    // La auditoría (una fila por factura) cuadra con el total del pago: la
+    // heurística vieja la tomaría como cierta y cobraría 1.000.000.
+    const pagoId = await crearBloqueHeredadoTest(
+      db,
+      tramiteId,
+      beneficiarioId,
+      CanalPago.PSE,
+      1,
+      [
+        { facturaId: t, monto: pesos(900_000) },
+        { facturaId: s, monto: pesos(400_000) },
+      ],
+      [
+        { facturaId: t, montoPagadoEnGrupo: pesos(1_000_000) },
+        { facturaId: s, montoPagadoEnGrupo: pesos(300_000) },
+      ],
+      pesos(1_300_000),
+    );
+    // Los enlaces los aplicó CxP v2 (`aplicarSaldo` deja su fila con
+    // `despues.origen`): sus montos son un dato, no una estimación.
+    for (const [facturaId, monto] of [
+      [t, pesos(900_000)],
+      [s, pesos(400_000)],
+    ] as const) {
+      await prisma.auditLog.create({
+        data: {
+          entidad: "FacturaProveedor",
+          entidadId: facturaId,
+          accion: "UPDATE_ESTADO",
+          usuarioId: db.userId,
+          tramiteId,
+          antes: { estado: "REGISTRADA", montoPagadoEnGrupo: textoCanonicoDeCentavos(monto) },
+          despues: {
+            estado: "PARCIAL",
+            monto: textoCanonicoDeCentavos(monto),
+            modo: "BLOQUE",
+            origen: { tipo: "PAGO", pagoId, tramiteId },
+          },
+        },
+      });
+    }
+
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      usuarioId: db.userId,
+    });
+
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoPse = await costoMatrizPago(CanalPago.PSE);
+    const params = await getParametrosSistema();
+    const esperado = calcularBorrador({
+      totalAnticipoAplicado: pesos(3_000_000),
+      costoRecaudoAnticipo: costoRecaudo,
+      pagos: [{ valor: pesos(900_000), costoBancario: costoPse }],
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      tasaIva: params.tasaIva,
+      tasa4x1000: params.tasa4x1000,
+    });
+    expect(borrador.totalPagosCentavos, "totalPagos").toBe(pesos(900_000));
+    expect(borrador.costosBancariosCentavos, "costosBancarios").toBe(costoRecaudo + costoPse);
+    expect(borrador.impuesto4x1000Centavos, "impuesto4x1000").toBe(esperado.impuesto4x1000);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { entidad: "BorradorFactura", entidadId: borrador.id, accion: "CREATE" },
+      select: { despues: true },
+    });
+    const despues = audit?.despues as {
+      resultado?: { totalFactura: string; saldoFinal: string };
+      pagosNoCobrables?: { valor: string; costoBancario: string };
+      pagosPorRevisar?: unknown[];
+    };
+    expect(despues.resultado?.totalFactura).toBe(textoCanonicoDeCentavos(esperado.totalFactura));
+    expect(despues.pagosNoCobrables).toEqual({ valor: "400000", costoBancario: "0" });
+    expect(despues.pagosPorRevisar).toEqual([]);
+  });
+
+  // ─── Migración M3 sobre un pago mixto heredado (hallazgo crítico 25-sep) ──
+  // Datos anteriores a v2: un pago de 800.000 enlazado (sin monto) al
+  // transporte T (1.000.000, se cobra, registrado primero) y a la asesoría A
+  // (300.000, NO SE COBRA). Se corre el paso 2 de M3 tal cual está en el repo
+  // (y la versión vieja, que llenaba por fecha) y luego se genera el borrador.
+  // Fase centavos: M3 corre ANTES de la migración de centavos, así que aquí se
+  // le cambian los nombres de columna (`valor` → `valorCentavos`, `monto` →
+  // `montoCentavos`); la regla no depende de la unidad.
+  it("M3 sobre un pago mixto heredado que no alcanza: la asesoría se llena primero, el cliente paga 500.000 y el pago queda ABONO_PARCIAL (también con el reparto viejo T 800.000 / A 0)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const migracion = readFileSync(
+      path.resolve(process.cwd(), "prisma/migrations/20260925100200_cxp_v2_backfill/migration.sql"),
+      "utf8",
+    ).replace(/\r\n/g, "\n");
+    const inicio = migracion.indexOf("WITH audit AS (");
+    const fin = migracion.indexOf("-- Red de seguridad");
+    expect(inicio).toBeGreaterThan(0);
+    expect(fin).toBeGreaterThan(inicio);
+    const paso2Pesos = migracion.slice(inicio, fin);
+    expect(paso2Pesos).toContain('ORDER BY frep, ffecha, fcreado, "facturaId"');
+    // Columnas de centavos (cada reemplazo debe encontrar lo que espera).
+    const aCentavos = (sql: string) => {
+      expect(sql.match(/\bp\.valor\b/g)).toHaveLength(1);
+      expect(sql.match(/\bf\.valor\b/g)).toHaveLength(3);
+      expect(sql.match(/SET "monto" =/g)).toHaveLength(1);
+      return sql
+        .replace(/\bp\.valor\b/g, 'p."valorCentavos"')
+        .replace(/\bf\.valor\b/g, 'f."valorCentavos"')
+        .replace('SET "monto" =', 'SET "montoCentavos" =');
+    };
+    const paso2 = aCentavos(paso2Pesos);
+    const cierreBase =
+      'LEFT JOIN audit au ON au."pagoId" = ptf."pagoId" AND au."facturaId" = ptf."facturaId"\n),';
+    expect(paso2.split(cierreBase)).toHaveLength(2);
+    /** Paso 2 de M3 limitado a los pagos de esta prueba (la BD de test es compartida). */
+    const correrPaso2 = async (pagoIds: string[], sql: string) => {
+      for (const id of pagoIds) expect(id).toMatch(/^[a-z0-9]+$/);
+      const filtro = `WHERE ptf."pagoId" IN (${pagoIds.map((id) => `'${id}'`).join(", ")})`;
+      await prisma.$executeRawUnsafe(sql.replace(cierreBase, cierreBase.replace("\n),", `\n  ${filtro}\n),`)));
+    };
+
+    const casos = [
+      { nombre: "M3 del repo (asesoría primero)", sql: paso2, esperadoT: pesos(500_000), esperadoA: pesos(300_000) },
+      {
+        nombre: "M3 vieja (por fecha)",
+        sql: paso2.replace('ORDER BY frep, ffecha, fcreado, "facturaId"', 'ORDER BY ffecha, fcreado, "facturaId"'),
+        esperadoT: pesos(800_000),
+        esperadoA: 0n,
+      },
+    ];
+    for (const caso of casos) {
+      const tramiteId = await crearTramiteTest(db);
+      await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA);
+      const t = await crearFacturaProveedorTest(db, tramiteId, "T-M3", pesos(1_000_000), true);
+      const a = await crearFacturaProveedorTest(db, tramiteId, "A-M3", pesos(300_000), false);
+      await crearPagoEnlazadoTest(tramiteId, pesos(800_000), CanalPago.TRANSF_BANCOLOMBIA, 1, [t, a]);
+      const pago = await prisma.pagoTramite.findFirstOrThrow({ where: { tramiteId }, select: { id: true } });
+
+      await correrPaso2([pago.id], caso.sql);
+      const enlaces = await prisma.pagoTramiteFactura.findMany({
+        where: { pagoId: pago.id },
+        select: { facturaId: true, montoCentavos: true },
+      });
+      const monto = (facturaId: string) => enlaces.find((e) => e.facturaId === facturaId)?.montoCentavos;
+      expect(monto(t), `${caso.nombre}: monto T`).toBe(caso.esperadoT);
+      expect(monto(a), `${caso.nombre}: monto A`).toBe(caso.esperadoA);
+
+      const borrador = await generarBorrador({
+        tramiteId,
+        comision: pesos(200_000),
+        ivaComision: pesos(38_000),
+        usuarioId: db.userId,
+      });
+      // Nunca se le cobra asesoría: 500.000 de transporte, no 800.000.
+      expect(borrador.totalPagosCentavos, `${caso.nombre}: totalPagos`).toBe(pesos(500_000));
+      const audit = await prisma.auditLog.findFirst({
+        where: { entidad: "BorradorFactura", entidadId: borrador.id, accion: "CREATE" },
+        select: { despues: true },
+      });
+      const despues = audit?.despues as {
+        pagosNoCobrables?: { valor: string; costoBancario: string };
+        pagosPorRevisar?: unknown[];
+      };
+      expect(despues.pagosNoCobrables?.valor, caso.nombre).toBe("300000");
+      expect(despues.pagosPorRevisar, caso.nombre).toEqual([
+        {
+          pagoId: pago.id,
+          concepto: "Pago enlazado test 800000",
+          numSoporte: null,
+          valor: "800000",
+          sumaFacturas: "1300000",
+          cobrable: "500000",
+          noCobrable: "300000",
+          motivo: "ABONO_PARCIAL",
+        },
+      ]);
+    }
+  });
+
+  // ─── Trámite con asesoría: pagos sueltos y sobrantes cobrables se marcan ──
+  it("trámite con asesoría sin enlazar: marca el pago suelto y el que paga de más su factura, sin cambiar ningún total", async (ctx) => {
+    const db = ensureDb(ctx);
+    const conAsesoria = await crearTramiteTest(db);
+    const sinAsesoria = await crearTramiteTest(db);
+
+    for (const tramiteId of [conAsesoria, sinAsesoria]) {
+      await crearAnticipoYAplicar(db, tramiteId, pesos(5_000_000), TipoRecaudo.BANCOLOMBIA);
+      const t = await crearFacturaProveedorTest(db, tramiteId, `T-SC-${tramiteId}`, pesos(1_000_000), true);
+      const t2 = await crearFacturaProveedorTest(db, tramiteId, `T2-SC-${tramiteId}`, pesos(1_000_000), true);
+      // Pago suelto, pago mayor que su factura y pago menor que su factura.
+      await crearPagoTest(tramiteId, pesos(2_000_000), CanalPago.TRANSF_BANCOLOMBIA, 1);
+      await crearPagoEnlazadoTest(tramiteId, pesos(1_300_000), CanalPago.TRANSF_BANCOLOMBIA, 2, [t]);
+      await crearPagoEnlazadoTest(tramiteId, pesos(800_000), CanalPago.PSE, 3, [t2]);
+    }
+    // Solo el primero tiene una asesoría (sin pago enlazado).
+    await crearFacturaProveedorTest(db, conAsesoria, "S-SC", pesos(300_000), false);
+
+    const generar = (tramiteId: string) =>
+      generarBorrador({ tramiteId, comision: pesos(200_000), ivaComision: pesos(38_000), usuarioId: db.userId });
+    const borradorCon = await generar(conAsesoria);
+    const borradorSin = await generar(sinAsesoria);
+
+    // Ningún total cambia: los tres pagos se cobran completos en ambos.
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoTransf = await costoMatrizPago(CanalPago.TRANSF_BANCOLOMBIA);
+    const costoPse = await costoMatrizPago(CanalPago.PSE);
+    const params = await getParametrosSistema();
+    const esperado = calcularBorrador({
+      totalAnticipoAplicado: pesos(5_000_000),
+      costoRecaudoAnticipo: costoRecaudo,
+      pagos: [
+        { valor: pesos(2_000_000), costoBancario: costoTransf },
+        { valor: pesos(1_300_000), costoBancario: costoTransf },
+        { valor: pesos(800_000), costoBancario: costoPse },
+      ],
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      tasaIva: params.tasaIva,
+      tasa4x1000: params.tasa4x1000,
+    });
+    const leerAuditoria = async (borradorId: string) => {
+      const audit = await prisma.auditLog.findFirst({
+        where: { entidad: "BorradorFactura", entidadId: borradorId, accion: "CREATE" },
+        select: { despues: true },
+      });
+      return audit?.despues as {
+        resultado?: Record<string, string | boolean>;
+        pagosNoCobrables?: { valor: string; costoBancario: string };
+        pagosPorRevisar?: unknown[];
+      };
+    };
+    for (const b of [borradorCon, borradorSin]) {
+      expect(b.totalPagosCentavos, "totalPagos").toBe(pesos(4_100_000));
+      expect(b.costosBancariosCentavos, "costosBancarios").toBe(esperado.costosBancarios);
+      expect(b.impuesto4x1000Centavos, "impuesto4x1000").toBe(esperado.impuesto4x1000);
+      // Salida completa del motor idéntica (el total del borrador sale de sus líneas).
+      const { resultado } = await leerAuditoria(b.id);
+      expect(resultado?.totalFactura, "totalFactura").toBe(textoCanonicoDeCentavos(esperado.totalFactura));
+      expect(resultado?.saldoFinal, "saldoFinal").toBe(textoCanonicoDeCentavos(esperado.saldoFinal));
+      expect(resultado?.saldoAFavorCliente, "saldoAFavorCliente").toBe(
+        textoCanonicoDeCentavos(esperado.saldoAFavorCliente),
+      );
+    }
+    expect(borradorCon.totalFacturaCentavos).toBe(borradorSin.totalFacturaCentavos);
+    expect(borradorCon.saldoAFavorClienteCentavos).toBe(borradorSin.saldoAFavorClienteCentavos);
+
+    const auditCon = await leerAuditoria(borradorCon.id);
+    expect(auditCon.pagosNoCobrables).toEqual({ valor: "0", costoBancario: "0" });
+    expect(auditCon.pagosPorRevisar).toEqual([
+      expect.objectContaining({
+        valor: "2000000",
+        sumaFacturas: "0",
+        cobrable: "2000000",
+        noCobrable: "0",
+        motivo: "PAGO_SIN_FACTURAS",
+      }),
+      expect.objectContaining({
+        valor: "1300000",
+        sumaFacturas: "1000000",
+        cobrable: "1300000",
+        noCobrable: "0",
+        motivo: "SOBRANTE_COBRADO",
+      }),
+    ]);
+    // Sin asesoría en el trámite, nada que revisar (casos dorados intactos).
+    expect((await leerAuditoria(borradorSin.id)).pagosPorRevisar).toEqual([]);
+  });
+
+  // ─── Asesoría cubierta: el pago suelto de naviera no es asesoría ─────────
+  it("asesoría pagada exacta por su pago enlazado o compensada: el pago suelto de naviera no se marca; si queda asesoría sin cubrir, sí; ningún total cambia", async (ctx) => {
+    const db = ensureDb(ctx);
+    const cubierta = await crearTramiteTest(db);
+    const compensada = await crearTramiteTest(db);
+    const sinCubrir = await crearTramiteTest(db);
+
+    for (const tramiteId of [cubierta, compensada, sinCubrir]) {
+      await crearAnticipoYAplicar(db, tramiteId, pesos(5_000_000), TipoRecaudo.BANCOLOMBIA);
+      // Naviera: pago suelto (sin facturas), se cobra completo.
+      await crearPagoTest(tramiteId, pesos(2_000_000), CanalPago.TRANSF_BANCOLOMBIA, 1);
+      // Transporte pagado exacto, enlazado a su factura.
+      const t = await crearFacturaProveedorTest(db, tramiteId, `T-CU-${tramiteId}`, pesos(1_000_000), true);
+      await crearPagoEnlazadoTest(tramiteId, pesos(1_000_000), CanalPago.TRANSF_BANCOLOMBIA, 2, [t]);
+    }
+    // Asesoría de 300.000 pagada exacta con un pago enlazado a su factura.
+    const sCubierta = await crearFacturaProveedorTest(db, cubierta, "S-CU", pesos(300_000), false);
+    await crearPagoEnlazadoTest(cubierta, pesos(300_000), CanalPago.TRANSF_BANCOLOMBIA, 3, [sCubierta]);
+    // Asesoría saldada por cruce de saldos (sin pago del libro).
+    const sCompensada = await crearFacturaProveedorTest(db, compensada, "S-CO", pesos(300_000), false);
+    await prisma.facturaProveedor.update({
+      where: { id: sCompensada },
+      // CxP v2: el cruce guarda cuánto saldó (aquí, toda la factura).
+      data: { compensacionId: `${TEST_PREFIX}-comp-${runId}`, montoCompensadoCentavos: pesos(300_000) },
+    });
+    // Asesoría pagada solo en parte (200.000 de 300.000): quedan 100.000 sin cubrir.
+    const sParcial = await crearFacturaProveedorTest(db, sinCubrir, "S-PA", pesos(300_000), false);
+    await crearPagoEnlazadoTest(sinCubrir, pesos(200_000), CanalPago.TRANSF_BANCOLOMBIA, 3, [sParcial]);
+
+    const generar = (tramiteId: string) =>
+      generarBorrador({ tramiteId, comision: pesos(200_000), ivaComision: pesos(38_000), usuarioId: db.userId });
+    const borradores = [
+      await generar(cubierta),
+      await generar(compensada),
+      await generar(sinCubrir),
+    ];
+
+    // Ningún total cambia: se cobran la naviera y el transporte; el pago de
+    // asesoría no entra (ni su valor ni su transferencia).
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoTransf = await costoMatrizPago(CanalPago.TRANSF_BANCOLOMBIA);
+    const params = await getParametrosSistema();
+    const esperado = calcularBorrador({
+      totalAnticipoAplicado: pesos(5_000_000),
+      costoRecaudoAnticipo: costoRecaudo,
+      pagos: [
+        { valor: pesos(2_000_000), costoBancario: costoTransf },
+        { valor: pesos(1_000_000), costoBancario: costoTransf },
+      ],
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      tasaIva: params.tasaIva,
+      tasa4x1000: params.tasa4x1000,
+    });
+    const leerAuditoria = async (borradorId: string) => {
+      const audit = await prisma.auditLog.findFirst({
+        where: { entidad: "BorradorFactura", entidadId: borradorId, accion: "CREATE" },
+        select: { despues: true },
+      });
+      return audit?.despues as {
+        resultado?: Record<string, string | boolean>;
+        pagosPorRevisar?: unknown[];
+      };
+    };
+    for (const b of borradores) {
+      expect(b.totalPagosCentavos, "totalPagos").toBe(pesos(3_000_000));
+      expect(b.costosBancariosCentavos, "costosBancarios").toBe(esperado.costosBancarios);
+      expect(b.impuesto4x1000Centavos, "impuesto4x1000").toBe(esperado.impuesto4x1000);
+      const { resultado } = await leerAuditoria(b.id);
+      expect(resultado?.totalFactura, "totalFactura").toBe(textoCanonicoDeCentavos(esperado.totalFactura));
+      expect(resultado?.saldoFinal, "saldoFinal").toBe(textoCanonicoDeCentavos(esperado.saldoFinal));
+    }
+
+    const [bCubierta, bCompensada, bSinCubrir] = borradores;
+    // Antes: la naviera salía como PAGO_SIN_FACTURAS solo porque el trámite
+    // tenía una factura NO SE COBRA.
+    expect((await leerAuditoria(bCubierta.id)).pagosPorRevisar).toEqual([]);
+    expect((await leerAuditoria(bCompensada.id)).pagosPorRevisar).toEqual([]);
+    expect((await leerAuditoria(bSinCubrir.id)).pagosPorRevisar).toEqual([
+      expect.objectContaining({
+        valor: "2000000",
+        sumaFacturas: "0",
+        cobrable: "2000000",
+        noCobrable: "0",
+        motivo: "PAGO_SIN_FACTURAS",
+      }),
+    ]);
+
+    // Lo que ve quien revisa: lo mismo.
+    const vista = await cargarBorradoresDeTramite(cubierta, { id: db.userRevisorId, rol: "REVISOR" });
+    expect(vista.borradores.find((b) => b.id === bCubierta.id)?.pagosPorRevisar).toEqual([]);
+  });
+
+  // ─── Bloque mixto + otra transferencia al mismo transporte ───────────────
+  it("bloque que ya pagó transporte 1.000.000 + asesoría 300.000 y otra transferencia de 650.000 al transporte: las dos quedan como SOBRANTE_COBRADO, la naviera no, y ningún total cambia", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(5_000_000), TipoRecaudo.BANCOLOMBIA);
+
+    const beneficiarioId = await crearBeneficiarioTest();
+    const t = await crearFacturaProveedorTest(db, tramiteId, "T-MX", pesos(1_000_000), true, beneficiarioId);
+    const s = await crearFacturaProveedorTest(db, tramiteId, "S-MX", pesos(300_000), false, beneficiarioId);
+    // Pago en bloque real: transporte completo + asesoría completa.
+    const bloque = await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [
+        { facturaProveedorId: t, monto: pesos(1_000_000) },
+        { facturaProveedorId: s, monto: pesos(300_000) },
+      ],
+      canalPago: CanalPago.PSE,
+      documentoId: await crearComprobanteTest(db, tramiteId),
+      usuarioId: db.userId,
+    });
+    expect(bloque.pagos.map((p) => p.valorCentavos)).toEqual([pesos(1_300_000)]);
+    // Otra transferencia enlazada solo al transporte (¿asesoría o un error?).
+    await crearPagoEnlazadoTest(tramiteId, pesos(650_000), CanalPago.TRANSF_BANCOLOMBIA, 10, [t]);
+    // Naviera: pago suelto. La asesoría ya la cubre el bloque → no se marca.
+    await crearPagoTest(tramiteId, pesos(2_000_000), CanalPago.TRANSF_BANCOLOMBIA, 11);
+
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      usuarioId: db.userId,
+    });
+
+    const costoRecaudo = await costoMatrizRecaudo(TipoRecaudo.BANCOLOMBIA);
+    const costoPse = await costoMatrizPago(CanalPago.PSE);
+    const costoTransf = await costoMatrizPago(CanalPago.TRANSF_BANCOLOMBIA);
+    const params = await getParametrosSistema();
+    // Del bloque se cobra el transporte (1.000.000); la transferencia y la
+    // naviera, completas. Las marcas no cambian nada de esto.
+    const esperado = calcularBorrador({
+      totalAnticipoAplicado: pesos(5_000_000),
+      costoRecaudoAnticipo: costoRecaudo,
+      pagos: [
+        { valor: pesos(1_000_000), costoBancario: costoPse },
+        { valor: pesos(650_000), costoBancario: costoTransf },
+        { valor: pesos(2_000_000), costoBancario: costoTransf },
+      ],
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      tasaIva: params.tasaIva,
+      tasa4x1000: params.tasa4x1000,
+    });
+    expect(borrador.totalPagosCentavos, "totalPagos").toBe(pesos(3_650_000));
+    expect(borrador.costosBancariosCentavos, "costosBancarios").toBe(esperado.costosBancarios);
+    expect(borrador.impuesto4x1000Centavos, "impuesto4x1000").toBe(esperado.impuesto4x1000);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { entidad: "BorradorFactura", entidadId: borrador.id, accion: "CREATE" },
+      select: { despues: true },
+    });
+    const despues = audit?.despues as {
+      resultado?: { totalFactura: string; saldoFinal: string };
+      pagosNoCobrables?: { valor: string; costoBancario: string };
+      pagosPorRevisar?: unknown[];
+    };
+    expect(despues.resultado?.totalFactura).toBe(textoCanonicoDeCentavos(esperado.totalFactura));
+    expect(despues.resultado?.saldoFinal).toBe(textoCanonicoDeCentavos(esperado.saldoFinal));
+    expect(despues.pagosNoCobrables).toEqual({ valor: "300000", costoBancario: "0" });
+    // Al cliente se le cobran 1.000.000 del bloque + 650.000 por un transporte
+    // de 1.000.000: los dos pagos quedan marcados.
+    expect(despues.pagosPorRevisar).toEqual([
+      expect.objectContaining({
+        pagoId: bloque.pagos[0].id,
+        valor: "1300000",
+        sumaFacturas: "1300000",
+        cobrable: "1000000",
+        noCobrable: "300000",
+        motivo: "SOBRANTE_COBRADO",
+      }),
+      expect.objectContaining({
+        valor: "650000",
+        sumaFacturas: "1000000",
+        cobrable: "650000",
+        noCobrable: "0",
+        motivo: "SOBRANTE_COBRADO",
+      }),
+    ]);
+  });
+
+  // ─── Fase centavos: montos con centavos de punta a punta ─────────────────
+  it("fase centavos: abono parcial mixto con centavos → cobra 500.000,25, guarda pesos con decimales en la auditoría y el revisor los lee en centavos", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA);
+
+    const t = await crearFacturaProveedorTest(db, tramiteId, "T-CEN", pesos(1_000_000), true);
+    // Asesoría con centavos reales: 300.000,20.
+    const s = await crearFacturaProveedorTest(db, tramiteId, "S-CEN", 30_000_020n, false);
+    // Pago heredado (enlaces en 0) de 800.000,45 al transporte y la asesoría.
+    await crearPagoEnlazadoTest(tramiteId, 80_000_045n, CanalPago.TRANSF_BANCOLOMBIA, 1, [t, s]);
+
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      usuarioId: db.userId,
+    });
+    // Primero la asesoría completa (300.000,20); el resto (500.000,25) es transporte.
+    expect(borrador.totalPagosCentavos, "totalPagos").toBe(50_000_025n);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { entidad: "BorradorFactura", entidadId: borrador.id, accion: "CREATE" },
+      select: { despues: true },
+    });
+    const despues = audit?.despues as {
+      pagosNoCobrables?: { valor: string; costoBancario: string };
+      pagosPorRevisar?: unknown[];
+    };
+    // Lo guardado son PESOS en texto canónico (con centavos solo si los hay).
+    expect(despues.pagosNoCobrables?.valor).toBe("300000.20");
+    expect(despues.pagosPorRevisar).toEqual([
+      expect.objectContaining({
+        valor: "800000.45",
+        sumaFacturas: "1300000.20",
+        cobrable: "500000.25",
+        noCobrable: "300000.20",
+        motivo: "ABONO_PARCIAL",
+      }),
+    ]);
+
+    // Quien revisa los recibe en CENTAVOS (la respuesta del API los emite "800000.45").
+    const { borradores } = await cargarBorradoresDeTramite(tramiteId, { id: db.userRevisorId, rol: "REVISOR" });
+    expect(borradores.find((b) => b.id === borrador.id)?.pagosPorRevisar).toEqual([
+      expect.objectContaining({
+        valor: 80_000_045n,
+        sumaFacturas: 130_000_020n,
+        cobrable: 50_000_025n,
+        noCobrable: 30_000_020n,
+        motivo: "ABONO_PARCIAL",
+      }),
+    ]);
+  });
+
+  // ─── CONCEPTOS_IVA: lo cobrado sale de las facturas, no de los pagos ─────
+  it("CONCEPTOS_IVA: no guarda pagos por revisar aunque haya un abono parcial con asesoría", async (ctx) => {
+    const db = ensureDb(ctx);
+    const clienteIva = await prisma.cliente.create({
+      data: {
+        nombre: "Cliente Vitest Borradores Conceptos IVA",
+        nit: `${TEST_PREFIX}-civa-${runId}`,
+        tipo: TipoCliente.PROPIO,
+        capacidades: { create: [{ codigo: "factura_conceptos_iva", habilitado: true }] },
+      },
+    });
+    const tramiteId = await crearTramiteTest(db, clienteIva.id);
+    await crearAnticipoYAplicar(db, tramiteId, pesos(3_000_000), TipoRecaudo.BANCOLOMBIA, clienteIva.id);
+
+    const t = await crearFacturaProveedorTest(db, tramiteId, "T-CI", pesos(1_000_000), true);
+    const s = await crearFacturaProveedorTest(db, tramiteId, "S-CI", pesos(300_000), false);
+    // Abono parcial mixto (en COMISION saldría como ABONO_PARCIAL) y un pago suelto.
+    await crearPagoEnlazadoTest(tramiteId, pesos(800_000), CanalPago.TRANSF_BANCOLOMBIA, 1, [t, s]);
+    await crearPagoTest(tramiteId, pesos(500_000), CanalPago.TRANSF_BANCOLOMBIA, 2);
+
+    const borrador = await generarBorrador({
+      tramiteId,
+      comision: pesos(200_000),
+      ivaComision: pesos(38_000),
+      usuarioId: db.userId,
+    });
+    expect(borrador.formatoFactura).toBe("CONCEPTOS_IVA");
+    // Lo que se cobra de terceros sale de la factura repercutible, no de los pagos.
+    const terceros = borrador.lineasRevision.filter((l) => l.seccion === "TERCEROS" && !l.tipoFija);
+    expect(terceros.map((l) => l.valorCentavos)).toEqual([pesos(1_000_000)]);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { entidad: "BorradorFactura", entidadId: borrador.id, accion: "CREATE" },
+      select: { despues: true },
+    });
+    const despues = audit?.despues as {
+      pagosNoCobrables?: { valor: string; costoBancario: string };
+      pagosPorRevisar?: unknown[];
+    };
+    expect(despues.pagosPorRevisar).toEqual([]);
+    expect(despues.pagosNoCobrables).toEqual({ valor: "300000", costoBancario: "0" });
+
+    const { borradores } = await cargarBorradoresDeTramite(tramiteId, {
+      id: db.userId,
+      rol: "ADMIN",
+    });
+    expect(borradores.find((b) => b.id === borrador.id)?.pagosPorRevisar).toEqual([]);
   });
 });

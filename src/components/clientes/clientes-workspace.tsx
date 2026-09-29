@@ -233,6 +233,8 @@ function NuevoClienteModal({
     const form = event.currentTarget;
     const formData = new FormData(form);
 
+    // `tarifaValor` viene del <input type="hidden"> de CampoMoneda: ya es
+    // pesos-texto canónico ("150000", "150000.45"), listo para la API.
     const tarifaValor = optionalText(formData.get("tarifaValor"));
     const tarifas =
       tarifaValor !== null
@@ -240,7 +242,7 @@ function NuevoClienteModal({
             {
               anio: Number(formData.get("tarifaAnio") ?? new Date().getFullYear()),
               tipo: String(formData.get("tarifaTipo") ?? "fijo"),
-              valor: tarifaValor.replace(/[^\d]/g, ""),
+              valor: tarifaValor,
             },
           ]
         : [];

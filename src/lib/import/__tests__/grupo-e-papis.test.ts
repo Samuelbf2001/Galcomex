@@ -2,24 +2,26 @@
  * Tests del motor de importación "GRUPO E PAPIS 2026".
  *
  * Corre 100% SIN base de datos usando dryRun=true: carga el workbook real,
- * reconcilia los conceptos contra las celdas del Excel a 0 pesos y valida los
+ * reconcilia los conceptos contra las celdas del Excel a 0 centavos y valida los
  * casos dorados (BUN26-0026, CTG26-0118) y la omisión de CTG26-0174.
  */
+import { existsSync } from "node:fs";
 import * as path from "node:path";
 
 import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
+
+import { pesos } from "@/lib/dinero";
 
 import {
   importarWorkbookGrupoEPapis,
   type ResultadoHoja,
 } from "../grupo-e-papis";
 
-const WORKBOOK_PATH = path.join(
-  process.cwd(),
-  "documentos referencia ",
-  "GRUPO E PAPIS 2026.xlsm",
-);
+const WORKBOOK_PATH =
+  process.env.GRUPO_E_PAPIS_XLSM ??
+  path.join(process.cwd(), "documentos referencia ", "GRUPO E PAPIS 2026.xlsm");
+const workbookDisponible = existsSync(WORKBOOK_PATH);
 
 function cargarWorkbook(): XLSX.WorkBook {
   return XLSX.readFile(WORKBOOK_PATH, {
@@ -31,7 +33,7 @@ function cargarWorkbook(): XLSX.WorkBook {
 }
 
 /** Valor calculado por el motor (lado "sistema" de la reconciliación). */
-function valorSistema(hoja: ResultadoHoja, concepto: string): string {
+function valorSistema(hoja: ResultadoHoja, concepto: string): bigint {
   const fila = hoja.reconciliacion.find((f) => f.concepto === concepto);
   if (!fila) {
     throw new Error(`Concepto "${concepto}" no encontrado en ${hoja.sheetName}`);
@@ -40,7 +42,7 @@ function valorSistema(hoja: ResultadoHoja, concepto: string): string {
 }
 
 /** Valor del Excel (lo que efectivamente se persiste — fuente de verdad). */
-function valorExcel(hoja: ResultadoHoja, concepto: string): string {
+function valorExcel(hoja: ResultadoHoja, concepto: string): bigint {
   const fila = hoja.reconciliacion.find((f) => f.concepto === concepto);
   if (!fila) {
     throw new Error(`Concepto "${concepto}" no encontrado en ${hoja.sheetName}`);
@@ -48,8 +50,8 @@ function valorExcel(hoja: ResultadoHoja, concepto: string): string {
   return fila.excel;
 }
 
-describe("importarWorkbookGrupoEPapis (dryRun, sin BD)", () => {
-  const workbook = cargarWorkbook();
+describe.skipIf(!workbookDisponible)("importarWorkbookGrupoEPapis (dryRun, sin BD)", () => {
+  const workbook = workbookDisponible ? cargarWorkbook() : (null as unknown as XLSX.WorkBook);
 
   it("reconcilia el caso dorado BUN26-0026 a 0 pesos", async () => {
     const reporte = await importarWorkbookGrupoEPapis({
@@ -64,7 +66,7 @@ describe("importarWorkbookGrupoEPapis (dryRun, sin BD)", () => {
     expect(hoja!.estado).toBe("IMPORTADO");
     expect(hoja!.cuadra).toBe(true);
     expect(hoja!.requirioOverride).toBe(false); // el motor reproduce el Excel
-    expect(valorSistema(hoja!, "Saldo a favor cliente")).toBe("3357958");
+    expect(valorSistema(hoja!, "Saldo a favor cliente")).toBe(pesos(3_357_958));
   });
 
   it("reconcilia el caso dorado CTG26-0118 (BAQ-18453) a 0 pesos", async () => {
@@ -80,8 +82,8 @@ describe("importarWorkbookGrupoEPapis (dryRun, sin BD)", () => {
     expect(hoja!.estado).toBe("IMPORTADO");
     expect(hoja!.cuadra).toBe(true);
     expect(hoja!.requirioOverride).toBe(false);
-    expect(valorSistema(hoja!, "TOTAL FACTURA")).toBe("33128000");
-    expect(valorSistema(hoja!, "Saldo a favor cliente")).toBe("1946500");
+    expect(valorSistema(hoja!, "TOTAL FACTURA")).toBe(pesos(33_128_000));
+    expect(valorSistema(hoja!, "Saldo a favor cliente")).toBe(pesos(1_946_500));
   });
 
   it("omite CTG26-0174 (no facturada, factura BAQ-XXXXX)", async () => {
@@ -166,7 +168,7 @@ describe("importarWorkbookGrupoEPapis (dryRun, sin BD)", () => {
     expect(hoja!.estado).toBe("IMPORTADO");
     expect(hoja!.cuadra).toBe(true);
     expect(hoja!.requirioOverride).toBe(true);
-    expect(valorExcel(hoja!, "TOTAL FACTURA")).toBe("39215632");
-    expect(valorSistema(hoja!, "TOTAL FACTURA")).toBe("32163000");
+    expect(valorExcel(hoja!, "TOTAL FACTURA")).toBe(pesos(39_215_632));
+    expect(valorSistema(hoja!, "TOTAL FACTURA")).toBe(pesos(32_163_000));
   });
 });

@@ -629,13 +629,13 @@ describe("tramites service con Postgres local", () => {
       await prisma.borradorFactura.create({
         data: {
           tramiteId: conBorrador.id,
-          comision: 0n,
-          ivaComision: 0n,
-          impuesto4x1000: 0n,
-          costosBancarios: 0n,
-          totalAnticipo: 0n,
-          totalPagos: 0n,
-          totalFactura: 0n,
+          comisionCentavos: 0n,
+          ivaComisionCentavos: 0n,
+          impuesto4x1000Centavos: 0n,
+          costosBancariosCentavos: 0n,
+          totalAnticipoCentavos: 0n,
+          totalPagosCentavos: 0n,
+          totalFacturaCentavos: 0n,
           estado: EstadoBorrador.FACTURADO,
         },
       });

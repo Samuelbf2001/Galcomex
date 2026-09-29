@@ -19,6 +19,7 @@ import { EstadoTramite, Rol, TipoCliente } from "@prisma/client";
 import * as XLSX from "xlsx";
 
 import { prisma } from "../src/lib/db/prisma";
+import { formatoPesos } from "../src/lib/dinero";
 import {
   importarWorkbookGrupoEPapis,
   mapCanalPago,
@@ -26,6 +27,7 @@ import {
   type ResultadoHoja,
 } from "../src/lib/import/grupo-e-papis";
 import {
+  centavosDeCeldaEraPesos,
   listDoSheets,
   parseDoSheetFromWorkbook,
 } from "../src/lib/excel/galcomex-workbook";
@@ -51,12 +53,14 @@ const ARCHIVOS: Array<{ file: string; nombre: string; nit: string }> = [
 
 const SHEET_NAME_PATTERN = /^([A-Z]{3})(\d{2})-(\d{4})$/;
 
+/** Celda de dinero del libro (era en pesos) → centavos al peso (ver `centavosDeCeldaEraPesos`). */
 function toBigInt(value: number | null | undefined): bigint {
-  return BigInt(Math.round(Number(value ?? 0)));
+  return centavosDeCeldaEraPesos(value);
 }
 
-function fmt(n: bigint | number): string {
-  return new Intl.NumberFormat("es-CO").format(Number(n));
+/** Centavos → "33.128.000" / "502.801,45" (formateador único del núcleo). */
+function fmt(n: bigint): string {
+  return formatoPesos(n, { simbolo: false });
 }
 
 /** Importa una hoja NO facturada como DO en curso (EN_TRAMITE), con anticipos y pagos. */
@@ -119,16 +123,16 @@ async function importarHojaEnCurso(
     const anticipo = await prisma.anticipo.create({
       data: {
         clienteId,
-        monto: row.monto,
+        montoCentavos: row.monto,
         fecha: row.fecha ?? fechaFallback,
         tipoRecaudo: row.tipoRecaudo,
-        costoRecaudo: row.conRecaudo ? row.costoRecaudo : 0n,
+        costoRecaudoCentavos: row.conRecaudo ? row.costoRecaudo : 0n,
         soporteKey: `IMPORT:${consecutivo}`,
         verificadoBanco: true,
       },
     });
     await prisma.aplicacionAnticipo.create({
-      data: { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicado: row.monto },
+      data: { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicadoCentavos: row.monto },
     });
   }
 
@@ -218,7 +222,7 @@ async function main() {
           totales.overrides += 1;
           const diffs = h.reconciliacion
             .filter((f) => !f.ok)
-            .map((f) => `${f.concepto}: motor ${fmt(BigInt(f.sistema))} vs excel ${fmt(BigInt(f.excel))}`)
+            .map((f) => `${f.concepto}: motor ${fmt(f.sistema)} vs excel ${fmt(f.excel)}`)
             .join("; ");
           detalleOverrides.push(`${nombre} ${h.sheetName} → ${diffs}`);
         }

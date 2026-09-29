@@ -1,7 +1,7 @@
 /**
  * Liquidación por lotes de la cuenta corriente con el socio LM (Lucho) — Galcomex.
  *
- * Función PURA, sin BD, BigInt, tolerancia 0 pesos.
+ * Función PURA, sin BD, BigInt en CENTAVOS de COP, tolerancia 0 (solo sumas).
  *
  * Cada factura SOCIO_LM deja un saldo de cruce con Lucho — el `saldoNetoLM`
  * autoritativo de la factura (mismo que usa Cartera y que cuadra con el Excel):

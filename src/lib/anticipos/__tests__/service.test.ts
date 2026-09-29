@@ -21,6 +21,7 @@ import {
   listarAnticipos,
   SoporteAnticipoRequeridoError,
 } from "../service";
+import { pesos } from "@/lib/dinero";
 
 const TEST_PREFIX = "vitest-anticipos";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -194,7 +195,7 @@ describe("anticipos service con Postgres local", () => {
     const anticipo = await crearAnticipo(
       {
         clienteId: db.clienteId,
-        monto: 10_000_000n,
+        monto: pesos(10_000_000),
         fecha: new Date("3001-01-15"),
         tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
         soporteKey: "vitest-soporte-dummy.pdf",
@@ -202,13 +203,13 @@ describe("anticipos service con Postgres local", () => {
       db.userId,
     );
 
-    expect(anticipo.monto).toBe(10_000_000n);
+    expect(anticipo.montoCentavos).toBe(pesos(10_000_000));
     expect(anticipo.clienteId).toBe(db.clienteId);
 
     const conSaldo = await getAnticipoConSaldo(anticipo.id);
     expect(conSaldo).not.toBeNull();
     expect(conSaldo!.aplicado).toBe(0n);
-    expect(conSaldo!.restante).toBe(10_000_000n);
+    expect(conSaldo!.restante).toBe(pesos(10_000_000));
     expect(conSaldo!.aplicaciones).toHaveLength(0);
   });
 
@@ -218,7 +219,7 @@ describe("anticipos service con Postgres local", () => {
     const anticipo = await crearAnticipo(
       {
         clienteId: db.clienteId,
-        monto: 34_369_000n,
+        monto: pesos(34_369_000),
         fecha: new Date("3001-02-01"),
         tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
         soporteKey: "vitest-soporte-dummy.pdf",
@@ -231,7 +232,7 @@ describe("anticipos service con Postgres local", () => {
       {
         anticipoId: anticipo.id,
         tramiteId: db.tramiteIds[0],
-        montoAplicado: 10_000_000n,
+        montoAplicado: pesos(10_000_000),
       },
       db.userId,
     );
@@ -242,7 +243,7 @@ describe("anticipos service con Postgres local", () => {
       {
         anticipoId: anticipo.id,
         tramiteId: db.tramiteIds[1],
-        montoAplicado: 15_000_000n,
+        montoAplicado: pesos(15_000_000),
       },
       db.userId,
     );
@@ -253,15 +254,15 @@ describe("anticipos service con Postgres local", () => {
       {
         anticipoId: anticipo.id,
         tramiteId: db.tramiteIds[2],
-        montoAplicado: 9_000_000n,
+        montoAplicado: pesos(9_000_000),
       },
       db.userId,
     );
     expect(r3.ok).toBe(true);
 
     const conSaldo = await getAnticipoConSaldo(anticipo.id);
-    expect(conSaldo!.aplicado).toBe(34_000_000n);
-    expect(conSaldo!.restante).toBe(369_000n);
+    expect(conSaldo!.aplicado).toBe(pesos(34_000_000));
+    expect(conSaldo!.restante).toBe(pesos(369_000));
     expect(conSaldo!.aplicaciones).toHaveLength(3);
 
     // Intentar aplicar al cuarto DO: 500.000 → excede restante (369.000) → debe fallar 422
@@ -269,7 +270,7 @@ describe("anticipos service con Postgres local", () => {
       {
         anticipoId: anticipo.id,
         tramiteId: db.tramiteIds[3],
-        montoAplicado: 500_000n,
+        montoAplicado: pesos(500_000),
       },
       db.userId,
     );
@@ -281,8 +282,8 @@ describe("anticipos service con Postgres local", () => {
 
     // Verificar que el saldo no cambio
     const conSaldoDespues = await getAnticipoConSaldo(anticipo.id);
-    expect(conSaldoDespues!.aplicado).toBe(34_000_000n);
-    expect(conSaldoDespues!.restante).toBe(369_000n);
+    expect(conSaldoDespues!.aplicado).toBe(pesos(34_000_000));
+    expect(conSaldoDespues!.restante).toBe(pesos(369_000));
     expect(conSaldoDespues!.aplicaciones).toHaveLength(3);
   });
 
@@ -293,7 +294,7 @@ describe("anticipos service con Postgres local", () => {
     const anticipoAgotado = await crearAnticipo(
       {
         clienteId: db.clienteId,
-        monto: 5_000_000n,
+        monto: pesos(5_000_000),
         fecha: new Date("3001-03-01"),
         tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
         soporteKey: "vitest-soporte-dummy.pdf",
@@ -305,7 +306,7 @@ describe("anticipos service con Postgres local", () => {
       {
         anticipoId: anticipoAgotado.id,
         tramiteId: db.tramiteIds[0],
-        montoAplicado: 5_000_000n,
+        montoAplicado: pesos(5_000_000),
       },
       db.userId,
     );
@@ -314,7 +315,7 @@ describe("anticipos service con Postgres local", () => {
     const anticipoConSaldo = await crearAnticipo(
       {
         clienteId: db.clienteId,
-        monto: 8_000_000n,
+        monto: pesos(8_000_000),
         fecha: new Date("3001-03-05"),
         tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
         soporteKey: "vitest-soporte-dummy.pdf",
@@ -325,7 +326,7 @@ describe("anticipos service con Postgres local", () => {
       {
         anticipoId: anticipoConSaldo.id,
         tramiteId: db.tramiteIds[1],
-        montoAplicado: 3_000_000n,
+        montoAplicado: pesos(3_000_000),
       },
       db.userId,
     );
@@ -353,8 +354,8 @@ describe("anticipos service con Postgres local", () => {
       (a) => a.id === anticipoConSaldo.id,
     );
     expect(conSaldoEnFiltrado).toBeDefined();
-    expect(conSaldoEnFiltrado!.restante).toBe(5_000_000n);
-    expect(conSaldoEnFiltrado!.aplicado).toBe(3_000_000n);
+    expect(conSaldoEnFiltrado!.restante).toBe(pesos(5_000_000));
+    expect(conSaldoEnFiltrado!.aplicado).toBe(pesos(3_000_000));
 
     // Verificar desglose por DO
     expect(conSaldoEnFiltrado!.aplicaciones).toHaveLength(1);
@@ -369,7 +370,7 @@ describe("anticipos service con Postgres local", () => {
     const anticipo = await crearAnticipo(
       {
         clienteId: db.clienteId,
-        monto: 20_000_000n,
+        monto: pesos(20_000_000),
         fecha: new Date("3001-04-01"),
         tipoRecaudo: TipoRecaudo.OTROS_BANCOS,
         soporteKey: "vitest-soporte-dummy.pdf",
@@ -382,7 +383,7 @@ describe("anticipos service con Postgres local", () => {
       {
         anticipoId: anticipo.id,
         tramiteId: db.tramiteIds[0],
-        montoAplicado: 12_000_000n,
+        montoAplicado: pesos(12_000_000),
       },
       db.userId,
     );
@@ -390,8 +391,8 @@ describe("anticipos service con Postgres local", () => {
     if (!r1.ok) throw new Error("Aplicacion fallida");
 
     const saldoDespuesAplicar = await getAnticipoConSaldo(anticipo.id);
-    expect(saldoDespuesAplicar!.aplicado).toBe(12_000_000n);
-    expect(saldoDespuesAplicar!.restante).toBe(8_000_000n);
+    expect(saldoDespuesAplicar!.aplicado).toBe(pesos(12_000_000));
+    expect(saldoDespuesAplicar!.restante).toBe(pesos(8_000_000));
 
     // Eliminar la aplicacion
     await eliminarAplicacion(r1.aplicacion.id, db.userId);
@@ -399,7 +400,7 @@ describe("anticipos service con Postgres local", () => {
     // El restante debe volver a 20.000.000
     const saldoDespuesEliminar = await getAnticipoConSaldo(anticipo.id);
     expect(saldoDespuesEliminar!.aplicado).toBe(0n);
-    expect(saldoDespuesEliminar!.restante).toBe(20_000_000n);
+    expect(saldoDespuesEliminar!.restante).toBe(pesos(20_000_000));
     expect(saldoDespuesEliminar!.aplicaciones).toHaveLength(0);
   });
 
@@ -436,7 +437,7 @@ describe("anticipos service con Postgres local", () => {
       crearAnticipo(
         {
           clienteId: db.clienteId,
-          monto: 1_000_000n,
+          monto: pesos(1_000_000),
           fecha: new Date("3001-05-01"),
           tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
         },
@@ -452,7 +453,7 @@ describe("anticipos service con Postgres local", () => {
       crearAnticipo(
         {
           clienteId: db.clienteId,
-          monto: 1_000_000n,
+          monto: pesos(1_000_000),
           fecha: new Date("3001-05-01"),
           tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
           soporteKey: "   ",
@@ -482,7 +483,7 @@ describe("anticipos service con Postgres local", () => {
       crearAnticipo(
         {
           clienteId: soloProveedor.id,
-          monto: 1_000_000n,
+          monto: pesos(1_000_000),
           fecha: new Date("3001-05-01"),
           tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
           soporteKey: "vitest-soporte-dummy.pdf",

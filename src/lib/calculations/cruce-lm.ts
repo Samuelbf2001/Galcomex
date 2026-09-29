@@ -10,23 +10,25 @@
  *    afecta este cruce interno. NO toca el saldo a favor del cliente.
  *
  * Fórmula (fuente de verdad Excel BAQ-18453, tolerancia 0):
- *   4x1000 interno = (anticipo × tasa4x1000) / 100_000   (base = anticipo: saldo a favor)
+ *   4x1000 interno = (anticipo × tasa4x1000) / 100_000 TRUNCADO AL PESO (D-2; base = anticipo)
  *   saldoLMInterno = anticipo − Σpagos − comisiónInternaLM − IVA − 4x1000interno − costos
  *
  * El cruce final (saldoLM = saldoLMInterno − saldoAFavorCliente) se calcula fuera,
  * porque saldoAFavorCliente es line-driven y vive en el borrador.
  *
- * INVARIANTE: todo BigInt (COP enteros, sin flotantes). Función pura, sin BD.
+ * INVARIANTE: todo BigInt en CENTAVOS de COP, sin flotantes. Función pura, sin BD.
  */
+
+import { porcentajeDe } from "@/lib/dinero";
 
 export interface CruceLMInput {
   /** Anticipo total aplicado al trámite. */
   totalAnticipo: bigint;
   /** Σ de los valores de los pagos a terceros. */
   totalPagos: bigint;
-  /** Comisión interna Galcomex→Lucho (manual, ej. 150.000n). */
+  /** Comisión interna Galcomex→Lucho (manual, ej. $150.000 = 15_000_000n centavos). */
   comisionInternaLM: bigint;
-  /** IVA de la comisión (mismo valor manual que la factura, ej. 76.000n). */
+  /** IVA de la comisión (mismo valor manual que la factura, ej. $76.000 = 7_600_000n centavos). */
   ivaComision: bigint;
   /** Costos bancarios reales: recaudo del anticipo ($1.950) + Σ costos de pagos. */
   costosBancarios: bigint;
@@ -44,7 +46,7 @@ export interface CruceLMResultado {
 /**
  * Calcula el 4x1000 interno (base anticipo) y el saldo de la cuenta interna LM.
  *
- * Caso dorado BAQ-18453 (tolerancia 0):
+ * Caso dorado BAQ-18453 (tolerancia 0; en pesos; en centavos es ×100):
  *   anticipo=35.074.500, Σpagos=32.931.686, comisiónInternaLM=150.000,
  *   IVA=76.000, costos=9.750, tasa4x1000=400
  *   → 4x1000interno=140.298, saldoLMInterno=1.766.766
@@ -62,7 +64,9 @@ export function calcularSaldoLMInterno(input: CruceLMInput): CruceLMResultado {
   // Cuando hay saldo a favor del cliente la base del 4x1000 es el anticipo
   // (igual que el motor). Sin anticipo no hay movimiento que gravar.
   const impuesto4x1000Interno =
-    totalAnticipo > 0n ? (totalAnticipo * tasa4x1000) / 100_000n : 0n;
+    totalAnticipo > 0n
+      ? porcentajeDe(totalAnticipo, tasa4x1000, 100_000n, { precision: "PESO", modo: "TRUNCAR" })
+      : 0n;
 
   const saldoLMInterno =
     totalAnticipo -

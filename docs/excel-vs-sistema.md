@@ -72,8 +72,9 @@ Esta es la parte más delicada que hacías con fórmulas. El sistema la replica 
 | Costos bancarios = recaudo + Σ pagos ($1.950 + 4×$3.900 = $17.550) | Sumados automáticamente |
 | Total factura, saldo a favor/cargo del **cliente** y de **Luis Martínez** | Calculados y guardados |
 
-- Dónde vive: `src/lib/calculations/motor-factura.ts` (función probada con **tolerancia 0 pesos**).
-- El dinero se maneja como **entero** (sin decimales flotantes) → nunca hay errores de redondeo de centavos.
+- Dónde vive: `src/lib/calculations/motor-factura.ts` (función probada con **tolerancia 0 centavos**).
+- El dinero se guarda en **centavos exactos** (números enteros de centavos, nunca decimales flotantes), así que una factura de proveedor de $502.801,45 se registra con sus 45 centavos y no se pierde nada al sumar. Cada redondeo tiene una regla fija y única (ver `docs/DINERO-CENTAVOS.md`): IVA y ReteIVA al centavo, como los liquida Siigo; 4x1000 al peso.
+- Al importar las hojas del Excel (que muestran el dinero sin decimales) cada celda se lleva al peso con la misma regla de siempre, así la importación da exactamente lo mismo que antes.
 
 ---
 
@@ -112,7 +113,7 @@ La relación de facturas por cliente con saldos, cruce y fechas de pago, que fil
 
 - **Un solo dato, no 26 hojas:** el cliente, el anticipo y los pagos se escriben una vez y alimentan trámite, factura y cartera **conectados** (en el Excel las hojas no se cruzaban).
 - **Sin doble digitación de consecutivos:** el DO se numera solo.
-- **Sin errores de redondeo:** dinero entero, fórmulas verificadas al peso.
+- **Sin errores de redondeo:** dinero en centavos exactos, fórmulas verificadas al centavo (el Excel solo cuadraba al peso).
 - **Trazabilidad:** cada cambio (crear, editar, aprobar, facturar) queda en el **Historial** del trámite (quién y cuándo).
 - **Roles y permisos:** cada quien ve y hace solo lo suyo (el socio LM solo sus trámites; el operativo no aprueba facturas).
 - **Documentos en la nube** (MinIO), no en un PC encendido 24 h.

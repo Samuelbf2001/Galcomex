@@ -37,15 +37,30 @@ vi.mock("@/lib/auth/auth", () => {
 vi.mock("@/lib/borradores/service", () => ({
   ensureBorrador: vi.fn(),
   listarBorradores: vi.fn(),
+  generarBorrador: vi.fn(),
+  ConceptosOperacionalesInvalidosError: class extends Error {},
+  TramiteNoFacturableError: class extends Error {},
+}));
+
+// La lectura de los pagos por revisar (auditoría del borrador) también se
+// mockea: aquí solo importa quién la recibe y que no rompa el listado.
+vi.mock("@/lib/borradores/pagos-por-revisar", async (original) => ({
+  ...(await original<typeof import("@/lib/borradores/pagos-por-revisar")>()),
+  leerPagosPorRevisar: vi.fn(),
 }));
 
 // ── Importaciones post-mock ────────────────────────────────────────────────────
 
 import { auth } from "@/lib/auth/auth";
-import { ensureBorrador, listarBorradores } from "@/lib/borradores/service";
+import { leerPagosPorRevisar } from "@/lib/borradores/pagos-por-revisar";
+import { ensureBorrador, generarBorrador, listarBorradores } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
+import { pesos } from "@/lib/dinero";
 import { GET as loteGET } from "@/app/api/facturacion/borradores/route";
-import { GET as individualGET } from "@/app/api/tramites/[id]/borrador/route";
+import {
+  GET as individualGET,
+  POST as individualPOST,
+} from "@/app/api/tramites/[id]/borrador/route";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -89,8 +104,9 @@ function borradorFake(tramiteId: string) {
     id: `b-${tramiteId}`,
     tramiteId,
     estado: "BORRADOR",
-    comision: 150_000n,
-    totalFactura: 1_234_567n,
+    // Fila de Prisma en CENTAVOS (columnas …Centavos, fase centavos).
+    comisionCentavos: 15_000_000n,
+    totalFacturaCentavos: 123_456_745n,
     lineasRevision: [],
     factura: null,
   };
@@ -125,6 +141,9 @@ describe("GET /api/facturacion/borradores (lote)", () => {
     vi.clearAllMocks();
     vi.mocked(auth.api.getSession).mockResolvedValue(null);
     vi.mocked(ensureBorrador).mockResolvedValue(undefined);
+    vi.mocked(leerPagosPorRevisar).mockImplementation(
+      async (ids) => new Map(ids.map((id) => [id, []])),
+    );
     instalarFindUnique();
     instalarListar();
   });
@@ -179,17 +198,20 @@ describe("GET /api/facturacion/borradores (lote)", () => {
       ["no-existe", "tr-explota", "tr-propio", "tr-socio"].sort(),
     );
 
-    // Payload idéntico al individual: { borradores } con BigInt → string.
+    // Payload idéntico al individual: { borradores } con BigInt → string. El
+    // ADMIN recibe además los pagos con asesoría por revisar (vacío aquí).
     expect(porTramite["tr-propio"]).toEqual({
       borradores: [
         {
           id: "b-tr-propio",
           tramiteId: "tr-propio",
           estado: "BORRADOR",
-          comision: "150000",
-          totalFactura: "1234567",
+          // El serializador quita el sufijo y emite PESOS con 2 decimales.
+          comision: "150000.00",
+          totalFactura: "1234567.45",
           lineasRevision: [],
           factura: null,
+          pagosPorRevisar: [],
         },
       ],
     });
@@ -224,6 +246,129 @@ describe("GET /api/facturacion/borradores (lote)", () => {
     // Ni ensureBorrador ni listar se ejecutan para el trámite vetado.
     expect(ensureBorrador).not.toHaveBeenCalledWith("tr-propio", expect.anything());
     expect(listarBorradores).not.toHaveBeenCalledWith("tr-propio");
+    // La asesoría es un costo interno de Galcomex: el SOCIO no recibe los
+    // pagos por revisar (ni siquiera se consultan).
+    const borradoresSocio = (porTramite["tr-socio"] as { borradores: Array<Record<string, unknown>> })
+      .borradores;
+    expect(borradoresSocio.every((b) => !("pagosPorRevisar" in b))).toBe(true);
+    expect(leerPagosPorRevisar).not.toHaveBeenCalled();
+  });
+
+  it("REVISOR: recibe los pagos con asesoría por revisar de cada borrador (BigInt → string)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(makeSession("REVISOR" as Rol));
+    vi.mocked(leerPagosPorRevisar).mockResolvedValue(
+      new Map([
+        [
+          "b-tr-propio",
+          [
+            {
+              pagoId: "p-1",
+              concepto: "Pago Ascinter",
+              numSoporte: null,
+              valor: pesos(1_200_000),
+              sumaFacturas: pesos(200_000),
+              cobrable: 0n,
+              noCobrable: pesos(1_200_000),
+              motivo: "SOBRANTE_NO_COBRADO",
+            },
+          ],
+        ],
+      ]),
+    );
+
+    const res = await loteGET(makeRequest("?tramiteIds=tr-propio"));
+    const porTramite = (await json(res)).porTramite as Record<
+      string,
+      { borradores: Array<Record<string, unknown>> }
+    >;
+    expect(porTramite["tr-propio"].borradores[0].pagosPorRevisar).toEqual([
+      {
+        pagoId: "p-1",
+        concepto: "Pago Ascinter",
+        numSoporte: null,
+        valor: "1200000.00",
+        sumaFacturas: "200000.00",
+        cobrable: "0.00",
+        noCobrable: "1200000.00",
+        motivo: "SOBRANTE_NO_COBRADO",
+      },
+    ]);
+    expect(leerPagosPorRevisar).toHaveBeenCalledWith(["b-tr-propio"]);
+  });
+
+  it("los pagos por revisar de todo el lote se leen en UNA sola consulta (no una por trámite)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(makeSession("ADMIN" as Rol));
+
+    const ids = Array.from({ length: 23 }, (_, i) => `lote-rev-${i}`);
+    for (const id of ids) TRAMITES[id] = "PROPIO";
+    vi.mocked(leerPagosPorRevisar).mockImplementation(
+      async (borradorIds) =>
+        new Map(
+          borradorIds
+            .filter((id) => id === "b-lote-rev-7")
+            .map((id) => [
+              id,
+              [
+                {
+                  pagoId: "p-7",
+                  concepto: "Pago suelto",
+                  numSoporte: null,
+                  valor: pesos(500_000),
+                  sumaFacturas: 0n,
+                  cobrable: pesos(500_000),
+                  noCobrable: 0n,
+                  motivo: "PAGO_SIN_FACTURAS" as const,
+                },
+              ],
+            ]),
+        ),
+    );
+
+    try {
+      // Grupos de 10 → 3 grupos, un trámite que falla y el resto con borrador.
+      const res = await loteGET(makeRequest(`?tramiteIds=${[...ids, "tr-explota"].join(",")}`));
+      expect(res.status).toBe(200);
+      const porTramite = (await json(res)).porTramite as Record<
+        string,
+        { borradores?: Array<Record<string, unknown>>; error?: string }
+      >;
+
+      expect(leerPagosPorRevisar).toHaveBeenCalledTimes(1);
+      expect([...vi.mocked(leerPagosPorRevisar).mock.calls[0][0]].sort()).toEqual(
+        ids.map((id) => `b-${id}`).sort(),
+      );
+      expect(porTramite["tr-explota"]).toEqual({
+        error: "Error al cargar los borradores del trámite",
+      });
+      expect(porTramite["lote-rev-7"].borradores?.[0].pagosPorRevisar).toEqual([
+        expect.objectContaining({ pagoId: "p-7", valor: "500000.00", motivo: "PAGO_SIN_FACTURAS" }),
+      ]);
+      for (const id of ids.filter((i) => i !== "lote-rev-7")) {
+        expect(porTramite[id].borradores?.[0].pagosPorRevisar, id).toEqual([]);
+      }
+    } finally {
+      for (const id of ids) delete TRAMITES[id];
+    }
+  });
+
+  it("si no se pueden leer los pagos por revisar, el revisor igual ve sus borradores (sin el aviso)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(makeSession("ADMIN" as Rol));
+    vi.mocked(leerPagosPorRevisar).mockRejectedValue(new Error("auditoría no disponible"));
+    const consola = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const res = await loteGET(makeRequest("?tramiteIds=tr-propio"));
+      const porTramite = (await json(res)).porTramite as Record<
+        string,
+        { borradores: Array<Record<string, unknown>> }
+      >;
+      expect(porTramite["tr-propio"].borradores).toEqual([
+        expect.objectContaining({ id: "b-tr-propio" }),
+      ]);
+      expect("pagosPorRevisar" in porTramite["tr-propio"].borradores[0]).toBe(false);
+    } finally {
+      consola.mockRestore();
+    }
   });
 
   it("ids duplicados se colapsan: una sola carga por trámite", async () => {
@@ -301,5 +446,78 @@ describe("GET /api/facturacion/borradores (lote)", () => {
     );
     expect(vetado.status).toBe(403);
     expect(await json(vetado)).toEqual({ error: "No autorizado" });
+  });
+});
+
+describe("POST /api/tramites/[id]/borrador — el borrador recién generado trae sus pagos por revisar", () => {
+  const generar = () =>
+    individualPOST(
+      new NextRequest("http://localhost/api/tramites/tr-propio/borrador", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      { params: Promise.resolve({ id: "tr-propio" }) },
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(auth.api.getSession).mockResolvedValue(makeSession("ADMIN" as Rol));
+    vi.mocked(generarBorrador).mockResolvedValue(borradorFake("tr-propio") as never);
+  });
+
+  it("ADMIN: 201 con pagosPorRevisar y su motivo (BigInt → string), como el GET", async () => {
+    vi.mocked(leerPagosPorRevisar).mockResolvedValue(
+      new Map([
+        [
+          "b-tr-propio",
+          [
+            {
+              pagoId: "p-9",
+              concepto: "Transferencia transporte",
+              numSoporte: null,
+              valor: pesos(650_000),
+              sumaFacturas: pesos(1_000_000),
+              cobrable: pesos(650_000),
+              noCobrable: 0n,
+              motivo: "SOBRANTE_COBRADO",
+            },
+          ],
+        ],
+      ]),
+    );
+
+    const res = await generar();
+    expect(res.status).toBe(201);
+    const borrador = (await json(res)).borrador as Record<string, unknown>;
+    expect(borrador.id).toBe("b-tr-propio");
+    expect(borrador.pagosPorRevisar).toEqual([
+      {
+        pagoId: "p-9",
+        concepto: "Transferencia transporte",
+        numSoporte: null,
+        valor: "650000.00",
+        sumaFacturas: "1000000.00",
+        cobrable: "650000.00",
+        noCobrable: "0.00",
+        motivo: "SOBRANTE_COBRADO",
+      },
+    ]);
+    expect(leerPagosPorRevisar).toHaveBeenCalledWith(["b-tr-propio"]);
+  });
+
+  it("sin pagos por revisar → lista vacía; si no se pueden leer → sin el campo, y el borrador igual sale", async () => {
+    vi.mocked(leerPagosPorRevisar).mockResolvedValue(new Map());
+    const vacio = (await json(await generar())).borrador as Record<string, unknown>;
+    expect(vacio.pagosPorRevisar).toEqual([]);
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(leerPagosPorRevisar).mockRejectedValue(new Error("BD caída"));
+    const res = await generar();
+    expect(res.status).toBe(201);
+    const sinCampo = (await json(res)).borrador as Record<string, unknown>;
+    expect(sinCampo.id).toBe("b-tr-propio");
+    expect("pagosPorRevisar" in sinCampo).toBe(false);
+    errorSpy.mockRestore();
   });
 });

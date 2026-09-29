@@ -10,6 +10,8 @@
 
 import { describe, expect, it } from "vitest";
 
+import { pesos } from "@/lib/dinero";
+
 import { resolverNit4x1000, NIT_BANCO_OCCIDENTE } from "@/lib/siigo/envio-factura-service";
 
 const banco = (nombre: string, nit: string | null) => ({
@@ -26,12 +28,12 @@ describe("resolverNit4x1000 — siempre Banco de Occidente (890300279)", () => {
     const pagos = [
       {
         canalPago: "TRANSF_BANCOLOMBIA",
-        valor: 1_000_000n,
+        valorCentavos: pesos(1_000_000),
         bancoBeneficiario: banco("Bancolombia", "890903938"),
       },
       {
         canalPago: "TRANSF_BANCOLOMBIA",
-        valor: 500_000n,
+        valorCentavos: pesos(500_000),
         bancoBeneficiario: banco("Bancolombia", "890903938"),
       },
     ];
@@ -43,12 +45,12 @@ describe("resolverNit4x1000 — siempre Banco de Occidente (890300279)", () => {
     const pagos = [
       {
         canalPago: "TRANSF_BANCOLOMBIA",
-        valor: 1_000_000n,
+        valorCentavos: pesos(1_000_000),
         bancoBeneficiario: banco("Bancolombia", "890903938"),
       },
       {
         canalPago: "TRANSF_OTROS_BANCOS",
-        valor: 800_000n,
+        valorCentavos: pesos(800_000),
         bancoBeneficiario: banco("Davivienda", "860034313"),
       },
     ];
@@ -60,7 +62,7 @@ describe("resolverNit4x1000 — siempre Banco de Occidente (890300279)", () => {
     const pagos = [
       {
         canalPago: "PSE",
-        valor: 5_000_000n,
+        valorCentavos: pesos(5_000_000),
         bancoBeneficiario: null,
       },
     ];
@@ -80,7 +82,7 @@ describe("resolverNit4x1000 — siempre Banco de Occidente (890300279)", () => {
     const pagos = [
       {
         canalPago: "TRANSF_OTROS_BANCOS",
-        valor: 500_000n,
+        valorCentavos: pesos(500_000),
         bancoBeneficiario: null,
       },
     ];

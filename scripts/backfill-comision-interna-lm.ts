@@ -15,6 +15,10 @@
  *
  * No toca borradores con una comisión interna ya fijada manualmente (≠ 0).
  *
+ * Fase centavos: todo en CENTAVOS (columnas `…Centavos`); en consola se
+ * muestran pesos es-CO y el AuditLog guarda PESOS texto canónico
+ * (`normalizeSerializable`), nunca `.toString()` de centavos.
+ *
  * Uso:
  *   npx tsx scripts/backfill-comision-interna-lm.ts          # dry-run (no escribe)
  *   npx tsx scripts/backfill-comision-interna-lm.ts --apply  # aplica los cambios
@@ -23,6 +27,8 @@ import "dotenv/config";
 import { Rol, TipoCliente } from "@prisma/client";
 
 import { calcularSaldoLMInterno } from "../src/lib/calculations/cruce-lm";
+import { formatoPesos } from "../src/lib/dinero";
+import { normalizeSerializable } from "../src/lib/db/serializable";
 import { getParametrosSistema } from "../src/lib/parametros/service";
 import { prisma } from "../src/lib/db/prisma";
 
@@ -39,25 +45,25 @@ async function main() {
 
   const borradores = await prisma.borradorFactura.findMany({
     where: {
-      comisionInternaLM: 0n,
+      comisionInternaLMCentavos: 0n,
       tramite: { cliente: { tipo: TipoCliente.SOCIO_LM } },
     },
     select: {
       id: true,
       estado: true,
       tramiteId: true,
-      totalAnticipo: true,
-      totalPagos: true,
-      ivaComision: true,
-      saldoLMInterno: true,
-      saldoAFavorCliente: true,
+      totalAnticipoCentavos: true,
+      totalPagosCentavos: true,
+      ivaComisionCentavos: true,
+      saldoLMInternoCentavos: true,
+      saldoAFavorClienteCentavos: true,
       tramite: { select: { consecutivo: true } },
     },
     orderBy: { createdAt: "asc" },
   });
 
   console.log(
-    `\nComisión interna a aplicar (COMISION_LM): ${comisionDefault.toString()}`,
+    `\nComisión interna a aplicar (COMISION_LM): ${formatoPesos(comisionDefault)}`,
   );
   console.log(
     `Borradores SOCIO_LM con comisionInternaLM=0: ${borradores.length}\n`,
@@ -68,43 +74,43 @@ async function main() {
     const [pagos, aplicaciones] = await Promise.all([
       prisma.pagoTramite.findMany({
         where: { tramiteId: b.tramiteId },
-        select: { costoBancario: true },
+        select: { costoBancarioCentavos: true },
       }),
       prisma.aplicacionAnticipo.findMany({
         where: { tramiteId: b.tramiteId },
-        select: { anticipo: { select: { id: true, costoRecaudo: true } } },
+        select: { anticipo: { select: { id: true, costoRecaudoCentavos: true } } },
       }),
     ]);
 
-    const costosPagos = pagos.reduce((sum, p) => sum + p.costoBancario, 0n);
+    const costosPagos = pagos.reduce((sum, p) => sum + p.costoBancarioCentavos, 0n);
     const costoRecaudoAnticipo = aplicaciones
       .filter(
         (a, idx, arr) =>
           arr.findIndex((x) => x.anticipo.id === a.anticipo.id) === idx,
       )
-      .reduce((sum, a) => sum + a.anticipo.costoRecaudo, 0n);
+      .reduce((sum, a) => sum + a.anticipo.costoRecaudoCentavos, 0n);
     const costosBancarios = costosPagos + costoRecaudoAnticipo;
 
     const { saldoLMInterno } = calcularSaldoLMInterno({
-      totalAnticipo: b.totalAnticipo,
-      totalPagos: b.totalPagos,
+      totalAnticipo: b.totalAnticipoCentavos,
+      totalPagos: b.totalPagosCentavos,
       comisionInternaLM: comisionDefault,
-      ivaComision: b.ivaComision,
+      ivaComision: b.ivaComisionCentavos,
       costosBancarios,
       tasa4x1000: params.tasa4x1000,
     });
 
-    const saldoLM = saldoLMInterno - b.saldoAFavorCliente;
+    const saldoLM = saldoLMInterno - b.saldoAFavorClienteCentavos;
     console.log(
       `  ${b.tramite.consecutivo.padEnd(16)} [${b.estado}]  ` +
-        `saldoInterno → ${saldoLMInterno.toString()}  ` +
-        `(saldoLM ${saldoLM.toString()})`,
+        `saldoInterno → ${formatoPesos(saldoLMInterno)}  ` +
+        `(saldoLM ${formatoPesos(saldoLM)})`,
     );
 
     if (apply) {
       await prisma.borradorFactura.update({
         where: { id: b.id },
-        data: { comisionInternaLM: comisionDefault, saldoLMInterno },
+        data: { comisionInternaLMCentavos: comisionDefault, saldoLMInternoCentavos: saldoLMInterno },
       });
       if (admin) {
         await prisma.auditLog.create({
@@ -114,11 +120,11 @@ async function main() {
             accion: "BACKFILL_COMISION_INTERNA_LM",
             usuarioId: admin.id,
             tramiteId: b.tramiteId,
-            antes: { comisionInternaLM: "0", saldoLMInterno: b.saldoLMInterno.toString() },
-            despues: {
-              comisionInternaLM: comisionDefault.toString(),
-              saldoLMInterno: saldoLMInterno.toString(),
-            },
+            antes: normalizeSerializable({ comisionInternaLM: 0n, saldoLMInterno: b.saldoLMInternoCentavos }),
+            despues: normalizeSerializable({
+              comisionInternaLM: comisionDefault,
+              saldoLMInterno,
+            }),
           },
         });
       }

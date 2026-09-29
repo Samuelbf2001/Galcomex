@@ -34,7 +34,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       anticipos: {
         orderBy: { fecha: "desc" },
         include: {
-          aplicaciones: { select: { montoAplicado: true } },
+          aplicaciones: { select: { montoAplicadoCentavos: true } },
         },
       },
       facturas: {
@@ -43,9 +43,9 @@ export async function GET(_request: NextRequest, context: RouteContext) {
           id: true,
           numSiigo: true,
           fecha: true,
-          totalFactura: true,
-          saldoAFavorCliente: true,
-          saldoACargoCliente: true,
+          totalFacturaCentavos: true,
+          saldoAFavorClienteCentavos: true,
+          saldoACargoClienteCentavos: true,
           fechaPagoCliente: true,
           // Enlace de la factura a su revisor/trámite (EnlaceFacturaVenta).
           borradorId: true,

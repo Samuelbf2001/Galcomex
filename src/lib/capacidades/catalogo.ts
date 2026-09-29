@@ -48,6 +48,22 @@ export const CAPACIDADES = [
     orden: 10,
   },
   {
+    // CxP v2 (decisión 9 de Ernesto, 23-sep-2026). Regla efectiva, consumidor
+    // único `exigeAnticipoDelDo` (src/lib/cxp/pagabilidad-bd.ts):
+    //   anticipos_cliente && pago_exige_anticipo.
+    // La migración 20260925100300 escribe `false` por empresa donde
+    // `anticipos_cliente` efectiva es false (comportamiento idéntico el día 1).
+    codigo: "pago_exige_anticipo",
+    nombre: "Sin anticipo no hay pago",
+    descripcion:
+      "No deja registrar pagos a terceros (ni pagarlos en bloque) desde un DO de esta empresa si el DO no tiene un anticipo aplicado. No aplica a costos propios que no se le cobran al cliente. Apágala si Galcomex paga con su plata y luego lo cobra (por ejemplo, el almacenaje de Almacarga cuando Litoplas aún no ha girado el fondo).",
+    grupo: "Cartera",
+    ambito: "EMPRESA",
+    porDefecto: true,
+    configPorDefecto: null,
+    orden: 12,
+  },
+  {
     codigo: "tarifario_propio",
     nombre: "Tarifario propio versionado",
     descripcion:

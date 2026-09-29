@@ -20,9 +20,9 @@ describe("calcularValidacionesCruce", () => {
     expect(result.proveedores[0]).toMatchObject({
       proveedorId: "b:dian",
       proveedorNombre: "DIAN",
-      totalFacturas: "17299000",
-      totalPagos: "17299000",
-      diferencia: "0",
+      totalFacturas: 17299000n,
+      totalPagos: 17299000n,
+      diferencia: 0n,
       cuadra: true,
     });
   });
@@ -37,9 +37,9 @@ describe("calcularValidacionesCruce", () => {
     const result = calcularValidacionesCruce(facturas, pagos, []);
 
     expect(result.proveedores).toHaveLength(1);
-    expect(result.proveedores[0]!.totalFacturas).toBe("12000000");
-    expect(result.proveedores[0]!.totalPagos).toBe("10000000");
-    expect(result.proveedores[0]!.diferencia).toBe("2000000");
+    expect(result.proveedores[0]!.totalFacturas).toBe(12000000n);
+    expect(result.proveedores[0]!.totalPagos).toBe(10000000n);
+    expect(result.proveedores[0]!.diferencia).toBe(2000000n);
     expect(result.proveedores[0]!.cuadra).toBe(false);
   });
 
@@ -51,7 +51,7 @@ describe("calcularValidacionesCruce", () => {
 
     const result = calcularValidacionesCruce(facturas, pagos, []);
 
-    expect(result.proveedores[0]!.diferencia).toBe("-1500000");
+    expect(result.proveedores[0]!.diferencia).toBe(-1500000n);
     expect(result.proveedores[0]!.cuadra).toBe(false);
   });
 
@@ -62,9 +62,9 @@ describe("calcularValidacionesCruce", () => {
 
     const result = calcularValidacionesCruce(facturas, [], []);
 
-    expect(result.proveedores[0]!.totalPagos).toBe("0");
-    expect(result.proveedores[0]!.totalFacturas).toBe("3200000");
-    expect(result.proveedores[0]!.diferencia).toBe("3200000");
+    expect(result.proveedores[0]!.totalPagos).toBe(0n);
+    expect(result.proveedores[0]!.totalFacturas).toBe(3200000n);
+    expect(result.proveedores[0]!.diferencia).toBe(3200000n);
     expect(result.proveedores[0]!.cuadra).toBe(false);
   });
 
@@ -90,7 +90,7 @@ describe("calcularValidacionesCruce", () => {
       pagoId: "pago-suelto-1",
       concepto: "Transporte interno",
       numSoporte: "SOP-9",
-      valor: "250000",
+      valor: 250000n,
     });
   });
 
@@ -109,5 +109,26 @@ describe("calcularValidacionesCruce", () => {
     const result = calcularValidacionesCruce(facturas, [], []);
 
     expect(result.proveedores).toHaveLength(2);
+  });
+});
+
+// Fase centavos, D-8: el ajuste REDONDEO de una factura re-expresada cuenta
+// como pagado en la vista por proveedor (sin alarma falsa por 0,45).
+describe("calcularValidacionesCruce — REDONDEO cuenta como pagado (D-8)", () => {
+  it("ALMACARGA: factura 502.801,45, pago 502.801 + REDONDEO 45 → cuadra con nota", () => {
+    const r = calcularValidacionesCruce(
+      [{ id: "fe", proveedorId: "ben-almacarga", proveedorNombre: "ALMACARGA", valor: 50_280_145n }],
+      [{ facturaId: "fe", valor: 50_280_100n }],
+      [],
+      [{ facturaId: "fe", monto: 45n }],
+    );
+    expect(r.proveedores[0]).toMatchObject({
+      totalFacturas: 50_280_145n,
+      totalPagos: 50_280_145n,
+      diferencia: 0n,
+      redondeo: 45n,
+      cuadra: true,
+      nota: "incluye redondeo de $\u00a00,45",
+    });
   });
 });

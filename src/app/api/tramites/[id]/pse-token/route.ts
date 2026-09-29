@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { prisma as db } from "@/lib/db/prisma";
 import { requireRole } from "@/lib/auth/session";
+import { dineroNoNegativoSchema } from "@/lib/dinero";
 import { jsonResponse } from "@/lib/http/json";
 import { solicitarCodigoPse } from "@/lib/whatsapp/pse-service";
 
@@ -11,7 +12,8 @@ type RouteContext = { params: Promise<{ id: string }> };
 /** Contexto del pago que viaja en el WhatsApp. Todo opcional: sin él, el aviso sale igual. */
 const bodySchema = z
   .object({
-    valor: z.string().regex(/^\d{1,15}$/, "Valor en COP enteros").optional(),
+    /** Pesos en texto ("502801.45"); sale en centavos. */
+    valor: dineroNoNegativoSchema.optional(),
     beneficiario: z.string().trim().max(120).optional(),
     concepto: z.string().trim().max(200).optional(),
   })
@@ -48,7 +50,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     consecutivo: tramite.consecutivo,
     usuarioId: session.user.id,
     operador: session.user.name,
-    valor: parsed.data.valor ? BigInt(parsed.data.valor) : null,
+    valor: parsed.data.valor ?? null,
     beneficiario: parsed.data.beneficiario || null,
     concepto: parsed.data.concepto || null,
   });

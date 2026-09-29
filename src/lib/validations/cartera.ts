@@ -5,13 +5,15 @@
 import { CanalPago, DestinoPago, TipoPagoFactura, TipoRecaudo } from "@prisma/client";
 import { z } from "zod";
 
+import { dineroSchema } from "@/lib/dinero";
+
+// Fase centavos: montos en PESOS de entrada ("502801.45" o número), CENTAVOS de salida (bigint).
+
 export const registrarPagoFacturaSchema = z
   .object({
     destino: z.nativeEnum(DestinoPago),
     tipo: z.nativeEnum(TipoPagoFactura),
-    monto: z.coerce
-      .bigint()
-      .refine((v) => v > 0n, { message: "El monto debe ser mayor a 0" }),
+    monto: dineroSchema.refine((v) => v > 0n, { message: "El monto debe ser mayor a 0" }),
     fecha: z.coerce.date(),
     // Exactamente uno de (tipoRecaudo, canalPago) debe estar seteado.
     // Callers que solo mandan canalPago siguen siendo válidos (compat).
@@ -43,9 +45,7 @@ export const conciliarLoteItemSchema = z
     facturaId: z.string().min(1),
     destino: z.nativeEnum(DestinoPago),
     tipo: z.nativeEnum(TipoPagoFactura),
-    monto: z.coerce
-      .bigint()
-      .refine((v) => v > 0n, { message: "El monto debe ser mayor a 0" }),
+    monto: dineroSchema.refine((v) => v > 0n, { message: "El monto debe ser mayor a 0" }),
     fecha: z.coerce.date(),
     tipoRecaudo: z.nativeEnum(TipoRecaudo).optional(),
     canalPago: z.nativeEnum(CanalPago).optional(),

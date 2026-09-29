@@ -18,6 +18,7 @@ const h = vi.hoisted(() => {
   const fallos = { proximoUpdate: false };
   const auditorias: Array<{ accion: string; despues?: unknown; antes?: unknown }> = [];
 
+  /** Borrador COMISION de $1.000.000,50 (centavos) con una sola línea que lo sostiene. */
   function borradorCompleto() {
     return {
       id: "bor-1",
@@ -25,13 +26,13 @@ const h = vi.hoisted(() => {
       siigoDraftId: estado.siigoDraftId,
       formaPagoSiigoId: 7,
       formatoFactura: "COMISION",
-      retenciones: 0n,
+      retencionesCentavos: 0n,
       reteIvaPorcentaje: null,
       comentariosCabecera: null,
-      totalFactura: 1_000_000n,
-      totalAnticipo: 0n,
-      saldoAFavorCliente: 0n,
-      saldoACargoCliente: 1_000_000n,
+      totalFacturaCentavos: 100_000_050n,
+      totalAnticipoCentavos: 0n,
+      saldoAFavorClienteCentavos: 0n,
+      saldoACargoClienteCentavos: 100_000_050n,
       tramite: {
         id: "tra-1",
         consecutivo: "DO.BAQ26-0001",
@@ -39,7 +40,19 @@ const h = vi.hoisted(() => {
         pagos: [],
       },
       formaPago: null,
-      lineasRevision: [],
+      lineasRevision: [
+        {
+          concepto: "COMISION GALCOMEX",
+          valorCentavos: 100_000_050n,
+          orden: 991,
+          seccion: "OPERACIONAL",
+          tipoFija: "COMISION",
+          aplicaIva: false,
+          nitTercero: null,
+          siigoProducto: { id: "p-1", codigo: "007", clasificacionIva: "Taxed", impuestos: [] },
+          facturas: [],
+        },
+      ],
     };
   }
 
@@ -166,6 +179,60 @@ describe("motivoRechazoEnvioSiigo (regla pura)", () => {
     expect(motivoRechazoEnvioSiigo({ siigoDraftId: "sg-1" }, { reenviar: true })).toMatch(
       /indicar cuál borrador/,
     );
+  });
+});
+
+describe("enviarBorradorASiigo — centavos e invariante de cuadre", () => {
+  it("manda price y payments.value en pesos con decimales, exactos desde los centavos", async () => {
+    siigo.postFactura.mockResolvedValueOnce(respuestaSiigo("sg-1"));
+
+    const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+    expect(r).toMatchObject({ ok: true });
+    const dto = siigo.postFactura.mock.calls[0]![1] as {
+      items: Array<{ price: number }>;
+      payments: Array<{ value: number }>;
+      observations?: string;
+    };
+    expect(dto.items.map((i) => i.price)).toEqual([1_000_000.5]);
+    expect(dto.payments.map((p) => p.value)).toEqual([1_000_000.5]);
+    // Observaciones como en las facturas reales: "$ 1.000.000,50" (espacio normal).
+    expect(dto.observations).toContain("TOTAL FACTURA 			 $ 1.000.000,50");
+  });
+
+  it("si Σ ítems ≠ total a pagar (un centavo), NO llama a Siigo y explica los dos valores", async () => {
+    h.findUnique.mockImplementation(async () => ({
+      ...h.borradorCompleto(),
+      totalFacturaCentavos: 100_000_051n,
+    }));
+    try {
+      const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+      expect(r).toMatchObject({ ok: false, tipo: "validacion" });
+      expect(r.ok ? "" : r.error).toMatch(/no cuadra para SIIGO/);
+      expect(r.ok ? "" : r.error).toContain("1.000.000,50");
+      expect(r.ok ? "" : r.error).toContain("1.000.000,51");
+      expect(siigo.postFactura).not.toHaveBeenCalled();
+    } finally {
+      h.findUnique.mockImplementation(async () => h.borradorCompleto());
+    }
+  });
+
+  it("COMISION con retenciones: no viajan a Siigo ⇒ no cuadra y se bloquea con la razón", async () => {
+    h.findUnique.mockImplementation(async () => ({
+      ...h.borradorCompleto(),
+      retencionesCentavos: 399_000n,
+      totalFacturaCentavos: 100_000_050n - 399_000n,
+    }));
+    try {
+      const r = await enviarBorradorASiigo("bor-1", "usr-1");
+
+      expect(r).toMatchObject({ ok: false, tipo: "validacion" });
+      expect(r.ok ? "" : r.error).toContain("retenciones de $ 3.990,00 no viajan a SIIGO");
+      expect(siigo.postFactura).not.toHaveBeenCalled();
+    } finally {
+      h.findUnique.mockImplementation(async () => h.borradorCompleto());
+    }
   });
 });
 

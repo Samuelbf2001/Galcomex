@@ -26,10 +26,11 @@ import {
   type ClienteAlertaCarteraRow,
   DashboardApiError,
   fetchDashboard,
-  formatCOP,
   formatDate,
+  formatDateTime,
   labelEstado,
 } from "./dashboard-api";
+import { centavosDeTextoApi, formatoPesos, textoDeCentavos } from "@/lib/dinero";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
 
@@ -180,7 +181,7 @@ function TablaCarteraVencida({ rows }: { rows: CarteraVencidaRow[] }) {
                 <EnlaceCliente id={row.clienteId}>{row.clienteNombre}</EnlaceCliente>
               </td>
               <td className="px-4 py-3 text-right text-sm font-semibold text-rose-600 whitespace-nowrap">
-                {formatCOP(row.saldoACargoCliente)}
+                {formatoPesos(centavosDeTextoApi(row.saldoACargoCliente))}
               </td>
               <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
                 {formatDate(row.fechaFactura)}
@@ -219,8 +220,9 @@ function TablaAlertasCartera({ rows }: { rows: ClienteAlertaCarteraRow[] }) {
         </thead>
         <tbody>
           {rows.map((row) => {
-            const negativo = BigInt(row.saldoNeto) < 0n;
-            const absStr = negativo ? (-BigInt(row.saldoNeto)).toString() : row.saldoNeto;
+            const saldoNetoCentavos = centavosDeTextoApi(row.saldoNeto);
+            const negativo = saldoNetoCentavos < 0n;
+            const absStr = textoDeCentavos(negativo ? -saldoNetoCentavos : saldoNetoCentavos);
             return (
               <tr
                 key={row.clienteId}
@@ -231,7 +233,7 @@ function TablaAlertasCartera({ rows }: { rows: ClienteAlertaCarteraRow[] }) {
                 </td>
                 <td className="px-4 py-3 text-right text-sm font-bold text-rose-600 whitespace-nowrap">
                   {negativo ? "−" : ""}
-                  {formatCOP(absStr)}
+                  {formatoPesos(centavosDeTextoApi(absStr))}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <Link
@@ -439,7 +441,7 @@ function ListaActividad({ rows }: { rows: ActividadRecienteRow[] }) {
                 title={`${row.entidad} · ${row.accion}`}
               >
                 <span className="font-medium">{usuario}</span> {describirActividad(row)}
-                <span className="text-slate-400"> · {formatDate(row.createdAt)}</span>
+                <span className="text-slate-400"> · {formatDateTime(row.createdAt)}</span>
               </p>
             </div>
           </li>
@@ -552,7 +554,7 @@ export function DashboardWorkspace() {
           label="Cartera vencida"
           value={
             data.cantidadFacturasVencidas > 0
-              ? formatCOP(data.totalCarteraVencida)
+              ? formatoPesos(centavosDeTextoApi(data.totalCarteraVencida))
               : "$0"
           }
           sub={
@@ -568,7 +570,7 @@ export function DashboardWorkspace() {
           label="Anticipos con saldo"
           value={
             data.anticiposConSaldo.cantidad > 0
-              ? formatCOP(data.anticiposConSaldo.totalRestante)
+              ? formatoPesos(centavosDeTextoApi(data.anticiposConSaldo.totalRestante))
               : "$0"
           }
           sub={
@@ -654,7 +656,7 @@ export function DashboardWorkspace() {
             <div className="border-t border-slate-100 bg-slate-50 px-4 py-2.5 text-xs">
               <span className="text-slate-500">Total a cobrar: </span>
               <span className="font-semibold text-rose-600">
-                {formatCOP(data.totalCarteraVencida)}
+                {formatoPesos(centavosDeTextoApi(data.totalCarteraVencida))}
               </span>
             </div>
           ) : null}

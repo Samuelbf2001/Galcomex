@@ -11,9 +11,10 @@
 
 import { randomBytes } from "node:crypto";
 
-import { type DocumentoEnlace, Prisma, type Rol } from "@prisma/client";
+import type { DocumentoEnlace, Rol } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -61,12 +62,6 @@ export class DocumentoNoEncontradoParaEnlaceError extends Error {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(
-    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
-  ) as Prisma.InputJsonValue;
-}
 
 export function puedeCompartirDocumento(rol: Rol): boolean {
   return ROLES_PUEDEN_COMPARTIR.includes(rol);

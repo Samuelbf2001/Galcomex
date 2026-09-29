@@ -244,7 +244,7 @@ describe("A1-T2 — API /api/clientes (integración BD)", () => {
       expect(postBody.cliente.tarifas).toHaveLength(1);
       expect(postBody.cliente.tarifas[0].anio).toBe(2026);
       // BigInt se serializa como string
-      expect(postBody.cliente.tarifas[0].valor).toBe("150000");
+      expect(postBody.cliente.tarifas[0].valor).toBe("150000.00");
 
       const clienteId = postBody.cliente.id;
       createdClienteIds.push(clienteId);
@@ -260,7 +260,7 @@ describe("A1-T2 — API /api/clientes (integración BD)", () => {
 
       const tarifa2026 = getBody.cliente.tarifas.find((t) => t.anio === 2026);
       expect(tarifa2026).toBeDefined();
-      expect(tarifa2026?.valor).toBe("150000");
+      expect(tarifa2026?.valor).toBe("150000.00");
     });
   });
 

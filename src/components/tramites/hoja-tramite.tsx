@@ -8,7 +8,7 @@ import {
   type LibroPagosData,
   calcularSaldosCliente,
   fetchLibroPagos,
-  formatCOP,
+  valorParaSaldoCliente,
 } from "@/components/pagos/pagos-api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
@@ -17,6 +17,8 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useRol } from "@/lib/auth/rol-context";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
+import { centavosDeTexto, formatoPesos, pesos, porcentajeDe, textoCanonicoDeCentavos, textoDeCentavos } from "@/lib/dinero";
 
 /**
  * Hoja del trámite — espejo de la hoja de Excel de Camila (GRUPO E PAPIS).
@@ -102,15 +104,9 @@ function str(value: unknown, fallback = "0"): string {
   return String(value);
 }
 
+/** Fecha-calendario (factura, anticipo): día guardado a 00:00 UTC, nunca la zona del navegador. */
 function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso) || "—";
 }
 
 const CANAL_LABEL: Record<string, string> = {
@@ -135,35 +131,33 @@ function tipoRecaudoLabel(tipo: string): string {
   return TIPO_RECAUDO_LABEL[tipo] ?? tipo;
 }
 
-/** Clase de color del saldo: verde > 0 (a favor), rojo < 0 (a cargo). */
-function saldoColor(bigStr: string): string {
+/**
+ * Lee un monto (pesos texto, de la API o un literal local "0") a centavos.
+ * Tolerante (`centavosDeTexto`, no el lector estricto de respuestas): esta
+ * función se comparte entre valores reales de la API y literales internos
+ * ("0" como saldo de partida), y ambos deben leerse igual.
+ */
+function bigOrZero(pesosTexto: string): bigint {
   try {
-    const n = BigInt(bigStr);
-    if (n > 0n) return "text-emerald-700";
-    if (n < 0n) return "text-rose-600";
-  } catch {
-    /* noop */
-  }
-  return "text-slate-700";
-}
-
-function saldoBg(bigStr: string): string {
-  try {
-    const n = BigInt(bigStr);
-    if (n > 0n) return "bg-emerald-50";
-    if (n < 0n) return "bg-rose-50";
-  } catch {
-    /* noop */
-  }
-  return "";
-}
-
-function bigOrZero(bigStr: string): bigint {
-  try {
-    return BigInt(bigStr);
+    return centavosDeTexto(pesosTexto);
   } catch {
     return 0n;
   }
+}
+
+/** Clase de color del saldo: verde > 0 (a favor), rojo < 0 (a cargo). */
+function saldoColor(pesosTexto: string): string {
+  const n = bigOrZero(pesosTexto);
+  if (n > 0n) return "text-emerald-700";
+  if (n < 0n) return "text-rose-600";
+  return "text-slate-700";
+}
+
+function saldoBg(pesosTexto: string): string {
+  const n = bigOrZero(pesosTexto);
+  if (n > 0n) return "bg-emerald-50";
+  if (n < 0n) return "bg-rose-50";
+  return "";
 }
 
 // ─── Normalización de datos ───────────────────────────────────────────────────
@@ -336,19 +330,24 @@ export function HojaTramite({
     );
   }
 
-  // Saldo corriente por fila de pago (mismo cálculo que el libro de pagos).
+  // Saldo corriente del CLIENTE por fila de pago (mismo cálculo que el libro
+  // de pagos y el borrador): lo pagado por facturas NO SE COBRA (asesoría) lo
+  // asume Galcomex y no baja el saldo del cliente.
   const saldosPagos = calcularSaldosCliente(
     libro.totalAnticipoAplicado,
-    libro.pagos.map((p) => p.valor),
+    libro.pagos.map((p) => valorParaSaldoCliente(p.valor, p.noCobrable)),
   );
+  const totalNoCobrable = bigOrZero(libro.totalNoCobrable);
   const saldoTrasPagos =
     saldosPagos.length > 0 ? saldosPagos[saldosPagos.length - 1]! : libro.totalAnticipoAplicado;
 
   // Costos bancarios en vivo (anticipo + pagos actuales, incluyendo pagos añadidos
   // después de crear el borrador que aún no están en borrador.costosBancarios).
-  const costosBancariosTotalLive = (
-    bigOrZero(libro.costosBancarios) + bigOrZero(libro.costosBancariosAnticipo)
-  ).toString();
+  // Solo lo que se le cobra al cliente: la transferencia de un pago de solo
+  // asesoría la asume Galcomex (igual que el borrador).
+  const costosBancariosTotalLive = textoDeCentavos(
+    bigOrZero(libro.costosBancariosCobrables) + bigOrZero(libro.costosBancariosAnticipo),
+  );
 
   // Totales del cliente: autoritativos de la FACTURA (mismo origen que cartera).
   // `b.totalFactura`/`b.saldoAFavorCliente`/`b.saldoACargoCliente` ya prefieren los
@@ -380,35 +379,41 @@ export function HojaTramite({
     const totalPagos = anticipo - bigOrZero(saldoTrasPagos);
     const comisionInternaLM = bigOrZero(b.comisionInternaLM);
     const iva = bigOrZero(b.ivaComision);
-    // 4x1000 interno: base = anticipo (GMF 0.4% fijo). Igual que el motor.
-    const cuatroXMilInterno = (anticipo * 4n) / 1000n;
+    // 4x1000 interno: base = anticipo (GMF 0.4% fijo), al PESO, TRUNCAR (D-2:
+    // se conserva el truncado histórico de Lucho; A.6). Igual que el motor.
+    const cuatroXMilInterno = porcentajeDe(anticipo, 4n, 1000n, { precision: "PESO", modo: "TRUNCAR" });
     // Costos = pagos a terceros + recaudo anticipo + costo bancario del tipo de
     // pago de la comisión interna LM (snapshot persistido en el borrador, se
     // suma al `costosBancarios` del servicio para que cuadre con el saldo
     // persistido en la BD — ver service.ts:actualizarComisionInternaLM).
     const costoComisionLM = bigOrZero(b.costoComisionInternaLM);
     const costos = bigOrZero(costosBancariosTotalLive) + costoComisionLM;
-    const saldoLMInterno =
+    // El saldo interno que manda es el GUARDADO en el borrador (lo calculó el
+    // servidor con la parte cobrable de cada pago). El de hoy solo se compara:
+    // si difiere, hubo pagos después de generar el borrador.
+    const saldoLMInternoVivo =
       bigOrZero(saldoTrasPagos) - comisionInternaLM - iva - cuatroXMilInterno - costos;
+    const saldoLMInterno = bigOrZero(b.saldoLMInterno);
     // Lado cliente: autoritativo de la FACTURA (igual que cartera). `b.saldoAFavorCliente`
     // y `b.totalFactura` ya vienen del factura cuando existe (ver fetchHojaData).
     // NO usar el recálculo live (totalesDinamicos): difiere del facturado.
     const saldoAFavorCliente = bigOrZero(b.saldoAFavorCliente);
     const saldoLM = saldoLMInterno - saldoAFavorCliente;
     return {
-      anticipo: anticipo.toString(),
-      totalPagos: totalPagos.toString(),
-      comisionInternaLM: comisionInternaLM.toString(),
+      anticipo: textoDeCentavos(anticipo),
+      totalPagos: textoDeCentavos(totalPagos),
+      comisionInternaLM: textoDeCentavos(comisionInternaLM),
       tipoRecaudoComisionInternaLM: b.tipoRecaudoComisionInternaLM,
       canalPagoComisionInternaLM: b.canalPagoComisionInternaLM,
-      costoComisionInternaLM: costoComisionLM.toString(),
-      iva: iva.toString(),
-      cuatroXMil: cuatroXMilInterno.toString(),
-      costos: costos.toString(),
-      saldoLMInterno: saldoLMInterno.toString(),
+      costoComisionInternaLM: textoDeCentavos(costoComisionLM),
+      iva: textoDeCentavos(iva),
+      cuatroXMil: textoDeCentavos(cuatroXMilInterno),
+      costos: textoDeCentavos(costos),
+      saldoLMInterno: textoDeCentavos(saldoLMInterno),
+      saldoLMInternoVivo: textoDeCentavos(saldoLMInternoVivo),
       saldoAFavorCliente: b.saldoAFavorCliente,
       totalFactura: b.totalFactura,
-      saldoLM: saldoLM.toString(),
+      saldoLM: textoDeCentavos(saldoLM),
     };
   })();
 
@@ -433,8 +438,8 @@ export function HojaTramite({
           <AlertTriangle aria-hidden="true" />
           <AlertTitle>Saldo del trámite por debajo del umbral de alerta</AlertTitle>
           <AlertDescription>
-            El saldo disponible ({formatCOP(saldoTrasPagos)}) está por debajo del umbral
-            configurado para trámites {tipoClienteLabel} ({formatCOP(hoja.umbralAlertaSaldo)}).
+            El saldo disponible ({formatoPesos(centavosDeTexto(saldoTrasPagos))}) está por debajo del umbral
+            configurado para trámites {tipoClienteLabel} ({formatoPesos(centavosDeTexto(hoja.umbralAlertaSaldo))}).
           </AlertDescription>
         </Alert>
       ) : null}
@@ -505,10 +510,10 @@ export function HojaTramite({
                 <tr key={ap.id} className="border-b border-slate-100 last:border-b-0">
                   <td className="px-4 py-2 text-slate-600">{formatDate(ap.anticipo.fecha)}</td>
                   <td className="px-4 py-2 text-right font-mono text-slate-800">
-                    {formatCOP(ap.anticipo.monto)}
+                    {formatoPesos(centavosDeTexto(ap.anticipo.monto))}
                   </td>
                   <td className="px-4 py-2 text-right font-mono font-semibold text-emerald-700">
-                    {formatCOP(ap.montoAplicado)}
+                    {formatoPesos(centavosDeTexto(ap.montoAplicado))}
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-600">{tipoRecaudoLabel(ap.anticipo.tipoRecaudo)}</td>
                   <td className="px-4 py-2 text-center">
@@ -524,7 +529,7 @@ export function HojaTramite({
                 <td className="px-4 py-2 text-slate-700">TOTAL anticipo aplicado</td>
                 <td />
                 <td className="px-4 py-2 text-right font-mono text-slate-900">
-                  {formatCOP(libro.totalAnticipoAplicado)}
+                  {formatoPesos(centavosDeTexto(libro.totalAnticipoAplicado))}
                 </td>
                 <td colSpan={2} />
               </tr>
@@ -578,7 +583,7 @@ export function HojaTramite({
                 <td
                   className={`px-3 py-2 text-right font-mono font-semibold ${saldoColor(libro.totalAnticipoAplicado)} ${saldoBg(libro.totalAnticipoAplicado)}`}
                 >
-                  {formatCOP(libro.totalAnticipoAplicado)}
+                  {formatoPesos(centavosDeTexto(libro.totalAnticipoAplicado))}
                 </td>
                 <td className="px-3 py-2" />
                 <td className="px-3 py-2" />
@@ -594,6 +599,7 @@ export function HojaTramite({
 
               {libro.pagos.map((p, idx) => {
                 const saldo = saldosPagos[idx] ?? "0";
+                const noCobrable = bigOrZero(p.noCobrable ?? "0");
                 return (
                   <tr key={p.id} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
                     <td className="px-3 py-2 text-xs text-slate-400">{idx + 1}</td>
@@ -604,21 +610,48 @@ export function HojaTramite({
                           {p.beneficiarios.map((b) => b.nombre).join(", ")}
                         </span>
                       ) : null}
+                      {noCobrable > 0n ? (
+                        <span className="block text-xs font-medium text-slate-500">
+                          No se cobra al cliente: {formatoPesos(noCobrable)} (asesoría, la asume Galcomex)
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 text-xs text-slate-600">{p.numSoporte ?? "—"}</td>
-                    <td className="px-3 py-2 text-right font-mono text-slate-900">{formatCOP(p.valor)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-slate-900">{formatoPesos(centavosDeTexto(p.valor))}</td>
                     <td
                       className={`px-3 py-2 text-right font-mono font-semibold ${saldoColor(saldo)} ${saldoBg(saldo)}`}
                     >
-                      {formatCOP(saldo)}
+                      {formatoPesos(centavosDeTexto(saldo))}
                     </td>
                     <td className="px-3 py-2 text-xs text-slate-600">{canalLabel(p.canalPago)}</td>
                     <td className="px-3 py-2 text-right font-mono text-xs text-slate-500">
-                      {bigOrZero(p.costoBancario) > 0n ? formatCOP(p.costoBancario) : "—"}
+                      {bigOrZero(p.costoBancario) > 0n ? formatoPesos(centavosDeTexto(p.costoBancario)) : "—"}
+                      {bigOrZero(p.costoBancario) > 0n &&
+                      p.costoBancarioCobrable !== undefined &&
+                      bigOrZero(p.costoBancarioCobrable ?? "0") === 0n ? (
+                        <span className="block font-sans text-[10px] text-slate-400">lo asume Galcomex</span>
+                      ) : null}
                     </td>
                   </tr>
                 );
               })}
+
+              {/* Asesoría (facturas NO SE COBRA): se pagó, pero no baja el saldo del cliente */}
+              {totalNoCobrable > 0n ? (
+                <tr className="border-b border-slate-100 bg-slate-50">
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-600">
+                    Asesoría NO SE COBRA: la asume Galcomex
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-500">No entra en la factura del cliente</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-500">
+                    {formatoPesos(totalNoCobrable)}
+                  </td>
+                  <td className="px-3 py-2 text-right text-xs text-slate-400">sin efecto en el saldo</td>
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2" />
+                </tr>
+              ) : null}
 
               {/* ── Cola de factura: descuentos sobre el saldo corriente ── */}
               {hoja.borrador ? (
@@ -707,7 +740,7 @@ function ColaFactura({
         } else {
           saldo -= bigOrZero(f.valor);
         }
-        const saldoStr = saldo.toString();
+        const saldoStr = textoDeCentavos(saldo);
         return (
           <tr
             key={f.label}
@@ -721,14 +754,14 @@ function ColaFactura({
             <td className="px-3 py-2 text-right font-mono text-rose-600">
               {f.isAddition ? (
                 bigOrZero(f.valor) > 0n ? (
-                  <span className="text-emerald-600">+{formatCOP(f.valor)}</span>
+                  <span className="text-emerald-600">+{formatoPesos(centavosDeTexto(f.valor))}</span>
                 ) : null
               ) : (
-                bigOrZero(f.valor) > 0n ? `−${formatCOP(f.valor)}` : formatCOP("0")
+                bigOrZero(f.valor) > 0n ? `−${formatoPesos(centavosDeTexto(f.valor))}` : formatoPesos(0n)
               )}
             </td>
             <td className={`px-3 py-2 text-right font-mono font-semibold ${saldoColor(saldoStr)} ${saldoBg(saldoStr)}`}>
-              {formatCOP(saldoStr)}
+              {formatoPesos(centavosDeTexto(saldoStr))}
             </td>
             <td className="px-3 py-2" />
             <td className="px-3 py-2" />
@@ -755,13 +788,13 @@ function SaldoChip({
   let texto: string;
   let clase: string;
   if (fav > 0n) {
-    texto = `+${formatCOP(favor)}`;
+    texto = `+${formatoPesos(centavosDeTexto(favor))}`;
     clase = "text-emerald-700";
   } else if (car > 0n) {
-    texto = `−${formatCOP(cargo)}`;
+    texto = `−${formatoPesos(centavosDeTexto(cargo))}`;
     clase = "text-rose-600";
   } else {
-    texto = formatCOP("0");
+    texto = formatoPesos(0n);
     clase = "text-slate-500";
   }
   return (
@@ -787,13 +820,13 @@ function TotalesFactura({
   const lmFavor =
     saldoLM !== null ? (bigOrZero(saldoLM) > 0n ? saldoLM : "0") : borrador.saldoAFavorLM;
   const lmCargo =
-    saldoLM !== null ? (bigOrZero(saldoLM) < 0n ? (-bigOrZero(saldoLM)).toString() : "0") : borrador.saldoACargoLM;
+    saldoLM !== null ? (bigOrZero(saldoLM) < 0n ? textoDeCentavos(-bigOrZero(saldoLM)) : "0") : borrador.saldoACargoLM;
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <div className="border border-slate-300 bg-slate-900 px-4 py-3">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">Total factura</p>
         <p className="mt-0.5 font-mono text-base font-bold text-white">
-          {formatCOP(totales.totalFactura)}
+          {formatoPesos(centavosDeTexto(totales.totalFactura))}
         </p>
       </div>
       <SaldoChip
@@ -822,7 +855,10 @@ type CruceData = {
   iva: string;
   cuatroXMil: string;
   costos: string;
+  /** Guardado en el borrador (manda). */
   saldoLMInterno: string;
+  /** Recalculado con los pagos de hoy, solo para avisar si difiere. */
+  saldoLMInternoVivo: string;
   saldoAFavorCliente: string;
   totalFactura: string;
   saldoLM: string;
@@ -849,7 +885,7 @@ function CruceRow({
       </span>
       <span className={`font-mono text-sm ${sign === "minus" ? "text-rose-600" : "text-slate-800"}`}>
         {prefijo}
-        {formatCOP(valor)}
+        {formatoPesos(centavosDeTexto(valor))}
       </span>
     </div>
   );
@@ -876,7 +912,7 @@ function CruceLM({
         ? "Luis Martínez debe a Galcomex"
         : "Cuenta saldada";
   const lmClase = saldoLM > 0n ? "text-emerald-700" : saldoLM < 0n ? "text-rose-600" : "text-slate-600";
-  const saldoLMAbs = (saldoLM < 0n ? -saldoLM : saldoLM).toString();
+  const saldoLMAbs = textoDeCentavos(saldoLM < 0n ? -saldoLM : saldoLM);
 
   return (
     <div className="border border-slate-300 bg-white">
@@ -910,6 +946,13 @@ function CruceLM({
           <CruceRow label="Impuesto 4x1000 (interno)" valor={cruce.cuatroXMil} sign="minus" />
           <CruceRow label="Costos bancarios" valor={cruce.costos} sign="minus" />
           <CruceRow label="Saldo interno LM" valor={cruce.saldoLMInterno} emphasis />
+          {cruce.saldoLMInternoVivo !== cruce.saldoLMInterno ? (
+            <p className="px-3 py-1.5 text-xs text-amber-700">
+              Es el saldo guardado al generar el borrador. Con los pagos de hoy daría{" "}
+              {formatoPesos(centavosDeTexto(cruce.saldoLMInternoVivo))}: si se registraron pagos después,
+              vuelve a generar el borrador.
+            </p>
+          ) : null}
         </div>
         {/* Cruce final */}
         <div className="bg-white">
@@ -923,7 +966,7 @@ function CruceLM({
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-700">Saldo LM</span>
             <span className={`font-mono text-sm font-bold ${lmClase}`}>
               {saldoLM > 0n ? "+" : saldoLM < 0n ? "−" : ""}
-              {formatCOP(saldoLMAbs)}
+              {formatoPesos(centavosDeTexto(saldoLMAbs))}
             </span>
           </div>
           <p className={`px-3 py-1.5 text-xs font-medium ${lmClase}`}>{lmTexto}</p>
@@ -956,7 +999,7 @@ function opcionKey(o: { grupo: string; value: string }): string {
   return `${o.grupo}:${o.value}`;
 }
 
-const COMISION_INTERNA_LM_MINIMO_COP = 150_000n;
+const COMISION_INTERNA_LM_MINIMO_COP = pesos(150_000);
 
 /**
  * Fila de la comisión interna Galcomex→Lucho. Solo lectura por defecto; con
@@ -990,7 +1033,7 @@ function ComisionInternaRow({
     ) ?? null;
 
   const canalLabel = opcionPersistida
-    ? `${opcionPersistida.label} · costo ${formatCOP(costoBancario)}`
+    ? `${opcionPersistida.label} · costo ${formatoPesos(centavosDeTexto(costoBancario))}`
     : "Sin tipo de pago configurado";
   const canalClase = opcionPersistida ? "text-slate-500" : "text-amber-700";
 
@@ -1002,7 +1045,7 @@ function ComisionInternaRow({
           <span className={`text-[11px] ${canalClase}`}>{canalLabel}</span>
         </div>
         <span className="flex items-center gap-2">
-          <span className="font-mono text-sm text-rose-600">−{formatCOP(valor)}</span>
+          <span className="font-mono text-sm text-rose-600">−{formatoPesos(centavosDeTexto(valor))}</span>
           {editable ? (
             <button
               type="button"
@@ -1061,7 +1104,7 @@ function ComisionInternaModal({
   const montoBig = (() => {
     if (monto.length === 0) return null;
     try {
-      return BigInt(monto);
+      return centavosDeTexto(monto);
     } catch {
       return null;
     }
@@ -1075,10 +1118,11 @@ function ComisionInternaModal({
     setGuardando(true);
     setError(null);
     try {
+      const comisionTexto = textoCanonicoDeCentavos(montoBig);
       const body =
         opcion.grupo === "RECAUDO"
-          ? { comisionInternaLM: montoBig.toString(), tipoRecaudoComisionInternaLM: opcion.value }
-          : { comisionInternaLM: montoBig.toString(), canalPagoComisionInternaLM: opcion.value };
+          ? { comisionInternaLM: comisionTexto, tipoRecaudoComisionInternaLM: opcion.value }
+          : { comisionInternaLM: comisionTexto, canalPagoComisionInternaLM: opcion.value };
       const res = await fetch(`/api/borradores/${borradorId}/comision-interna-lm`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -1108,7 +1152,7 @@ function ComisionInternaModal({
       open
       onClose={onClose}
       title="Comisión interna Galcomex→Lucho"
-      description={`Mínimo ${formatCOP(COMISION_INTERNA_LM_MINIMO_COP.toString())}. El costo bancario del tipo de pago se suma al cruce LM.`}
+      description={`Mínimo ${formatoPesos(COMISION_INTERNA_LM_MINIMO_COP)}. El costo bancario del tipo de pago se suma al cruce LM.`}
       size="sm"
       dismissible={!guardando}
     >
@@ -1120,6 +1164,7 @@ function ComisionInternaModal({
             <CampoMoneda
               value={monto}
               onValueChange={setMonto}
+              decimales={false}
               disabled={guardando}
               placeholder="150.000"
               className="h-10 w-full border border-slate-300 px-3 text-right font-mono text-sm outline-none focus:border-sky-500"
@@ -1128,9 +1173,9 @@ function ComisionInternaModal({
               <p
                 className={`text-xs ${montoValido ? "text-slate-500" : "text-rose-600"}`}
               >
-                {formatCOP(montoBig.toString())}
+                {formatoPesos(montoBig)}
                 {!montoValido
-                  ? ` · debe ser ≥ ${formatCOP(COMISION_INTERNA_LM_MINIMO_COP.toString())}`
+                  ? ` · debe ser ≥ ${formatoPesos(COMISION_INTERNA_LM_MINIMO_COP)}`
                   : ""}
               </p>
             ) : null}
@@ -1151,7 +1196,7 @@ function ComisionInternaModal({
                 {OPCIONES_TIPO_PAGO_COMISION_LM.filter((o) => o.grupo === "RECAUDO").map(
                   (o) => (
                     <option key={opcionKey(o)} value={opcionKey(o)}>
-                      {o.label} — ${o.costo.toLocaleString("es-CO")}
+                      {o.label} — {formatoPesos(pesos(o.costo))}
                     </option>
                   ),
                 )}
@@ -1160,7 +1205,7 @@ function ComisionInternaModal({
                 {OPCIONES_TIPO_PAGO_COMISION_LM.filter((o) => o.grupo === "PAGO").map(
                   (o) => (
                     <option key={opcionKey(o)} value={opcionKey(o)}>
-                      {o.label} — ${o.costo.toLocaleString("es-CO")}
+                      {o.label} — {formatoPesos(pesos(o.costo))}
                     </option>
                   ),
                 )}
@@ -1170,7 +1215,7 @@ function ComisionInternaModal({
               <p className="text-xs text-slate-500">
                 Costo bancario:{" "}
                 <span className="font-medium text-slate-700">
-                  {formatCOP(String(opcion.costo))}
+                  {formatoPesos(pesos(opcion.costo))}
                 </span>
               </p>
             ) : null}
@@ -1268,10 +1313,10 @@ function ComisionInternaBlock({
             Monto
           </p>
           <p className="mt-0.5 font-mono text-base font-semibold text-slate-900">
-            {formatCOP(comisionInternaLM)}
+            {formatoPesos(centavosDeTexto(comisionInternaLM))}
           </p>
           <p className="text-[11px] text-slate-500">
-            Mínimo {formatCOP(COMISION_INTERNA_LM_MINIMO_COP.toString())}
+            Mínimo {formatoPesos(COMISION_INTERNA_LM_MINIMO_COP)}
           </p>
         </div>
         <div className="bg-white px-4 py-3">
@@ -1297,7 +1342,7 @@ function ComisionInternaBlock({
           </p>
           <p className="mt-0.5 font-mono text-sm font-semibold text-rose-600">
             {bigOrZero(costoComisionInternaLM) > 0n
-              ? `−${formatCOP(costoComisionInternaLM)}`
+              ? `−${formatoPesos(centavosDeTexto(costoComisionInternaLM))}`
               : "—"}
           </p>
           <p className="text-[11px] text-slate-500">Se suma al cruce LM</p>

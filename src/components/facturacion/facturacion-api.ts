@@ -1,8 +1,14 @@
 /**
  * Helpers de API para el módulo de Facturación (borradores + transiciones).
  * Patrón idéntico a pagos-api.ts.
- * BigInt serializado como string desde el backend — parsear con BigInt().
+ * Dinero = pesos texto con 2 decimales, siempre ("502801.45", "45226000.00"),
+ * tal como lo emite el servidor (`textoDeCentavos`, A.5). Se lee con
+ * `centavosDeTextoApi` (estricto) de `@/lib/dinero`, nunca con `BigInt()`.
  */
+
+// Normalizador de `pagosPorRevisar` (valida los montos con `centavosDeTextoApi`).
+import { normalizarPagosPorRevisar, type PagoPorRevisarRow } from "@/components/facturacion/aviso-pagos-por-revisar";
+import { formatFechaCalendario, formatInstanteBogota } from "@/lib/tiempo/bogota";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -15,7 +21,7 @@ export type LineaRevisionRow = {
   borradorId: string;
   concepto: string;
   numSoporte: string | null;
-  valor: string; // BigInt serializado
+  valor: string; // pesos texto ("502801.45")
   orden: number;
   observacion: string | null;
   origen: "AUTO" | "MANUAL";
@@ -48,7 +54,7 @@ export type SiigoFormaPagoRow = {
 /** Un concepto operacional: nombre + valor (BigInt como string) */
 export type ConceptoOperacionalRow = {
   concepto: string;
-  valor: string; // BigInt serializado
+  valor: string; // pesos texto ("502801.45")
 };
 
 export type BorradorRow = {
@@ -58,21 +64,21 @@ export type BorradorRow = {
   formatoFactura: string;
   /** % de ReteIVA automática del formato CONCEPTOS_IVA; null = retenciones a mano. */
   reteIvaPorcentaje: number | null;
-  comision: string; // BigInt
-  ivaComision: string; // BigInt
-  impuesto4x1000: string; // BigInt
-  costosBancarios: string; // BigInt
-  totalAnticipo: string; // BigInt
-  totalPagos: string; // BigInt
-  totalFactura: string; // BigInt
-  saldoAFavorCliente: string; // BigInt
-  saldoACargoCliente: string; // BigInt
-  saldoAFavorLM: string; // BigInt
-  saldoACargoLM: string; // BigInt
+  comision: string; // pesos texto ("502801.45")
+  ivaComision: string; // pesos texto ("502801.45")
+  impuesto4x1000: string; // pesos texto ("502801.45")
+  costosBancarios: string; // pesos texto ("502801.45")
+  totalAnticipo: string; // pesos texto ("502801.45")
+  totalPagos: string; // pesos texto ("502801.45")
+  totalFactura: string; // pesos texto ("502801.45")
+  saldoAFavorCliente: string; // pesos texto ("502801.45")
+  saldoACargoCliente: string; // pesos texto ("502801.45")
+  saldoAFavorLM: string; // pesos texto ("502801.45")
+  saldoACargoLM: string; // pesos texto ("502801.45")
   /** Total retenciones (RETE IVA + RETE FTE + RETE ICA). Fallback "0". */
-  retenciones: string; // BigInt
+  retenciones: string; // pesos texto ("502801.45")
   /** Total por líneas (Σ líneas + comisión + IVA − retenciones). BigInt. */
-  totalFacturaLineas: string; // BigInt
+  totalFacturaLineas: string; // pesos texto ("502801.45")
   /** Desglose de conceptos operacionales de la comisión. Null si no aplica. */
   conceptosOperacionales: ConceptoOperacionalRow[] | null;
   /** Comentarios de cabecera (formato Lucho). Cada string es una fila descriptiva. */
@@ -95,6 +101,8 @@ export type BorradorRow = {
   createdAt: string;
   lineasRevision: LineaRevisionRow[];
   factura: FacturaRow | null;
+  /** Solo ADMIN/REVISOR (GET del trámite, lote y POST de generar). null/ausente = esta respuesta no lo trae (SOCIO, PATCH/POST de acciones). */
+  pagosPorRevisar?: PagoPorRevisarRow[] | null;
 };
 
 export type FacturaRow = {
@@ -102,20 +110,24 @@ export type FacturaRow = {
   borradorId: string;
   numSiigo: string;
   fecha: string;
-  totalFactura: string; // BigInt
+  totalFactura: string; // pesos texto ("502801.45")
 };
 
 export type CruceFacturaRow = {
   id: string;
   proveedorNombre: string;
   numFactura: string;
-  valor: string; // BigInt serializado
-  montoPagado: string; // BigInt serializado
-  montoFacturado: string; // BigInt serializado
-  diferencia: string; // BigInt serializado (montoFacturado − montoPagado)
+  valor: string; // pesos texto ("502801.45")
+  montoPagado: string; // pesos texto ("502801.45")
+  montoFacturado: string; // pesos texto ("502801.45")
+  diferencia: string; // pesos texto (montoFacturado − montoPagado)
   /** ¿Se traslada al cliente en la factura de venta? (M6) */
   repercutible: boolean;
-  /** Diferencia que el revisor debe mirar. Falso si no se traslada al cliente. */
+  /** Lo facturado al cliente por esta factura pasa de su valor. */
+  facturadoExcedeValor: boolean;
+  /** Factura NO SE COBRA con líneas de venta vinculadas (se le cobraría al cliente). */
+  noCobrableFacturada: boolean;
+  /** Fila que el revisor debe mirar (desfase, exceso sobre el valor o asesoría facturada). */
   esDesviacion: boolean;
 };
 
@@ -123,9 +135,9 @@ export type CruceFacturaRow = {
 export type ValidacionProveedorRow = {
   proveedorId: string;
   proveedorNombre: string;
-  totalFacturas: string; // BigInt serializado
-  totalPagos: string; // BigInt serializado
-  diferencia: string; // BigInt serializado (totalFacturas − totalPagos)
+  totalFacturas: string; // pesos texto ("502801.45")
+  totalPagos: string; // pesos texto ("502801.45")
+  diferencia: string; // pesos texto (totalFacturas − totalPagos)
   cuadra: boolean;
 };
 
@@ -134,7 +146,7 @@ export type PagoSueltoRow = {
   pagoId: string;
   concepto: string;
   numSoporte: string | null;
-  valor: string; // BigInt serializado
+  valor: string; // pesos texto ("502801.45")
 };
 
 export type ValidacionesCruceResult = {
@@ -162,10 +174,13 @@ export type TramiteParaFacturacion = {
 
 export class FacturacionApiError extends Error {
   status?: number;
-  constructor(message: string, status?: number) {
+  /** Código de negocio del servidor (p. ej. `SIIGO_TOTAL_DISTINTO`), si lo trae. */
+  codigo?: string;
+  constructor(message: string, status?: number, codigo?: string) {
     super(message);
     this.name = "FacturacionApiError";
     this.status = status;
+    this.codigo = codigo;
   }
 }
 
@@ -288,6 +303,8 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
     createdAt: String(raw.createdAt ?? ""),
     lineasRevision: lineas,
     factura,
+    // null = la respuesta no lo trae (distinto de [] = sin pagos por revisar).
+    pagosPorRevisar: normalizarPagosPorRevisar(raw.pagosPorRevisar),
   };
 }
 
@@ -488,7 +505,7 @@ export async function fetchBorradoresPorLote(
 // ─── Generar borrador ─────────────────────────────────────────────────────────
 
 export type GenerarBorradorInput = {
-  comision?: string; // BigInt como string, opcional
+  comision?: string; // pesos texto opcional ("502801.45")
   ivaComision?: string;
   montoLM?: string;
   /**
@@ -502,6 +519,15 @@ export type GenerarBorradorInput = {
    * DEUDA: el Zod schema del endpoint POST /borrador aún no acepta este campo.
    */
   conceptosOperacionales?: { concepto: string; valor: string }[];
+  /**
+   * Generar con el tarifario vigente. El servidor responde 409 si ya no puede
+   * aplicar `tarifarioId` (el que el revisor vio), en vez de caer a la
+   * comisión por defecto.
+   */
+  usarTarifario?: boolean;
+  tarifarioId?: string;
+  /** Total del tarifario que vio el revisor (pesos texto del API): si al generar da otro, 409. */
+  totalTarifario?: string;
 };
 
 export async function generarBorrador(
@@ -515,6 +541,9 @@ export async function generarBorrador(
   // retenciones y conceptosOperacionales se incluyen cuando el backend los acepte
   if (input.retenciones) body.retenciones = input.retenciones;
   if (input.conceptosOperacionales) body.conceptosOperacionales = input.conceptosOperacionales;
+  if (input.usarTarifario) body.usarTarifario = true;
+  if (input.tarifarioId) body.tarifarioId = input.tarifarioId;
+  if (input.totalTarifario !== undefined) body.totalTarifario = input.totalTarifario;
 
   const response = await fetch(`/api/tramites/${tramiteId}/borrador`, {
     method: "POST",
@@ -617,7 +646,7 @@ export async function devolverBorrador(
 export type CrearLineaInput = {
   concepto: string;
   numSoporte?: string;
-  valor: string; // BigInt como string
+  valor: string; // pesos texto ("502801.45")
   observacion?: string;
   seccion?: SeccionLinea;
   facturaIds?: string[];
@@ -807,7 +836,10 @@ export async function sincronizarFacturaDesdeSiigo(
       isRecord(payload) && typeof payload.error === "string"
         ? payload.error
         : `Error sincronizando con SIIGO (${response.status}).`;
-    throw new FacturacionApiError(message, response.status);
+    // 409 SIIGO_TOTAL_DISTINTO (D-7): `error` ya trae los dos totales en pesos;
+    // el borrador sigue APROBADO y no se creó la factura.
+    const codigo = isRecord(payload) && typeof payload.codigo === "string" ? payload.codigo : undefined;
+    throw new FacturacionApiError(message, response.status, codigo);
   }
   if (!isRecord(payload)) {
     throw new FacturacionApiError("Respuesta de SIIGO no válida.");
@@ -948,6 +980,8 @@ export async function fetchCruceFacturas(borradorId: string): Promise<CruceFactu
       montoFacturado: String(r.montoFacturado ?? "0"),
       diferencia: String(r.diferencia ?? "0"),
       repercutible: r.repercutible !== false,
+      facturadoExcedeValor: r.facturadoExcedeValor === true,
+      noCobrableFacturada: r.noCobrableFacturada === true,
       esDesviacion: r.esDesviacion === true,
     }),
   );
@@ -1010,49 +1044,23 @@ export async function fetchValidacionesCruce(
 }
 
 // ─── Formateo ─────────────────────────────────────────────────────────────────
+//
+// Sin formateadores/parsers de dinero locales (diseño D.6): las pantallas leen
+// los campos de dinero de este archivo con `centavosDeTextoApi` (estricto, 2
+// decimales) y muestran con `formatoPesos`, ambos de `@/lib/dinero`. Los campos
+// que escribe la persona van por `CampoMoneda`, que ya emite pesos texto
+// canónico listo para mandar en el body de la API.
 
-/** Formatea BigInt serializado como COP: $45.226.000 */
-export function formatCOP(value: string): string {
-  try {
-    const n = BigInt(value);
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(n));
-  } catch {
-    return value;
-  }
-}
-
-/** Parsea entrada de texto a BigInt string limpio */
-export function parseBigIntInput(raw: string): string | null {
-  const cleaned = raw
-    .replace(/\./g, "")
-    .replace(/,/g, "")
-    .replace(/\$/g, "")
-    .replace(/COP/g, "")
-    .trim();
-  if (!cleaned || cleaned === "-") return null;
-  try {
-    const v = BigInt(cleaned);
-    if (v < 0n) return null;
-    return v.toString();
-  } catch {
-    return null;
-  }
-}
-
+/** Fecha-calendario (fechaFactura): día guardado a 00:00 UTC, se muestra en UTC. */
 export function formatDate(iso: string): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso) || iso;
+}
+
+/** Instante real (fechaAprobacion, enviadoASiigoEn): se muestra en el día de Bogotá. */
+export function formatDateTime(iso: string): string {
+  if (!iso) return "—";
+  return formatInstanteBogota(iso) || iso;
 }
 
 export const ESTADO_BORRADOR_LABEL: Record<EstadoBorrador, string> = {

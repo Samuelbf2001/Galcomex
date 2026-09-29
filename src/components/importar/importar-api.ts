@@ -4,8 +4,11 @@
  *     - file: .xlsm/.xls (≤ 25 MB)
  *     - clienteId: id del cliente existente
  *     - dryRun: "true" (previsualizar) | "false" (importar de verdad)
- * Todo el dinero llega como string desde el servidor.
+ * Todo el dinero llega como pesos en texto con 2 decimales ("41868042.00",
+ * fase centavos A.3): leer con `centavosDeTextoApi` y mostrar con `formatoPesos`.
  */
+
+import { centavosDeTextoApi, formatoPesos } from "@/lib/dinero";
 
 export type EstadoHoja = "IMPORTADO" | "OMITIDO" | "YA_EXISTIA" | "ERROR";
 
@@ -34,6 +37,20 @@ export interface ResultadoImport {
   omitidas: number;
   errores: number;
   hojas: ResultadoHoja[];
+}
+
+/**
+ * Monto de la reconciliación para mostrar ("41868042.00" → "$ 41.868.042").
+ * Si el servidor manda algo que no es dinero de la API, se muestra tal cual
+ * (visible, no se inventa un número).
+ */
+export function formatoMontoReconciliacion(texto: string): string {
+  if (!texto) return "—";
+  try {
+    return formatoPesos(centavosDeTextoApi(texto));
+  } catch {
+    return texto;
+  }
 }
 
 export const MAX_SIZE_BYTES_IMPORT = 25 * 1024 * 1024; // 25 MB

@@ -5,7 +5,6 @@ import { parsearAprobadores } from "../aprobadores";
 import {
   definicionPlantillaPse,
   extraerCodigo,
-  formatoPesos,
   leerPayloadBoton,
   mensajePlantillaPse,
   parametrosPlantillaPse,
@@ -13,6 +12,7 @@ import {
   textoRespuesta,
 } from "../catalogo";
 import type { KapsoConfig } from "../config";
+import { formatoPesos, pesos } from "@/lib/dinero";
 import { decidirEntrante, type SolicitudRef } from "../decidir";
 import { leerEventosKapso, type MensajeEntrante } from "../entrante";
 import { verificarFirmaKapso } from "../firma";
@@ -146,9 +146,10 @@ describe("catálogo", () => {
     expect(leerPayloadBoton(`gx_pse_no_puedo:${SOLICITUD_ID}:extra`)).toBeNull();
   });
 
-  it("formatoPesos con separador de miles", () => {
-    expect(formatoPesos(4233902n)).toBe("$4.233.902");
-    expect(formatoPesos(0n)).toBe("$0");
+  it("valor PSE en centavos con el formato del núcleo (centavos solo si hay)", () => {
+    expect(formatoPesos(pesos(4_233_902))).toBe("$\u00a04.233.902");
+    expect(formatoPesos(0n)).toBe("$\u00a00");
+    expect(formatoPesos(50_280_145n)).toBe("$\u00a0502.801,45");
   });
 
   it("parámetros de la plantilla limpios (sin vacíos ni saltos de línea)", () => {
@@ -164,11 +165,11 @@ describe("catálogo", () => {
       idioma: "es",
       solicitudId: SOLICITUD_ID,
       token: "abc123",
-      datos: { nombreAprobador: "María Camila", operador: "Karina", consecutivo: "DO.BAQ26-0142", beneficiario: "Almacarga", valor: 4233902n },
+      datos: { nombreAprobador: "María Camila", operador: "Karina", consecutivo: "DO.BAQ26-0142", beneficiario: "Almacarga", valor: pesos(4_233_902) },
     });
     expect(cuerpo.type).toBe("template");
     const [body, rapido, url] = cuerpo.template.components;
-    expect(body.parameters.map((p) => ("text" in p ? p.text : ""))).toEqual(["María Camila", "Karina", "DO.BAQ26-0142", "Almacarga", "$4.233.902"]);
+    expect(body.parameters.map((p) => ("text" in p ? p.text : ""))).toEqual(["María Camila", "Karina", "DO.BAQ26-0142", "Almacarga", "$\u00a04.233.902"]);
     expect(rapido).toEqual({ type: "button", sub_type: "quick_reply", index: "0", parameters: [{ type: "payload", payload: `gx_pse_no_puedo:${SOLICITUD_ID}` }] });
     expect(url).toEqual({ type: "button", sub_type: "url", index: "1", parameters: [{ type: "text", text: "abc123" }] });
   });

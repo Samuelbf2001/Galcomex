@@ -18,6 +18,7 @@ import {
   TipoCliente,
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { pesos } from "@/lib/dinero";
 
 import { prisma } from "@/lib/db/prisma";
 import { ENTIDAD_AUDIT_NOTIFICACION } from "@/lib/notificaciones/whatsapp";
@@ -159,8 +160,8 @@ async function crearBorradorEn(
   const tramite = await crearTramite(db);
   const borrador = await generarBorrador({
     tramiteId: tramite.id,
-    comision: 150_000n,
-    ivaComision: 28_500n,
+    comision: pesos(150_000),
+    ivaComision: pesos(28_500),
     usuarioId: db.adminId,
   });
   const borradorId = borrador!.id;

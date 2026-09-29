@@ -5,15 +5,46 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 
-const cop = z.coerce
-  .bigint()
-  .refine((v) => v >= 0n, { message: "El valor no puede ser negativo" });
+import {
+  centavosDeTexto,
+  dineroNoNegativoSchema,
+  textoCanonicoDeCentavos,
+  textoDeCentavos,
+  type Centavos,
+} from "@/lib/dinero";
 
-/** COP como string de dígitos (así viaja el JSON de mínimos). */
+/**
+ * Fase centavos (diseño A.2 / B.4):
+ *   - `valor` / `valorAdicional` llegan en PESOS (texto "100000" o "100000.50",
+ *     o number) y salen del esquema en CENTAVOS (bigint).
+ *   - `minimos` y `tramos[].valor` son JSON guardados en PESOS texto: se
+ *     validan con `centavosDeTexto` (máx. 2 decimales, sin separador de miles)
+ *     y salen en forma CANÓNICA ("300000", "300000.45"; nunca "300000.00"),
+ *     que es como se guardan.
+ */
+const cop = dineroNoNegativoSchema;
+
+/** PESOS texto para los JSON de mínimos y tramos → texto canónico. */
 const copString = z
   .string()
   .trim()
-  .regex(/^\d{1,15}$/, "Escribe el valor en pesos sin puntos ni decimales");
+  .transform((s, ctx): string => {
+    let c: Centavos;
+    try {
+      c = centavosDeTexto(s);
+    } catch {
+      ctx.addIssue({
+        code: "custom",
+        message: 'Escribe el valor en pesos, con punto decimal si lleva centavos y sin separador de miles (ej. "300000" o "300000.50")',
+      });
+      return z.NEVER;
+    }
+    if (c < 0n) {
+      ctx.addIssue({ code: "custom", message: "El valor no puede ser negativo" });
+      return z.NEVER;
+    }
+    return textoCanonicoDeCentavos(c);
+  });
 
 export const minimosTarifaSchema = z
   .object({
@@ -90,6 +121,7 @@ const tarifaItemBase = z.object({
   ...tarifaItemCampos,
   disparador: tarifaItemCampos.disparador.default(DisparadorTarifa.SIEMPRE),
   unidad: tarifaItemCampos.unidad.default(UnidadTarifa.TRAMITE),
+  // Zod 4: `.default()` devuelve el valor tal cual (tipo de SALIDA): 0n centavos.
   valor: tarifaItemCampos.valor.default(0n),
   aplicaIva: tarifaItemCampos.aplicaIva.default(true),
   orden: tarifaItemCampos.orden.default(0),
@@ -150,6 +182,25 @@ export function validarCoherenciaItem(item: TarifaItemInput, ctx: z.RefinementCt
 }
 
 export const tarifaItemSchema = tarifaItemBase.superRefine(validarCoherenciaItem);
+
+/**
+ * Ítem ya validado (valores en CENTAVOS) → forma de ENTRADA del esquema
+ * (PESOS texto), para volver a validarlo (plantillas, edición parcial). El
+ * esquema no acepta `bigint` de entrada: sería ambiguo pesos/centavos.
+ * Ida y vuelta exacta: `tarifaItemSchema.parse(entradaDeItemTarifa(it)).valor === it.valor`.
+ */
+export function entradaDeItemTarifa<T extends { valor?: Centavos; valorAdicional?: Centavos | null }>(
+  item: T,
+): Omit<T, "valor" | "valorAdicional"> & { valor?: string; valorAdicional?: string | null } {
+  const { valor, valorAdicional, ...resto } = item;
+  return {
+    ...resto,
+    ...(valor !== undefined ? { valor: textoDeCentavos(valor) } : {}),
+    ...(valorAdicional !== undefined
+      ? { valorAdicional: valorAdicional === null ? null : textoDeCentavos(valorAdicional) }
+      : {}),
+  };
+}
 // Sin defaults: en Zod 4 `.partial()` conserva los `.default()` y una edición
 // parcial reescribía disparador, unidad, valor, IVA y orden del ítem.
 export const tarifaItemUpdateSchema = z.object(tarifaItemCampos).partial();
@@ -202,6 +253,10 @@ export const tarifarioDuplicarSchema = z
     vigenteHasta: fechaSchema,
     /** Incremento porcentual (5.29 = IPC 5,29 %). Se redondea a `redondeoA`. */
     incrementoPct: z.number().min(-100).max(1_000).optional(),
+    /**
+     * Paso de redondeo en PESOS enteros (1.000 por defecto), NO centavos: el
+     * servicio lo convierte con `pesos(redondeoA)` antes de operar (A.2).
+     */
     redondeoA: z.number().int().min(1).max(1_000_000).default(1_000),
     /** Copiar a otra empresa (arrancar el tarifario de un cliente nuevo desde uno existente). */
     empresaDestinoId: z.string().min(1).optional(),

@@ -8,6 +8,9 @@
 import { describe, it, expect } from "vitest";
 import * as XLSX from "xlsx";
 
+import { centavosDeNumero, pesos } from "@/lib/dinero";
+import { $ } from "@/lib/dinero/test-utils";
+
 import {
   construirBorradorXlsx,
   construirRelacionFacturasXlsx,
@@ -26,18 +29,18 @@ const BORRADOR_DORADO: BorradorDto = {
     cliente: { nombre: "LITOPLAS S.A.S." },
   },
   lineasRevision: [
-    { concepto: "Declaración DIAN", numSoporte: "850100500", valor: 30_854_000n, orden: 1 },
-    { concepto: "Flete terrestre", numSoporte: "FT-001", valor: 2_011_341n, orden: 2 },
-    { concepto: "Gastos portuarios", numSoporte: null, valor: 1_000_000n, orden: 3 },
+    { concepto: "Declaración DIAN", numSoporte: "850100500", valor: pesos(30_854_000), orden: 1 },
+    { concepto: "Flete terrestre", numSoporte: "FT-001", valor: pesos(2_011_341), orden: 2 },
+    { concepto: "Gastos portuarios", numSoporte: null, valor: pesos(1_000_000), orden: 3 },
   ],
-  comision: 200_000n,
-  ivaComision: 76_000n,
-  impuesto4x1000: 180_904n,
-  costosBancarios: 17_550n,
-  totalFactura: 41_868_042n,
-  saldoAFavorCliente: 3_357_958n,
+  comision: pesos(200_000),
+  ivaComision: pesos(76_000),
+  impuesto4x1000: pesos(180_904),
+  costosBancarios: pesos(17_550),
+  totalFactura: pesos(41_868_042),
+  saldoAFavorCliente: pesos(3_357_958),
   saldoACargoCliente: 0n,
-  saldoAFavorLM: 875_944n,
+  saldoAFavorLM: pesos(875_944),
   saldoACargoLM: 0n,
 };
 
@@ -208,10 +211,10 @@ describe("construirRelacionFacturasXlsx", () => {
         id: "f1",
         numSiigo: "BAQ-18288",
         fecha: new Date("2026-03-15"),
-        totalFactura: 41_868_042n,
-        saldoAFavorCliente: 3_357_958n,
+        totalFactura: pesos(41_868_042),
+        saldoAFavorCliente: pesos(3_357_958),
         saldoACargoCliente: 0n,
-        saldoAFavorLM: 875_944n,
+        saldoAFavorLM: pesos(875_944),
         saldoACargoLM: 0n,
         fechaPagoCliente: null,
         fechaPagoLM: null,
@@ -221,18 +224,18 @@ describe("construirRelacionFacturasXlsx", () => {
         id: "f2",
         numSiigo: "BAQ-18300",
         fecha: new Date("2026-04-10"),
-        totalFactura: 10_000_000n,
+        totalFactura: pesos(10_000_000),
         saldoAFavorCliente: 0n,
-        saldoACargoCliente: 500_000n,
+        saldoACargoCliente: pesos(500_000),
         saldoAFavorLM: 0n,
-        saldoACargoLM: 200_000n,
+        saldoACargoLM: pesos(200_000),
         fechaPagoCliente: null,
         fechaPagoLM: null,
         borrador: { tramiteId: "t2", tramite: { consecutivo: "DO.BUN26-0027" } },
       },
     ],
-    cruceCliente: 500_000n - 3_357_958n, // < 0 → a favor del cliente
-    cruceLM: 200_000n - 875_944n,        // < 0 → a favor de LM
+    cruceCliente: pesos(500_000) - pesos(3_357_958), // < 0 → a favor del cliente
+    cruceLM: pesos(200_000) - pesos(875_944),        // < 0 → a favor de LM
     totalFacturas: 2,
   };
 
@@ -289,5 +292,33 @@ describe("construirRelacionFacturasXlsx", () => {
     // Fila 3 (índice 2): segunda factura, columna G (índice 6)
     const cell = ws[XLSX.utils.encode_cell({ r: 2, c: 6 })] as XLSX.CellObject;
     expect(cell.v).toBe("A cargo");
+  });
+});
+
+// ─── Fase centavos: pesos con 2 decimales, formato "#,##0.00" e ida y vuelta ──
+
+describe("siigo-xlsx — centavos", () => {
+  it("una línea de 502.801,45 se escribe 502801.45 con formato #,##0.00 y se lee de vuelta igual", () => {
+    const buf = construirBorradorXlsx({
+      ...BORRADOR_DORADO,
+      lineasRevision: [
+        { concepto: "ALMACENAJE ALMACARGA FACT. FE 11298", numSoporte: "FE-11298", valor: $("502.801,45"), orden: 1 },
+      ],
+      totalFactura: $("1.487.623,45"),
+      saldoAFavorCliente: 0n,
+      saldoACargoCliente: $("69.623,45"),
+    });
+    const ws = XLSX.read(buf, { type: "buffer", cellNF: true }).Sheets["Borrador"]!;
+    const celdas = Object.entries(ws)
+      .filter(([k]) => !k.startsWith("!"))
+      .map(([, c]) => c as XLSX.CellObject)
+      .filter((c) => c.t === "n");
+    const linea = celdas.find((c) => c.v === 502_801.45);
+    expect(linea).toBeDefined();
+    expect(linea!.z).toBe("#,##0.00");
+    // Ida y vuelta: todas las celdas de dinero vuelven a los mismos centavos.
+    expect(celdas.map((c) => centavosDeNumero(c.v as number))).toEqual(
+      expect.arrayContaining([$("502.801,45"), $("1.487.623,45"), $("69.623,45")]),
+    );
   });
 });

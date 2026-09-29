@@ -38,12 +38,31 @@ export type LineaPropuestaRow = {
   detalle: string;
 };
 
+/**
+ * Dónde se arregla un concepto que el tarifario no pudo calcular (espejo de
+ * `CausaPendiente` en `lib/tarifas/motor.ts`). Sin dato → `BASE_DO`.
+ */
+export type CausaPendienteRow = "BASE_DO" | "COSTO_PROVEEDOR" | "TARIFARIO";
+
+export type PendienteTarifaRow = {
+  concepto: string;
+  nombrePublico: string;
+  motivo: string;
+  causa?: CausaPendienteRow;
+};
+
+function causaPendiente(v: unknown): CausaPendienteRow {
+  return v === "COSTO_PROVEEDOR" || v === "TARIFARIO" ? v : "BASE_DO";
+}
+
 export type PropuestaTarifaRow = {
   tarifario: { id: string; nombre: string; version: number; alcance: string; vigenteDesde: string; vigenteHasta: string } | null;
   motivo: string | null;
+  /** La empresa tiene la función "Tarifario propio" (haya o no uno vigente). */
+  tarifarioPropio?: boolean;
   resultado: {
     lineas: LineaPropuestaRow[];
-    pendientes: { concepto: string; nombrePublico: string; motivo: string }[];
+    pendientes: PendienteTarifaRow[];
     manuales: { concepto: string; nombrePublico: string }[];
     total: string;
     totalConIva: string;
@@ -160,6 +179,7 @@ export async function fetchPropuestaTarifa(tramiteId: string, signal?: AbortSign
         }
       : null,
     motivo: strOrNull(p.motivo),
+    tarifarioPropio: p.tarifarioPropio === true,
     resultado: r
       ? {
           lineas: Array.isArray(r.lineas)
@@ -176,7 +196,12 @@ export async function fetchPropuestaTarifa(tramiteId: string, signal?: AbortSign
               }))
             : [],
           pendientes: Array.isArray(r.pendientes)
-            ? r.pendientes.filter(isRecord).map((x) => ({ concepto: str(x.concepto), nombrePublico: str(x.nombrePublico), motivo: str(x.motivo) }))
+            ? r.pendientes.filter(isRecord).map((x) => ({
+                concepto: str(x.concepto),
+                nombrePublico: str(x.nombrePublico),
+                motivo: str(x.motivo),
+                causa: causaPendiente(x.causa),
+              }))
             : [],
           manuales: Array.isArray(r.manuales)
             ? r.manuales.filter(isRecord).map((x) => ({ concepto: str(x.concepto), nombrePublico: str(x.nombrePublico) }))

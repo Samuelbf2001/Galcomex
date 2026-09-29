@@ -15,6 +15,16 @@ import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
+import { centavosDeTextoApi, formatoPesos } from "@/lib/dinero";
+
+/** Centavos de un pesos-texto de la API; 0n si viene vacío o dañado. */
+function centavosSeguro(raw: string): bigint {
+  try {
+    return centavosDeTextoApi(raw);
+  } catch {
+    return 0n;
+  }
+}
 
 /**
  * Sección «Cartera» de la ficha de empresa (revisión 22-sep): el cruce de
@@ -36,8 +46,8 @@ type FilaEstado = Pick<FacturaRow, "pendienteCobroCliente" | "pendienteDevolucio
 
 /** Estado de una factura ya neto de abonos y devoluciones (ledger de cartera). */
 export function estadoFacturaCartera(fila: FilaEstado): EstadoFacturaCartera {
-  if (BigInt(fila.pendienteCobroCliente || "0") > 0n) return "POR_COBRAR";
-  if (BigInt(fila.pendienteDevolucionCliente || "0") > 0n) return "POR_DEVOLVER";
+  if (centavosSeguro(fila.pendienteCobroCliente || "0") > 0n) return "POR_COBRAR";
+  if (centavosSeguro(fila.pendienteDevolucionCliente || "0") > 0n) return "POR_DEVOLVER";
   return "SALDADA";
 }
 
@@ -59,8 +69,8 @@ export type KpisCarteraEmpresa = { totalACargo: bigint; totalAFavor: bigint };
 export function calcularKpisCarteraEmpresa(facturas: FilaEstado[]): KpisCarteraEmpresa {
   return facturas.reduce<KpisCarteraEmpresa>(
     (acc, f) => ({
-      totalACargo: acc.totalACargo + BigInt(f.pendienteCobroCliente || "0"),
-      totalAFavor: acc.totalAFavor + BigInt(f.pendienteDevolucionCliente || "0"),
+      totalACargo: acc.totalACargo + centavosSeguro(f.pendienteCobroCliente || "0"),
+      totalAFavor: acc.totalAFavor + centavosSeguro(f.pendienteDevolucionCliente || "0"),
     }),
     { totalACargo: 0n, totalAFavor: 0n },
   );
@@ -68,25 +78,15 @@ export function calcularKpisCarteraEmpresa(facturas: FilaEstado[]): KpisCarteraE
 
 /** Frase del neto (`cruceCliente`): quién le debe a quién, con el monto incluido. */
 export function fraseNetoCartera(cruceCliente: string, nombreEmpresa: string): string {
-  let cruce: bigint;
-  try {
-    cruce = BigInt(cruceCliente);
-  } catch {
-    return "Saldada";
-  }
+  const cruce = centavosSeguro(cruceCliente);
   if (cruce === 0n) return "Saldada";
-  if (cruce < 0n) return `${nombreEmpresa} le debe a Galcomex ${formatCOP((-cruce).toString())}`;
-  return `Galcomex le debe a ${nombreEmpresa} ${formatCOP(cruce.toString())}`;
+  if (cruce < 0n) return `${nombreEmpresa} le debe a Galcomex ${formatoPesos(-cruce)}`;
+  return `Galcomex le debe a ${nombreEmpresa} ${formatoPesos(cruce)}`;
 }
 
 /** Color del texto del KPI "Neto" según el signo del cruce (ámbar/cian, nunca rojo/verde). */
 function colorNetoCartera(cruceCliente: string): string {
-  let cruce: bigint;
-  try {
-    cruce = BigInt(cruceCliente);
-  } catch {
-    return "text-slate-600";
-  }
+  const cruce = centavosSeguro(cruceCliente);
   if (cruce < 0n) return "text-amber-800";
   if (cruce > 0n) return "text-cyan-800";
   return "text-slate-600";
@@ -143,18 +143,13 @@ export function SeccionCarteraEmpresa({
 
   useEffect(() => {
     if (loadState !== "ready") return;
-    let cruce: bigint;
-    try {
-      cruce = BigInt(cruceCliente);
-    } catch {
-      return;
-    }
+    const cruce = centavosSeguro(cruceCliente);
     // La suma de filas (a favor − a cargo) tiene que dar lo mismo que el
     // cruce que manda el API: es la misma fórmula. Si no cuadra, manda el
     // API (puede estar mirando algo distinto) y se deja constancia aquí.
     if (kpis.totalAFavor - kpis.totalACargo !== cruce) {
       console.warn(
-        `[SeccionCarteraEmpresa] La suma de facturas (${(kpis.totalAFavor - kpis.totalACargo).toString()}) no coincide con cruceCliente (${cruce.toString()}) para el cliente ${clienteId}.`,
+        `[SeccionCarteraEmpresa] La suma de facturas (${formatoPesos(kpis.totalAFavor - kpis.totalACargo)}) no coincide con cruceCliente (${formatoPesos(cruce)}) para el cliente ${clienteId}.`,
       );
     }
   }, [loadState, kpis, cruceCliente, clienteId]);
@@ -215,7 +210,7 @@ export function SeccionCarteraEmpresa({
                 Saldo a cargo del cliente
               </p>
               <p className="mt-0.5 font-mono text-lg font-bold text-amber-800">
-                {formatCOP(kpis.totalACargo.toString())}
+                {formatoPesos(kpis.totalACargo)}
               </p>
               <p className="mt-0.5 text-xs text-slate-500">le debe a Galcomex</p>
             </div>
@@ -224,7 +219,7 @@ export function SeccionCarteraEmpresa({
                 Saldo a favor del cliente
               </p>
               <p className="mt-0.5 font-mono text-lg font-bold text-cyan-800">
-                {formatCOP(kpis.totalAFavor.toString())}
+                {formatoPesos(kpis.totalAFavor)}
               </p>
               <p className="mt-0.5 text-xs text-slate-500">Galcomex le debe</p>
             </div>
@@ -258,9 +253,9 @@ export function SeccionCarteraEmpresa({
               <tbody>
                 {visibles.map((f) => {
                   const estado = estadoFacturaCartera(f);
-                  const devoluciones = BigInt(f.devolucionesCliente || "0");
-                  const aCargo = BigInt(f.pendienteCobroCliente || "0");
-                  const aFavor = BigInt(f.pendienteDevolucionCliente || "0");
+                  const devoluciones = centavosSeguro(f.devolucionesCliente || "0");
+                  const aCargo = centavosSeguro(f.pendienteCobroCliente || "0");
+                  const aFavor = centavosSeguro(f.pendienteDevolucionCliente || "0");
 
                   return (
                     <tr key={f.id} className="border-b border-slate-100 last:border-b-0">
@@ -285,15 +280,15 @@ export function SeccionCarteraEmpresa({
                         {formatCOP(f.abonosCliente || "0")}
                         {devoluciones > 0n ? (
                           <span className="mt-0.5 block text-xs font-normal text-slate-500">
-                            Devuelto {formatCOP(devoluciones.toString())}
+                            Devuelto {formatoPesos(devoluciones)}
                           </span>
                         ) : null}
                       </td>
                       <td className="px-4 py-2.5 text-right font-mono text-amber-800">
-                        {aCargo > 0n ? formatCOP(aCargo.toString()) : "—"}
+                        {aCargo > 0n ? formatoPesos(aCargo) : "—"}
                       </td>
                       <td className="px-4 py-2.5 text-right font-mono text-cyan-800">
-                        {aFavor > 0n ? formatCOP(aFavor.toString()) : "—"}
+                        {aFavor > 0n ? formatoPesos(aFavor) : "—"}
                       </td>
                       <td className="px-4 py-2.5">
                         <span

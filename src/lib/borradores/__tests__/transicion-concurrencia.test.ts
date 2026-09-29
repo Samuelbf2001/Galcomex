@@ -11,6 +11,7 @@
  */
 import { EstadoBorrador } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { pesos } from "@/lib/dinero";
 
 const h = vi.hoisted(() => {
   const db = { estado: "EN_REVISION" as string, aprobadoPorId: null as string | null };
@@ -26,15 +27,15 @@ const h = vi.hoisted(() => {
       id: "bor-1",
       tramiteId: "tra-1",
       estado: db.estado,
-      comision: 150_000n,
-      ivaComision: 28_500n,
+      comision: pesos(150_000),
+      ivaComision: pesos(28_500),
       impuesto4x1000: 0n,
       costosBancarios: 0n,
       totalAnticipo: 0n,
       totalPagos: 0n,
-      totalFactura: 178_500n,
+      totalFactura: pesos(178_500),
       saldoAFavorCliente: 0n,
-      saldoACargoCliente: 178_500n,
+      saldoACargoCliente: pesos(178_500),
       saldoAFavorLM: 0n,
       saldoACargoLM: 0n,
       retenciones: 0n,

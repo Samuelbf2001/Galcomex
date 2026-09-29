@@ -17,6 +17,7 @@
 import { CanalPago, TipoRecaudo, type MatrizPago, type MatrizRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 
 export class MatrizRecaudoNoEncontradaError extends Error {
   public readonly status = 404;
@@ -63,17 +64,18 @@ export async function actualizarCostoRecaudo(
 
     const actualizado = await tx.matrizRecaudo.update({
       where: { tipoRecaudo },
-      data: { costoFijo },
+      data: { costoFijoCentavos: costoFijo },
     });
 
+    // AuditLog en pesos texto canónico (misma forma que la historia: "3900").
     await tx.auditLog.create({
       data: {
         entidad: "MatrizRecaudo",
         entidadId: actual.id,
         accion: "UPDATE",
         usuarioId,
-        antes: { tipoRecaudo, costoFijo: actual.costoFijo.toString() },
-        despues: { tipoRecaudo, costoFijo: actualizado.costoFijo.toString() },
+        antes: normalizeSerializable({ tipoRecaudo, costoFijo: actual.costoFijoCentavos }),
+        despues: normalizeSerializable({ tipoRecaudo, costoFijo: actualizado.costoFijoCentavos }),
       },
     });
 
@@ -102,17 +104,18 @@ export async function actualizarCostoPago(
 
     const actualizado = await tx.matrizPago.update({
       where: { canalPago },
-      data: { costoFijo },
+      data: { costoFijoCentavos: costoFijo },
     });
 
+    // AuditLog en pesos texto canónico (misma forma que la historia: "3900").
     await tx.auditLog.create({
       data: {
         entidad: "MatrizPago",
         entidadId: actual.id,
         accion: "UPDATE",
         usuarioId,
-        antes: { canalPago, costoFijo: actual.costoFijo.toString() },
-        despues: { canalPago, costoFijo: actualizado.costoFijo.toString() },
+        antes: normalizeSerializable({ canalPago, costoFijo: actual.costoFijoCentavos }),
+        despues: normalizeSerializable({ canalPago, costoFijo: actualizado.costoFijoCentavos }),
       },
     });
 

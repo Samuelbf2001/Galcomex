@@ -4,8 +4,9 @@ import { Calculator, Loader2, RotateCcw, Save } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { fetchCapacidades } from "@/components/clientes/capacidades-api";
-import { fetchEventosCatalogo, formatCOP, type EventoCatalogoRow } from "@/components/clientes/tarifas-api";
+import { fetchEventosCatalogo, type EventoCatalogoRow } from "@/components/clientes/tarifas-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { centavosDeTexto, centavosDeTextoApi, formatoPesos, textoCanonicoDeCentavos } from "@/lib/dinero";
 import {
   fetchEventosTramite,
   fetchPropuestaTarifa,
@@ -16,7 +17,7 @@ import {
   type PropuestaTarifaRow,
   type TipoCarga,
 } from "@/components/tramites/eventos-api";
-import { CampoMoneda } from "@/components/ui/campo-moneda";
+import { CampoMoneda, useErroresMoneda } from "@/components/ui/campo-moneda";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 
@@ -138,6 +139,9 @@ export function SeccionEventosTramite({
   const [form, setForm] = useState<FormAtributos | null>(null);
   const [guardandoAtributos, setGuardandoAtributos] = useState(false);
   const [guardandoEvento, setGuardandoEvento] = useState<string | null>(null);
+  // Un CIF u OC mal escrito llega como "" (igual que vacío): sin esto se
+  // mandaba null y se BORRABA el valor guardado, con aviso de éxito.
+  const erroresMoneda = useErroresMoneda();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -187,10 +191,17 @@ export function SeccionEventosTramite({
 
   async function guardarAtributos() {
     if (!form || guardandoAtributos) return;
+    if (erroresMoneda.primerError) {
+      toast({ title: "No se guardó: corrige el monto", description: erroresMoneda.primerError, variant: "error" });
+      return;
+    }
     setGuardandoAtributos(true);
     try {
       await guardarAtributosTramite(tramiteId, {
-        valorCif: form.valorCif.trim() === "" ? null : form.valorCif.replace(/\D/g, ""),
+        // `form.valorCif`/`form.ordenCompraValor` ya vienen de `CampoMoneda` en
+        // pesos texto canónico ("300000000.45"): NO quitar el punto decimal con
+        // un replace (multiplicaría por 100 en silencio, R1).
+        valorCif: form.valorCif.trim() === "" ? null : textoCanonicoDeCentavos(centavosDeTexto(form.valorCif)),
         tipoCarga: form.tipoCarga === "" ? null : form.tipoCarga,
         numContenedores: enteroONull(form.numContenedores),
         numDeclaraciones: enteroONull(form.numDeclaraciones),
@@ -199,7 +210,10 @@ export function SeccionEventosTramite({
         ...(aplica.oc
           ? {
               ordenCompraNumero: form.ordenCompraNumero.trim() === "" ? null : form.ordenCompraNumero.trim(),
-              ordenCompraValor: form.ordenCompraValor.trim() === "" ? null : form.ordenCompraValor.replace(/\D/g, ""),
+              ordenCompraValor:
+                form.ordenCompraValor.trim() === ""
+                  ? null
+                  : textoCanonicoDeCentavos(centavosDeTexto(form.ordenCompraValor)),
             }
           : {}),
       });
@@ -279,7 +293,7 @@ export function SeccionEventosTramite({
                   <>
                     <label className="block space-y-1">
                       <span className={LABEL}>Valor CIF (COP)</span>
-                      <CampoMoneda value={form.valorCif} onValueChange={(digitos) => setForm({ ...form, valorCif: digitos })} disabled={!puedeEditar} className={INPUT} placeholder="300000000" />
+                      <CampoMoneda value={form.valorCif} onValueChange={(digitos, detalle) => { setForm({ ...form, valorCif: digitos }); erroresMoneda.registrar("Valor CIF", detalle); }} disabled={!puedeEditar} className={INPUT} placeholder="300000000" />
                     </label>
                     <label className="block space-y-1">
                       <span className={LABEL}>Tipo de carga</span>
@@ -324,7 +338,7 @@ export function SeccionEventosTramite({
                     </label>
                     <label className="block space-y-1">
                       <span className={LABEL}>Valor de la OC (COP, sin IVA)</span>
-                      <CampoMoneda value={form.ordenCompraValor} onValueChange={(digitos) => setForm({ ...form, ordenCompraValor: digitos })} disabled={!puedeEditar} className={INPUT} placeholder="4500000" />
+                      <CampoMoneda value={form.ordenCompraValor} onValueChange={(digitos, detalle) => { setForm({ ...form, ordenCompraValor: digitos }); erroresMoneda.registrar("Valor de la OC", detalle); }} disabled={!puedeEditar} className={INPUT} placeholder="4500000" />
                     </label>
                     <p className="col-span-2 text-xs text-slate-500">El cliente devuelve la OC por el valor de la solicitud de fondos. En la revisión de la factura se contrasta y el número va en la descripción.</p>
                   </>
@@ -429,14 +443,14 @@ export function SeccionEventosTramite({
                                 {!l.aplicaIva ? <span className="ml-2 text-[10px] uppercase text-slate-400">sin IVA</span> : null}
                               </td>
                               <td className="px-3 py-2 text-xs text-slate-500">{l.detalle}</td>
-                              <td className="px-3 py-2 text-right font-mono text-slate-900">{formatCOP(l.valor)}</td>
+                              <td className="px-3 py-2 text-right font-mono text-slate-900">{formatoPesos(centavosDeTextoApi(l.valor))}</td>
                             </tr>
                           ))}
                           <tr className="border-t border-slate-200 bg-slate-50">
                             <td className="px-3 py-2 text-sm font-semibold text-slate-900" colSpan={2}>
                               Total conceptos (antes de IVA)
                             </td>
-                            <td className="px-3 py-2 text-right font-mono font-semibold text-slate-900">{formatCOP(resultado.total)}</td>
+                            <td className="px-3 py-2 text-right font-mono font-semibold text-slate-900">{formatoPesos(centavosDeTextoApi(resultado.total))}</td>
                           </tr>
                         </tbody>
                       </table>

@@ -86,6 +86,32 @@ Para descubrir los IDs numéricos: `scripts/siigo-config-lookup.ts`.
 - `src/components/facturacion/revisor-borrador.tsx` — orquestación en la UI.
 - `src/components/configuracion/` — UI de parámetros y productos Siigo.
 
+## Dinero con centavos (fase CENTAVOS, 2026-09)
+
+- **`price` y `payments[].value` viajan en pesos con hasta 2 decimales**
+  (`502801.45`), armados con `numeroDeCentavos` desde los centavos del borrador.
+- **IVA y ReteIVA al centavo (D-1).** Siigo liquida el IVA de cada ítem gravado y
+  la ReteIVA al centavo, mitad hacia arriba (181 facturas de 2026: 16 IVA y 107
+  ReteIVA con centavos, 0 al peso). Ejemplos: FV-2-18702, ítem 6.632.007 → IVA
+  1.260.081,33; FV-2-18772, IVA 208.050 → ReteIVA 31.207,50. El motor
+  (`calculations/factura-conceptos.ts`: `PRECISION_IVA`, `PRECISION_RETEIVA`) y la
+  comprobación de envío (`PRECISION_IVA_SIIGO`) usan la MISMA constante.
+- **4x1000 al peso** (mitad arriba): es un ítem que escribimos nosotros (49/49
+  facturas 2026 al peso).
+- **Comprobación que corta el envío** (`verificarCuadreSiigo`): sobre el payload
+  exacto, Σ ítems + IVA por ítem − retenciones que viajan = `payments.value` al
+  centavo. Si no cuadra, NO se hace el POST y el usuario ve los dos valores. En el
+  formato COMISION las retenciones no viajan: un borrador COMISION con retenciones
+  > 0 se bloquea antes de enviar.
+- **Sincronización (D-7):** si el total (o, en CONCEPTOS_IVA, el IVA/retenciones)
+  que devolvió Siigo no es igual al centavo al del borrador, la ruta responde
+  **409 `SIIGO_TOTAL_DISTINTO`** con `totalSiigo`, `totalBorrador` y
+  `diferencias[]`; no se crea la Factura y el borrador sigue APROBADO. La pantalla
+  lo muestra con el título «SIIGO liquidó un total distinto al del borrador».
+- **Primer envío y primera sincronización reales:** con Camila mirando el
+  borrador DRAFT en Siigo (la forma del GET de Siigo no se probó contra la API
+  viva).
+
 ## Limitaciones conocidas
 1. El envío no distingue PROPIO/SOCIO_LM (manda las líneas tal cual).
 2. El estampado/validación final es manual en el portal Siigo (`stamp.send=false`); no hay webhook

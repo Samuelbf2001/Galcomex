@@ -23,8 +23,22 @@
  *
  * Si falta un dato de la base de cálculo (CIF, número de contenedores…) el ítem
  * NO se inventa con cero: se devuelve en `pendientes` con el motivo, para que
- * la UI lo pida antes de facturar. Tolerancia cero: todo es BigInt en COP.
+ * la UI lo pida antes de facturar. Tolerancia cero: todo es BigInt en
+ * CENTAVOS de COP (fase centavos, diseño A.2).
+ *
+ * Unidades (fase centavos):
+ *   - `valor`, `valorAdicional`, costos, CIF y todo resultado = centavos (bigint).
+ *   - `minimos` y `tramos[].valor` son JSON guardados en PESOS texto (canónico
+ *     "300000" / "300000.45"; se tolera el heredado y ".00"). Se leen SOLO con
+ *     `centavosDeTexto` del núcleo: un valor ilegible NO se ignora en silencio,
+ *     deja el ítem en `pendientes` con el motivo.
+ *   - PORCENTAJE_MIN se lleva AL PESO con MITAD_ARRIBA (diseño A.6), vía
+ *     `porcentajeDe` del núcleo. El IVA de la propuesta (`totalConIva`) va
+ *     por ítem AL CENTAVO, igual que la factura (D-1, `ivaDeItem`).
  */
+
+import { ivaDeItem } from "@/lib/calculations/factura-conceptos";
+import { centavosDeTexto, enteroNoDinero, formatoPesos, porcentajeDe, type Centavos } from "@/lib/dinero";
 
 export type TipoCalculoTarifa =
   | "FIJO"
@@ -46,12 +60,13 @@ export type UnidadTarifa =
 
 export type TipoCarga = "SUELTA" | "CONTENEDOR_20" | "CONTENEDOR_40";
 
-/** Mínimos de un ítem PORCENTAJE_MIN, en COP string (JSON en BD). */
+/** Mínimos de un ítem PORCENTAJE_MIN, en PESOS texto (JSON en BD: "498000" o "498000.45"). */
 export type MinimosTarifa = Partial<Record<TipoCarga, string>>;
 
 /**
  * Tramo de un ítem POR_TRAMO: hasta `hasta` unidades (inclusive) el precio
- * unitario es `valor`; `hasta = null` es "en adelante". COP string (JSON en BD).
+ * unitario es `valor`; `hasta = null` es "en adelante". `valor` en PESOS texto
+ * (JSON en BD: "300000" o "300000.45"); se lee con `centavosDeTexto`.
  */
 export type TramoTarifa = { hasta: number | null; valor: string };
 
@@ -108,10 +123,21 @@ export interface LineaPropuesta {
   detalle: string;
 }
 
+/**
+ * Por qué no se pudo calcular un ítem, para mandar al revisor al sitio donde
+ * se arregla (modal "Generar borrador", hallazgo 4 del 24-sep):
+ * - `BASE_DO`: falta un dato del trámite (CIF, contenedores, tipo de carga…).
+ * - `COSTO_PROVEEDOR`: el ítem espeja un costo y no hay pago ni factura de
+ *   proveedor que lo contenga.
+ * - `TARIFARIO`: el ítem está mal configurado (sin porcentaje, sin tramos…).
+ */
+export type CausaPendiente = "BASE_DO" | "COSTO_PROVEEDOR" | "TARIFARIO";
+
 export interface ItemPendiente {
   concepto: string;
   nombrePublico: string;
   motivo: string;
+  causa: CausaPendiente;
 }
 
 export interface ResultadoTarifa {
@@ -151,14 +177,32 @@ function unidades(unidad: UnidadTarifa, cantidad: number): string {
   return cantidad === 1 ? ETIQUETA_UNIDAD[unidad] : PLURAL_UNIDAD[unidad];
 }
 
-function formatoCOP(valor: bigint): string {
-  return valor.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+/** Monto para el texto de `detalle` (sin "$"; centavos solo si existen): "10.000", "502.801,45". */
+function formatoCOP(valor: Centavos): string {
+  return formatoPesos(valor, { simbolo: false });
 }
 
-/** Redondeo half-up de `cif × bps / 10.000` en enteros. */
-export function porcentajeSobre(base: bigint, bps: number): bigint {
+/**
+ * `base × bps / 10.000` AL PESO, mitad hacia arriba (diseño A.6: los conceptos
+ * propios de Galcomex se cobran en pesos enteros). Base y resultado en centavos.
+ */
+export function porcentajeSobre(base: Centavos, bps: number): Centavos {
   if (bps <= 0) return 0n;
-  return (base * BigInt(bps) + 5_000n) / 10_000n;
+  return porcentajeDe(base, enteroNoDinero(bps), 10_000n, { precision: "PESO" });
+}
+
+/**
+ * Lee un monto guardado en PESOS texto (mínimos, tramos) → centavos.
+ * `null` si no es legible (nunca se inventa un valor: quien llama decide si
+ * el ítem queda pendiente o si no hay ejemplo).
+ */
+export function centavosDeTextoTarifa(raw: unknown): Centavos | null {
+  if (typeof raw !== "string") return null;
+  try {
+    return centavosDeTexto(raw.trim());
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -197,14 +241,20 @@ function motivoFaltante(unidad: UnidadTarifa): string {
   }
 }
 
-function minimoDe(minimos: MinimosTarifa | null, tipoCarga: TipoCarga): bigint | null {
-  const raw = minimos?.[tipoCarga];
-  if (raw === undefined || raw === null || raw === "") return null;
-  try {
-    return BigInt(raw);
-  } catch {
-    return null;
-  }
+/**
+ * Mínimo del tipo de carga, en centavos. Sin mínimo definido → `{ ok: true, valor: null }`.
+ * Mínimo ilegible (p. ej. "498.000,5") → `{ ok: false }`: antes se ignoraba en
+ * silencio y la tarifa salía sin mínimo; ahora deja el ítem pendiente.
+ */
+export function minimoDe(
+  minimos: MinimosTarifa | null,
+  tipoCarga: TipoCarga,
+): { ok: true; valor: Centavos | null } | { ok: false; raw: string } {
+  const raw: unknown = minimos?.[tipoCarga];
+  if (raw === undefined || raw === null || raw === "") return { ok: true, valor: null };
+  const valor = centavosDeTextoTarifa(raw);
+  if (valor === null || valor < 0n) return { ok: false, raw: typeof raw === "string" ? raw : JSON.stringify(raw) };
+  return { ok: true, valor };
 }
 
 /**
@@ -224,12 +274,10 @@ export function tramoPara(tramos: TramoTarifa[], n: number): TramoTarifa | null 
   return null;
 }
 
-function valorTramo(tramo: TramoTarifa): bigint | null {
-  try {
-    return /^\d+$/.test(tramo.valor) ? BigInt(tramo.valor) : null;
-  } catch {
-    return null;
-  }
+/** Precio unitario del tramo en centavos; `null` si el texto no es legible o es negativo. */
+export function valorTramo(tramo: TramoTarifa): Centavos | null {
+  const valor = centavosDeTextoTarifa(tramo.valor);
+  return valor === null || valor < 0n ? null : valor;
 }
 
 function etiquetaTramo(tramo: TramoTarifa, tramos: TramoTarifa[], unidad: UnidadTarifa): string {
@@ -249,7 +297,7 @@ function buscarCosto(costos: CostoEspejable[], conceptoCosto: string): CostoEspe
 
 type Calculo =
   | { ok: true; cantidad: number; valorUnitario: bigint; valor: bigint; detalle: string }
-  | { ok: false; motivo: string };
+  | { ok: false; motivo: string; causa: CausaPendiente };
 
 function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadEvento: number | null): Calculo {
   switch (item.tipoCalculo) {
@@ -259,33 +307,33 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
         ok: true,
         cantidad,
         valorUnitario: item.valor,
-        valor: item.valor * BigInt(cantidad),
+        valor: item.valor * enteroNoDinero(cantidad),
         detalle: cantidad === 1 ? "Valor fijo" : `Valor fijo × ${cantidad}`,
       };
     }
 
     case "POR_UNIDAD": {
       const cantidad = cantidadEvento ?? cantidadDeUnidad(item.unidad, ctx);
-      if (cantidad === null) return { ok: false, motivo: motivoFaltante(item.unidad) };
+      if (cantidad === null) return { ok: false, motivo: motivoFaltante(item.unidad), causa: "BASE_DO" };
       return {
         ok: true,
         cantidad,
         valorUnitario: item.valor,
-        valor: item.valor * BigInt(cantidad),
+        valor: item.valor * enteroNoDinero(cantidad),
         detalle: `${formatoCOP(item.valor)} × ${cantidad} ${unidades(item.unidad, cantidad)}`,
       };
     }
 
     case "PORCENTAJE_MIN": {
-      if (ctx.valorCif === null) return { ok: false, motivo: "Falta el valor CIF (valor en aduana) del trámite" };
-      if (item.porcentajeBps === null) return { ok: false, motivo: "El ítem no tiene porcentaje configurado" };
+      if (ctx.valorCif === null) return { ok: false, motivo: "Falta el valor CIF (valor en aduana) del trámite", causa: "BASE_DO" };
+      if (item.porcentajeBps === null) return { ok: false, motivo: "El ítem no tiene porcentaje configurado", causa: "TARIFARIO" };
       const calculado = porcentajeSobre(ctx.valorCif, item.porcentajeBps);
       const pct = (item.porcentajeBps / 100).toFixed(2).replace(".", ",");
 
       if (ctx.tipoCarga === null) {
         // Sin tipo de carga no se puede aplicar mínimo: si hay mínimos definidos, se pide el dato.
         if (item.minimos && Object.keys(item.minimos).length > 0) {
-          return { ok: false, motivo: "Falta el tipo de carga para aplicar el mínimo" };
+          return { ok: false, motivo: "Falta el tipo de carga para aplicar el mínimo", causa: "BASE_DO" };
         }
         return {
           ok: true,
@@ -296,7 +344,15 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
         };
       }
 
-      const minimo = minimoDe(item.minimos, ctx.tipoCarga);
+      const lectura = minimoDe(item.minimos, ctx.tipoCarga);
+      if (!lectura.ok) {
+        return {
+          ok: false,
+          motivo: `El mínimo de ${ETIQUETA_CARGA[ctx.tipoCarga]} tiene un valor ilegible ("${lectura.raw}"); corrige el tarifario`,
+          causa: "TARIFARIO",
+        };
+      }
+      const minimo = lectura.valor;
       if (minimo !== null && calculado < minimo) {
         return {
           ok: true,
@@ -317,10 +373,10 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
 
     case "PRIMERO_MAS_ADICIONAL": {
       const n = cantidadEvento ?? cantidadDeUnidad(item.unidad, ctx);
-      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad) };
+      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad), causa: "BASE_DO" };
       if (n <= 0) return { ok: true, cantidad: 0, valorUnitario: item.valor, valor: 0n, detalle: "Sin unidades" };
       const adicional = item.valorAdicional ?? item.valor;
-      const valor = item.valor + adicional * BigInt(n - 1);
+      const valor = item.valor + adicional * enteroNoDinero(n - 1);
       return {
         ok: true,
         cantidad: n,
@@ -334,9 +390,9 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
     }
 
     case "ESPEJO_DE_COSTO": {
-      if (!item.conceptoCosto) return { ok: false, motivo: "El ítem no dice qué costo espeja" };
+      if (!item.conceptoCosto) return { ok: false, motivo: "El ítem no dice qué costo espeja", causa: "TARIFARIO" };
       const costo = buscarCosto(ctx.costos, item.conceptoCosto);
-      if (!costo) return { ok: false, motivo: `No hay un pago o factura de proveedor que contenga "${item.conceptoCosto}"` };
+      if (!costo) return { ok: false, motivo: `No hay un pago o factura de proveedor que contenga "${item.conceptoCosto}"`, causa: "COSTO_PROVEEDOR" };
       return {
         ok: true,
         cantidad: 1,
@@ -347,19 +403,21 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
     }
 
     case "POR_TRAMO": {
-      if (!item.tramos || item.tramos.length === 0) return { ok: false, motivo: "El ítem no tiene tramos configurados" };
+      if (!item.tramos || item.tramos.length === 0) return { ok: false, motivo: "El ítem no tiene tramos configurados", causa: "TARIFARIO" };
       const n = cantidadEvento ?? cantidadDeUnidad(item.unidad, ctx);
-      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad) };
+      if (n === null) return { ok: false, motivo: motivoFaltante(item.unidad), causa: "BASE_DO" };
       if (n <= 0) return { ok: true, cantidad: 0, valorUnitario: 0n, valor: 0n, detalle: "Sin unidades" };
       const tramo = tramoPara(item.tramos, n);
-      if (!tramo) return { ok: false, motivo: `Ningún tramo cubre ${n} ${unidades(item.unidad, n)}` };
+      if (!tramo) return { ok: false, motivo: `Ningún tramo cubre ${n} ${unidades(item.unidad, n)}`, causa: "TARIFARIO" };
       const unitario = valorTramo(tramo);
-      if (unitario === null) return { ok: false, motivo: "Un tramo tiene un valor que no es un entero en COP" };
+      if (unitario === null) {
+        return { ok: false, motivo: `Un tramo tiene un valor ilegible ("${tramo.valor}"); corrige el tarifario`, causa: "TARIFARIO" };
+      }
       return {
         ok: true,
         cantidad: n,
         valorUnitario: unitario,
-        valor: unitario * BigInt(n),
+        valor: unitario * enteroNoDinero(n),
         detalle: `${formatoCOP(unitario)} × ${n} ${unidades(item.unidad, n)} (tramo ${etiquetaTramo(tramo, item.tramos, item.unidad)})`,
       };
     }
@@ -370,8 +428,10 @@ export interface EjemploTramo {
   /** "1", "11–20", "21 o más" — mismo formato que usa la tabla de ítems. */
   rango: string;
   cantidad: number;
-  valorUnitario: bigint;
-  total: bigint;
+  /** Centavos. */
+  valorUnitario: Centavos;
+  /** Centavos. */
+  total: Centavos;
 }
 
 /**
@@ -380,9 +440,15 @@ export interface EjemploTramo {
  * MISMA selección de tramo que usa `calcularLineasTarifa` — así que si el
  * motor cambia de criterio el ejemplo cambia con él. No agrega ni modifica
  * ningún cálculo existente.
+ *
+ * Contrato congelado (fase centavos, A.9 / hito P3-a): `tramos[].valor` es
+ * PESOS texto (canónico "250000" / "250000.50" o heredado), leído con
+ * `centavosDeTexto`; `valorUnitario` y `total` salen en CENTAVOS. Valor
+ * ilegible (el usuario aún está escribiendo) → `null` (sin ejemplo).
+ * Se ejecuta en el navegador (`clientes/seccion-tarifario.tsx`).
  */
 export function ejemploTramo(tramos: TramoTarifa[], n: number): EjemploTramo | null {
-  if (n <= 0 || tramos.length === 0) return null;
+  if (!Number.isSafeInteger(n) || n <= 0 || tramos.length === 0) return null;
   const tramo = tramoPara(tramos, n);
   if (!tramo) return null;
   const valorUnitario = valorTramo(tramo);
@@ -398,7 +464,7 @@ export function ejemploTramo(tramos: TramoTarifa[], n: number): EjemploTramo | n
   const rango =
     tramo.hasta === null ? `${anterior + 1} o más` : tramo.hasta === 1 ? "1" : `${anterior + 1}–${tramo.hasta}`;
 
-  return { rango, cantidad: n, valorUnitario, total: valorUnitario * BigInt(n) };
+  return { rango, cantidad: n, valorUnitario, total: valorUnitario * enteroNoDinero(n) };
 }
 
 /**
@@ -430,7 +496,7 @@ export function calcularLineasTarifa(
 
     const calculo = calcularItem(item, ctx, cantidadEvento);
     if (!calculo.ok) {
-      pendientes.push({ concepto: item.concepto, nombrePublico: item.nombrePublico, motivo: calculo.motivo });
+      pendientes.push({ concepto: item.concepto, nombrePublico: item.nombrePublico, motivo: calculo.motivo, causa: calculo.causa });
       continue;
     }
     if (calculo.valor <= 0n) continue;
@@ -449,8 +515,9 @@ export function calcularLineasTarifa(
   }
 
   const total = lineas.reduce((acc, l) => acc + l.valor, 0n);
-  const baseIva = lineas.filter((l) => l.aplicaIva).reduce((acc, l) => acc + l.valor, 0n);
-  const totalConIva = total + porcentajeSobre(baseIva, 1_900);
+  // IVA 19 % por ítem, al centavo (D-1: igual que la factura CONCEPTOS_IVA y Siigo).
+  const iva = lineas.filter((l) => l.aplicaIva).reduce((acc, l) => acc + ivaDeItem(l.valor, 19n), 0n);
+  const totalConIva = total + iva;
 
   return { lineas, pendientes, manuales, total, totalConIva };
 }

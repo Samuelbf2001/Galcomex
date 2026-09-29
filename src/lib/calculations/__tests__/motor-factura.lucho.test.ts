@@ -17,13 +17,17 @@
  * Decisión de redondeo del 4x1000 de FACTURA (base ingresos terceros):
  *   base = 32.521.912 × 4 / 1000 = 130.087,648
  *   El Excel muestra 130.088, lo que corresponde a round-half-up.
- *   Fórmula BigInt: (base * 4n + 500n) / 1000n   [round-half-up]
+ *   Fórmula (fase centavos): impuesto4x1000SobreTerceros = porcentajeDe(base, 400n,
+ *   100_000n, { precision: "PESO" }) → al PESO, mitad arriba (al centavo daría
+ *   130.087,65, que NO es lo que liquida la contabilidad; diseño A.6).
  *   Justificación: el Excel de Lucho usa redondeo aritmético estándar, no truncado.
  *
- * Tolerancia: 0 pesos en todos los casos.
+ * Unidades: todo en CENTAVOS (pesos(x) = x × 100). Tolerancia: 0 centavos.
  */
 
 import { describe, it, expect } from "vitest";
+import { pesos, porcentajeDe } from "@/lib/dinero";
+import { impuesto4x1000SobreTerceros } from "../factura-conceptos";
 import {
   calcularSaldosPorLineas,
   calcularTotalPorLineas,
@@ -35,11 +39,12 @@ import { calcularBorrador } from "../motor-factura";
 /**
  * Calcula el impuesto 4x1000 para la factura del cliente SOCIO_LM.
  * Base = Σ ingresos de terceros (excluye el propio 4x1000 y los costos bancarios).
- * Redondeo: round-half-up → (base * 4 + 500) / 1000 con BigInt.
- * Esta es la única diferencia respecto al motor interno (que usa truncado).
+ * Redondeo: al PESO, mitad arriba — es la MISMA función de producción
+ * (`impuesto4x1000SobreTerceros`). Única diferencia respecto al motor interno
+ * (que trunca al peso, D-2).
  */
 function calcular4x1000Factura(baseTerceros: bigint): bigint {
-  return (baseTerceros * 4n + 500n) / 1000n;
+  return impuesto4x1000SobreTerceros(baseTerceros, 400n);
 }
 
 // ─── Datos del caso BAQ-18453 ─────────────────────────────────────────────────
@@ -48,8 +53,8 @@ function calcular4x1000Factura(baseTerceros: bigint): bigint {
  * Anticipo: depósito del cliente GRUPO E PAPIS / LUTOSA por $35.074.500.
  * Recaudo: BANCOLOMBIA digital (costo $1.950 — interno, no va a la factura SOCIO_LM).
  */
-const ANTICIPO = 35_074_500n;
-const COSTO_RECAUDO_ANTICIPO = 1_950n; // interno, no aparece en factura SOCIO_LM
+const ANTICIPO = pesos(35_074_500);
+const COSTO_RECAUDO_ANTICIPO = pesos(1_950); // interno, no aparece en factura SOCIO_LM
 
 /**
  * Pagos a proveedores de terceros (los que el socio LM pagó):
@@ -60,14 +65,14 @@ const COSTO_RECAUDO_ANTICIPO = 1_950n; // interno, no aparece en factura SOCIO_L
  */
 const PAGOS_BAQ18453 = [
   // Pagos PSE (costo $0)
-  { valor: 4_998_800n, costoBancario: 0n },
-  { valor: 8_910_000n, costoBancario: 0n },
-  { valor: 5_040_000n, costoBancario: 0n },
-  { valor: 6_250_000n, costoBancario: 0n },
-  { valor: 7_322_886n, costoBancario: 0n },
+  { valor: pesos(4_998_800), costoBancario: 0n },
+  { valor: pesos(8_910_000), costoBancario: 0n },
+  { valor: pesos(5_040_000), costoBancario: 0n },
+  { valor: pesos(6_250_000), costoBancario: 0n },
+  { valor: pesos(7_322_886), costoBancario: 0n },
   // Pagos TRANSF BANCOLOMBIA (costo $3.900 c/u)
-  { valor: 205_000n, costoBancario: 3_900n },
-  { valor: 205_000n, costoBancario: 3_900n },
+  { valor: pesos(205_000), costoBancario: pesos(3_900) },
+  { valor: pesos(205_000), costoBancario: pesos(3_900) },
 ];
 const TOTAL_PAGOS = PAGOS_BAQ18453.reduce((s, p) => s + p.valor, 0n);
 // 4.998.800 + 8.910.000 + 5.040.000 + 6.250.000 + 7.322.886 + 205.000 + 205.000 = 32.931.686
@@ -88,16 +93,18 @@ const COSTOS_BANCARIOS_TOTAL = COSTO_RECAUDO_ANTICIPO + COSTOS_BANCARIOS_PAGOS;
  * NOTA: Para SOCIO_LM la comisión no entra en la factura del cliente como línea fija.
  *   Sin embargo el IVA_COMISION SÍ aparece en la factura como servicio logístico.
  */
-const COMISION_INTERNA = 400_000n;
-const IVA_COMISION = 76_000n;
+const COMISION_INTERNA = pesos(400_000);
+const IVA_COMISION = pesos(76_000);
 
 /**
  * 4x1000 INTERNO (base = anticipo × tasa = 35.074.500 × 0.004):
  *   BigInt truncado: (35.074.500 × 400) / 100.000 = 140.298
  */
-const TASA_4X1000_INTERNA = 400n; // escala /100.000
-const IMPUESTO_4X1000_INTERNO =
-  (ANTICIPO * TASA_4X1000_INTERNA) / 100_000n;
+const TASA_4X1000_INTERNA = 400n; // tasa (no dinero), escala /100.000
+const IMPUESTO_4X1000_INTERNO = porcentajeDe(ANTICIPO, TASA_4X1000_INTERNA, 100_000n, {
+  precision: "PESO",
+  modo: "TRUNCAR",
+});
 // 35.074.500 × 400 / 100.000 = 140.298
 
 /**
@@ -105,7 +112,7 @@ const IMPUESTO_4X1000_INTERNO =
  * de sus proveedores, excluyendo el propio 4x1000 de factura y costos bancarios):
  *   32.521.912 COP
  */
-const BASE_TERCEROS_FACTURA = 32_521_912n;
+const BASE_TERCEROS_FACTURA = pesos(32_521_912);
 
 /**
  * 4x1000 de FACTURA (base ingresos terceros, round-half-up):
@@ -173,51 +180,53 @@ const SALDO_LM = RESTANTE_INTERNO - SALDO_A_FAVOR_CLIENTE;
 
 describe("BAQ-18453 (DO.CTG26-0118) — SOCIO_LM — Función 4x1000 factura", () => {
   it("calcular4x1000Factura: round-half-up produce 130.088 sobre base 32.521.912", () => {
-    expect(calcular4x1000Factura(32_521_912n)).toBe(130_088n);
+    expect(calcular4x1000Factura(pesos(32_521_912))).toBe(pesos(130_088));
   });
 
   it("calcular4x1000Factura: BigInt truncado daría 130.087 (diferencia del round)", () => {
     // Verifica que la fórmula truncada da 130.087 (distinto del Excel)
-    const truncado = (32_521_912n * 4n) / 1000n;
-    expect(truncado).toBe(130_087n);
+    const truncado = porcentajeDe(pesos(32_521_912), 400n, 100_000n, { precision: "PESO", modo: "TRUNCAR" });
+    expect(truncado).toBe(pesos(130_087));
+    // Y al centavo daría 130.087,65 (no es lo que liquida la contabilidad: por eso va al peso)
+    expect(porcentajeDe(pesos(32_521_912), 400n, 100_000n, { precision: "CENTAVO" })).toBe(13_008_765n);
     // Y la versión round-half-up da 130.088 (correcto según Excel)
-    expect(calcular4x1000Factura(32_521_912n)).toBe(130_088n);
+    expect(calcular4x1000Factura(pesos(32_521_912))).toBe(pesos(130_088));
   });
 });
 
 describe("BAQ-18453 (DO.CTG26-0118) — SOCIO_LM — Pagos y costos internos", () => {
   it("totalPagos === 32.931.686", () => {
-    expect(TOTAL_PAGOS).toBe(32_931_686n);
+    expect(TOTAL_PAGOS).toBe(pesos(32_931_686));
   });
 
   it("costosBancariosTotal (recaudo + pagos) === 9.750", () => {
-    expect(COSTOS_BANCARIOS_TOTAL).toBe(9_750n);
+    expect(COSTOS_BANCARIOS_TOTAL).toBe(pesos(9_750));
   });
 
   it("4x1000 interno (base anticipo, truncado) === 140.298", () => {
-    expect(IMPUESTO_4X1000_INTERNO).toBe(140_298n);
+    expect(IMPUESTO_4X1000_INTERNO).toBe(pesos(140_298));
   });
 });
 
 describe("BAQ-18453 (DO.CTG26-0118) — SOCIO_LM — Cruce FACTURA cliente", () => {
   it("4x1000 factura (round-half-up) === 130.088", () => {
-    expect(IMPUESTO_4X1000_FACTURA).toBe(130_088n);
+    expect(IMPUESTO_4X1000_FACTURA).toBe(pesos(130_088));
   });
 
   it("total terceros factura (base + 4x1000) === 32.652.000", () => {
-    expect(TOTAL_TERCEROS_FACTURA).toBe(32_652_000n);
+    expect(TOTAL_TERCEROS_FACTURA).toBe(pesos(32_652_000));
   });
 
   it("total operacionales factura (comisión + IVA) === 476.000", () => {
-    expect(TOTAL_OPERACIONALES_FACTURA).toBe(476_000n);
+    expect(TOTAL_OPERACIONALES_FACTURA).toBe(pesos(476_000));
   });
 
   it("total factura cliente === 33.128.000", () => {
-    expect(TOTAL_FACTURA_CLIENTE).toBe(33_128_000n);
+    expect(TOTAL_FACTURA_CLIENTE).toBe(pesos(33_128_000));
   });
 
   it("saldo a favor cliente === 1.946.500 (anticipo − totalFactura)", () => {
-    expect(SALDO_A_FAVOR_CLIENTE).toBe(1_946_500n);
+    expect(SALDO_A_FAVOR_CLIENTE).toBe(pesos(1_946_500));
   });
 });
 
@@ -235,7 +244,7 @@ describe("BAQ-18453 — calcularTotalPorLineas (integración con total-lineas.ts
       ivaComision: IVA_COMISION,
       retenciones: 0n,
     });
-    expect(total).toBe(33_128_000n);
+    expect(total).toBe(pesos(33_128_000));
   });
 
   it("saldos via calcularSaldosPorLineas: saldo a favor 1.946.500", () => {
@@ -249,8 +258,8 @@ describe("BAQ-18453 — calcularTotalPorLineas (integración con total-lineas.ts
       retenciones: 0n,
       totalAnticipo: ANTICIPO,
     });
-    expect(saldos.totalFactura).toBe(33_128_000n);
-    expect(saldos.saldoAFavorCliente).toBe(1_946_500n);
+    expect(saldos.totalFactura).toBe(pesos(33_128_000));
+    expect(saldos.saldoAFavorCliente).toBe(pesos(1_946_500));
     expect(saldos.saldoACargoCliente).toBe(0n);
   });
 });
@@ -275,9 +284,9 @@ describe("BAQ-18453 — Cruce INTERNO LM (motor-factura.ts)", () => {
     });
 
     // Verificar componentes del motor
-    expect(resultado.totalPagos).toBe(32_931_686n);
-    expect(resultado.costosBancarios).toBe(9_750n);
-    expect(resultado.impuesto4x1000).toBe(140_298n);
+    expect(resultado.totalPagos).toBe(pesos(32_931_686));
+    expect(resultado.costosBancarios).toBe(pesos(9_750));
+    expect(resultado.impuesto4x1000).toBe(pesos(140_298));
     // saldoFinal = restante interno = anticipo − pagos − comisión − IVA − 4x1000 − costos
     expect(resultado.saldoFinal).toBe(RESTANTE_INTERNO);
   });
@@ -295,16 +304,26 @@ describe("BAQ-18453 — Invariantes BigInt (tolerancia 0 pesos)", () => {
 
   it("total terceros factura es entero exacto (sin flotantes)", () => {
     expect(typeof TOTAL_TERCEROS_FACTURA).toBe("bigint");
-    expect(TOTAL_TERCEROS_FACTURA).toBe(32_652_000n);
+    expect(TOTAL_TERCEROS_FACTURA).toBe(pesos(32_652_000));
   });
 
   it("total factura cliente es entero exacto", () => {
     expect(typeof TOTAL_FACTURA_CLIENTE).toBe("bigint");
-    expect(TOTAL_FACTURA_CLIENTE).toBe(33_128_000n);
+    expect(TOTAL_FACTURA_CLIENTE).toBe(pesos(33_128_000));
   });
 
   it("saldo a favor cliente es entero exacto", () => {
     expect(typeof SALDO_A_FAVOR_CLIENTE).toBe("bigint");
-    expect(SALDO_A_FAVOR_CLIENTE).toBe(1_946_500n);
+    expect(SALDO_A_FAVOR_CLIENTE).toBe(pesos(1_946_500));
+  });
+});
+
+describe("BAQ-18453 — dorados en CENTAVOS (fase centavos, E.2.2)", () => {
+  it("4x1000 factura 13.008.800 · interno 14.029.800 · total 3.312.800.000 · saldo LM −42.973.400", () => {
+    expect(IMPUESTO_4X1000_FACTURA).toBe(13_008_800n);
+    expect(IMPUESTO_4X1000_INTERNO).toBe(14_029_800n);
+    expect(TOTAL_FACTURA_CLIENTE).toBe(3_312_800_000n);
+    expect(RESTANTE_INTERNO).toBe(151_676_600n);
+    expect(SALDO_LM).toBe(-42_973_400n);
   });
 });

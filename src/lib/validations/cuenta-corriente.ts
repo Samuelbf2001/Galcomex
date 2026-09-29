@@ -5,16 +5,19 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 
+import { dineroSchema } from "@/lib/dinero";
+import { fechaCalendarioSchema } from "@/lib/validations/comunes";
+
+// Fase centavos: valores en PESOS de entrada ("502801.45" o número), CENTAVOS de salida (bigint).
+
 /**
- * Fecha de un día del calendario. El formulario manda "AAAA-MM-DD"; leído tal
- * cual queda a medianoche UTC y en Colombia (UTC−5) se ve como el día anterior.
- * Se ancla al mediodía de Bogotá para que el día no cambie al mostrarlo.
+ * Fecha de un día del calendario (movimiento o cruce). Convención única de
+ * CxP v2 (§D.7): "AAAA-MM-DD" → 00:00 UTC de ese día, mostrada en UTC con
+ * `formatFechaCalendario`. Reemplaza el anclaje a mediodía de Bogotá de la
+ * rama Coldex; las filas que ya quedaron a mediodía (17:00Z) se siguen
+ * mostrando en su día (ver `aFechaCalendario`).
  */
-const fechaDia = z.preprocess(
-  (valor) =>
-    typeof valor === "string" && /^\d{4}-\d{2}-\d{2}$/.test(valor) ? `${valor}T12:00:00-05:00` : valor,
-  z.coerce.date(),
-);
+const fechaDia = fechaCalendarioSchema;
 
 export const movimientoCuentaSchema = z.object({
   rol: z.nativeEnum(RolCuenta),
@@ -28,9 +31,7 @@ export const movimientoCuentaSchema = z.object({
   /** Espejo de `TipoTramite.lineaServicio`. */
   lineaServicio: z.string().trim().min(1).max(40).default("TRAMITE"),
   concepto: z.string().trim().min(1, "El concepto es obligatorio").max(200),
-  valor: z.coerce
-    .bigint()
-    .refine((valor) => valor > 0n, { message: "El valor debe ser mayor a 0" }),
+  valor: dineroSchema.refine((valor) => valor > 0n, { message: "El valor debe ser mayor a 0" }),
   fecha: fechaDia,
   tramiteId: z.string().min(1).optional().nullable(),
   /** N° de la factura del proveedor ("Registrar factura de <proveedor>"). */
@@ -56,10 +57,7 @@ export type MovimientoCuentaPayload = z.infer<typeof movimientoCuentaSchema>;
  */
 export const compensacionSchema = z
   .object({
-    valor: z.coerce
-      .bigint()
-      .refine((valor) => valor > 0n, { message: "El valor debe ser mayor a 0" })
-      .optional(),
+    valor: dineroSchema.refine((valor) => valor > 0n, { message: "El valor debe ser mayor a 0" }).optional(),
     fecha: fechaDia,
     concepto: z.string().trim().min(1, "El concepto es obligatorio").max(200),
     lineaServicio: z.string().trim().min(1).max(40).default("TRAMITE"),

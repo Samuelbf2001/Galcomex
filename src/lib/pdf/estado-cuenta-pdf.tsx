@@ -16,9 +16,15 @@ import {
 } from "@react-pdf/renderer";
 import React from "react";
 
-import { formatCOP } from "./borrador-pdf";
+import { formatoPesos } from "@/lib/dinero";
+
+/** Centavos → "$ 1.487.623,45" / "$ 464.077,00" (PDF: siempre ",00", D-5). */
+function cop(centavos: bigint): string {
+  return formatoPesos(centavos, { decimales: "siempre" });
+}
 
 // ─── Tipos de datos del DTO ───────────────────────────────────────────────────
+// Dinero: todo `bigint` = CENTAVOS de COP (fase centavos).
 
 export type FacturaEstadoCuentaDto = {
   id: string;
@@ -109,10 +115,10 @@ export function prepararDatosEstadoCuentaPdf(
       numSiigo: f.numSiigo,
       consecutivoDO: f.consecutivoDO,
       fechaStr: formatDate(f.fecha),
-      totalFacturaStr: formatCOP(f.totalFactura),
-      saldoClienteStr: formatCOP(saldoAbsoluto),
+      totalFacturaStr: cop(f.totalFactura),
+      saldoClienteStr: cop(saldoAbsoluto),
       saldoClienteEsFavor: esFavor,
-      saldoLMStr: formatCOP(saldoAbsLM),
+      saldoLMStr: cop(saldoAbsLM),
       saldoLMEsFavor: esFavorLM,
       pagadoCliente: f.fechaPagoCliente ? formatDate(f.fechaPagoCliente) : "Pendiente",
       pagadoLM: f.fechaPagoLM ? formatDate(f.fechaPagoLM) : "Pendiente",
@@ -129,11 +135,11 @@ export function prepararDatosEstadoCuentaPdf(
     fechaEmisionStr: formatDate(dto.fechaEmision),
     totalFacturas: dto.totalFacturas,
     filas,
-    cruceClienteStr: formatCOP(
+    cruceClienteStr: cop(
       dto.cruceCliente < 0n ? -dto.cruceCliente : dto.cruceCliente,
     ),
     cruceClienteEsDeuda: clienteDeuda,
-    cruceLMStr: formatCOP(dto.cruceLM < 0n ? -dto.cruceLM : dto.cruceLM),
+    cruceLMStr: cop(dto.cruceLM < 0n ? -dto.cruceLM : dto.cruceLM),
     cruceLMEsDeuda: lmDeuda,
   };
 }

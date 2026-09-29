@@ -14,47 +14,40 @@ import { useRol } from "@/lib/auth/rol-context";
 
 import {
   fetchLiquidacionLM,
-  formatCOP,
   formatDate,
   LiquidacionApiError,
   type LiquidacionData,
   type LiquidacionTramiteRow,
 } from "./liquidacion-api";
+import { centavosDeTexto, formatoPesos, textoDeCentavos } from "@/lib/dinero";
 
 // ─── Helpers visuales ─────────────────────────────────────────────────────────
 
-function montoClass(value: string): string {
+/** Lee un monto (pesos texto de la API, o un literal local "0") a centavos. */
+function safeBigInt(v: string): bigint {
   try {
-    const n = BigInt(value);
-    if (n < 0n) return "text-rose-600";
-    if (n > 0n) return "text-emerald-600";
+    return centavosDeTexto(v);
   } catch {
-    // ignore
+    return 0n;
   }
+}
+
+function montoClass(value: string): string {
+  const n = safeBigInt(value);
+  if (n < 0n) return "text-rose-600";
+  if (n > 0n) return "text-emerald-600";
   return "text-slate-700";
 }
 
 function direccionNeto(value: string): { texto: string; clase: string } {
-  try {
-    const n = BigInt(value);
-    if (n < 0n) {
-      return { texto: "Lucho le debe a Galcomex", clase: "text-rose-600" };
-    }
-    if (n > 0n) {
-      return { texto: "Galcomex le debe a Lucho", clase: "text-emerald-600" };
-    }
-  } catch {
-    // ignore
+  const n = safeBigInt(value);
+  if (n < 0n) {
+    return { texto: "Lucho le debe a Galcomex", clase: "text-rose-600" };
+  }
+  if (n > 0n) {
+    return { texto: "Galcomex le debe a Lucho", clase: "text-emerald-600" };
   }
   return { texto: "Cuenta saldada", clase: "text-slate-600" };
-}
-
-function safeBigInt(v: string): bigint {
-  try {
-    return BigInt(v);
-  } catch {
-    return 0n;
-  }
 }
 
 /**
@@ -87,7 +80,7 @@ function toLoteFacturaRow(t: LiquidacionTramiteRow): FacturaRow {
     pendienteCobroCliente: "0",
     pendienteDevolucionCliente: "0",
     saldoNetoLM: t.saldoLM,
-    pendienteCobroLM: saldoLMBig < 0n ? (-saldoLMBig).toString() : "0",
+    pendienteCobroLM: saldoLMBig < 0n ? textoDeCentavos(-saldoLMBig) : "0",
     pendienteDevolucionLM: saldoLMBig > 0n ? t.saldoLM : "0",
     costosBancariosCliente: "0",
     costosBancariosLM: "0",
@@ -357,7 +350,7 @@ export function LiquidacionWorkspace() {
                 <p
                   className={`mt-1 text-2xl font-semibold ${direccionNeto(data.resumen.saldoNeto).clase}`}
                 >
-                  {formatCOP(data.resumen.saldoNeto)}
+                  {formatoPesos(centavosDeTexto(data.resumen.saldoNeto))}
                 </p>
                 <p className={`mt-1 text-sm ${direccionNeto(data.resumen.saldoNeto).clase}`}>
                   {direccionNeto(data.resumen.saldoNeto).texto}
@@ -379,7 +372,7 @@ export function LiquidacionWorkspace() {
                   Lucho debe a Galcomex
                 </p>
                 <p className="mt-1 text-2xl font-semibold text-rose-600">
-                  {formatCOP(data.resumen.totalLuchoDebe)}
+                  {formatoPesos(centavosDeTexto(data.resumen.totalLuchoDebe))}
                 </p>
               </div>
               <div className="border border-slate-200 bg-white p-4">
@@ -387,7 +380,7 @@ export function LiquidacionWorkspace() {
                   Galcomex debe a Lucho
                 </p>
                 <p className="mt-1 text-2xl font-semibold text-emerald-600">
-                  {formatCOP(data.resumen.totalGalcomexDebe)}
+                  {formatoPesos(centavosDeTexto(data.resumen.totalGalcomexDebe))}
                 </p>
               </div>
             </div>
@@ -402,7 +395,7 @@ export function LiquidacionWorkspace() {
                     trámite{selectedIds.size !== 1 ? "s" : ""} seleccionado
                     {selectedIds.size !== 1 ? "s" : ""} · Pendiente total LM:{" "}
                     <span className="font-semibold">
-                      {formatCOP(pendienteTotalSeleccionado.toString())}
+                      {formatoPesos(pendienteTotalSeleccionado)}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -499,10 +492,10 @@ export function LiquidacionWorkspace() {
                             {formatDate(t.fechaFactura)}
                           </td>
                           <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                            {formatCOP(t.saldoLMInterno)}
+                            {formatoPesos(centavosDeTexto(t.saldoLMInterno))}
                           </td>
                           <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                            {formatCOP(t.saldoAFavorCliente)}
+                            {formatoPesos(centavosDeTexto(t.saldoAFavorCliente))}
                           </td>
                           <td className="px-4 py-3 text-right">
                             {cruzado ? (
@@ -513,7 +506,7 @@ export function LiquidacionWorkspace() {
                               <span
                                 className={`font-medium tabular-nums ${montoClass(t.saldoLM)}`}
                               >
-                                {formatCOP(t.saldoLM)}
+                                {formatoPesos(centavosDeTexto(t.saldoLM))}
                               </span>
                             )}
                           </td>
@@ -530,7 +523,7 @@ export function LiquidacionWorkspace() {
                       <td
                         className={`px-4 py-3 text-right tabular-nums ${montoClass(data.resumen.saldoNeto)}`}
                       >
-                        {formatCOP(data.resumen.saldoNeto)}
+                        {formatoPesos(centavosDeTexto(data.resumen.saldoNeto))}
                       </td>
                     </tr>
                   </tfoot>

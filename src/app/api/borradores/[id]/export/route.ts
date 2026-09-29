@@ -57,18 +57,19 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       .map((l) => ({
         concepto: l.concepto,
         numSoporte: l.numSoporte,
-        valor: l.valor,
+        valor: l.valorCentavos,
         orden: l.orden,
       })),
-    comision: borrador.comision,
-    ivaComision: borrador.ivaComision,
-    impuesto4x1000: borrador.impuesto4x1000,
-    costosBancarios: borrador.costosBancarios,
-    totalFactura: borrador.totalFactura,
-    saldoAFavorCliente: borrador.saldoAFavorCliente,
-    saldoACargoCliente: borrador.saldoACargoCliente,
-    saldoAFavorLM: borrador.saldoAFavorLM,
-    saldoACargoLM: borrador.saldoACargoLM,
+    // Centavos de COP (el XLSX los escribe en pesos con 2 decimales).
+    comision: borrador.comisionCentavos,
+    ivaComision: borrador.ivaComisionCentavos,
+    impuesto4x1000: borrador.impuesto4x1000Centavos,
+    costosBancarios: borrador.costosBancariosCentavos,
+    totalFactura: borrador.totalFacturaCentavos,
+    saldoAFavorCliente: borrador.saldoAFavorClienteCentavos,
+    saldoACargoCliente: borrador.saldoACargoClienteCentavos,
+    saldoAFavorLM: borrador.saldoAFavorLMCentavos,
+    saldoACargoLM: borrador.saldoACargoLMCentavos,
   });
 
   const filename = nombreArchivoXlsx("borrador", borradorId, borrador.numFacturaSiigo);

@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { setCapacidadesEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
+import { pesos } from "@/lib/dinero";
 import {
   CuentaCorrienteNoHabilitadaError,
   FacturaProveedorDuplicadaError,
@@ -143,19 +144,50 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
       origen: "CARGO_MANUAL",
       lineaServicio: "TRAMITE",
       concepto: "Servicios aduaneros septiembre",
-      valor: 4_500_000n,
+      valor: pesos(4_500_000),
       fecha: new Date("2026-09-24"),
       usuarioId: USUARIO_ID,
       numeroFactura: "FE-1234",
     });
 
     const despues = await getCuentaCorriente(empresa.id);
-    expect(despues.pendienteProveedor).toBe(4_500_000n);
-    expect(despues.neto).toBe(-4_500_000n);
+    expect(despues.pendienteProveedor).toBe(pesos(4_500_000));
+    expect(despues.neto).toBe(-pesos(4_500_000));
 
     const movimientoManual = despues.movimientos.find((m) => m.numeroFactura === "FE-1234");
     expect(movimientoManual).toBeDefined();
     expect(movimientoManual?.tieneSoporte).toBe(false);
+  });
+
+  it("centavos: una factura con centavos queda exacta en valorCentavos y en el pendiente (sin ×100 ni redondeo)", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresaConCargosManuales(`${RUN_ID}-centavos`);
+
+    // $ 4.500.000,45 = 450.000.045 centavos (lo que entrega dineroSchema).
+    const valor = pesos(4_500_000) + 45n;
+    await registrarMovimientoCuenta({
+      empresaId: empresa.id,
+      rol: "PROVEEDOR",
+      tipo: "ABONO",
+      origen: "CARGO_MANUAL",
+      lineaServicio: "TRAMITE",
+      concepto: "Servicios aduaneros con centavos",
+      valor,
+      fecha: new Date("2026-09-24"),
+      usuarioId: USUARIO_ID,
+      numeroFactura: "FE-4545",
+    });
+
+    const fila = await prisma.movimientoCuenta.findFirstOrThrow({
+      where: { empresaId: empresa.id, numeroFactura: "FE-4545" },
+      select: { valorCentavos: true, numeroFacturaNorm: true },
+    });
+    expect(fila.valorCentavos).toBe(450_000_045n);
+    expect(fila.numeroFacturaNorm).toBe("FE4545");
+
+    const cuenta = await getCuentaCorriente(empresa.id);
+    expect(cuenta.pendienteProveedor).toBe(450_000_045n);
+    expect(cuenta.neto).toBe(-450_000_045n);
   });
 
   it("registra el soporte y lo refleja en tieneSoporte", async (ctx) => {
@@ -169,7 +201,7 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
       origen: "CARGO_MANUAL",
       lineaServicio: "TRAMITE",
       concepto: "Quincenas septiembre",
-      valor: 1_200_000n,
+      valor: pesos(1_200_000),
       fecha: new Date("2026-09-24"),
       usuarioId: USUARIO_ID,
       numeroFactura: "FE-5678",
@@ -192,7 +224,7 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
       origen: "CARGO_MANUAL",
       lineaServicio: "TRAMITE",
       concepto: "Servicios aduaneros agosto",
-      valor: 4_000_000n,
+      valor: pesos(4_000_000),
       fecha: new Date("2026-08-15"),
       usuarioId: USUARIO_ID,
       numeroFactura: "FE-0001",
@@ -206,7 +238,7 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
         origen: "CARGO_MANUAL",
         lineaServicio: "TRAMITE",
         concepto: "Servicios aduaneros agosto (duplicado)",
-        valor: 4_000_000n,
+        valor: pesos(4_000_000),
         fecha: new Date("2026-09-01"),
         usuarioId: USUARIO_ID,
         // Mismo número, con formato distinto: debe normalizar igual.
@@ -226,7 +258,7 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
       origen: "CARGO_MANUAL",
       lineaServicio: "TRAMITE",
       concepto: "Factura proveedor",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       fecha: new Date("2026-09-01"),
       usuarioId: USUARIO_ID,
       numeroFactura: "FE-9999",
@@ -240,7 +272,7 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
         origen: "CARGO_MANUAL",
         lineaServicio: "TRAMITE",
         concepto: "Factura cliente",
-        valor: 1_000_000n,
+        valor: pesos(1_000_000),
         fecha: new Date("2026-09-01"),
         usuarioId: USUARIO_ID,
         numeroFactura: "FE-9999",
@@ -259,7 +291,7 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
       origen: "CARGO_MANUAL",
       lineaServicio: "TRAMITE",
       concepto: "Servicios aduaneros agosto",
-      valor: 4_000_000n,
+      valor: pesos(4_000_000),
       fecha: new Date("2026-08-15"),
       usuarioId: USUARIO_ID,
       numeroFactura: "FE-0002",
@@ -275,7 +307,7 @@ describe("registrarMovimientoCuenta — factura de proveedor", () => {
         origen: "CARGO_MANUAL",
         lineaServicio: "TRAMITE",
         concepto: "Servicios aduaneros agosto (de nuevo)",
-        valor: 4_000_000n,
+        valor: pesos(4_000_000),
         fecha: new Date("2026-09-01"),
         usuarioId: USUARIO_ID,
         numeroFactura: "fe.0002",
@@ -309,14 +341,14 @@ describe("registrarMovimientoCuenta — sin esProveedor y sin cuenta_corriente",
       origen: "CARGO_MANUAL",
       lineaServicio: "TRAMITE",
       concepto: "Mensualidad",
-      valor: 2_000_000n,
+      valor: pesos(2_000_000),
       fecha: new Date("2026-09-24"),
       usuarioId: USUARIO_ID,
       numeroFactura: "FE-7777",
     });
 
     const cuenta = await getCuentaCorriente(empresa.id);
-    expect(cuenta.pendienteProveedor).toBe(2_000_000n);
+    expect(cuenta.pendienteProveedor).toBe(pesos(2_000_000));
   });
 
   it('"Otro ajuste" (AJUSTE) sigue exigiendo cuenta_corriente: se rechaza con solo cargos manuales', async (ctx) => {
@@ -331,7 +363,7 @@ describe("registrarMovimientoCuenta — sin esProveedor y sin cuenta_corriente",
         origen: "AJUSTE",
         lineaServicio: "TRAMITE",
         concepto: "Ajuste manual",
-        valor: 500_000n,
+        valor: pesos(500_000),
         fecha: new Date("2026-09-24"),
         usuarioId: USUARIO_ID,
       }),

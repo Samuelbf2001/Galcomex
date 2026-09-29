@@ -8,6 +8,12 @@
  *
  * El cálculo es del motor puro (`./motor.ts`); aquí solo se arma el contexto
  * del trámite (base de cálculo + eventos + costos) y se persiste.
+ *
+ * Fase centavos (diseño A.2 / B.4 / A.6): `valorCentavos` y
+ * `valorAdicionalCentavos` en CENTAVOS; `minimos`/`tramos` son JSON en PESOS
+ * texto canónico (se escriben con `normalizeSerializable` = `aJsonGuardado`
+ * y se leen con `centavosDeTexto`). El incremento de un duplicado se redondea
+ * a `redondeoA` PESOS (`pesos(redondeoA)`), no centavos.
  */
 
 import {
@@ -19,13 +25,25 @@ import {
   type Tarifario,
 } from "@prisma/client";
 
+import { cargarPagosParaCobro } from "@/lib/borradores/pagos-para-cobro";
+import { desglosarPago } from "@/lib/calculations/pagos-cobrables";
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { tiene } from "@/lib/capacidades/resolver";
+import {
+  dividirRedondeando,
+  enteroNoDinero,
+  pesos,
+  redondearA,
+  textoCanonicoDeCentavos,
+  type Centavos,
+} from "@/lib/dinero";
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import { plantillaPorCodigo } from "@/lib/tarifas/plantillas";
 import {
   calcularLineasTarifa,
+  centavosDeTextoTarifa,
   vigenteEn,
   type ContextoTarifa,
   type ItemTarifaCalculable,
@@ -34,6 +52,7 @@ import {
   type TramoTarifa,
 } from "@/lib/tarifas/motor";
 import {
+  entradaDeItemTarifa,
   tarifaItemSchema,
   type TarifaItemPayload,
   type TarifaItemUpdatePayload,
@@ -142,20 +161,31 @@ export class ConceptoNoEnCatalogoError extends Error {
   }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(
-    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
-  ) as Prisma.InputJsonValue;
+/**
+ * Un mínimo o un tramo guardado no se puede leer como PESOS texto (fase
+ * centavos): no se duplica en silencio con un valor inventado.
+ */
+export class TarifaValorIlegibleError extends Error {
+  public readonly status = 422;
+  constructor(detalle: string) {
+    super(`El tarifario tiene un valor que no se puede leer (${detalle}); corrígelo antes de duplicarlo`);
+    this.name = "TarifaValorIlegibleError";
+  }
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Mínimos guardados (PESOS texto). Se conservan TODOS los textos, también los
+ * que no se pueden leer: el motor los marca como pendiente con el motivo
+ * (antes un "498000.50" se descartaba en silencio y la tarifa salía sin mínimo).
+ */
 function minimosDe(json: Prisma.JsonValue | null): MinimosTarifa | null {
   if (!json || typeof json !== "object" || Array.isArray(json)) return null;
   const out: MinimosTarifa = {};
   for (const clave of ["SUELTA", "CONTENEDOR_20", "CONTENEDOR_40"] as const) {
     const v = (json as Record<string, unknown>)[clave];
-    if (typeof v === "string" && /^\d+$/.test(v)) out[clave] = v;
+    if (typeof v === "string" && v.trim() !== "") out[clave] = v;
   }
   return out;
 }
@@ -166,7 +196,8 @@ function tramosDe(json: Prisma.JsonValue | null): TramoTarifa[] | null {
   for (const t of json) {
     if (!t || typeof t !== "object" || Array.isArray(t)) continue;
     const { hasta, valor } = t as Record<string, unknown>;
-    if (typeof valor !== "string" || !/^\d+$/.test(valor)) continue;
+    // PESOS texto; un valor ilegible se conserva para que el motor lo marque pendiente.
+    if (typeof valor !== "string" || valor.trim() === "") continue;
     if (hasta === null || (typeof hasta === "number" && Number.isInteger(hasta) && hasta >= 1)) {
       out.push({ hasta: hasta as number | null, valor });
     }
@@ -183,8 +214,8 @@ export function itemCalculableDe(item: TarifaItem): ItemTarifaCalculable {
     disparador: item.disparador,
     eventoCodigo: item.eventoCodigo,
     unidad: item.unidad,
-    valor: item.valor,
-    valorAdicional: item.valorAdicional,
+    valor: item.valorCentavos,
+    valorAdicional: item.valorAdicionalCentavos,
     porcentajeBps: item.porcentajeBps,
     minimos: minimosDe(item.minimos),
     conceptoCosto: item.conceptoCosto,
@@ -239,8 +270,8 @@ function itemCreateData(
     tipoCalculo: item.tipoCalculo,
     disparador: item.disparador,
     unidad: item.unidad,
-    valor: item.valor,
-    valorAdicional: item.valorAdicional ?? null,
+    valorCentavos: item.valor,
+    valorAdicionalCentavos: item.valorAdicional ?? null,
     porcentajeBps: item.porcentajeBps ?? null,
     minimos: item.minimos ? normalizeSerializable(item.minimos) : undefined,
     conceptoCosto: item.conceptoCosto ?? null,
@@ -335,7 +366,7 @@ export async function crearTarifario(input: CrearTarifarioInput): Promise<Tarifa
   if (!nombre) throw new TarifarioSinNombreError();
   const alcance = input.alcance ?? plantilla?.alcance ?? "TRAMITE";
   const items: TarifaItemPayload[] =
-    input.items.length > 0 ? input.items : (plantilla?.items ?? []).map((it) => tarifaItemSchema.parse(it));
+    input.items.length > 0 ? input.items : (plantilla?.items ?? []).map((it) => tarifaItemSchema.parse(entradaDeItemTarifa(it)));
   const notas =
     input.notas ?? (plantilla ? `Cargado desde la plantilla "${plantilla.nombre}" (${plantilla.fuente})` : null);
 
@@ -479,19 +510,31 @@ export async function cambiarEstadoTarifario(
   });
 }
 
-function redondear(valor: bigint, a: number): bigint {
-  const paso = BigInt(a);
-  if (paso <= 1n) return valor;
-  return ((valor + paso / 2n) / paso) * paso;
+/**
+ * `valor × (1 + pct/100)` (CENTAVOS) con redondeo mitad arriba a un múltiplo
+ * de `redondeoA` PESOS (1.000 por defecto; diseño A.6):
+ *   redondearA(dividirRedondeando(c × factor, 1_000_000n), pesos(redondeoA))
+ * Dorado: $100.000 + IPC 5,29 % a $1.000 = $105.000 (10.500.000 centavos).
+ * Sin incremento devuelve el valor exacto (copia fiel, también con centavos).
+ */
+export function aplicarIncremento(valor: Centavos, incrementoPct: number | undefined, redondeoA: number): Centavos {
+  if (incrementoPct === undefined || incrementoPct === 0) return valor;
+  // pct con 4 decimales de precisión (5.29 → 1.052.900 / 1.000.000). Factor = escala, no dinero.
+  const factor = enteroNoDinero(Math.round((100 + incrementoPct) * 10_000));
+  const bruto = dividirRedondeando(valor * factor, 1_000_000n);
+  return redondearA(bruto, pesos(redondeoA));
 }
 
-/** `valor × (1 + pct/100)` con redondeo half-up a `redondeoA` (1.000 por defecto). */
-export function aplicarIncremento(valor: bigint, incrementoPct: number | undefined, redondeoA: number): bigint {
-  if (incrementoPct === undefined || incrementoPct === 0) return valor;
-  // pct con 4 decimales de precisión (5.29 → 52900 / 1.000.000)
-  const factor = BigInt(Math.round((100 + incrementoPct) * 10_000));
-  const bruto = (valor * factor + 500_000n) / 1_000_000n;
-  return redondear(bruto, redondeoA);
+/** PESOS texto guardado → PESOS texto canónico con el incremento aplicado. */
+function incrementarTextoPesos(
+  raw: string,
+  incrementoPct: number | undefined,
+  redondeoA: number,
+  detalle: string,
+): string {
+  const c = centavosDeTextoTarifa(raw);
+  if (c === null) throw new TarifaValorIlegibleError(`${detalle} = "${raw}"`);
+  return textoCanonicoDeCentavos(aplicarIncremento(c, incrementoPct, redondeoA));
 }
 
 /**
@@ -511,7 +554,7 @@ function copiarItemsDeTarifario(
       ? Object.fromEntries(
           Object.entries(minimos).map(([k, v]) => [
             k,
-            aplicarIncremento(BigInt(v), incrementoPct, redondeoA).toString(),
+            incrementarTextoPesos(v, incrementoPct, redondeoA, `mínimo ${k} de ${it.concepto}`),
           ]),
         )
       : null;
@@ -519,7 +562,7 @@ function copiarItemsDeTarifario(
     const tramosAjustados = tramos
       ? tramos.map((t) => ({
           hasta: t.hasta,
-          valor: aplicarIncremento(BigInt(t.valor), incrementoPct, redondeoA).toString(),
+          valor: incrementarTextoPesos(t.valor, incrementoPct, redondeoA, `tramo de ${it.concepto}`),
         }))
       : null;
     return {
@@ -530,9 +573,11 @@ function copiarItemsDeTarifario(
       tipoCalculo: it.tipoCalculo,
       disparador: it.disparador,
       unidad: it.unidad,
-      valor: aplicarIncremento(it.valor, incrementoPct, redondeoA),
-      valorAdicional:
-        it.valorAdicional === null ? null : aplicarIncremento(it.valorAdicional, incrementoPct, redondeoA),
+      valorCentavos: aplicarIncremento(it.valorCentavos, incrementoPct, redondeoA),
+      valorAdicionalCentavos:
+        it.valorAdicionalCentavos === null
+          ? null
+          : aplicarIncremento(it.valorAdicionalCentavos, incrementoPct, redondeoA),
       porcentajeBps: it.porcentajeBps,
       minimos: minimosAjustados ? normalizeSerializable(minimosAjustados) : undefined,
       conceptoCosto: it.conceptoCosto,
@@ -760,13 +805,17 @@ export async function actualizarItemTarifario(
   const antes = t.items.find((i) => i.id === itemId);
   if (!antes) throw new TarifaItemNoEncontradoError(itemId);
 
-  // Coherencia del ítem resultante (tipo de cálculo ↔ campos).
+  // Coherencia del ítem resultante (tipo de cálculo ↔ campos). El esquema
+  // recibe PESOS (no acepta bigint): los valores ya en centavos se vuelven a
+  // texto con `entradaDeItemTarifa` (ida y vuelta exacta).
   const fusionado = tarifaItemSchema.parse({
-    ...itemCalculableDe(antes),
-    minimos: minimosDe(antes.minimos),
-    tramos: tramosDe(antes.tramos),
-    notas: antes.notas,
-    ...payload,
+    ...entradaDeItemTarifa({
+      ...itemCalculableDe(antes),
+      minimos: minimosDe(antes.minimos),
+      tramos: tramosDe(antes.tramos),
+      notas: antes.notas,
+    }),
+    ...entradaDeItemTarifa(payload),
   });
 
   if (fusionado.concepto !== antes.concepto && t.items.some((i) => i.concepto === fusionado.concepto)) {
@@ -853,6 +902,12 @@ export interface PropuestaTarifa {
   } | null;
   /** Por qué no hay propuesta, en palabras para la UI. */
   motivo: string | null;
+  /**
+   * La empresa tiene encendida la función `tarifario_propio`, haya o no un
+   * tarifario vigente. Facturación lo usa para no proponer la comisión fija por
+   * defecto a una empresa que se factura por tarifario.
+   */
+  tarifarioPropio: boolean;
   resultado: ResultadoTarifa | null;
   contexto: ContextoTramite;
 }
@@ -860,35 +915,57 @@ export interface PropuestaTarifa {
 /** Contexto del motor más la orden de compra del cliente (no entra al cálculo). */
 export type ContextoTramite = ContextoTarifa & {
   ordenCompraNumero: string | null;
-  ordenCompraValor: bigint | null;
+  /** Centavos (sale en la API como `ordenCompraValor`). */
+  ordenCompraValor: Centavos | null;
 };
 
+/**
+ * Contexto del motor de tarifas para un trámite. Los costos que un ítem
+ * ESPEJO_DE_COSTO puede reflejar son SOLO lo que se le cobra al cliente
+ * (igual que el borrador; ver `lib/calculations/pagos-cobrables.ts`):
+ * - facturas de proveedor: solo las que se cobran (`repercutible`); una
+ *   «NO SE COBRA» (asesoría) nunca se espeja;
+ * - pagos del libro: solo su parte cobrable (`desglosarPago`, con los mismos
+ *   montos del pago en bloque que usa `generarBorrador`). Un pago que es
+ *   todo asesoría no aparece: ni siquiera con 0, que taparía a otro costo con
+ *   el mismo concepto. Los pagos sueltos y los 100 % repercutibles van
+ *   completos, como siempre.
+ */
 export async function contextoDeTramite(tramiteId: string): Promise<ContextoTramite> {
   const tramite = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
     select: {
-      valorCif: true,
+      valorCifCentavos: true,
       tipoCarga: true,
       numContenedores: true,
       numDeclaraciones: true,
       numDocumentos: true,
       numItems: true,
       ordenCompraNumero: true,
-      ordenCompraValor: true,
+      ordenCompraValorCentavos: true,
       eventos: { select: { eventoCodigo: true, cantidad: true } },
-      pagos: { select: { concepto: true, valor: true } },
-      facturasProveedor: { select: { concepto: true, valor: true } },
+      facturasProveedor: { where: { repercutible: true }, select: { concepto: true, valorCentavos: true } },
     },
   });
   if (!tramite) throw new TarifarioNoEncontradoError(tramiteId);
 
+  const pagos = await cargarPagosParaCobro(prisma, tramiteId);
+  const costosDePagos = pagos.flatMap(({ pago, paraCobro }) => {
+    if (!pago.concepto) return [];
+    const { cobrable, noCobrable } = desglosarPago(paraCobro);
+    if (cobrable.valor === 0n && noCobrable > 0n) return [];
+    return [{ concepto: pago.concepto, valor: cobrable.valor }];
+  });
+
   const costos = [
-    ...tramite.pagos.filter((p) => p.concepto).map((p) => ({ concepto: p.concepto ?? "", valor: p.valor })),
-    ...tramite.facturasProveedor.filter((f) => f.concepto).map((f) => ({ concepto: f.concepto ?? "", valor: f.valor })),
+    ...costosDePagos,
+    ...tramite.facturasProveedor
+      .filter((f) => f.concepto)
+      .map((f) => ({ concepto: f.concepto ?? "", valor: f.valorCentavos })),
   ];
 
   return {
-    valorCif: tramite.valorCif,
+    valorCif: tramite.valorCifCentavos,
     tipoCarga: tramite.tipoCarga,
     numContenedores: tramite.numContenedores,
     numDeclaraciones: tramite.numDeclaraciones,
@@ -899,7 +976,7 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
     // No entra al motor: viaja con el contexto para que el panel del DO y la
     // revisión de la factura vean la OC del cliente (Polyrec).
     ordenCompraNumero: tramite.ordenCompraNumero,
-    ordenCompraValor: tramite.ordenCompraValor,
+    ordenCompraValor: tramite.ordenCompraValorCentavos,
   };
 }
 
@@ -907,8 +984,17 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
  * Líneas que el tarifario vigente de la empresa propone para el trámite. Es
  * lo que ve el revisor antes de generar el borrador y lo que `generarBorrador`
  * usa como desglose de la comisión cuando la empresa tiene tarifario propio.
+ *
+ * `fecha` es el DÍA calendario en Bogotá (hallazgo 2 del 24-sep): con
+ * `new Date()` (instante UTC) este default anulaba el de `tarifarioVigenteDe`
+ * y desde las 19:00 del último día de vigencia el modal no veía tarifario (y
+ * `ensureBorrador` facturaba la comisión por defecto); un día antes del cambio
+ * de versión ya usaba la nueva.
  */
-export async function propuestaParaTramite(tramiteId: string, fecha: Date = new Date()): Promise<PropuestaTarifa> {
+export async function propuestaParaTramite(
+  tramiteId: string,
+  fecha: Date = fechaCalendarioBogota(),
+): Promise<PropuestaTarifa> {
   const tramite = await prisma.tramiteDO.findUnique({
     where: { id: tramiteId },
     select: {
@@ -922,7 +1008,13 @@ export async function propuestaParaTramite(tramiteId: string, fecha: Date = new 
   const contexto = await contextoDeTramite(tramiteId);
   const capacidades = await capacidadesDeEmpresa(tramite.clienteId);
   if (!tiene(capacidades, "tarifario_propio")) {
-    return { tarifario: null, motivo: `${tramite.cliente.nombre} no tiene habilitado el tarifario propio`, resultado: null, contexto };
+    return {
+      tarifario: null,
+      motivo: `${tramite.cliente.nombre} no tiene habilitado el tarifario propio`,
+      tarifarioPropio: false,
+      resultado: null,
+      contexto,
+    };
   }
 
   const alcance = tramite.tipoTramite.lineaServicio;
@@ -931,6 +1023,7 @@ export async function propuestaParaTramite(tramiteId: string, fecha: Date = new 
     return {
       tarifario: null,
       motivo: `${tramite.cliente.nombre} no tiene un tarifario vigente para ${alcance.toLowerCase()} en esta fecha`,
+      tarifarioPropio: true,
       resultado: null,
       contexto,
     };
@@ -948,6 +1041,7 @@ export async function propuestaParaTramite(tramiteId: string, fecha: Date = new 
       vigenteHasta: vigente.vigenteHasta,
     },
     motivo: null,
+    tarifarioPropio: true,
     resultado,
     contexto,
   };

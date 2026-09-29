@@ -3,7 +3,7 @@
  *
  * Lee el Excel real con el parser (A3-T4), carga cliente → DO → anticipo → pagos
  * vía los servicios reales, genera el borrador con el motor (A1-T7/T8) y reconcilia
- * los valores calculados por el sistema contra los del Excel (tolerancia 0 pesos).
+ * los valores calculados por el sistema contra los del Excel (tolerancia 0; en centavos).
  *
  * Uso:  npx tsx scripts/replicar-grupo-e-papis.ts
  * Es idempotente: re-ejecutarlo borra y recarga el DO de replicación.
@@ -14,7 +14,8 @@ import { AgenciaAduanas, CanalPago, Ciudad, EstadoBorrador, Rol, TipoCliente, Ti
 
 import { generarBorrador, transicionarBorrador } from "../src/lib/borradores/service";
 import { prisma } from "../src/lib/db/prisma";
-import { readGalcomexWorkbook } from "../src/lib/excel/galcomex-workbook";
+import { formatoPesos, pesos } from "../src/lib/dinero";
+import { centavosDeCeldaEraPesos, readGalcomexWorkbook } from "../src/lib/excel/galcomex-workbook";
 import { crearPago } from "../src/lib/pagos/service";
 
 const WORKBOOK = "C:\\Users\\samue\\Galcomex\\GRUPO E PAPIS 2026 (1).xlsm";
@@ -43,9 +44,13 @@ function mapTipoRecaudo(excel: string | null): TipoRecaudo {
   return TipoRecaudo.BANCOLOMBIA;
 }
 
+/** Centavos → "41.868.042" (formateador único del núcleo). */
 function fmt(n: bigint): string {
-  return new Intl.NumberFormat("es-CO").format(n);
+  return formatoPesos(n, { simbolo: false });
 }
+
+/** Celda de dinero del libro (era en pesos) → centavos al peso. */
+const cent = (v: number | null | undefined, dato: string) => centavosDeCeldaEraPesos(v, dato);
 
 async function limpiarReplicaPrevia() {
   const existing = await prisma.tramiteDO.findUnique({
@@ -80,25 +85,25 @@ async function main() {
   const t = parsed.target;
 
   const anticipoRow = t.advance.rows[0];
-  const anticipoMonto = BigInt(Math.round(Number(anticipoRow.amount ?? 0)));
+  const anticipoMonto = cent(anticipoRow.amount, "Anticipo");
   const tipoRecaudo = mapTipoRecaudo(anticipoRow.collectionType);
 
   const pagos = t.payments.rows.map((r) => ({
     concepto: String(r.concept ?? "Pago"),
     numSoporte: r.invoiceReference ? String(r.invoiceReference) : null,
-    valor: BigInt(Math.round(Number(r.amount ?? 0))),
+    valor: cent(r.amount, "Pago"),
     canalPago: mapCanalPago(r.paymentType),
   }));
 
   // Valores del Excel para reconciliar
-  const costoPorConcepto = new Map(t.costs.rows.map((c) => [String(c.concept).toUpperCase(), BigInt(Math.round(Number(c.amount ?? 0)))]));
-  const comisionExcel = costoPorConcepto.get("COMISIÓN GALCOMEX") ?? 200_000n;
-  const ivaExcel = costoPorConcepto.get("IVA COMISIÓN") ?? 76_000n;
+  const costoPorConcepto = new Map(t.costs.rows.map((c) => [String(c.concept).toUpperCase(), cent(c.amount, String(c.concept))]));
+  const comisionExcel = costoPorConcepto.get("COMISIÓN GALCOMEX") ?? pesos(200_000);
+  const ivaExcel = costoPorConcepto.get("IVA COMISIÓN") ?? pesos(76_000);
   const cuatroXmilExcel = costoPorConcepto.get("IMPUESTO 4X1000") ?? 0n;
   const costosExcel = costoPorConcepto.get("COSTOS BANCARIOS") ?? 0n;
-  const totalFacturaExcel = BigInt(Math.round(Number(t.totals.invoiceTotal ?? 0)));
-  const saldoClienteExcel = BigInt(Math.round(Number(t.totals.clientBalance ?? 0)));
-  const saldoLMExcel = BigInt(Math.round(Number(t.totals.luisMartinezBalance ?? 0)));
+  const totalFacturaExcel = cent(t.totals.invoiceTotal, "Total factura");
+  const saldoClienteExcel = cent(t.totals.clientBalance, "Saldo cliente");
+  const saldoLMExcel = cent(t.totals.luisMartinezBalance, "Saldo LM");
 
   // ── Cargar en BD ──────────────────────────────────────────────────────────
   await limpiarReplicaPrevia();
@@ -133,17 +138,17 @@ async function main() {
   const anticipo = await prisma.anticipo.create({
     data: {
       clienteId: cliente.id,
-      monto: anticipoMonto,
+      montoCentavos: anticipoMonto,
       fecha: anticipoRow.date ? new Date(anticipoRow.date) : new Date("2026-02-09"),
       tipoRecaudo,
-      costoRecaudo: 1950n, // BANCOLOMBIA digital
+      costoRecaudoCentavos: pesos(1_950), // BANCOLOMBIA digital
       soporteKey: MARKER,
       verificadoBanco: true,
     },
   });
 
   await prisma.aplicacionAnticipo.create({
-    data: { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicado: anticipoMonto },
+    data: { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicadoCentavos: anticipoMonto },
   });
 
   for (const p of pagos) {
@@ -188,19 +193,19 @@ async function main() {
 
   // ── Reconciliación ──────────────────────────────────────────────────────────
   const filas: Array<[string, bigint, bigint]> = [
-    ["Anticipo aplicado", borrador.totalAnticipo, anticipoMonto],
-    ["Total pagos", borrador.totalPagos, BigInt(Math.round(Number(parsed.target.payments.rows.reduce((s, r) => s + Number(r.amount ?? 0), 0))))],
-    ["Costos bancarios", borrador.costosBancarios, costosExcel],
-    ["Comisión", borrador.comision, comisionExcel],
-    ["IVA comisión", borrador.ivaComision, ivaExcel],
-    ["Impuesto 4x1000", borrador.impuesto4x1000, cuatroXmilExcel],
-    ["TOTAL FACTURA", borrador.totalFactura, totalFacturaExcel],
-    ["Saldo a favor cliente", borrador.saldoAFavorCliente, saldoClienteExcel],
-    ["Saldo a favor LM", borrador.saldoAFavorLM, saldoLMExcel],
+    ["Anticipo aplicado", borrador.totalAnticipoCentavos, anticipoMonto],
+    ["Total pagos", borrador.totalPagosCentavos, pagos.reduce((s, p) => s + p.valor, 0n)],
+    ["Costos bancarios", borrador.costosBancariosCentavos, costosExcel],
+    ["Comisión", borrador.comisionCentavos, comisionExcel],
+    ["IVA comisión", borrador.ivaComisionCentavos, ivaExcel],
+    ["Impuesto 4x1000", borrador.impuesto4x1000Centavos, cuatroXmilExcel],
+    ["TOTAL FACTURA", borrador.totalFacturaCentavos, totalFacturaExcel],
+    ["Saldo a favor cliente", borrador.saldoAFavorClienteCentavos, saldoClienteExcel],
+    ["Saldo a favor LM", borrador.saldoAFavorLMCentavos, saldoLMExcel],
   ];
 
   console.log(`✅ Cargado en BD: cliente=${cliente.nombre}  DO=${tramite.consecutivo}  pagos=${pagos.length}  factura=${numFacturaSiigo} (FACTURADO)  → visible en Trámites, Facturación y Cartera\n`);
-  console.log("RECONCILIACIÓN SISTEMA vs EXCEL (tolerancia 0 pesos)");
+  console.log("RECONCILIACIÓN SISTEMA vs EXCEL (tolerancia 0)");
   console.log("─".repeat(72));
   console.log("Concepto".padEnd(26) + "Sistema".padStart(16) + "Excel".padStart(16) + "  OK");
   console.log("─".repeat(72));

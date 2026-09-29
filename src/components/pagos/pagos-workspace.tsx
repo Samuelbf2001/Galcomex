@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  ArrowUpRight,
   CheckCircle2,
   Loader2,
   Lock,
@@ -11,43 +12,55 @@ import {
   Upload,
   Users,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
-import { CampoMoneda } from "@/components/ui/campo-moneda";
+import { valorFilaParaGuardar } from "@/components/pagos/valor-fila";
+import { CampoMoneda, type DetalleCampoMoneda } from "@/components/ui/campo-moneda";
+import { centavosDeTexto, textoCanonicoDeCentavos, textoDeCentavos } from "@/lib/dinero";
 import {
   CANALES_PAGO,
+  PagosApiError,
   type CanalPago,
   type ClienteOption,
-  type PagoGlobalRow,
-  type PagosGlobalFiltros,
+  type CostoAsumidoPor,
+  type GrupoPagoDOInfo,
   type TramiteOption,
   createPago,
   deletePago,
   fetchClienteOptions,
-  fetchPagosGlobal,
   fetchTramiteOptions,
   formatCOP,
   formatDate,
   subirComprobante,
   updatePago,
 } from "@/components/pagos/pagos-global-api";
+import { PagoEnBloqueModal } from "@/components/pagos/pago-multi-do-modal";
+import { AnularBloqueDialog } from "@/components/pagos/anular-bloque-dialog";
+import { DetalleBloqueDialog } from "@/components/pagos/detalle-bloque-dialog";
+import { nuevaClaveIdempotencia } from "@/components/pagos/clave-idempotencia";
+import { desgloseResumenCxp } from "@/components/clientes/seccion-cxp-proveedor";
 import { BeneficiarioCombobox, type BeneficiarioSeleccion } from "@/components/beneficiarios/beneficiario-combobox";
 import { useConfirm } from "@/components/ui/confirm-dialog";
-import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { EnlaceCliente, EnlaceTramite, rutaCliente } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
-import { PagoMultiDOModal } from "@/components/pagos/pago-multi-do-modal";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
-import { usePermiso } from "@/lib/auth/rol-context";
+import { useRol, usePermiso } from "@/lib/auth/rol-context";
+import { rutaPermitida } from "@/lib/auth/rutas-roles";
+import type { ResumenCxpJson } from "@/lib/cxp/contratos-api";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 
 type LoadState = "loading" | "ready" | "error";
 
 /**
- * Crear ("Nuevo pago", "Pago multi-DO" → /api/pagos/multi), editar en línea y
+ * Crear ("Nuevo pago", "Pagar en bloque" → /api/pagos/multi), editar en línea y
  * eliminar exigen ADMIN/OPERATIVO. REVISOR consulta en solo lectura.
  */
 const ROLES_EDITAR_PAGOS = ["ADMIN", "OPERATIVO"] as const;
+/** D-6 / R16: los totales del proveedor (facturado, pagado, pendiente) solo para ADMIN y REVISOR. */
+const ROLES_TOTALES_PROVEEDOR = ["ADMIN", "REVISOR"] as const;
 
 function canalPagoLabel(canal: CanalPago): string {
   return CANALES_PAGO.find((c) => c.value === canal)?.label ?? canal;
@@ -57,13 +70,27 @@ function canalPagoLabel(canal: CanalPago): string {
 // Helpers de formato / parseo
 // ---------------------------------------------------------------------------
 
+/**
+ * Lee el texto canónico que entrega `CampoMoneda` (pesos, hasta 2 decimales)
+ * y devuelve el mismo texto canónico si es válido y > 0; null si no.
+ */
 function parseBigIntInput(raw: string): string | null {
-  const cleaned = raw.replace(/\./g, "").replace(/,/g, "").replace(/\$/g, "").replace(/COP/g, "").trim();
-  if (cleaned === "" || cleaned === "-") return null;
+  const limpio = raw.trim();
+  if (limpio === "" || limpio === "-") return null;
   try {
-    return BigInt(cleaned).toString();
+    const c = centavosDeTexto(limpio);
+    return c > 0n ? textoCanonicoDeCentavos(c) : null;
   } catch {
     return null;
+  }
+}
+
+/** Centavos de un pesos-texto (API o canónico); 0n si viene vacío o dañado. */
+function centavosSeguro(raw: string): bigint {
+  try {
+    return centavosDeTexto(raw);
+  } catch {
+    return 0n;
   }
 }
 
@@ -74,11 +101,358 @@ function isoToDateInput(iso: string | null): string {
   return d.toISOString().slice(0, 10);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function parseErrorMessage(response: Response): Promise<string> {
+  try {
+    const payload: unknown = await response.json();
+    if (isRecord(payload) && typeof payload.error === "string") return payload.error;
+  } catch {
+    // ignore
+  }
+  return `Error ${response.status}`;
+}
+
+// ---------------------------------------------------------------------------
+// Fila de pago (CxP v2, §D.5) — normalizada AQUÍ y no con `fetchPagosGlobal`
+// de `pagos-global-api.ts` (P4): esa función manda el filtro de proveedor con
+// el nombre de parámetro equivocado (`proveedorId` en vez de
+// `proveedorEmpresaId`/`beneficiarioId`, que es lo único que valida
+// `listarPagosQuerySchema`), no lee `costosAsumidosGalcomex` ni `proveedor`
+// de la respuesta (llaves reales del backend), y lee `raw.facturas` cuando el
+// campo real de cada fila es `aplicaciones` (`CamposCxpPago` en
+// `src/lib/pagos/service.ts`). El detalle exacto de los cuatro desajustes
+// está en el informe de este paquete (pedido a P4). Mientras tanto, el módulo
+// habla directo con `/api/pagos` con los nombres de parámetro reales.
+// ---------------------------------------------------------------------------
+
+export type AplicacionFilaPago = {
+  facturaId: string;
+  numFactura: string;
+  numFacturaVisible: string;
+  monto: string;
+};
+
+type GrupoFilaPago = {
+  estado: "ACTIVO" | "ANULADO";
+  costoBancario: string;
+  costoAsumidoPor: CostoAsumidoPor;
+  esHistorico: boolean;
+  otrosDOs: GrupoPagoDOInfo[];
+};
+
+export type PagoRow = {
+  id: string;
+  tramiteId: string;
+  consecutivo: string;
+  estadoTramite: string;
+  clienteId: string;
+  clienteNombre: string;
+  clienteNit: string;
+  concepto: string;
+  /** Nombres de beneficiarios vinculados (display). */
+  beneficiarios: string;
+  numSoporte: string | null;
+  /** Comprobante bancario. null = sin comprobante (badge de advertencia, no bloquea). */
+  documentoId: string | null;
+  faltaComprobante: boolean;
+  /** Id del grupo de pago en bloque (null = pago normal de un solo DO). */
+  grupoPagoId: string | null;
+  /** Otros DOs del mismo grupoPagoId (vacío si no es un pago en bloque). */
+  grupoOtrosDOs: GrupoPagoDOInfo[];
+  /** Facturas de proveedor que cubre este pago, con su monto (§D.5: "FE 12481 · $464.077"). */
+  aplicaciones: AplicacionFilaPago[];
+  /** true = el pago tiene facturas aplicadas (pago suelto con `aplicaciones` o "Generar pago"). */
+  tieneFacturas: boolean;
+  esBloque: boolean;
+  /** false = valor y canal de solo lectura (pago con facturas o de un bloque). */
+  editableDinero: boolean;
+  grupo: GrupoFilaPago | null;
+  valor: string; // BigInt serializado
+  canalPago: CanalPago;
+  costoBancario: string; // BigInt serializado
+  orden: number;
+  fechaRealPago: string | null; // ISO
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function normalizeGrupoOtrosDOs(raw: unknown): GrupoPagoDOInfo[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr
+    .filter(isRecord)
+    .map((g) => ({ tramiteId: String(g.tramiteId ?? ""), consecutivo: String(g.consecutivo ?? "") }));
+}
+
+export function normalizeAplicacion(raw: unknown): AplicacionFilaPago | null {
+  if (!isRecord(raw)) return null;
+  return {
+    facturaId: String(raw.facturaId ?? ""),
+    numFactura: String(raw.numFactura ?? ""),
+    numFacturaVisible: String(raw.numFacturaVisible ?? raw.numFactura ?? ""),
+    monto: String(raw.monto ?? "0"),
+  };
+}
+
+export function normalizeGrupo(raw: unknown): GrupoFilaPago | null {
+  if (!isRecord(raw)) return null;
+  return {
+    estado: raw.estado === "ANULADO" ? "ANULADO" : "ACTIVO",
+    costoBancario: String(raw.costoBancario ?? "0"),
+    costoAsumidoPor: (raw.costoAsumidoPor as CostoAsumidoPor) ?? "PRIMER_DO",
+    esHistorico: raw.esHistorico === true,
+    otrosDOs: normalizeGrupoOtrosDOs(raw.otrosDOs),
+  };
+}
+
+export function normalizePagoRow(raw: unknown): PagoRow | null {
+  if (!isRecord(raw)) return null;
+  const tramite = isRecord(raw.tramite) ? raw.tramite : {};
+  const cliente = isRecord(tramite.cliente) ? tramite.cliente : {};
+
+  return {
+    id: String(raw.id ?? ""),
+    tramiteId: String(raw.tramiteId ?? tramite.id ?? ""),
+    consecutivo: String(tramite.consecutivo ?? ""),
+    estadoTramite: String(tramite.estado ?? ""),
+    clienteId: String(cliente.id ?? ""),
+    clienteNombre: String(cliente.nombre ?? ""),
+    clienteNit: String(cliente.nit ?? ""),
+    concepto: String(raw.concepto ?? ""),
+    beneficiarios: (() => {
+      const arr = Array.isArray(raw.beneficiarios) ? raw.beneficiarios : [];
+      return arr
+        .filter(isRecord)
+        .map((link) => {
+          const b = isRecord(link.beneficiario) ? link.beneficiario : link;
+          return typeof b.nombre === "string" ? b.nombre : "";
+        })
+        .filter(Boolean)
+        .join(", ");
+    })(),
+    numSoporte: typeof raw.numSoporte === "string" ? raw.numSoporte : null,
+    documentoId: typeof raw.documentoId === "string" ? raw.documentoId : null,
+    faltaComprobante:
+      typeof raw.faltaComprobante === "boolean"
+        ? raw.faltaComprobante
+        : !(typeof raw.documentoId === "string"),
+    grupoPagoId: typeof raw.grupoPagoId === "string" ? raw.grupoPagoId : null,
+    grupoOtrosDOs: normalizeGrupoOtrosDOs(raw.grupoOtrosDOs),
+    aplicaciones: (Array.isArray(raw.aplicaciones) ? raw.aplicaciones : [])
+      .map(normalizeAplicacion)
+      .filter((a): a is AplicacionFilaPago => a !== null),
+    tieneFacturas: raw.tieneFacturas === true,
+    esBloque: raw.esBloque === true,
+    editableDinero: raw.editableDinero !== false,
+    grupo: normalizeGrupo(raw.grupo),
+    valor: String(raw.valor ?? "0"),
+    canalPago: (raw.canalPago as CanalPago) ?? "OTRO",
+    costoBancario: String(raw.costoBancario ?? "0"),
+    orden: typeof raw.orden === "number" ? raw.orden : 0,
+    fechaRealPago: typeof raw.fechaRealPago === "string" ? raw.fechaRealPago : null,
+    createdAt: String(raw.createdAt ?? ""),
+    updatedAt: String(raw.updatedAt ?? ""),
+  };
+}
+
+/** §D.4/§D.5: valor y canal de solo lectura en un pago con facturas o de un bloque. */
+export function esDineroSoloLectura(fila: Pick<PagoRow, "tieneFacturas" | "esBloque">, readOnly: boolean): boolean {
+  return readOnly || fila.tieneFacturas || fila.esBloque;
+}
+
+/** "(3 facturas en 3 DOs)" / "(1 factura en 1 DO)" — franja del proveedor (§D.5). */
+/**
+ * "Costos bancarios" de la tarjeta al recalcular en la pantalla tras editar o
+ * borrar: Σ costo de cada pago + lo que asumió Galcomex en los bloques (que no
+ * está en ningún pago). Mismo total que da el servidor al cargar.
+ */
+export function totalCostosBancarios(costosPorPago: readonly string[], costosAsumidosGalcomex: string): bigint {
+  return costosPorPago.reduce((s, c) => s + centavosSeguro(c || "0"), 0n) + centavosSeguro(costosAsumidosGalcomex || "0");
+}
+
+export function textoFacturasEnDOs(facturasConSaldo: number, dosConSaldo: number): string {
+  const facturaLabel = facturasConSaldo === 1 ? "factura" : "facturas";
+  const doLabel = dosConSaldo === 1 ? "DO" : "DOs";
+  return `${facturasConSaldo} ${facturaLabel} en ${dosConSaldo} ${doLabel}`;
+}
+
+/**
+ * "de ellos $Y asumidos por Galcomex" bajo la tarjeta "Costos bancarios"
+ * (R8/§D.5) — null cuando Galcomex no asumió ningún costo del período.
+ */
+export function textoCostosBancariosDetalle(costosAsumidosGalcomex: string): string | null {
+  const monto = centavosSeguro(costosAsumidosGalcomex || "0");
+  if (monto <= 0n) return null;
+  return `de ellos ${formatCOP(costosAsumidosGalcomex)} asumidos por Galcomex`;
+}
+
+/** Selección del filtro "Proveedor" (§D.5): empresa proveedora o ficha suelta. */
+type ProveedorTipo = "EMPRESA" | "FICHA";
+type ProveedorSeleccion = { tipo: ProveedorTipo; id: string; nombre: string; nit: string | null };
+
+type ProveedorMeta = { nombre: string; facturasConSaldo: number; dosConSaldo: number };
+
+type PagosGlobalDataLocal = {
+  pagos: PagoRow[];
+  totalPagos: string;
+  costosBancarios: string;
+  /** De `costosBancarios`, lo que asumió Galcomex (bloques `costoAsumidoPor=GALCOMEX`). */
+  costosAsumidosGalcomex: string;
+  totalSinFecha: string;
+  resumenProveedor: ResumenCxpJson | null;
+  proveedorMeta: ProveedorMeta | null;
+};
+
+/** `GET /api/pagos` con los nombres de parámetro reales (`listarPagosQuerySchema`, P1). */
+async function fetchPagosGlobalDirecto(
+  filtros: {
+    clienteId?: string;
+    canalPago?: CanalPago | "";
+    soloPendientes?: boolean;
+    proveedor?: ProveedorSeleccion | null;
+  },
+  signal?: AbortSignal,
+): Promise<PagosGlobalDataLocal> {
+  const url = new URL("/api/pagos", window.location.origin);
+  if (filtros.clienteId) url.searchParams.set("clienteId", filtros.clienteId);
+  if (filtros.canalPago) url.searchParams.set("canalPago", filtros.canalPago);
+  if (filtros.soloPendientes) url.searchParams.set("solo_pendientes", "true");
+  if (filtros.proveedor) {
+    if (filtros.proveedor.tipo === "EMPRESA") {
+      url.searchParams.set("proveedorEmpresaId", filtros.proveedor.id);
+    } else {
+      url.searchParams.set("beneficiarioId", filtros.proveedor.id);
+    }
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new PagosApiError("No fue posible conectar con /api/pagos.");
+  }
+
+  if (!response.ok) {
+    const msg = await parseErrorMessage(response);
+    throw new PagosApiError(msg, response.status);
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!isRecord(payload)) throw new PagosApiError("Respuesta de pagos no válida.");
+
+  const rawPagos = Array.isArray(payload.pagos) ? payload.pagos : [];
+  const pagos = rawPagos.map(normalizePagoRow).filter((p): p is PagoRow => p !== null);
+  const proveedorRaw = payload.proveedor;
+
+  return {
+    pagos,
+    totalPagos: String(payload.totalPagos ?? "0"),
+    costosBancarios: String(payload.costosBancarios ?? "0"),
+    costosAsumidosGalcomex: String(payload.costosAsumidosGalcomex ?? "0"),
+    totalSinFecha: String(payload.totalSinFecha ?? payload.totalPendiente ?? "0"),
+    resumenProveedor: isRecord(payload.resumenProveedor)
+      ? (payload.resumenProveedor as unknown as ResumenCxpJson)
+      : null,
+    proveedorMeta: isRecord(proveedorRaw)
+      ? {
+          nombre: String(proveedorRaw.nombre ?? ""),
+          facturasConSaldo: typeof proveedorRaw.facturasConSaldo === "number" ? proveedorRaw.facturasConSaldo : 0,
+          dosConSaldo: typeof proveedorRaw.dosConSaldo === "number" ? proveedorRaw.dosConSaldo : 0,
+        }
+      : null,
+  };
+}
+
+/**
+ * Opciones del combo "Proveedor" (§D.5): empresas con `esProveedor=true`
+ * (`/api/clientes?rol=proveedor`, F1) + fichas de pago sueltas sin empresa (`/api/beneficiarios`,
+ * `empresaId == null` — las que ya están enlazadas a una empresa quedan
+ * cubiertas por su grupo "Empresas proveedoras").
+ */
+async function fetchProveedorOptions(signal?: AbortSignal): Promise<ProveedorSeleccion[]> {
+  const [clientesRes, beneficiariosRes] = await Promise.all([
+    fetch("/api/clientes?rol=proveedor", { cache: "no-store", headers: { Accept: "application/json" }, signal }),
+    fetch("/api/beneficiarios", { cache: "no-store", headers: { Accept: "application/json" }, signal }),
+  ]);
+
+  const empresas: ProveedorSeleccion[] = [];
+  if (clientesRes.ok) {
+    const payload: unknown = await clientesRes.json().catch(() => null);
+    const lista = isRecord(payload) && Array.isArray(payload.clientes) ? payload.clientes : [];
+    for (const c of lista) {
+      if (!isRecord(c) || c.esProveedor !== true) continue;
+      empresas.push({
+        tipo: "EMPRESA",
+        id: String(c.id ?? ""),
+        nombre: String(c.nombre ?? ""),
+        nit: typeof c.nit === "string" ? c.nit : null,
+      });
+    }
+  }
+
+  const fichas: ProveedorSeleccion[] = [];
+  if (beneficiariosRes.ok) {
+    const payload: unknown = await beneficiariosRes.json().catch(() => null);
+    const lista = isRecord(payload) && Array.isArray(payload.beneficiarios) ? payload.beneficiarios : [];
+    for (const b of lista) {
+      if (!isRecord(b) || b.empresaId) continue;
+      fichas.push({
+        tipo: "FICHA",
+        id: String(b.id ?? ""),
+        nombre: String(b.nombreCorto ?? b.nombre ?? ""),
+        nit: typeof b.nit === "string" ? b.nit : null,
+      });
+    }
+  }
+
+  empresas.sort((a, b) => a.nombre.localeCompare(b.nombre));
+  fichas.sort((a, b) => a.nombre.localeCompare(b.nombre));
+  return [...empresas, ...fichas];
+}
+
+/**
+ * Resuelve el `beneficiarioInicial` que exige `PagoEnBloqueModal` (siempre
+ * una FICHA, `BeneficiarioSeleccion`). Con una empresa proveedora, toma su
+ * primera ficha de pago (`GET /api/clientes/[id]/cuenta-proveedor`, P1): el
+ * dominio une por NIT base (`fichasHermanas`), así que cualquiera de sus
+ * fichas trae el mismo total de facturas.
+ */
+async function resolverBeneficiarioInicial(proveedor: ProveedorSeleccion): Promise<BeneficiarioSeleccion | null> {
+  if (proveedor.tipo === "FICHA") {
+    return { id: proveedor.id, nombre: proveedor.nombre, nit: proveedor.nit };
+  }
+  try {
+    const response = await fetch(`/api/clientes/${encodeURIComponent(proveedor.id)}/cuenta-proveedor`, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const payload: unknown = await response.json().catch(() => null);
+    const fichas = isRecord(payload) && Array.isArray(payload.fichas) ? payload.fichas : [];
+    const primera = fichas.find(isRecord);
+    if (!primera) return null;
+    return {
+      id: String(primera.id ?? ""),
+      nombre: String(primera.nombreCorto ?? primera.nombre ?? proveedor.nombre),
+      nit: typeof primera.nit === "string" ? primera.nit : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Fila editable
 // ---------------------------------------------------------------------------
 
-type FilaPago = PagoGlobalRow & {
+type FilaPago = PagoRow & {
   editingConcepto: string;
   editingNumSoporte: string;
   editingValor: string;
@@ -87,9 +461,13 @@ type FilaPago = PagoGlobalRow & {
   dirty: boolean;
   saving: boolean;
   errorFila: string | null;
+  /** Mensaje de CampoMoneda si lo escrito en «Valor» no es un monto válido. */
+  errorValor: string | null;
+  /** El cambio no se mandó porque no pasa la validación (no hubo rollback). */
+  errorValidacion: string | null;
 };
 
-function filaFromRow(row: PagoGlobalRow): FilaPago {
+function filaFromRow(row: PagoRow): FilaPago {
   return {
     ...row,
     editingConcepto: row.concepto,
@@ -100,6 +478,8 @@ function filaFromRow(row: PagoGlobalRow): FilaPago {
     dirty: false,
     saving: false,
     errorFila: null,
+    errorValor: null,
+    errorValidacion: null,
   };
 }
 
@@ -120,6 +500,8 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
   const [error, setError] = useState<string | null>(null);
   const [valorRaw, setValorRaw] = useState("");
   const [beneficiariosSel, setBeneficiariosSel] = useState<BeneficiarioSeleccion[]>([]);
+  // Idempotencia (§B.5): una clave por formulario; se renueva tras guardar o con IDEMPOTENCIA_CONFLICTO.
+  const [claveIdempotencia, setClaveIdempotencia] = useState(nuevaClaveIdempotencia);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -138,29 +520,34 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
     }
 
     const valorBig = parseBigIntInput(valorRaw);
-    if (!valorBig || BigInt(valorBig) <= 0n) {
-      setError("El valor debe ser un número entero mayor a 0.");
+    if (!valorBig) {
+      setError("El valor debe ser mayor a 0.");
       return;
     }
 
     setIsSubmitting(true);
     try {
-      await createPago(tramiteId, {
+      const pago = await createPago(tramiteId, {
         concepto,
         beneficiarioIds: beneficiariosSel.map((b) => b.id),
         numSoporte: null,
         valor: valorBig,
         canalPago,
         fechaRealPago,
+        claveIdempotencia,
       });
+      setClaveIdempotencia(nuevaClaveIdempotencia());
       const consecutivo = tramites.find((t) => t.id === tramiteId)?.consecutivo ?? "";
       toast({
-        title: "Pago guardado",
-        description: `${concepto} · ${formatCOP(valorBig)}${consecutivo ? ` en ${consecutivo}` : ""}`,
+        title: pago.repetido ? "Este pago ya estaba guardado" : "Pago guardado",
+        description: `${concepto} · ${formatCOP(pago.valor)}${consecutivo ? ` en ${consecutivo}` : ""}`,
         variant: "success",
       });
       onCreated();
     } catch (caught) {
+      if ((caught as { codigo?: string } | null)?.codigo === "IDEMPOTENCIA_CONFLICTO") {
+        setClaveIdempotencia(nuevaClaveIdempotencia());
+      }
       setError(describirError(caught, "Error al crear el pago."));
     } finally {
       setIsSubmitting(false);
@@ -220,7 +607,7 @@ function NuevoPagoModal({ tramites, tramiteIdInicial, onClose, onCreated }: Nuev
               <input
                 type="date"
                 name="fechaRealPago"
-                defaultValue={new Date().toISOString().slice(0, 10)}
+                defaultValue={hoyBogotaISO()}
                 className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
               />
             </label>
@@ -304,11 +691,16 @@ type FilaPagoProps = {
       | "editingFechaReal"
     >,
     value: string,
+    detalle?: DetalleCampoMoneda,
   ) => void;
   onBlur: (id: string) => void;
   onDelete: (fila: FilaPago) => void;
   /** Sube y adjunta el comprobante bancario a un pago ya guardado. */
   onAdjuntarComprobante: (fila: FilaPago, file: File) => void;
+  /** Pago de un bloque: no se borra suelto (409 PAGO_DE_BLOQUE); se ve el bloque. */
+  onVerBloque: (grupoPagoId: string) => void;
+  /** "Anular bloque" (solo ADMIN, R16); sin él no se muestra. */
+  onAnularBloque?: (fila: FilaPago) => void;
 };
 
 function FilaPagoRow({
@@ -319,8 +711,14 @@ function FilaPagoRow({
   onBlur,
   onDelete,
   onAdjuntarComprobante,
+  onVerBloque,
+  onAnularBloque,
 }: FilaPagoProps) {
   const etiqueta = `pago "${fila.concepto}" del DO ${fila.consecutivo}`;
+  // §D.4/§D.5: valor y canal de solo lectura en un pago con facturas o de un bloque
+  // (se anula y se registra de nuevo, no se edita a mano).
+  const soloLecturaDinero = esDineroSoloLectura(fila, readOnly);
+  const totalDOsBloque = fila.grupoOtrosDOs.length + 1;
 
   return (
     <>
@@ -354,6 +752,15 @@ function FilaPagoRow({
               className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
             />
           )}
+          {fila.aplicaciones.length > 0 ? (
+            <div className="space-y-0.5 px-1 pb-0.5">
+              {fila.aplicaciones.map((a) => (
+                <p key={a.facturaId} className="text-[11px] text-slate-500">
+                  {a.numFacturaVisible || a.numFactura} · {formatCOP(a.monto)}
+                </p>
+              ))}
+            </div>
+          ) : null}
           {fila.faltaComprobante || fila.grupoPagoId ? (
             <div className="flex flex-wrap gap-1 px-1 pb-0.5">
               {fila.faltaComprobante ? (
@@ -393,11 +800,11 @@ function FilaPagoRow({
                   className="inline-flex items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700"
                   title={
                     fila.grupoOtrosDOs.length > 0
-                      ? `Pago multi-DO — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
-                      : "Pago multi-DO"
+                      ? `Pago en bloque — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
+                      : "Pago en bloque"
                   }
                 >
-                  Pago multi-DO
+                  {fila.grupoOtrosDOs.length > 0 ? `Pago en bloque · ${totalDOsBloque} DOs` : "Pago en bloque"}
                 </span>
               ) : null}
             </div>
@@ -427,12 +834,14 @@ function FilaPagoRow({
 
         {/* Valor */}
         <td className="px-3 py-2 text-right">
-          {readOnly ? (
-            <span className="text-sm font-medium text-slate-900">{formatCOP(fila.valor)}</span>
+          {soloLecturaDinero ? (
+            <span className="text-sm font-medium text-slate-900" title={fila.tieneFacturas || fila.esBloque ? "Pago con facturas o de un bloque: anula y registra de nuevo para cambiar el valor" : undefined}>
+              {formatCOP(fila.valor)}
+            </span>
           ) : (
             <CampoMoneda
               value={fila.editingValor}
-              onValueChange={(digitos) => onChange(fila.id, "editingValor", digitos)}
+              onValueChange={(digitos, detalle) => onChange(fila.id, "editingValor", digitos, detalle)}
               onFocus={(e) => e.target.select()}
               onBlur={() => onBlur(fila.id)}
               aria-label={`Valor del ${etiqueta} (COP)`}
@@ -443,7 +852,7 @@ function FilaPagoRow({
 
         {/* Canal */}
         <td className="px-3 py-2">
-          {readOnly ? (
+          {soloLecturaDinero ? (
             <span className="text-sm text-slate-700">{canalPagoLabel(fila.canalPago)}</span>
           ) : (
             <select
@@ -498,20 +907,42 @@ function FilaPagoRow({
               ) : (
                 <CheckCircle2 className="h-4 w-4 text-slate-300" aria-hidden="true" />
               )}
-              <button
-                type="button"
-                onClick={() => onDelete(fila)}
-                disabled={isDeleting}
-                className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
-                aria-label={`Eliminar ${etiqueta}`}
-                title="Eliminar pago"
-              >
-                {isDeleting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Trash2 className="h-4 w-4" aria-hidden="true" />
-                )}
-              </button>
+              {fila.esBloque && fila.grupoPagoId ? (
+                // Un pago de bloque no se borra suelto: se anula el bloque completo.
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onVerBloque(fila.grupoPagoId as string)}
+                    className="whitespace-nowrap px-1 text-xs font-semibold text-cyan-700 hover:underline"
+                  >
+                    Ver bloque
+                  </button>
+                  {onAnularBloque ? (
+                    <button
+                      type="button"
+                      onClick={() => onAnularBloque(fila)}
+                      className="whitespace-nowrap px-1 text-xs font-semibold text-rose-700 hover:underline"
+                    >
+                      Anular bloque
+                    </button>
+                  ) : null}
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onDelete(fila)}
+                  disabled={isDeleting}
+                  className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                  aria-label={`Eliminar ${etiqueta}`}
+                  title="Eliminar pago"
+                >
+                  {isDeleting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  )}
+                </button>
+              )}
             </div>
           )}
         </td>
@@ -525,6 +956,14 @@ function FilaPagoRow({
           </td>
         </tr>
       ) : null}
+      {fila.errorValidacion ? (
+        <tr className="bg-rose-50">
+          <td colSpan={10} className="px-3 py-1.5 text-xs text-rose-700" role="alert">
+            <AlertTriangle className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
+            {fila.errorValidacion} — el cambio no se guardó.
+          </td>
+        </tr>
+      ) : null}
     </>
   );
 }
@@ -533,12 +972,22 @@ function FilaPagoRow({
 // Componente principal
 // ---------------------------------------------------------------------------
 
-export function PagosWorkspace() {
+export type PagosWorkspaceProps = {
+  /** Deep-link desde otra pantalla (p. ej. la ficha del proveedor) — §G, P6. */
+  proveedorInicial?: { tipo: ProveedorTipo; id: string } | null;
+};
+
+export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps) {
   const puedeEditar = usePermiso(ROLES_EDITAR_PAGOS);
+  const puedeVerTotalesProveedor = usePermiso(ROLES_TOTALES_PROVEEDOR);
+  const esAdmin = usePermiso(["ADMIN"]);
+  const rol = useRol();
+  const puedeVerFichaProveedor = rutaPermitida("/clientes", rol);
   const { toast } = useToast();
   const confirmar = useConfirm();
   const [filas, setFilas] = useState<FilaPago[]>([]);
   const [totales, setTotales] = useState({ totalPagos: "0", costosBancarios: "0", totalPendiente: "0" });
+  const [costosAsumidosGalcomex, setCostosAsumidosGalcomex] = useState("0");
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
   const [tramites, setTramites] = useState<TramiteOption[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -546,7 +995,11 @@ export function PagosWorkspace() {
   const [reloadKey, setReloadKey] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [multiDOOpen, setMultiDOOpen] = useState(false);
+  const [beneficiarioParaBloque, setBeneficiarioParaBloque] = useState<BeneficiarioSeleccion | null>(null);
+  const [resolviendoBloqueProveedor, setResolviendoBloqueProveedor] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [bloqueParaDetalle, setBloqueParaDetalle] = useState<string | null>(null);
+  const [bloqueParaAnular, setBloqueParaAnular] = useState<{ grupoPagoId: string; resumen: string } | null>(null);
 
   // Filtros
   const [filtroCliente, setFiltroCliente] = useState("");
@@ -554,7 +1007,34 @@ export function PagosWorkspace() {
   const [soloPendientes, setSoloPendientes] = useState(false);
   const [busqueda, setBusqueda] = useState("");
 
+  // Filtro "Proveedor" (§D.5)
+  const [proveedorOptions, setProveedorOptions] = useState<ProveedorSeleccion[]>([]);
+  const [proveedorSel, setProveedorSel] = useState<ProveedorSeleccion | null>(null);
+  const [resumenProveedor, setResumenProveedor] = useState<ResumenCxpJson | null>(null);
+  const [proveedorMeta, setProveedorMeta] = useState<ProveedorMeta | null>(null);
+
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // --- Opciones del filtro "Proveedor" (independiente de la carga de pagos) ---
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchProveedorOptions(controller.signal)
+      .then((opts) => {
+        setProveedorOptions(opts);
+        setProveedorSel((actual) => {
+          if (actual || !proveedorInicial) return actual;
+          const match = opts.find((o) => o.tipo === proveedorInicial.tipo && o.id === proveedorInicial.id);
+          return match ?? { tipo: proveedorInicial.tipo, id: proveedorInicial.id, nombre: "", nit: null };
+        });
+      })
+      .catch((caught: unknown) => {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+        // El combo de proveedor es una ayuda adicional: si falla su carga, el
+        // resto del módulo sigue funcionando sin ese filtro.
+      });
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proveedorInicial?.tipo, proveedorInicial?.id]);
 
   // --- Carga ---
   useEffect(() => {
@@ -564,14 +1044,16 @@ export function PagosWorkspace() {
       setLoadState("loading");
       setLoadError(null);
 
-      const filtros: PagosGlobalFiltros = {
-        clienteId: filtroCliente || undefined,
-        canalPago: filtroCanal || undefined,
-        soloPendientes: soloPendientes || undefined,
-      };
-
       const [data, clientesData, tramitesData] = await Promise.all([
-        fetchPagosGlobal(filtros, controller.signal),
+        fetchPagosGlobalDirecto(
+          {
+            clienteId: filtroCliente || undefined,
+            canalPago: filtroCanal || undefined,
+            soloPendientes: soloPendientes || undefined,
+            proveedor: proveedorSel,
+          },
+          controller.signal,
+        ),
         fetchClienteOptions(controller.signal),
         fetchTramiteOptions(controller.signal),
       ]);
@@ -580,8 +1062,11 @@ export function PagosWorkspace() {
       setTotales({
         totalPagos: data.totalPagos,
         costosBancarios: data.costosBancarios,
-        totalPendiente: data.totalPendiente,
+        totalPendiente: data.totalSinFecha,
       });
+      setCostosAsumidosGalcomex(data.costosAsumidosGalcomex);
+      setResumenProveedor(data.resumenProveedor);
+      setProveedorMeta(data.proveedorMeta);
       setClientes(clientesData);
       setTramites(tramitesData);
       setLoadState("ready");
@@ -594,7 +1079,8 @@ export function PagosWorkspace() {
     });
 
     return () => controller.abort();
-  }, [reloadKey, filtroCliente, filtroCanal, soloPendientes]);
+  }, [reloadKey, filtroCliente, filtroCanal, soloPendientes, proveedorSel]);
+
 
   // Búsqueda en cliente (concepto / beneficiario / N° soporte / DO)
   const filasVisibles = useMemo(() => {
@@ -621,9 +1107,21 @@ export function PagosWorkspace() {
       | "editingFechaReal"
     >,
     value: string,
+    detalle?: DetalleCampoMoneda,
   ) {
     setFilas((prev) =>
-      prev.map((f) => (f.id === id ? { ...f, [field]: value, dirty: true, errorFila: null } : f)),
+      prev.map((f) =>
+        f.id === id
+          ? {
+              ...f,
+              [field]: value,
+              dirty: true,
+              errorFila: null,
+              errorValidacion: null,
+              ...(field === "editingValor" ? { errorValor: detalle && !detalle.ok ? detalle.mensaje : null } : {}),
+            }
+          : f,
+      ),
     );
   }
 
@@ -641,16 +1139,22 @@ export function PagosWorkspace() {
     const fila = filas.find((f) => f.id === id);
     if (!fila) return;
 
+    // Un valor vacío o mal escrito NO se cambia en silencio por el anterior.
+    const valorGuardar = valorFilaParaGuardar(fila.editingValor, fila.errorValor);
+    if (!valorGuardar.ok) {
+      setFilas((prev) => prev.map((f) => (f.id === id ? { ...f, errorValidacion: valorGuardar.mensaje } : f)));
+      return;
+    }
+
     setFilas((prev) => prev.map((f) => (f.id === id ? { ...f, saving: true, errorFila: null } : f)));
 
-    const valorBig = parseBigIntInput(fila.editingValor);
     const snapshot = { ...fila };
 
     try {
       const updated = await updatePago(fila.tramiteId, id, {
         concepto: fila.editingConcepto,
         numSoporte: fila.editingNumSoporte || null,
-        valor: valorBig ?? fila.valor,
+        valor: valorGuardar.valor,
         canalPago: fila.editingCanal,
         fechaRealPago: fila.editingFechaReal || null,
       });
@@ -732,18 +1236,24 @@ export function PagosWorkspace() {
   }
 
   // Recalcula los totales de las tarjetas a partir de las filas actuales
+  // (costosAsumidosGalcomex y el resumen de proveedor no se recalculan aquí:
+  // se refrescan en el próximo `reloadKey`).
   function setReloadTotales() {
     setFilas((prev) => {
-      const totalPagos = prev.reduce((s, f) => s + BigInt(parseBigIntInput(f.editingValor) ?? f.valor), 0n);
-      const costosBancarios = prev.reduce((s, f) => s + BigInt(f.costoBancario), 0n);
+      const totalPagos = prev.reduce((s, f) => s + centavosSeguro(parseBigIntInput(f.editingValor) ?? f.valor), 0n);
+      // + lo que Galcomex asumió en los bloques (no está en ningún pago): mismo total que el servidor.
+      const costosBancarios = totalCostosBancarios(
+        prev.map((f) => f.costoBancario),
+        costosAsumidosGalcomex,
+      );
       const totalPendiente = prev.reduce(
-        (s, f) => (f.fechaRealPago === null ? s + BigInt(parseBigIntInput(f.editingValor) ?? f.valor) : s),
+        (s, f) => (f.fechaRealPago === null ? s + centavosSeguro(parseBigIntInput(f.editingValor) ?? f.valor) : s),
         0n,
       );
       setTotales({
-        totalPagos: totalPagos.toString(),
-        costosBancarios: costosBancarios.toString(),
-        totalPendiente: totalPendiente.toString(),
+        totalPagos: textoDeCentavos(totalPagos),
+        costosBancarios: textoDeCentavos(costosBancarios),
+        totalPendiente: textoDeCentavos(totalPendiente),
       });
       return prev;
     });
@@ -781,8 +1291,35 @@ export function PagosWorkspace() {
     setReloadKey((k) => k + 1);
   }
 
+  function abrirBloqueSinProveedor() {
+    setBeneficiarioParaBloque(null);
+    setMultiDOOpen(true);
+  }
+
+  /** "Pagar en bloque" desde la franja del proveedor filtrado (§D.5). */
+  async function abrirBloqueParaProveedor() {
+    if (!proveedorSel || resolviendoBloqueProveedor) return;
+    setResolviendoBloqueProveedor(true);
+    try {
+      const beneficiario = await resolverBeneficiarioInicial(proveedorSel);
+      if (!beneficiario) {
+        toast({
+          title: "No se pudo abrir el pago en bloque",
+          description: "Este proveedor no tiene una ficha de pago activa.",
+          variant: "error",
+        });
+        return;
+      }
+      setBeneficiarioParaBloque(beneficiario);
+      setMultiDOOpen(true);
+    } finally {
+      setResolviendoBloqueProveedor(false);
+    }
+  }
+
   function handlePagoMultiDOCreado() {
     setMultiDOOpen(false);
+    setBeneficiarioParaBloque(null);
     setReloadKey((k) => k + 1);
   }
 
@@ -805,12 +1342,12 @@ export function PagosWorkspace() {
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              onClick={() => setMultiDOOpen(true)}
+              onClick={abrirBloqueSinProveedor}
               className="inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-              title="Un solo comprobante cubre facturas de varios DOs (caso Karina/Occidente)"
+              title="Un solo comprobante cubre facturas de proveedor de varios DOs"
             >
               <Users className="h-4 w-4" aria-hidden="true" />
-              Pago multi-DO
+              Pagar en bloque
             </button>
             <button
               type="button"
@@ -837,13 +1374,19 @@ export function PagosWorkspace() {
       ) : loadState === "ready" || filas.length > 0 ? (
         <div className="grid grid-cols-3 gap-4">
           {[
-            { label: "Total pagos", value: totales.totalPagos, color: "text-slate-900" },
-            { label: "Costos bancarios", value: totales.costosBancarios, color: "text-slate-700" },
-            { label: "Pendiente de pagar", value: totales.totalPendiente, color: "text-amber-700" },
+            { label: "Total pagado", value: totales.totalPagos, color: "text-slate-900", detalle: null as string | null },
+            {
+              label: "Costos bancarios",
+              value: totales.costosBancarios,
+              color: "text-slate-700",
+              detalle: textoCostosBancariosDetalle(costosAsumidosGalcomex),
+            },
+            { label: "Pagos sin fecha de pago", value: totales.totalPendiente, color: "text-amber-700", detalle: null },
           ].map((s) => (
             <div key={s.label} className="border border-slate-200 bg-white px-4 py-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{s.label}</p>
               <p className={`mt-1 text-xl font-bold ${s.color}`}>{formatCOP(s.value)}</p>
+              {s.detalle ? <p className="mt-0.5 text-[11px] text-slate-500">{s.detalle}</p> : null}
             </div>
           ))}
         </div>
@@ -866,6 +1409,50 @@ export function PagosWorkspace() {
         </select>
 
         <select
+          value={proveedorSel ? `${proveedorSel.tipo}:${proveedorSel.id}` : ""}
+          onChange={(e) => {
+            const v = e.target.value;
+            // Al cambiar de proveedor, la franja no puede seguir mostrando las cifras
+            // del anterior mientras llega (o falla) la carga del nuevo.
+            setResumenProveedor(null);
+            setProveedorMeta(null);
+            if (!v) {
+              setProveedorSel(null);
+              return;
+            }
+            const [tipo, id] = v.split(":") as [ProveedorTipo, string];
+            const encontrado = proveedorOptions.find((o) => o.tipo === tipo && o.id === id);
+            setProveedorSel(encontrado ?? { tipo, id, nombre: "", nit: null });
+          }}
+          aria-label="Filtrar por proveedor"
+          className="h-9 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
+        >
+          <option value="">Todos los proveedores</option>
+          {proveedorOptions.some((o) => o.tipo === "EMPRESA") ? (
+            <optgroup label="Empresas proveedoras">
+              {proveedorOptions
+                .filter((o) => o.tipo === "EMPRESA")
+                .map((o) => (
+                  <option key={`EMPRESA:${o.id}`} value={`EMPRESA:${o.id}`}>
+                    {o.nombre}
+                  </option>
+                ))}
+            </optgroup>
+          ) : null}
+          {proveedorOptions.some((o) => o.tipo === "FICHA") ? (
+            <optgroup label="Otras fichas de pago">
+              {proveedorOptions
+                .filter((o) => o.tipo === "FICHA")
+                .map((o) => (
+                  <option key={`FICHA:${o.id}`} value={`FICHA:${o.id}`}>
+                    {o.nombre}
+                  </option>
+                ))}
+            </optgroup>
+          ) : null}
+        </select>
+
+        <select
           value={filtroCanal}
           onChange={(e) => setFiltroCanal(e.target.value as CanalPago | "")}
           aria-label="Filtrar por canal de pago"
@@ -883,13 +1470,14 @@ export function PagosWorkspace() {
           type="button"
           onClick={() => setSoloPendientes((v) => !v)}
           aria-pressed={soloPendientes}
+          title="Pagos a los que les falta la fecha real de pago. No es lo que se le debe a proveedores."
           className={`h-9 border px-3 text-xs font-semibold transition ${
             soloPendientes
               ? "border-amber-600 bg-amber-600 text-white"
               : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
           }`}
         >
-          Solo pendientes
+          Sin fecha de pago
         </button>
 
         <input
@@ -909,6 +1497,70 @@ export function PagosWorkspace() {
           Actualizar
         </button>
       </div>
+
+      {/* Franja del proveedor filtrado (§D.5) */}
+      {proveedorSel ? (
+        <div className="flex flex-col gap-3 border border-cyan-200 bg-cyan-50/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-slate-800">
+            {resumenProveedor && proveedorMeta && puedeVerTotalesProveedor ? (
+              <>
+                <span className="font-semibold text-slate-900">{proveedorMeta.nombre || proveedorSel.nombre}</span>
+                {" — "}
+                Total de sus facturas <strong>{formatCOP(resumenProveedor.facturado)}</strong>
+                {" · "}
+                Pagado <strong>{formatCOP(resumenProveedor.pagado)}</strong>
+                {desgloseResumenCxp(resumenProveedor).map((d) => (
+                  <span key={d.etiqueta}>
+                    {" · "}
+                    {d.etiqueta} <strong>{formatCOP(d.valor)}</strong>
+                  </span>
+                ))}
+                {" · "}
+                Pendiente por pagar <strong className="text-amber-700">{formatCOP(resumenProveedor.pendiente)}</strong>
+                {" "}
+                ({textoFacturasEnDOs(proveedorMeta.facturasConSaldo, proveedorMeta.dosConSaldo)})
+              </>
+            ) : proveedorMeta ? (
+              // OPERATIVO (D-6): sin totales del proveedor, solo cuántas facturas tienen saldo.
+              <>
+                <span className="font-semibold text-slate-900">{proveedorMeta.nombre || proveedorSel.nombre}</span>
+                {" — "}
+                Con saldo: {textoFacturasEnDOs(proveedorMeta.facturasConSaldo, proveedorMeta.dosConSaldo)}
+              </>
+            ) : loadState === "error" ? (
+              <span className="text-rose-700">No se pudo cargar el estado de cuenta del proveedor.</span>
+            ) : (
+              <span className="text-slate-500">Cargando el estado de cuenta del proveedor…</span>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {puedeEditar ? (
+              <button
+                type="button"
+                onClick={() => void abrirBloqueParaProveedor()}
+                disabled={resolviendoBloqueProveedor}
+                className="inline-flex h-9 items-center gap-2 border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+              >
+                {resolviendoBloqueProveedor ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Users className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                Pagar en bloque
+              </button>
+            ) : null}
+            {proveedorSel.tipo === "EMPRESA" && puedeVerFichaProveedor ? (
+              <Link
+                href={`${rutaCliente(proveedorSel.id)}#estado-cuenta`}
+                className="inline-flex h-9 items-center gap-1 border border-slate-300 bg-white px-3 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-50"
+              >
+                Ver estado de cuenta
+                <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </Link>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {/* Tabla: la carga inicial reserva el alto con un skeleton */}
       {isInitialLoading ? (
@@ -939,7 +1591,7 @@ export function PagosWorkspace() {
             <ModuleState
               type="empty"
               title="No hay pagos que coincidan con los filtros"
-              detail="Ajusta cliente, canal o búsqueda para ampliar la consulta."
+              detail="Ajusta cliente, proveedor, canal o búsqueda para ampliar la consulta."
             />
           </div>
         ) : (
@@ -972,6 +1624,18 @@ export function PagosWorkspace() {
                   onBlur={handleBlurField}
                   onDelete={(f) => void handleDelete(f)}
                   onAdjuntarComprobante={(f, file) => void handleAdjuntarComprobante(f, file)}
+                  onVerBloque={setBloqueParaDetalle}
+                  onAnularBloque={
+                    esAdmin
+                      ? (f) =>
+                          setBloqueParaAnular({
+                            grupoPagoId: f.grupoPagoId as string,
+                            resumen: `${f.consecutivo} · ${formatCOP(f.valor)}${
+                              f.grupoOtrosDOs.length > 0 ? ` + ${f.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}` : ""
+                            }`,
+                          })
+                      : undefined
+                  }
                 />
               ))}
             </tbody>
@@ -989,9 +1653,29 @@ export function PagosWorkspace() {
         />
       ) : null}
 
+      {bloqueParaDetalle ? (
+        <DetalleBloqueDialog grupoPagoId={bloqueParaDetalle} onClose={() => setBloqueParaDetalle(null)} />
+      ) : null}
+
+      {bloqueParaAnular ? (
+        <AnularBloqueDialog
+          grupoPagoId={bloqueParaAnular.grupoPagoId}
+          resumen={bloqueParaAnular.resumen}
+          onClose={() => setBloqueParaAnular(null)}
+          onDone={() => {
+            setBloqueParaAnular(null);
+            setReloadKey((k) => k + 1);
+          }}
+        />
+      ) : null}
+
       {multiDOOpen && puedeEditar ? (
-        <PagoMultiDOModal
-          onClose={() => setMultiDOOpen(false)}
+        <PagoEnBloqueModal
+          beneficiarioInicial={beneficiarioParaBloque}
+          onClose={() => {
+            setMultiDOOpen(false);
+            setBeneficiarioParaBloque(null);
+          }}
           onCreated={handlePagoMultiDOCreado}
         />
       ) : null}

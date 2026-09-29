@@ -2,95 +2,113 @@
 
 import {
   forwardRef,
+  useCallback,
   useEffect,
-  useLayoutEffect,
+  useId,
   useRef,
   useState,
   type ChangeEvent,
   type CSSProperties,
+  type FocusEvent,
   type InputHTMLAttributes,
 } from "react";
 
+import {
+  MENSAJE_DINERO_USUARIO,
+  centavosDeTexto,
+  centavosDeTextoUsuario,
+  formatoEdicion,
+  formatoPesos,
+  mensajeComaAmbigua,
+  redondearAPeso,
+  textoCanonicoDeCentavos,
+  type Centavos,
+  type MotivoDineroUsuario,
+} from "@/lib/dinero";
+
 /**
- * Campo de dinero en COP: mientras se escribe, muestra separador de miles
- * ("200.000"). El valor real (`value` / `onValueChange`) siempre son dígitos
- * ("200000"), nunca el texto formateado — así el resto de la app sigue
- * trabajando en pesos enteros (BigInt) sin tocar el formato.
+ * Campo de dinero en COP con centavos (fase centavos, diseño A.8).
  *
- *   <CampoMoneda value={montoRaw} onValueChange={setMontoRaw} placeholder="5.800.000" />
+ * - `value` / `defaultValue`: PESOS como texto de máquina, el mismo que habla
+ *   la API: "502801.45", "200000", "502801.00" (también se acepta el entero
+ *   heredado). "" = vacío.
+ * - `onValueChange(texto, detalle)`: emite pesos texto CANÓNICO ("200000",
+ *   "502801.45"), listo para mandar a la API; "" si está vacío o si lo escrito
+ *   no es válido (y `detalle.ok = false` con el motivo). Nunca trunca: "1,500"
+ *   o "1,5055" quedan marcados como error, no se recortan.
+ * - Mientras se edita, el campo muestra el texto tal cual se escribe (sin
+ *   puntos de miles, para que borrar un dígito no convierta "1.500" en
+ *   "1.50") y una ayuda con el monto interpretado ("$ 1.500.000"); al salir
+ *   muestra "502.801,45" / "1.500.000".
+ * - Acepta lo que escribe o pega una persona (tabla de A.5): "502.801,45",
+ *   "502801,45", "502801.45" (pegado de Excel), "$ 1.500.000".
+ * - `decimales={false}`: solo pesos enteros (p. ej. comisión LM).
+ * - Con `name`, agrega `<input type="hidden" name>` con el texto canónico
+ *   (para formularios con FormData); el input visible no lleva `name`.
+ * - «Vacío» e «inválido» emiten el mismo "" pero NO son lo mismo: lo escrito
+ *   inválido marca el input visible con `setCustomValidity(mensaje)`, así un
+ *   `<form onSubmit>` no se envía (el navegador muestra el mensaje). Los flujos
+ *   que guardan sin `<form>` (botón con onClick, guardado al salir del campo)
+ *   deben mirar `detalle.ok`; `useErroresMoneda()` lo lleva por campo.
  *
- * Con `name`, además agrega un `<input type="hidden">` con los dígitos para
- * que los formularios basados en `FormData` (sin `value`/`onValueChange`
- * controlados) sigan funcionando: el input visible no lleva `name`.
+ *   <CampoMoneda value={monto} onValueChange={setMonto} placeholder="5.800.000" />
  */
+
+export type DetalleCampoMoneda =
+  | { ok: true; centavos: Centavos | null }
+  | { ok: false; motivo: MotivoDineroUsuario | "CON_CENTAVOS"; mensaje: string };
 
 export type CampoMonedaProps = Omit<
   InputHTMLAttributes<HTMLInputElement>,
   "value" | "defaultValue" | "onChange" | "type" | "name"
 > & {
-  /** Valor controlado: solo dígitos ("200000"), con "-" al inicio si permitirNegativo. "" = vacío. */
+  /** Valor controlado: pesos texto de máquina ("502801.45", "200000"); "" = vacío. */
   value?: string;
   /** Valor inicial sin controlar, mismo formato. */
   defaultValue?: string;
-  /** Recibe siempre los dígitos crudos, nunca el texto formateado. */
-  onValueChange?: (digitos: string) => void;
+  /** Recibe pesos texto canónico ("200000", "502801.45") o "" (vacío o inválido; ver `detalle`). */
+  onValueChange?: (texto: string, detalle: DetalleCampoMoneda) => void;
   /** Si se da, agrega <input type="hidden" name={name}> para formularios con FormData. */
   name?: string;
-  /** Permite un "-" inicial (montos negativos). Por defecto false. */
+  /** Permite montos negativos. Por defecto false. */
   permitirNegativo?: boolean;
+  /** Permite centavos (hasta 2 decimales). Por defecto true; false = solo pesos enteros. */
+  decimales?: boolean;
   /** Muestra "$" dentro del campo. Por defecto true. */
   prefijo?: boolean;
+  /** Muestra el mensaje de error bajo el campo. Por defecto true. */
+  mostrarError?: boolean;
   /** Clases para el <span> contenedor (el input conserva `className`). */
   wrapperClassName?: string;
 };
 
-// useLayoutEffect en el servidor genera warning (Next hace SSR de client
-// components); en el navegador sí lo necesitamos para mover el caret antes
-// del paint.
-const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
+const MENSAJE_CON_CENTAVOS = "Solo pesos enteros, sin centavos";
 
-/** "1234567" -> "1.234.567", "-45712" -> "-45.712", "" -> "" */
-export function formatearMilesCOP(digitos: string): string {
-  if (!digitos) return "";
-  const negativo = digitos.startsWith("-");
-  const soloDigitos = negativo ? digitos.slice(1) : digitos;
-  if (!soloDigitos) return negativo ? "-" : "";
-  const agrupado = soloDigitos.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return negativo ? `-${agrupado}` : agrupado;
-}
+type Evaluacion = { texto: string; detalle: DetalleCampoMoneda };
 
-/**
- * Extrae dígitos de texto escrito o pegado: "$ 200.000,50" -> "200000" (la
- * coma es separador decimal, los decimales se descartan), quita ceros a la
- * izquierda ("007" -> "7", "0" -> "0") y limita a 15 dígitos.
- */
-export function digitosDesdeTextoCOP(texto: string, permitirNegativo = false): string {
-  if (!texto) return "";
-  const negativo = permitirNegativo && texto.includes("-");
-  const parteEntera = texto.split(",")[0] ?? "";
-  const soloDigitos = parteEntera.replace(/\D/g, "");
-  const sinCerosIniciales = soloDigitos.replace(/^0+(?=\d)/, "");
-  const limitado = sinCerosIniciales.slice(0, 15);
-  if (!limitado) return negativo ? "-" : "";
-  return negativo ? `-${limitado}` : limitado;
-}
-
-/** Cuenta dígitos y el signo "-" (los únicos caracteres que sobreviven al formateo). */
-function contarSignificativos(texto: string): number {
-  return (texto.match(/[-\d]/g) ?? []).length;
-}
-
-/** Posición en `texto` justo después del n-ésimo dígito/signo. */
-function posicionTrasSignificativos(texto: string, n: number): number {
-  if (n <= 0) return 0;
-  let contados = 0;
-  for (let i = 0; i < texto.length; i++) {
-    if (/[-\d]/.test(texto[i])) {
-      contados++;
-      if (contados >= n) return i + 1;
-    }
+/** Interpreta lo que escribió la persona. */
+function evaluar(texto: string, permitirNegativo: boolean, decimales: boolean): Evaluacion {
+  const r = centavosDeTextoUsuario(texto, { permitirNegativo });
+  if (!r.ok) {
+    if (r.motivo === "VACIO") return { texto: "", detalle: { ok: true, centavos: null } };
+    const mensaje = r.motivo === "FORMATO" ? mensajeComaAmbigua(texto) : MENSAJE_DINERO_USUARIO[r.motivo];
+    return { texto: "", detalle: { ok: false, motivo: r.motivo, mensaje } };
   }
-  return texto.length;
+  if (!decimales && redondearAPeso(r.valor) !== r.valor) {
+    return { texto: "", detalle: { ok: false, motivo: "CON_CENTAVOS", mensaje: MENSAJE_CON_CENTAVOS } };
+  }
+  return { texto: textoCanonicoDeCentavos(r.valor), detalle: { ok: true, centavos: r.valor } };
+}
+
+/** Lee el `value` que da el padre (texto de máquina). null = vacío; undefined = ilegible. */
+function leerValor(texto: string): Centavos | null | undefined {
+  const limpio = texto.trim();
+  if (limpio === "") return null;
+  try {
+    return centavosDeTexto(limpio);
+  } catch {
+    return undefined;
+  }
 }
 
 export const CampoMoneda = forwardRef<HTMLInputElement, CampoMonedaProps>(function CampoMoneda(
@@ -100,54 +118,102 @@ export const CampoMoneda = forwardRef<HTMLInputElement, CampoMonedaProps>(functi
     onValueChange,
     name,
     permitirNegativo = false,
+    decimales = true,
     prefijo = true,
+    mostrarError = true,
     wrapperClassName,
     style,
     className,
+    onFocus,
+    onBlur,
     ...rest
   },
   ref,
 ) {
-  const controlado = value !== undefined;
-  const [interno, setInterno] = useState(() =>
-    digitosDesdeTextoCOP(defaultValue ?? "", permitirNegativo),
-  );
-  const digitos = controlado ? digitosDesdeTextoCOP(value ?? "", permitirNegativo) : interno;
-  const formateado = formatearMilesCOP(digitos);
-
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const caretPendiente = useRef<number | null>(null);
+  const asignarRef = useCallback(
+    (el: HTMLInputElement | null) => {
+      inputRef.current = el;
+      if (typeof ref === "function") ref(el);
+      else if (ref) ref.current = el;
+    },
+    [ref],
+  );
+  const controlado = value !== undefined;
+  const [interno, setInterno] = useState(() => {
+    const c = leerValor(defaultValue ?? "");
+    return c === null || c === undefined ? (defaultValue ?? "").trim() : textoCanonicoDeCentavos(c);
+  });
+  const valorActual = controlado ? (value ?? "") : interno;
 
-  useIsomorphicLayoutEffect(() => {
-    if (caretPendiente.current === null) return;
-    const el = inputRef.current;
-    if (el) {
-      const pos = posicionTrasSignificativos(formateado, caretPendiente.current);
-      el.setSelectionRange(pos, pos);
-    }
-    caretPendiente.current = null;
-  }, [formateado]);
+  /** Texto tal como lo escribió la persona; null = se muestra el valor formateado. */
+  const [textoUsuario, setTextoUsuario] = useState<string | null>(null);
+  const [enfocado, setEnfocado] = useState(false);
+  const [ultimoEmitido, setUltimoEmitido] = useState<string | null>(null);
+  const [valorPrevio, setValorPrevio] = useState(valorActual);
+
+  // Si el padre cambia `value` por su cuenta (reset, carga de datos), se
+  // descarta lo que la persona tenía escrito.
+  if (valorActual !== valorPrevio) {
+    setValorPrevio(valorActual);
+    if (valorActual !== ultimoEmitido) setTextoUsuario(null);
+  }
+
+  const centavos = leerValor(valorActual);
+  const evaluacion = textoUsuario !== null ? evaluar(textoUsuario, permitirNegativo, decimales) : null;
+  const error = evaluacion && !evaluacion.detalle.ok ? evaluacion.detalle.mensaje : null;
+
+  let mostrado: string;
+  if (textoUsuario !== null) mostrado = textoUsuario;
+  else if (centavos === null) mostrado = "";
+  else if (centavos === undefined) mostrado = valorActual;
+  else mostrado = formatoEdicion(centavos, { miles: !enfocado });
+
+  const ayuda =
+    enfocado && evaluacion && evaluacion.detalle.ok && evaluacion.detalle.centavos !== null
+      ? formatoPesos(evaluacion.detalle.centavos)
+      : null;
+  const errorVisible = mostrarError && error !== null && !enfocado;
+
+  // Lo escrito inválido deja el input en estado inválido para el formulario:
+  // un `<form onSubmit>` no se envía con este campo así (no se confunde con vacío).
+  useEffect(() => {
+    inputRef.current?.setCustomValidity(error ?? "");
+  }, [error]);
+
+  const idBase = useId();
+  const idError = `${idBase}-error`;
+  const idAyuda = `${idBase}-ayuda`;
 
   function handleChange(event: ChangeEvent<HTMLInputElement>) {
     const texto = event.target.value;
-    const caret = event.target.selectionStart ?? texto.length;
-    caretPendiente.current = contarSignificativos(texto.slice(0, caret));
-
-    const nuevosDigitos = digitosDesdeTextoCOP(texto, permitirNegativo);
-    if (!controlado) setInterno(nuevosDigitos);
-    onValueChange?.(nuevosDigitos);
+    setTextoUsuario(texto);
+    const r = evaluar(texto, permitirNegativo, decimales);
+    setUltimoEmitido(r.texto);
+    if (!controlado) setInterno(r.texto);
+    onValueChange?.(r.texto, r.detalle);
   }
 
-  function setRefs(node: HTMLInputElement | null) {
-    inputRef.current = node;
-    if (typeof ref === "function") {
-      ref(node);
-    } else if (ref && "current" in ref) {
-      (ref as { current: HTMLInputElement | null }).current = node;
+  function handleFocus(event: FocusEvent<HTMLInputElement>) {
+    setEnfocado(true);
+    onFocus?.(event);
+  }
+
+  function handleBlur(event: FocusEvent<HTMLInputElement>) {
+    setEnfocado(false);
+    // Válido: se vuelve a mostrar formateado desde el valor. Inválido: se
+    // conserva lo escrito para que la persona vea qué corregir.
+    if (textoUsuario !== null && evaluar(textoUsuario, permitirNegativo, decimales).detalle.ok) {
+      setTextoUsuario(null);
     }
+    onBlur?.(event);
   }
 
   const estiloInput: CSSProperties | undefined = prefijo ? { ...style, paddingLeft: "1.75rem" } : style;
+  const describedBy =
+    [rest["aria-describedby"], errorVisible ? idError : null, ayuda ? idAyuda : null].filter(Boolean).join(" ") ||
+    undefined;
+  const valorOculto = centavos === null || centavos === undefined ? "" : textoCanonicoDeCentavos(centavos);
 
   return (
     // `block` (no `inline-block`): así un input con `w-full` sigue ocupando todo
@@ -163,16 +229,72 @@ export const CampoMoneda = forwardRef<HTMLInputElement, CampoMonedaProps>(functi
       ) : null}
       <input
         {...rest}
-        ref={setRefs}
+        ref={asignarRef}
         type="text"
-        inputMode="numeric"
+        inputMode={decimales ? "decimal" : "numeric"}
         autoComplete="off"
-        value={formateado}
+        value={mostrado}
         onChange={handleChange}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        aria-invalid={errorVisible ? true : rest["aria-invalid"]}
+        aria-describedby={describedBy}
         className={className}
         style={estiloInput}
       />
-      {name !== undefined ? <input type="hidden" name={name} value={digitos} /> : null}
+      {ayuda ? (
+        <span
+          id={idAyuda}
+          data-campo-moneda="ayuda"
+          className="pointer-events-none absolute left-0 top-full z-10 mt-1 whitespace-nowrap rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs text-slate-600 shadow-sm"
+        >
+          {ayuda}
+        </span>
+      ) : null}
+      {errorVisible ? (
+        <span id={idError} role="alert" data-campo-moneda="error" className="mt-1 block text-xs text-red-600">
+          {error}
+        </span>
+      ) : null}
+      {name !== undefined ? <input type="hidden" name={name} value={valorOculto} /> : null}
     </span>
   );
 });
+
+/**
+ * Lleva, por campo, si lo escrito en un `CampoMoneda` es inválido. Sirve para
+ * los flujos que guardan sin `<form>` nativo, o para dar un mensaje propio:
+ *
+ *   const errores = useErroresMoneda();
+ *   <CampoMoneda onValueChange={(t, d) => { setCif(t); errores.registrar("Valor CIF", d); }} />
+ *   if (errores.primerError) { setError(errores.primerError); return; }   // no guardar
+ *
+ * `primerError` = "Valor CIF: <mensaje del campo>" o null.
+ */
+export function useErroresMoneda() {
+  const [errores, setErrores] = useState<Readonly<Record<string, string>>>({});
+
+  const registrar = useCallback((campo: string, detalle: DetalleCampoMoneda) => {
+    setErrores((prev) => {
+      if (detalle.ok) return sinCampo(prev, campo);
+      if (prev[campo] === detalle.mensaje) return prev;
+      return { ...prev, [campo]: detalle.mensaje };
+    });
+  }, []);
+
+  /** Olvida el error de un campo (al cancelar la edición o quitar la fila). */
+  const quitar = useCallback((campo: string) => setErrores((prev) => sinCampo(prev, campo)), []);
+
+  const limpiar = useCallback(() => setErrores({}), []);
+
+  const primero = Object.entries(errores)[0];
+  const primerError = primero ? `${primero[0]}: ${primero[1]}` : null;
+  return { errores, primerError, registrar, quitar, limpiar };
+}
+
+function sinCampo(prev: Readonly<Record<string, string>>, campo: string): Readonly<Record<string, string>> {
+  if (!(campo in prev)) return prev;
+  const resto = { ...prev };
+  delete resto[campo];
+  return resto;
+}

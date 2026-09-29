@@ -24,6 +24,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db/prisma";
 import { registrarPagoFacturaAbono } from "@/lib/cartera/service";
 import { getIngresos } from "../service";
+import { pesos } from "@/lib/dinero";
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -203,17 +204,17 @@ async function crearFacturaDirecta(
   const borrador = await prisma.borradorFactura.create({
     data: {
       tramiteId: tramite.id,
-      comision: 150_000n,
-      ivaComision: 28_500n,
-      impuesto4x1000: 0n,
-      costosBancarios: 0n,
-      totalAnticipo: 5_000_000n,
-      totalPagos: 5_000_000n,
-      totalFactura: 5_000_000n + saldoACargoCliente,
-      saldoAFavorCliente,
-      saldoACargoCliente,
-      saldoAFavorLM: 0n,
-      saldoACargoLM: 0n,
+      comisionCentavos: pesos(150_000),
+      ivaComisionCentavos: pesos(28_500),
+      impuesto4x1000Centavos: 0n,
+      costosBancariosCentavos: 0n,
+      totalAnticipoCentavos: pesos(5_000_000),
+      totalPagosCentavos: pesos(5_000_000),
+      totalFacturaCentavos: pesos(5_000_000) + saldoACargoCliente,
+      saldoAFavorClienteCentavos: saldoAFavorCliente,
+      saldoACargoClienteCentavos: saldoACargoCliente,
+      saldoAFavorLMCentavos: 0n,
+      saldoACargoLMCentavos: 0n,
       estado: EstadoBorrador.FACTURADO,
       aprobadoPorId: db.userId,
       fechaAprobacion: new Date(`${stateYear}-01-10`),
@@ -226,11 +227,11 @@ async function crearFacturaDirecta(
       clienteId: db.clienteId,
       numSiigo: `ING-${runId.slice(-6)}-${numero}`,
       fecha: new Date(`${stateYear}-01-15`),
-      totalFactura: borrador.totalFactura,
-      saldoAFavorCliente,
-      saldoACargoCliente,
-      saldoAFavorLM: 0n,
-      saldoACargoLM: 0n,
+      totalFacturaCentavos: borrador.totalFacturaCentavos,
+      saldoAFavorClienteCentavos: saldoAFavorCliente,
+      saldoACargoClienteCentavos: saldoACargoCliente,
+      saldoAFavorLMCentavos: 0n,
+      saldoACargoLMCentavos: 0n,
     },
   });
 
@@ -272,10 +273,10 @@ describe("ingresos service con Postgres local", () => {
     await prisma.anticipo.create({
       data: {
         clienteId: db.clienteId,
-        monto: 2_000_000n,
+        montoCentavos: pesos(2_000_000),
         fecha: fechaAnticipo,
         tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-        costoRecaudo: 1_950n,
+        costoRecaudoCentavos: pesos(1_950),
         verificadoBanco: true,
       },
     });
@@ -284,20 +285,20 @@ describe("ingresos service con Postgres local", () => {
     const fila = ingresos.find((f) => f.tipo === "ANTICIPO");
 
     expect(fila).toBeDefined();
-    expect(fila?.montoConSigno).toBe(2_000_000n);
+    expect(fila?.montoConSigno).toBe(pesos(2_000_000));
     expect(fila?.montoConSigno).toBeGreaterThan(0n);
   });
 
   it("abono aparece como entrada positiva en ingresos", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const { facturaId } = await crearFacturaDirecta(db, { saldoACargoCliente: 1_000_000n });
+    const { facturaId } = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(1_000_000) });
 
     await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 600_000n,
+      monto: pesos(600_000),
       fecha: new Date(`${stateYear}-02-10`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -307,19 +308,19 @@ describe("ingresos service con Postgres local", () => {
     const fila = ingresos.find((f) => f.tipo === "ABONO");
 
     expect(fila).toBeDefined();
-    expect(fila?.montoConSigno).toBe(600_000n);
+    expect(fila?.montoConSigno).toBe(pesos(600_000));
   });
 
   it("devolución aparece como salida negativa en ingresos", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const { facturaId } = await crearFacturaDirecta(db, { saldoAFavorCliente: 500_000n });
+    const { facturaId } = await crearFacturaDirecta(db, { saldoAFavorCliente: pesos(500_000) });
 
     await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.DEVOLUCION,
-      monto: 300_000n,
+      monto: pesos(300_000),
       fecha: new Date(`${stateYear}-03-01`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -329,7 +330,7 @@ describe("ingresos service con Postgres local", () => {
     const fila = ingresos.find((f) => f.tipo === "DEVOLUCION");
 
     expect(fila).toBeDefined();
-    expect(fila?.montoConSigno).toBe(-300_000n);
+    expect(fila?.montoConSigno).toBe(-pesos(300_000));
     expect(fila?.montoConSigno).toBeLessThan(0n);
   });
 
@@ -344,33 +345,33 @@ describe("ingresos service con Postgres local", () => {
     await prisma.anticipo.create({
       data: {
         clienteId: db.clienteId,
-        monto: 1_000_000n,
+        montoCentavos: pesos(1_000_000),
         fecha: new Date(`${stateYear}-06-05`),
         tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-        costoRecaudo: 1_950n,
+        costoRecaudoCentavos: pesos(1_950),
         verificadoBanco: false,
       },
     });
 
     // Factura con abono el día 10
-    const { facturaId } = await crearFacturaDirecta(db, { saldoACargoCliente: 800_000n });
+    const { facturaId } = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(800_000) });
     await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 500_000n,
+      monto: pesos(500_000),
       fecha: new Date(`${stateYear}-06-10`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
     });
 
     // Factura con saldo a favor y devolución el día 20
-    const { facturaId: factura2Id } = await crearFacturaDirecta(db, { saldoAFavorCliente: 200_000n });
+    const { facturaId: factura2Id } = await crearFacturaDirecta(db, { saldoAFavorCliente: pesos(200_000) });
     await registrarPagoFacturaAbono({
       facturaId: factura2Id,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.DEVOLUCION,
-      monto: 200_000n,
+      monto: pesos(200_000),
       fecha: new Date(`${stateYear}-06-20`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -385,7 +386,7 @@ describe("ingresos service con Postgres local", () => {
 
     // Verificar saldo corrido: anticipo 1.000.000 + abono 500.000 - devolucion 200.000 = 1.300.000
     const ultimaFila = ingresos[ingresos.length - 1];
-    expect(ultimaFila.saldoCorrido).toBe(1_300_000n);
+    expect(ultimaFila.saldoCorrido).toBe(pesos(1_300_000));
   });
 
   it("filtro por clienteId devuelve solo filas de ese cliente", async (ctx) => {

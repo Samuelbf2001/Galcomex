@@ -16,6 +16,7 @@
 import "dotenv/config";
 
 import { prisma } from "../src/lib/db/prisma";
+import { formatoPesos, pesos } from "../src/lib/dinero";
 import { capacidadesDeEmpresa } from "../src/lib/capacidades/service";
 import { configDe, tiene } from "../src/lib/capacidades/resolver";
 
@@ -43,7 +44,7 @@ async function empresa(nit: string) {
 async function facturadosDe(clienteId: string) {
   const b = await prisma.borradorFactura.findMany({
     where: { estado: "FACTURADO", tramite: { clienteId } },
-    select: { numFacturaSiigo: true, totalFactura: true, formatoFactura: true, tramite: { select: { consecutivo: true } } },
+    select: { numFacturaSiigo: true, totalFacturaCentavos: true, formatoFactura: true, tramite: { select: { consecutivo: true } } },
     orderBy: { numFacturaSiigo: "asc" },
   });
   return b;
@@ -97,12 +98,12 @@ async function cw() {
   const e = await empresa("900775062");
   if (!e) return;
   const caps = await capacidadesDeEmpresa(e.id);
-  const items = await prisma.tarifaItem.findMany({ where: { tarifario: { empresaId: e.id, estado: "VIGENTE" } }, select: { concepto: true, tipoCalculo: true, disparador: true, valor: true } });
+  const items = await prisma.tarifaItem.findMany({ where: { tarifario: { empresaId: e.id, estado: "VIGENTE" } }, select: { concepto: true, tipoCalculo: true, disparador: true, valorCentavos: true } });
   const pct = items.find((i) => i.tipoCalculo === "PORCENTAJE_MIN");
   const f = await facturadosDe(e.id);
   push({ cliente: "CW ASIA", condicion: "Servicio logístico = 0,37 % del CIF con mínimos (suelta 370k, 20′ 498k, 40′ 554k)", fuente: "31-ago 74:30–75:20; propuesta PDF", esperado: "base_cif + tarifario_propio + ítem PORCENTAJE_MIN", enProd: `${cap(caps, "base_cif") ? "CIF sí" : "CIF no"} · ${cap(caps, "tarifario_propio") ? "tarifario sí" : "tarifario no"} · ${pct ? pct.concepto : "sin ítem %"}`, estado: cap(caps, "base_cif") && cap(caps, "tarifario_propio") && pct ? "OK" : "FALTA", evidencia: `DO.CTG26-0021 parcial: tarifario = 615.595 = real BAQ-18437/18627 (mínimo suelta 370.000; el 0,37 % nunca lo superó). Facturados: ${f.map((x) => x.numFacturaSiigo).join(", ")}`, comoVerificar: "DO de CW → base de cálculo CIF + tipo de carga → Generar borrador" });
   push({ cliente: "CW ASIA", condicion: "Eventos: despacho parcial 50k, ingreso ZF por contenedor, registro/modificación", fuente: "31-ago 81:07–82:22", esperado: "eventos_facturables + ítems EVENTO", enProd: `${cap(caps, "eventos_facturables") ? "encendida" : "apagada"} · ${items.filter((i) => i.disparador === "EVENTO").map((i) => i.concepto).join(", ")}`, estado: cap(caps, "eventos_facturables") && items.some((i) => i.disparador === "EVENTO") ? "OK" : "FALTA", evidencia: "DO.CTG26-0021 DESPACHO_PARCIAL×2; DO.CTG26-0198 INGRESO_ZF 166.000 = real BAQ-18794", comoVerificar: "DO → Resumen → eventos → checklist gana documentos" });
-  push({ cliente: "CW ASIA", condicion: "Sistematización 30.000 (Litoplas 20.000)", fuente: "31-ago 81:32", esperado: "ítem SISTEMATIZACION 30.000", enProd: items.find((i) => /SISTEMATIZACION/.test(i.concepto))?.valor?.toString() ?? "—", estado: items.find((i) => /SISTEMATIZACION/.test(i.concepto))?.valor === 30000n ? "OK" : "FALTA", evidencia: "Todas las facturas 2026 de CW traen 30.000", comoVerificar: "Empresas → CW ASIA → Tarifario" });
+  push({ cliente: "CW ASIA", condicion: "Sistematización 30.000 (Litoplas 20.000)", fuente: "31-ago 81:32", esperado: "ítem SISTEMATIZACION 30.000", enProd: ((v) => (v === undefined ? "—" : formatoPesos(v)))(items.find((i) => /SISTEMATIZACION/.test(i.concepto))?.valorCentavos), estado: items.find((i) => /SISTEMATIZACION/.test(i.concepto))?.valorCentavos === pesos(30_000) ? "OK" : "FALTA", evidencia: "Todas las facturas 2026 de CW traen 30.000", comoVerificar: "Empresas → CW ASIA → Tarifario" });
   push({ cliente: "CW ASIA", condicion: "Defectos del tarifario cargado", fuente: "Simulación 21-sep", esperado: "PAGO_REGISTRO como EVENTO; GASTOS_TRAMITE confirmar", enProd: items.filter((i) => /PAGO_REGISTRO|GASTOS_TRAMITE/.test(i.concepto)).map((i) => `${i.concepto} ${i.disparador}`).join(", "), estado: items.some((i) => i.concepto === "PAGO_REGISTRO" && i.disparador === "SIEMPRE") ? "PARCIAL" : "OK", evidencia: "PAGO_REGISTRO (espejo de costo) con disparador SIEMPRE tumba el borrador automático si el DO no tiene registro; GASTOS_TRAMITE 100.000/contenedor no aparece en ninguna factura 2026", comoVerificar: "Generar borrador en un DO de CW sin registro → error TarifaIncompleta" });
 }
 
@@ -124,8 +125,8 @@ async function coldex() {
   const caps = await capacidadesDeEmpresa(e.id);
   const f = await facturadosDe(e.id);
   push({ cliente: "Coldex", condicion: "Es cliente Y proveedor (agencia de aduanas de todos menos Litoplas)", fuente: "31-ago 67:30; 10-jun", esperado: "esCliente + esProveedor", enProd: `esCliente ${e.esCliente} · esProveedor ${e.esProveedor} · ${await prisma.tramiteDO.count({ where: { agenciaAduanas: "COLDEX" } })} DOs con agencia Coldex`, estado: e.esCliente && e.esProveedor ? "OK" : "FALTA", evidencia: `39 DOs históricos como cliente intermediario; facturados: ${f.map((x) => x.numFacturaSiigo).join(", ")}`, comoVerificar: "Empresas → Coldex → roles; Trámites → filtro agencia" });
-  const mov = await prisma.movimientoCuenta.aggregate({ _count: true, _sum: { valor: true } });
-  push({ cliente: "Coldex", condicion: "Cargos manuales en cuenta corriente (mensualidad ~4 M, quincenas) que se cruzan", fuente: "31-ago 68:45–72:50", esperado: "cargos_manuales_contraparte + cruce de saldos", enProd: `${cap(caps, "cargos_manuales_contraparte") ? "encendida" : "apagada"} · ${mov._count} movimientos (${mov._sum.valor?.toString() ?? 0})`, estado: cap(caps, "cargos_manuales_contraparte") ? "OK" : "FALTA", evidencia: "Cargo de ejemplo 4.000.000 (fase 0, 15-sep); botón Cruzar saldos", comoVerificar: "Empresas → Coldex → Cuenta corriente → Cruzar saldos" });
+  const mov = await prisma.movimientoCuenta.aggregate({ _count: true, _sum: { valorCentavos: true } });
+  push({ cliente: "Coldex", condicion: "Cargos manuales en cuenta corriente (mensualidad ~4 M, quincenas) que se cruzan", fuente: "31-ago 68:45–72:50", esperado: "cargos_manuales_contraparte + cruce de saldos", enProd: `${cap(caps, "cargos_manuales_contraparte") ? "encendida" : "apagada"} · ${mov._count} movimientos (${formatoPesos(mov._sum.valorCentavos ?? 0n)})`, estado: cap(caps, "cargos_manuales_contraparte") ? "OK" : "FALTA", evidencia: "Cargo de ejemplo 4.000.000 (fase 0, 15-sep); botón Cruzar saldos", comoVerificar: "Empresas → Coldex → Cuenta corriente → Cruzar saldos" });
   push({ cliente: "Coldex", condicion: "Sin anticipos: 'las facturas siempre están a cargo'", fuente: "31-ago 70:50", esperado: "anticipos_cliente apagada", enProd: cap(caps, "anticipos_cliente") ? "encendida" : "apagada", estado: cap(caps, "anticipos_cliente") ? "FALTA" : "OK", evidencia: "5 facturas simuladas, todas saldo a cargo por el total", comoVerificar: "Empresas → Coldex → Funciones" });
   push({ cliente: "Coldex", condicion: "Solo se cobra un servicio (145.000) + revisión/fiscalización 200k/400k + sellos 10k", fuente: "31-ago 71:15; Siigo 52 facturas", esperado: "líneas manuales (sin tarifario)", enProd: `${await prisma.tarifario.count({ where: { empresaId: e.id, estado: "VIGENTE" } })} tarifarios`, estado: "PARCIAL", evidencia: "BAQ-18438 / 18662 / 18668 / 18698 / 18736 reproducidas al peso; DO multi-factura (0131) funciona", comoVerificar: "Facturación → DO.BAQ26-0131 → 3 borradores FACTURADO" });
 }

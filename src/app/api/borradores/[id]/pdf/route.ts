@@ -65,7 +65,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       orden: l.orden,
       concepto: l.concepto,
       numSoporte: l.numSoporte ?? null,
-      valor: l.valor,
+      valor: l.valorCentavos,
     }));
 
   const dto: BorradorPdfDto = {
@@ -77,18 +77,19 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     lineas,
 
-    totalAnticipo: borrador.totalAnticipo,
-    totalPagos: borrador.totalPagos,
-    comision: borrador.comision,
-    ivaComision: borrador.ivaComision,
-    costosBancarios: borrador.costosBancarios,
-    impuesto4x1000: borrador.impuesto4x1000,
-    totalFactura: borrador.totalFactura,
+    // Centavos de COP (el PDF los muestra siempre con ",00").
+    totalAnticipo: borrador.totalAnticipoCentavos,
+    totalPagos: borrador.totalPagosCentavos,
+    comision: borrador.comisionCentavos,
+    ivaComision: borrador.ivaComisionCentavos,
+    costosBancarios: borrador.costosBancariosCentavos,
+    impuesto4x1000: borrador.impuesto4x1000Centavos,
+    totalFactura: borrador.totalFacturaCentavos,
 
-    saldoAFavorCliente: borrador.saldoAFavorCliente,
-    saldoACargoCliente: borrador.saldoACargoCliente,
-    saldoAFavorLM: borrador.saldoAFavorLM,
-    saldoACargoLM: borrador.saldoACargoLM,
+    saldoAFavorCliente: borrador.saldoAFavorClienteCentavos,
+    saldoACargoCliente: borrador.saldoACargoClienteCentavos,
+    saldoAFavorLM: borrador.saldoAFavorLMCentavos,
+    saldoACargoLM: borrador.saldoACargoLMCentavos,
   };
 
   // ── Renderizar PDF ────────────────────────────────────────────────────────

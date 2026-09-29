@@ -1,8 +1,11 @@
 /**
  * Helpers de API para el módulo de Pagos (libro de pagos del DO).
  * Patrón idéntico a tramites-api.ts.
- * BigInt serializado como string desde el backend — parsear con BigInt().
+ * Dinero: pesos como texto con 2 decimales desde el backend (fase CENTAVOS,
+ * diseño §A.2) — parsear con `centavosDeTextoApi` de `@/lib/dinero`.
  */
+
+import { centavosDeTexto, centavosDeTextoApi, formatoPesos, textoDeCentavos } from "@/lib/dinero";
 
 export type CanalPago =
   | "TRANSF_BANCOLOMBIA"
@@ -31,6 +34,27 @@ export type FacturaPagoLink = {
 
 /** Otro DO del mismo grupoPagoId (pago multi-DO) — para el badge "Pago multi-DO". */
 export type GrupoPagoDOInfo = { tramiteId: string; consecutivo: string };
+
+/** Mismos valores que el enum Prisma `CostoBancarioAsumidoPor` (CxP v2). */
+export type CostoAsumidoPor = "GALCOMEX" | "PRIMER_DO" | "PRORRATEADO";
+
+/** Una factura cubierta por el pago, con el monto aplicado (CxP v2, §D.4). */
+export type AplicacionDePagoRow = {
+  facturaId: string;
+  numFactura: string;
+  /** "FE 12481" según la ficha del proveedor. */
+  numFacturaVisible: string;
+  monto: string; // BigInt serializado
+};
+
+/** Cabecera del pago en bloque, vista desde una de sus filas (CxP v2, §D.4). */
+export type GrupoDePagoRow = {
+  estado: "ACTIVO" | "ANULADO";
+  costoBancario: string; // BigInt serializado
+  costoAsumidoPor: CostoAsumidoPor;
+  esHistorico: boolean;
+  otrosDOs: GrupoPagoDOInfo[];
+};
 
 export type PagoRow = {
   id: string;
@@ -61,6 +85,24 @@ export type PagoRow = {
   viaSocio: boolean;
   /** Banco usado como tercero del 4x1000 (null = sin banco asignado). */
   bancoBeneficiario: BeneficiarioMinimo | null;
+  /** true si el puente pago↔factura tiene al menos una aplicación (CxP v2). */
+  tieneFacturas: boolean;
+  /** true si el pago es parte de un bloque (`grupoPagoId` no nulo). */
+  esBloque: boolean;
+  /** false = valor y canal de solo lectura (pago con facturas o de un bloque): anula y registra de nuevo. */
+  editableDinero: boolean;
+  /** Facturas cubiertas por este pago, con el monto aplicado a cada una. */
+  aplicaciones: AplicacionDePagoRow[];
+  /** Cabecera del bloque si `esBloque`; null en un pago suelto. */
+  grupo: GrupoDePagoRow | null;
+  /**
+   * Solo en el libro del DO: parte del valor que asume Galcomex porque pagó
+   * facturas NO SE COBRA (asesoría). "0" en pagos sueltos o 100 % cobrables.
+   * Ausente = la respuesta no lo trae (se trata como "0").
+   */
+  noCobrable?: string;
+  /** Solo en el libro del DO: costo bancario que se le cobra al cliente. */
+  costoBancarioCobrable?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -96,8 +138,15 @@ export type CruceFacturaRow = {
 export type LibroPagosData = {
   pagos: PagoRow[];
   aplicaciones: AplicacionRow[];
+  /** Σ valor de todos los pagos (lo que salió del banco). */
   totalPagos: string;
   costosBancarios: string;
+  /** Σ lo que se le cobra al cliente (sin la asesoría NO SE COBRA). */
+  totalPagosCobrables: string;
+  /** Σ lo que asume Galcomex (asesoría NO SE COBRA). */
+  totalNoCobrable: string;
+  /** Σ costo bancario que se le cobra al cliente. */
+  costosBancariosCobrables: string;
   costosBancariosAnticipo: string;
   totalAnticipoAplicado: string;
   saldos: string[];
@@ -117,6 +166,9 @@ export type TramiteDetail = {
   };
 };
 
+/** Cuánto de este pago va a una factura (CxP v2, §D.4; Σ = valor). */
+export type AplicacionPagoInput = { facturaProveedorId: string; monto: string };
+
 export type CreatePagoInput = {
   concepto: string;
   /** IDs de beneficiarios (N↔N). */
@@ -129,22 +181,32 @@ export type CreatePagoInput = {
   valor: string; // BigInt as string
   canalPago: CanalPago;
   fechaRealPago?: string | null;
-  /** IDs de facturas de proveedor a vincular (N↔N). */
+  /** CxP v2: cuánto de este pago va a cada factura (Σ = valor). Preferida sobre `facturaProveedorIds`. */
+  aplicaciones?: AplicacionPagoInput[];
+  /** Entrada heredada (reparto FIFO): no se combina con `aplicaciones`. */
   facturaProveedorIds?: string[];
   /** Banco (Beneficiario) usado como tercero del 4x1000. null/omitido = auto. */
   bancoBeneficiarioId?: string | null;
+  /** Pago en efectivo del socio. */
+  viaSocio?: boolean;
+  /** Idempotencia: UUID que genera la pantalla al abrir el formulario. */
+  claveIdempotencia?: string | null;
 };
 
 /**
- * Tipo mínimo de factura de proveedor necesario para el selector en NuevoPagoModal.
- * Refleja los campos que usa el componente; el tipo completo vive en facturas-proveedor-api.ts.
+ * Factura de proveedor con su saldo, para el selector del pago simple
+ * (`NuevoPagoModal`, CxP v2 §D.4): solo se pueden marcar las que tienen saldo.
  */
 export type FacturaProveedorOpcion = {
   id: string;
   numFactura: string;
+  /** "FE 12481" según la ficha del proveedor. */
+  numFacturaVisible: string;
   proveedorNombre: string;
-  valor: string;  // BigInt serializado
-  estado: string; // "REGISTRADA" | "PAGADA" | "FACTURADA_CLIENTE"
+  valor: string; // BigInt serializado
+  saldo: string; // BigInt serializado
+  etiqueta: "Pendiente" | "Abonada" | "Pagada" | "Cruzada" | "Pagada con ajuste";
+  estado: string; // "REGISTRADA" | "PARCIAL" | "PAGADA" | "FACTURADA_CLIENTE"
   beneficiarioId: string | null;
   beneficiarioNit: string | null;
 };
@@ -186,8 +248,11 @@ export async function fetchFacturasProveedorTramite(
       return {
         id: String(f.id ?? ""),
         numFactura: String(f.numFactura ?? ""),
+        numFacturaVisible: String(f.numFacturaVisible ?? f.numFactura ?? ""),
         proveedorNombre: String(f.proveedorNombre ?? ""),
         valor: String(f.valor ?? "0"),
+        saldo: String(f.saldo ?? f.valor ?? "0"),
+        etiqueta: (f.etiqueta as FacturaProveedorOpcion["etiqueta"]) ?? "Pendiente",
         estado: String(f.estado ?? ""),
         beneficiarioId: ben && typeof ben.id === "string" ? ben.id : (typeof f.beneficiarioId === "string" ? f.beneficiarioId : null),
         beneficiarioNit: ben && typeof ben.nit === "string" ? ben.nit : null,
@@ -214,11 +279,16 @@ export type UpdatePagoInput = {
 
 export class PagosApiError extends Error {
   status?: number;
+  /** Código del error de CxP (§B.7), p. ej. "FACTURA_SIN_SALDO", "IDEMPOTENCIA_CONFLICTO". */
+  codigo?: string;
+  detalles?: unknown;
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, codigo?: string, detalles?: unknown) {
     super(message);
     this.name = "PagosApiError";
     this.status = status;
+    this.codigo = codigo;
+    this.detalles = detalles;
   }
 }
 
@@ -281,7 +351,7 @@ export async function fetchTramiteDetail(
   };
 }
 
-function parsePagoRow(p: Record<string, unknown>): PagoRow {
+export function parsePagoRow(p: Record<string, unknown>): PagoRow {
   return {
     id: String(p.id ?? ""),
     tramiteId: String(p.tramiteId ?? ""),
@@ -346,9 +416,58 @@ function parsePagoRow(p: Record<string, unknown>): PagoRow {
         nit: typeof b.nit === "string" ? b.nit : null,
       };
     })(),
+    tieneFacturas: p.tieneFacturas === true,
+    esBloque: p.esBloque === true,
+    // Sin el campo (respuesta vieja en caché): editable solo si de verdad no
+    // tiene ni facturas ni bloque (el lado seguro para no permitir romper R2).
+    editableDinero:
+      typeof p.editableDinero === "boolean" ? p.editableDinero : p.tieneFacturas !== true && p.esBloque !== true,
+    aplicaciones: (() => {
+      const raw = Array.isArray(p.aplicaciones) ? p.aplicaciones : [];
+      return raw.filter(isRecord).map(
+        (a): AplicacionDePagoRow => ({
+          facturaId: String(a.facturaId ?? ""),
+          numFactura: String(a.numFactura ?? ""),
+          numFacturaVisible: String(a.numFacturaVisible ?? a.numFactura ?? ""),
+          monto: String(a.monto ?? "0"),
+        }),
+      );
+    })(),
+    grupo: (() => {
+      if (!isRecord(p.grupo)) return null;
+      const g = p.grupo;
+      const otros = Array.isArray(g.otrosDOs) ? g.otrosDOs : [];
+      return {
+        estado: g.estado === "ANULADO" ? "ANULADO" : "ACTIVO",
+        costoBancario: String(g.costoBancario ?? "0"),
+        costoAsumidoPor: (g.costoAsumidoPor as CostoAsumidoPor) ?? "PRIMER_DO",
+        esHistorico: g.esHistorico === true,
+        otrosDOs: otros.filter(isRecord).map((o) => ({
+          tramiteId: String(o.tramiteId ?? ""),
+          consecutivo: String(o.consecutivo ?? ""),
+        })),
+      };
+    })(),
+    ...(p.noCobrable !== undefined ? { noCobrable: String(p.noCobrable) } : {}),
+    ...(p.costoBancarioCobrable !== undefined
+      ? { costoBancarioCobrable: String(p.costoBancarioCobrable) }
+      : {}),
     createdAt: String(p.createdAt ?? ""),
     updatedAt: String(p.updatedAt ?? ""),
   };
+}
+
+/**
+ * Lo que el pago le descuenta al saldo del CLIENTE: su valor menos lo que
+ * asume Galcomex (asesoría NO SE COBRA). Igual que el borrador. `valor` es el
+ * de la fila (puede venir editado); lo no cobrable solo existe en pagos con
+ * facturas, cuyo valor no se edita.
+ * Entrada: pesos-texto TOLERANTE (API "650000.00" o canónico de `CampoMoneda`
+ * "650000.45"); salida: pesos-texto de la API (2 decimales), lista para
+ * `calcularSaldosCliente`.
+ */
+export function valorParaSaldoCliente(valor: string, noCobrable: string | undefined): string {
+  return textoDeCentavos(centavosDeTexto(valor) - centavosDeTexto(noCobrable ?? "0"));
 }
 
 export async function fetchLibroPagos(
@@ -419,6 +538,10 @@ export async function fetchLibroPagos(
     aplicaciones,
     totalPagos: String(payload.totalPagos ?? "0"),
     costosBancarios: String(payload.costosBancarios ?? "0"),
+    // Respuesta sin los campos (vieja en caché): todo se cobra.
+    totalPagosCobrables: String(payload.totalPagosCobrables ?? payload.totalPagos ?? "0.00"),
+    totalNoCobrable: String(payload.totalNoCobrable ?? "0.00"),
+    costosBancariosCobrables: String(payload.costosBancariosCobrables ?? payload.costosBancarios ?? "0.00"),
     costosBancariosAnticipo: String(payload.costosBancariosAnticipo ?? "0"),
     totalAnticipoAplicado: String(payload.totalAnticipoAplicado ?? "0"),
     saldos: Array.isArray(payload.saldos) ? payload.saldos.map(String) : [],
@@ -430,7 +553,7 @@ export async function fetchLibroPagos(
 export async function createPago(
   tramiteId: string,
   input: CreatePagoInput,
-): Promise<PagoRow> {
+): Promise<PagoRow & { repetido: boolean }> {
   const response = await fetch(`/api/tramites/${tramiteId}/pagos`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
@@ -440,18 +563,19 @@ export async function createPago(
   const payload: unknown = await response.json().catch(() => null);
 
   if (!response.ok) {
+    const codigo = isRecord(payload) && typeof payload.codigo === "string" ? payload.codigo : undefined;
     const message =
       isRecord(payload) && typeof payload.error === "string"
         ? payload.error
         : `No fue posible crear el pago (${response.status}).`;
-    throw new PagosApiError(message, response.status);
+    throw new PagosApiError(message, response.status, codigo, isRecord(payload) ? payload.detalles : undefined);
   }
 
   if (!isRecord(payload) || !isRecord(payload.pago)) {
     throw new PagosApiError("Respuesta de creación no válida.");
   }
 
-  return parsePagoRow(payload.pago);
+  return { ...parsePagoRow(payload.pago), repetido: payload.repetido === true };
 }
 
 export async function updatePago(
@@ -616,16 +740,10 @@ export async function subirComprobante(
   };
 }
 
-/** Formatea BigInt serializado como COP: $45.226.000 */
+/** Formatea pesos-texto de la API ("45226000.00") como "$ 45.226.000" (D-5: centavos solo si existen). */
 export function formatCOP(value: string): string {
   try {
-    const n = BigInt(value);
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(n));
+    return formatoPesos(centavosDeTextoApi(value));
   } catch {
     return value;
   }
@@ -635,14 +753,17 @@ export function formatCOP(value: string): string {
  * Recalcula los saldos intermedios del libro de pagos en el cliente.
  * saldo[i] = totalAnticipoAplicado − Σ(valores[0..i])
  * Exactamente la misma lógica que calcularSaldosIntermedios() del motor.
+ * Entrada: pesos-texto TOLERANTE (mezcla de respuestas de la API y texto
+ * canónico editado sin confirmar todavía); salida: pesos-texto de la API
+ * (2 decimales), lista para `formatCOP`.
  */
 export function calcularSaldosCliente(
   totalAnticipoAplicado: string,
   valores: string[],
 ): string[] {
-  let saldo = BigInt(totalAnticipoAplicado);
+  let saldo = centavosDeTexto(totalAnticipoAplicado);
   return valores.map((v) => {
-    saldo -= BigInt(v);
-    return saldo.toString();
+    saldo -= centavosDeTexto(v);
+    return textoDeCentavos(saldo);
   });
 }

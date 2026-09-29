@@ -7,6 +7,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 
+import { dineroNoNegativoSchema } from "@/lib/dinero";
 import { CAMPOS_ORDEN_TRAMITE } from "@/lib/tramites/orden";
 
 const optionalDate = z
@@ -40,13 +41,13 @@ const enteroOpcional = z.number().int().min(0).max(100_000).optional().nullable(
 /**
  * Base de cálculo del tarifario (M3). Todos opcionales: el motor de tarifas
  * reporta lo que falta en vez de asumir cero.
+ *
+ * Fase centavos: `valorCif` y `ordenCompraValor` llegan en PESOS (texto
+ * "502801.45" o número) y salen en CENTAVOS (`bigint`). La ruta los guarda en
+ * `valorCifCentavos` / `ordenCompraValorCentavos` (`datosTramiteDeAtributos`).
  */
 export const atributosTramiteSchema = z.object({
-  valorCif: z.coerce
-    .bigint()
-    .refine((v) => v >= 0n, { message: "El valor CIF no puede ser negativo" })
-    .optional()
-    .nullable(),
+  valorCif: dineroNoNegativoSchema.optional().nullable(),
   tipoCarga: z.nativeEnum(TipoCarga).optional().nullable(),
   numContenedores: enteroOpcional,
   numDeclaraciones: enteroOpcional,
@@ -54,12 +55,28 @@ export const atributosTramiteSchema = z.object({
   numItems: enteroOpcional,
   /** Orden de compra del cliente (capacidad `orden_compra_en_revision`, caso Polyrec). */
   ordenCompraNumero: z.string().trim().min(1).max(60).optional().nullable(),
-  ordenCompraValor: z.coerce
-    .bigint()
-    .refine((v) => v >= 0n, { message: "El valor de la orden de compra no puede ser negativo" })
-    .optional()
-    .nullable(),
+  ordenCompraValor: dineroNoNegativoSchema.optional().nullable(),
 });
+
+/**
+ * Lleva los atributos validados a las columnas de Prisma: `valorCif` →
+ * `valorCifCentavos`, `ordenCompraValor` → `ordenCompraValorCentavos` (una
+ * llave de API sin renombrar haría fallar el `update` de Prisma en tiempo de
+ * ejecución: `tsc` no lo ve en un objeto que no es literal).
+ */
+export function datosTramiteDeAtributos<T extends { valorCif?: bigint | null; ordenCompraValor?: bigint | null }>(
+  payload: T,
+): Omit<T, "valorCif" | "ordenCompraValor"> & {
+  valorCifCentavos?: bigint | null;
+  ordenCompraValorCentavos?: bigint | null;
+} {
+  const { valorCif, ordenCompraValor, ...resto } = payload;
+  return {
+    ...resto,
+    ...(valorCif !== undefined ? { valorCifCentavos: valorCif } : {}),
+    ...(ordenCompraValor !== undefined ? { ordenCompraValorCentavos: ordenCompraValor } : {}),
+  };
+}
 
 export const tramiteUpdateSchema = atributosTramiteSchema.extend({
   referenciaExterna: z.string().trim().min(1).optional().nullable(),

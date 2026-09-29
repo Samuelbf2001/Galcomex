@@ -42,11 +42,12 @@ export async function GET(request: NextRequest) {
       id: f.id,
       numSiigo: f.numSiigo,
       fecha: f.fecha,
-      totalFactura: f.totalFactura,
-      saldoAFavorCliente: f.saldoAFavorCliente,
-      saldoACargoCliente: f.saldoACargoCliente,
-      saldoAFavorLM: f.saldoAFavorLM,
-      saldoACargoLM: f.saldoACargoLM,
+      // Centavos de COP (el XLSX los escribe en pesos con 2 decimales).
+      totalFactura: f.totalFacturaCentavos,
+      saldoAFavorCliente: f.saldoAFavorClienteCentavos,
+      saldoACargoCliente: f.saldoACargoClienteCentavos,
+      saldoAFavorLM: f.saldoAFavorLMCentavos,
+      saldoACargoLM: f.saldoACargoLMCentavos,
       fechaPagoCliente: f.fechaPagoCliente,
       fechaPagoLM: f.fechaPagoLM,
       borrador: f.borrador

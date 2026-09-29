@@ -56,6 +56,7 @@ import {
 } from "@/lib/pagos/service";
 import { transitionTramite } from "@/lib/tramites/service";
 import { TramiteCerradoError } from "../guard";
+import { pesos } from "@/lib/dinero";
 
 // ─── Constantes del test ─────────────────────────────────────────────────────
 
@@ -122,7 +123,21 @@ async function cleanupTestData() {
   await prisma.pagoTramiteFactura.deleteMany({ where: { pago: { tramiteId: { in: tramiteIds } } } });
   await prisma.pagoTramiteBeneficiario.deleteMany({ where: { pago: { tramiteId: { in: tramiteIds } } } });
   await prisma.facturaProveedor.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
+  // CxP v2: cabeceras PagoGrupo de los pagos en bloque de prueba (FK
+  // pago_tramite.grupoPagoId → pago_grupo): se borran después de sus pagos.
+  const grupos = await prisma.pagoTramite.findMany({
+    where: { tramiteId: { in: tramiteIds }, grupoPagoId: { not: null } },
+    select: { grupoPagoId: true },
+  });
   await prisma.pagoTramite.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
+  await prisma.pagoGrupo.deleteMany({
+    where: {
+      OR: [
+        { id: { in: grupos.flatMap((g) => (g.grupoPagoId ? [g.grupoPagoId] : [])) } },
+        { creadoPorId: { in: userIds } },
+      ],
+    },
+  });
   await prisma.documento.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
 
   const testAnticipos = await prisma.anticipo.findMany({
@@ -219,15 +234,15 @@ async function aplicarAnticipoDirecto(db: Fixture, tramiteId: string, monto: big
   const anticipo = await prisma.anticipo.create({
     data: {
       clienteId: db.clienteId,
-      monto,
+      montoCentavos: monto,
       fecha: new Date("3003-01-10"),
       tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-      costoRecaudo: 1_950n,
+      costoRecaudoCentavos: pesos(1_950),
       verificadoBanco: true,
     },
   });
   const aplicacion = await prisma.aplicacionAnticipo.create({
-    data: { anticipoId: anticipo.id, tramiteId, montoAplicado: monto },
+    data: { anticipoId: anticipo.id, tramiteId, montoAplicadoCentavos: monto },
   });
   return aplicacion.id;
 }
@@ -252,7 +267,7 @@ async function crearFacturaProveedorTest(
       proveedorNombre: "Proveedor Vitest",
       beneficiarioId,
       numFactura,
-      valor,
+      valorCentavos: valor,
       fecha: new Date("3003-02-01"),
       subidaPorId: db.adminId,
     },
@@ -290,14 +305,14 @@ describe("guard transversal de trámite CERRADO", () => {
   it("crearPago se rechaza en un trámite CERRADO", async (ctx) => {
     const db = ensureDb(ctx);
     const tramite = await crearTramiteTest(db);
-    await aplicarAnticipoDirecto(db, tramite.id, 5_000_000n);
+    await aplicarAnticipoDirecto(db, tramite.id, pesos(5_000_000));
     await cerrarTramite(tramite.id);
 
     await expect(
       crearPago({
         tramiteId: tramite.id,
         concepto: "Pago en tramite cerrado",
-        valor: 1_000_000n,
+        valor: pesos(1_000_000),
         canalPago: CanalPago.PSE,
         usuarioId: db.adminId,
       }),
@@ -310,12 +325,12 @@ describe("guard transversal de trámite CERRADO", () => {
   it("actualizarPago y eliminarPago se rechazan cuando el trámite pasa a CERRADO después de creado el pago", async (ctx) => {
     const db = ensureDb(ctx);
     const tramite = await crearTramiteTest(db);
-    await aplicarAnticipoDirecto(db, tramite.id, 5_000_000n);
+    await aplicarAnticipoDirecto(db, tramite.id, pesos(5_000_000));
 
     const pago = await crearPago({
       tramiteId: tramite.id,
       concepto: "Pago antes de cerrar",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.adminId,
     });
@@ -323,14 +338,14 @@ describe("guard transversal de trámite CERRADO", () => {
     await cerrarTramite(tramite.id);
 
     await expect(
-      actualizarPago(pago.id, { valor: 2_000_000n }, db.adminId),
+      actualizarPago(pago.id, { valor: pesos(2_000_000) }, db.adminId),
     ).rejects.toThrow(TramiteCerradoError);
 
     await expect(eliminarPago(pago.id, db.adminId)).rejects.toThrow(TramiteCerradoError);
 
     const persisted = await prisma.pagoTramite.findUnique({ where: { id: pago.id } });
     expect(persisted).not.toBeNull();
-    expect(persisted?.valor).toBe(1_000_000n);
+    expect(persisted?.valorCentavos).toBe(pesos(1_000_000));
   });
 
   // ─── Anticipos ───────────────────────────────────────────────────────────
@@ -342,17 +357,17 @@ describe("guard transversal de trámite CERRADO", () => {
     const anticipo = await prisma.anticipo.create({
       data: {
         clienteId: db.clienteId,
-        monto: 3_000_000n,
+        montoCentavos: pesos(3_000_000),
         fecha: new Date("3003-01-15"),
         tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-        costoRecaudo: 1_950n,
+        costoRecaudoCentavos: pesos(1_950),
         verificadoBanco: true,
       },
     });
 
     await expect(
       aplicarAnticipo(
-        { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicado: 1_000_000n },
+        { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicado: pesos(1_000_000) },
         db.adminId,
       ),
     ).rejects.toThrow(TramiteCerradoError);
@@ -364,7 +379,7 @@ describe("guard transversal de trámite CERRADO", () => {
   it("eliminarAplicacion se rechaza cuando el trámite pasa a CERRADO después de aplicado el anticipo", async (ctx) => {
     const db = ensureDb(ctx);
     const tramite = await crearTramiteTest(db);
-    const aplicacionId = await aplicarAnticipoDirecto(db, tramite.id, 2_000_000n);
+    const aplicacionId = await aplicarAnticipoDirecto(db, tramite.id, pesos(2_000_000));
 
     await cerrarTramite(tramite.id);
 
@@ -442,13 +457,13 @@ describe("guard transversal de trámite CERRADO", () => {
     const borrador = await prisma.borradorFactura.create({
       data: {
         tramiteId: tramite.id,
-        comision: 0n,
-        ivaComision: 0n,
-        impuesto4x1000: 0n,
-        costosBancarios: 0n,
-        totalAnticipo: 0n,
-        totalPagos: 0n,
-        totalFactura: 0n,
+        comisionCentavos: 0n,
+        ivaComisionCentavos: 0n,
+        impuesto4x1000Centavos: 0n,
+        costosBancariosCentavos: 0n,
+        totalAnticipoCentavos: 0n,
+        totalPagosCentavos: 0n,
+        totalFacturaCentavos: 0n,
       },
     });
 
@@ -458,7 +473,7 @@ describe("guard transversal de trámite CERRADO", () => {
       crearLineaManual({
         borradorId: borrador.id,
         concepto: "Línea manual en trámite cerrado",
-        valor: 100_000n,
+        valor: pesos(100_000),
         usuarioId: db.adminId,
       }),
     ).rejects.toThrow(TramiteCerradoError);
@@ -475,17 +490,17 @@ describe("guard transversal de trámite CERRADO", () => {
 
     const tramiteAbierto = await crearTramiteTest(db);
     const tramiteCerrado = await crearTramiteTest(db, EstadoTramite.CERRADO);
-    await aplicarAnticipoDirecto(db, tramiteAbierto.id, 5_000_000n);
+    await aplicarAnticipoDirecto(db, tramiteAbierto.id, pesos(5_000_000));
 
-    const fp1 = await crearFacturaProveedorTest(db, tramiteAbierto.id, "FP-GUARD-001", 1_000_000n, beneficiarioId);
-    const fp2 = await crearFacturaProveedorTest(db, tramiteCerrado.id, "FP-GUARD-002", 1_000_000n, beneficiarioId);
+    const fp1 = await crearFacturaProveedorTest(db, tramiteAbierto.id, "FP-GUARD-001", pesos(1_000_000), beneficiarioId);
+    const fp2 = await crearFacturaProveedorTest(db, tramiteCerrado.id, "FP-GUARD-002", pesos(1_000_000), beneficiarioId);
 
     await expect(
       crearPagoMultiDO({
         beneficiarioId,
         facturas: [
-          { facturaProveedorId: fp1, monto: 1_000_000n },
-          { facturaProveedorId: fp2, monto: 1_000_000n },
+          { facturaProveedorId: fp1, monto: pesos(1_000_000) },
+          { facturaProveedorId: fp2, monto: pesos(1_000_000) },
         ],
         canalPago: CanalPago.PSE,
         usuarioId: db.adminId,

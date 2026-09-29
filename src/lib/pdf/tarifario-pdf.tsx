@@ -10,16 +10,22 @@
 import { Document, Page, renderToBuffer, StyleSheet, Text, View } from "@react-pdf/renderer";
 import React from "react";
 
+import { centavosDeTexto, formatoPesos } from "@/lib/dinero";
+
 export type TarifaItemPdfDto = {
   nombrePublico: string;
   tipoCalculo: "FIJO" | "POR_UNIDAD" | "PORCENTAJE_MIN" | "PRIMERO_MAS_ADICIONAL" | "ESPEJO_DE_COSTO" | "POR_TRAMO";
   disparador: "SIEMPRE" | "EVENTO" | "MANUAL";
   unidad: "TRAMITE" | "CONTENEDOR" | "DECLARACION" | "DOCUMENTO" | "ITEM" | "MES";
+  /** Centavos de COP. */
   valor: bigint;
+  /** Centavos de COP. */
   valorAdicional: bigint | null;
   porcentajeBps: number | null;
+  /** JSON guardado: PESOS en texto ("150000" o "150000.45"; se lee con `centavosDeTexto`). */
   minimos: { SUELTA?: string; CONTENEDOR_20?: string; CONTENEDOR_40?: string } | null;
   conceptoCosto: string | null;
+  /** JSON guardado: `valor` en PESOS texto ("300000" o "300000.45"). */
   tramos: { hasta: number | null; valor: string }[] | null;
   aplicaIva: boolean;
   notas: string | null;
@@ -75,8 +81,22 @@ const CARGA_TXT: Record<string, string> = {
 
 const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 
-export function formatCOPTarifa(valor: bigint): string {
-  return `${valor.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")},00`;
+/** Centavos → "100.000,00" / "502.801,45" (sin "$", siempre 2 decimales, como la propuesta en Word). */
+export function formatCOPTarifa(centavos: bigint): string {
+  return formatoPesos(centavos, { decimales: "siempre", simbolo: false });
+}
+
+/**
+ * Texto de pesos guardado en `minimos`/`tramos` → centavos. Tolerante al
+ * entero heredado ("300000") y a ".00"; un valor ilegible es error visible
+ * (nunca se omite en silencio una tarifa del PDF).
+ */
+function centavosDeJsonTarifa(texto: string, donde: string): bigint {
+  try {
+    return centavosDeTexto(texto.trim());
+  } catch {
+    throw new Error(`Valor ilegible en ${donde} del tarifario: "${texto}"`);
+  }
 }
 
 function fechaLarga(d: Date): string {
@@ -104,7 +124,7 @@ export function filasDeItem(item: TarifaItemPdfDto): { concepto: string; valor: 
       const pct = ((item.porcentajeBps ?? 0) / 100).toFixed(2).replace(".", ",");
       const filas = [{ concepto: `${item.nombrePublico}`, valor: `${pct} % sobre el valor en Aduana` }];
       for (const [k, v] of Object.entries(item.minimos ?? {})) {
-        if (v) filas.push({ concepto: `Tarifa mínima por ${CARGA_TXT[k] ?? k.toLowerCase()}`, valor: formatCOPTarifa(BigInt(v)) });
+        if (v) filas.push({ concepto: `Tarifa mínima por ${CARGA_TXT[k] ?? k.toLowerCase()}`, valor: formatCOPTarifa(centavosDeJsonTarifa(v, `el mínimo ${k}`)) });
       }
       return filas;
     }
@@ -126,7 +146,7 @@ export function filasDeItem(item: TarifaItemPdfDto): { concepto: string; valor: 
             : t.hasta === 1
               ? `1 ${UNIDAD_TXT[item.unidad]}`
               : `de ${anterior + 1} a ${t.hasta} ${plural}`;
-        return { concepto: `${item.nombrePublico} (${rango}, por ${UNIDAD_TXT[item.unidad]})`, valor: `${formatCOPTarifa(BigInt(t.valor))}${item.aplicaIva ? " + IVA" : ""}` };
+        return { concepto: `${item.nombrePublico} (${rango}, por ${UNIDAD_TXT[item.unidad]})`, valor: `${formatCOPTarifa(centavosDeJsonTarifa(t.valor, "un tramo"))}${item.aplicaIva ? " + IVA" : ""}` };
       });
     }
   }

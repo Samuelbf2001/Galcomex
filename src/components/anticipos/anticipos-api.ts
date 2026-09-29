@@ -1,7 +1,12 @@
 /**
  * Helpers de API para el módulo de Anticipos.
  * Patrón idéntico a tramites-api.ts / pagos-api.ts.
+ * Dinero: pesos como texto con 2 decimales desde el backend (fase CENTAVOS,
+ * diseño §A.2) — parsear con `centavosDeTextoApi` de `@/lib/dinero`.
  */
+
+import { centavosDeTextoApi, formatoPesos } from "@/lib/dinero";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 export type TipoRecaudo = "BANCOLOMBIA" | "OTROS_BANCOS" | "SUCURSAL" | "CORRESPONSAL" | "CAJERO";
 
@@ -449,28 +454,16 @@ export async function obtenerUrlDescargaSoporte(storageKey: string): Promise<str
   return payload.downloadUrl.url;
 }
 
-/** Formatea BigInt serializado como COP: $45.226.000 */
+/** Formatea pesos-texto de la API ("45226000.00") como "$ 45.226.000" (D-5: centavos solo si existen). */
 export function formatCOP(value: string): string {
   try {
-    const n = BigInt(value);
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(n));
+    return formatoPesos(centavosDeTextoApi(value));
   } catch {
     return value;
   }
 }
 
+/** Fecha-calendario del anticipo (día, no instante): usa UTC como Bogota.ts, nunca la zona del navegador. */
 export function formatDate(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(d);
+  return formatFechaCalendario(iso);
 }

@@ -25,6 +25,7 @@
  * KAPSO_WEBHOOK_SECRET y opcional KAPSO_WEBHOOK_TOKEN (webhook), NEXT_PUBLIC_APP_URL.
  * El archivo .env.kapso NO se commitea (está cubierto por .env* en .gitignore).
  */
+import { pesos } from "../src/lib/dinero";
 import { definicionPlantillaPse, mensajePlantillaPse } from "../src/lib/whatsapp/catalogo";
 import { HEADER_TOKEN_WEBHOOK, PLANTILLA_PSE_POR_DEFECTO, PROXY_POR_DEFECTO, kapsoConfig, urlPublicaApp } from "../src/lib/whatsapp/config";
 import { enviarWhatsapp } from "../src/lib/whatsapp/kapso-cliente";
@@ -140,7 +141,7 @@ async function probar(args: string[]): Promise<void> {
     idioma: config.idiomaPlantilla,
     solicitudId: "cprueba0000000000000000000",
     token: "prueba-sin-efecto",
-    datos: { nombreAprobador: "Prueba", operador: "Sixteam", consecutivo: "DO.PRUEBA", beneficiario: "Prueba de canal", valor: 1000n },
+    datos: { nombreAprobador: "Prueba", operador: "Sixteam", consecutivo: "DO.PRUEBA", beneficiario: "Prueba de canal", valor: pesos(1_000) },
   });
   if (!args.includes("--si-enviar")) {
     imprimir(cuerpo);

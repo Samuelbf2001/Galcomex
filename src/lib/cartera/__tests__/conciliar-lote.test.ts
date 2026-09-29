@@ -27,6 +27,7 @@ import { prisma } from "@/lib/db/prisma";
 import { conciliarLoteSchema } from "@/lib/validations/cartera";
 
 import { conciliarLoteFacturas } from "../service";
+import { pesos } from "@/lib/dinero";
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -190,20 +191,20 @@ async function crearFacturaDirecta(
   const borrador = await prisma.borradorFactura.create({
     data: {
       tramiteId: tramite.id,
-      comision: 150_000n,
-      ivaComision: 28_500n,
-      impuesto4x1000: 0n,
-      costosBancarios: 0n,
-      totalAnticipo: 10_000_000n,
-      totalPagos: 10_000_000n,
-      totalFactura:
+      comisionCentavos: pesos(150_000),
+      ivaComisionCentavos: pesos(28_500),
+      impuesto4x1000Centavos: 0n,
+      costosBancariosCentavos: 0n,
+      totalAnticipoCentavos: pesos(10_000_000),
+      totalPagosCentavos: pesos(10_000_000),
+      totalFacturaCentavos:
         saldoAFavorCliente > 0n
-          ? 10_000_000n - saldoAFavorCliente
-          : 10_000_000n + saldoACargoCliente,
-      saldoAFavorCliente,
-      saldoACargoCliente,
-      saldoAFavorLM,
-      saldoACargoLM,
+          ? pesos(10_000_000) - saldoAFavorCliente
+          : pesos(10_000_000) + saldoACargoCliente,
+      saldoAFavorClienteCentavos: saldoAFavorCliente,
+      saldoACargoClienteCentavos: saldoACargoCliente,
+      saldoAFavorLMCentavos: saldoAFavorLM,
+      saldoACargoLMCentavos: saldoACargoLM,
       estado: EstadoBorrador.FACTURADO,
       aprobadoPorId: db.userId,
       fechaAprobacion: new Date(`${stateYear}-01-10`),
@@ -216,11 +217,11 @@ async function crearFacturaDirecta(
       clienteId: db.clienteId,
       numSiigo: `LOT-${runId.slice(-6)}-${numero}`,
       fecha: new Date(`${stateYear}-01-15`),
-      totalFactura: borrador.totalFactura,
-      saldoAFavorCliente,
-      saldoACargoCliente,
-      saldoAFavorLM,
-      saldoACargoLM,
+      totalFacturaCentavos: borrador.totalFacturaCentavos,
+      saldoAFavorClienteCentavos: saldoAFavorCliente,
+      saldoACargoClienteCentavos: saldoACargoCliente,
+      saldoAFavorLMCentavos: saldoAFavorLM,
+      saldoACargoLMCentavos: saldoACargoLM,
     },
   });
 
@@ -259,9 +260,9 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
   it("lote 3 facturas saldables: todas ok, fechaPagoCliente seteada en todas", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const f1 = await crearFacturaDirecta(db, { saldoACargoCliente: 500_000n });
-    const f2 = await crearFacturaDirecta(db, { saldoACargoCliente: 300_000n });
-    const f3 = await crearFacturaDirecta(db, { saldoACargoCliente: 200_000n });
+    const f1 = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(500_000) });
+    const f2 = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(300_000) });
+    const f3 = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(200_000) });
 
     const fecha = new Date(`${stateYear}-02-01`);
 
@@ -271,7 +272,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f1,
           destino: DestinoPago.CLIENTE,
           tipo: TipoPagoFactura.ABONO,
-          monto: 500_000n,
+          monto: pesos(500_000),
           fecha,
           canalPago: CanalPago.TRANSF_BANCOLOMBIA,
         },
@@ -279,7 +280,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f2,
           destino: DestinoPago.CLIENTE,
           tipo: TipoPagoFactura.ABONO,
-          monto: 300_000n,
+          monto: pesos(300_000),
           fecha,
           canalPago: CanalPago.TRANSF_BANCOLOMBIA,
         },
@@ -287,7 +288,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f3,
           destino: DestinoPago.CLIENTE,
           tipo: TipoPagoFactura.ABONO,
-          monto: 200_000n,
+          monto: pesos(200_000),
           fecha,
           canalPago: CanalPago.TRANSF_BANCOLOMBIA,
         },
@@ -313,9 +314,9 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
     const db = ensureDb(ctx);
 
     // f1 y f3 tienen saldoACargo (cliente debe) — abonable
-    const f1 = await crearFacturaDirecta(db, { saldoACargoCliente: 100_000n });
-    const f2 = await crearFacturaDirecta(db, { saldoAFavorCliente: 50_000n });
-    const f3 = await crearFacturaDirecta(db, { saldoACargoCliente: 200_000n });
+    const f1 = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(100_000) });
+    const f2 = await crearFacturaDirecta(db, { saldoAFavorCliente: pesos(50_000) });
+    const f3 = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(200_000) });
 
     const fecha = new Date(`${stateYear}-02-15`);
 
@@ -325,7 +326,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f1,
           destino: DestinoPago.CLIENTE,
           tipo: TipoPagoFactura.ABONO,
-          monto: 100_000n,
+          monto: pesos(100_000),
           fecha,
           canalPago: CanalPago.TRANSF_BANCOLOMBIA,
         },
@@ -334,7 +335,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f2,
           destino: DestinoPago.CLIENTE,
           tipo: TipoPagoFactura.DEVOLUCION,
-          monto: 999_999n,
+          monto: pesos(999_999),
           fecha,
           canalPago: CanalPago.TRANSF_BANCOLOMBIA,
         },
@@ -342,7 +343,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f3,
           destino: DestinoPago.CLIENTE,
           tipo: TipoPagoFactura.ABONO,
-          monto: 200_000n,
+          monto: pesos(200_000),
           fecha,
           canalPago: CanalPago.TRANSF_BANCOLOMBIA,
         },
@@ -384,8 +385,8 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
     const db = ensureDb(ctx);
 
     const f = await crearFacturaDirecta(db, {
-      saldoACargoCliente: 100_000n,
-      saldoACargoLM: 80_000n,
+      saldoACargoCliente: pesos(100_000),
+      saldoACargoLM: pesos(80_000),
     });
 
     const fecha = new Date(`${stateYear}-03-01`);
@@ -396,7 +397,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f,
           destino: DestinoPago.CLIENTE,
           tipo: TipoPagoFactura.ABONO,
-          monto: 100_000n,
+          monto: pesos(100_000),
           fecha,
           canalPago: CanalPago.TRANSF_BANCOLOMBIA,
         },
@@ -404,7 +405,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f,
           destino: DestinoPago.LM,
           tipo: TipoPagoFactura.ABONO,
-          monto: 80_000n,
+          monto: pesos(80_000),
           fecha,
           canalPago: CanalPago.TRANSF_BANCOLOMBIA,
         },
@@ -426,7 +427,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
   it("AuditLog paraguas: status=COMPLETADO cuando todo va bien", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const f = await crearFacturaDirecta(db, { saldoACargoCliente: 50_000n });
+    const f = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(50_000) });
 
     const result = await conciliarLoteFacturas({
       items: [
@@ -434,7 +435,7 @@ describe("conciliarLoteFacturas (integración con Postgres)", () => {
           facturaId: f,
           destino: DestinoPago.CLIENTE,
           tipo: TipoPagoFactura.ABONO,
-          monto: 50_000n,
+          monto: pesos(50_000),
           fecha: new Date(`${stateYear}-03-10`),
           tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
         },

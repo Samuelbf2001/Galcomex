@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { pesos } from "@/lib/dinero";
 import { calcularBorrador, calcularSaldosIntermedios } from "../motor-factura";
 
 // Parámetros del sistema (igual que el seed)
@@ -36,39 +37,39 @@ const TASA_4X1000 = 400n; // 400 / 100_000 = 0.004
 // ---------------------------------------------------------------------------
 describe("TEST DORADO — DO.BUN26-0026", () => {
   const PAGOS_DORADO = [
-    { valor: 1_000_000n, costoBancario: 3_900n },   // TRANSF BANCOLOMBIA
-    { valor: 2_011_341n, costoBancario: 0n },        // PSE
-    { valor: 30_854_000n, costoBancario: 0n },       // PSE
-    { valor: 2_216_233n, costoBancario: 0n },        // PSE
-    { valor: 760_283n, costoBancario: 3_900n },      // TRANSF BANCOLOMBIA
-    { valor: 175_787n, costoBancario: 3_900n },      // TRANSF BANCOLOMBIA
-    { valor: 3_500_000n, costoBancario: 3_900n },    // TRANSF BANCOLOMBIA
+    { valor: pesos(1_000_000), costoBancario: pesos(3_900) },   // TRANSF BANCOLOMBIA
+    { valor: pesos(2_011_341), costoBancario: 0n },        // PSE
+    { valor: pesos(30_854_000), costoBancario: 0n },       // PSE
+    { valor: pesos(2_216_233), costoBancario: 0n },        // PSE
+    { valor: pesos(760_283), costoBancario: pesos(3_900) },      // TRANSF BANCOLOMBIA
+    { valor: pesos(175_787), costoBancario: pesos(3_900) },      // TRANSF BANCOLOMBIA
+    { valor: pesos(3_500_000), costoBancario: pesos(3_900) },    // TRANSF BANCOLOMBIA
   ];
 
   const INPUT_DORADO = {
-    totalAnticipoAplicado: 45_226_000n,
-    costoRecaudoAnticipo: 1_950n,       // costo bancario del recaudo del anticipo
+    totalAnticipoAplicado: pesos(45_226_000),
+    costoRecaudoAnticipo: pesos(1_950),       // costo bancario del recaudo del anticipo
     pagos: PAGOS_DORADO,
-    comision: 200_000n,
-    ivaComision: 76_000n,               // override manual del Excel (no 19%×200.000)
+    comision: pesos(200_000),
+    ivaComision: pesos(76_000),               // override manual del Excel (no 19%×200.000)
     tasaIva: TASA_IVA,
     tasa4x1000: TASA_4X1000,
-    montoLM: 875_944n,
+    montoLM: pesos(875_944),
   };
 
   it("totalPagos === 40.517.644", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.totalPagos).toBe(40_517_644n);
+    expect(r.totalPagos).toBe(pesos(40_517_644));
   });
 
   it("costosBancarios === 17.550 (1.950 recaudo + 4×3.900 pagos)", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.costosBancarios).toBe(17_550n);
+    expect(r.costosBancarios).toBe(pesos(17_550));
   });
 
   it("saldoTrasPagos === 4.708.356", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.saldoTrasPagos).toBe(4_708_356n);
+    expect(r.saldoTrasPagos).toBe(pesos(4_708_356));
   });
 
   it("aplica4x1000 === true (saldo a favor)", () => {
@@ -78,22 +79,29 @@ describe("TEST DORADO — DO.BUN26-0026", () => {
 
   it("impuesto4x1000 === 180.904 (45.226.000 × 0.004)", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.impuesto4x1000).toBe(180_904n);
+    expect(r.impuesto4x1000).toBe(pesos(180_904));
   });
 
   it("saldoFinal === 4.233.902", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.saldoFinal).toBe(4_233_902n);
+    expect(r.saldoFinal).toBe(pesos(4_233_902));
   });
 
   it("totalFactura === 41.868.042", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.totalFactura).toBe(41_868_042n);
+    expect(r.totalFactura).toBe(pesos(41_868_042));
   });
 
   it("saldoAFavorCliente === 3.357.958", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.saldoAFavorCliente).toBe(3_357_958n);
+    expect(r.saldoAFavorCliente).toBe(pesos(3_357_958));
+  });
+
+  it("dorado en CENTAVOS (E.2.2): anticipo 4.522.600.000 · 4x1000 18.090.400 · saldo 335.795.800", () => {
+    const r = calcularBorrador(INPUT_DORADO);
+    expect(INPUT_DORADO.totalAnticipoAplicado).toBe(4_522_600_000n);
+    expect(r.impuesto4x1000).toBe(18_090_400n);
+    expect(r.saldoAFavorCliente).toBe(335_795_800n);
   });
 
   it("saldoACargoCliente === 0 (es a favor)", () => {
@@ -103,7 +111,7 @@ describe("TEST DORADO — DO.BUN26-0026", () => {
 
   it("saldoAFavorLM === 875.944", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.saldoAFavorLM).toBe(875_944n);
+    expect(r.saldoAFavorLM).toBe(pesos(875_944));
   });
 
   it("saldoACargoLM === 0 (es a favor)", () => {
@@ -113,7 +121,7 @@ describe("TEST DORADO — DO.BUN26-0026", () => {
 
   it("ivaComision === 76.000 (override manual respetado)", () => {
     const r = calcularBorrador(INPUT_DORADO);
-    expect(r.ivaComision).toBe(76_000n);
+    expect(r.ivaComision).toBe(pesos(76_000));
   });
 });
 
@@ -125,24 +133,24 @@ describe("TEST DORADO — DO.BUN26-0026", () => {
 describe("Rama saldo a cargo del cliente", () => {
   it("saldoACargoCliente > 0, saldoAFavorCliente === 0, aplica4x1000 === false", () => {
     const resultado = calcularBorrador({
-      totalAnticipoAplicado: 1_000_000n,
+      totalAnticipoAplicado: pesos(1_000_000),
       pagos: [
-        { valor: 900_000n, costoBancario: 3_900n },
-        { valor: 200_000n, costoBancario: 0n },
+        { valor: pesos(900_000), costoBancario: pesos(3_900) },
+        { valor: pesos(200_000), costoBancario: 0n },
       ],
-      comision: 150_000n,
+      comision: pesos(150_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
 
     // saldoTrasPagos = 1.000.000 − 1.100.000 = −100.000
-    expect(resultado.saldoTrasPagos).toBe(-100_000n);
+    expect(resultado.saldoTrasPagos).toBe(-pesos(100_000));
     // saldoAntesDe4x1000 = −100.000 − 150.000 − 28.500 − 3.900 = −282.400 (a cargo)
     // 4x1000 SIEMPRE se cobra: base = anticipo + |saldo a cargo| = 1.000.000 + 282.400 = 1.282.400
     // impuesto4x1000 = 1.282.400 × 0,004 = 5.129 (trunc) → saldoFinal = −282.400 − 5.129 = −287.529
     expect(resultado.aplica4x1000).toBe(false);
-    expect(resultado.impuesto4x1000).toBe(5_129n);
-    expect(resultado.saldoFinal).toBe(-287_529n);
+    expect(resultado.impuesto4x1000).toBe(pesos(5_129));
+    expect(resultado.saldoFinal).toBe(-pesos(287_529));
     expect(resultado.saldoACargoCliente).toBeGreaterThan(0n);
     expect(resultado.saldoAFavorCliente).toBe(0n);
   });
@@ -150,8 +158,8 @@ describe("Rama saldo a cargo del cliente", () => {
   it("caso a cargo exacto: verifica saldoACargoCliente === |saldoFinal|", () => {
     // anticipo 500.000, pago 600.000, sin comisión extra
     const resultado = calcularBorrador({
-      totalAnticipoAplicado: 500_000n,
-      pagos: [{ valor: 600_000n, costoBancario: 0n }],
+      totalAnticipoAplicado: pesos(500_000),
+      pagos: [{ valor: pesos(600_000), costoBancario: 0n }],
       comision: 0n,
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
@@ -160,8 +168,8 @@ describe("Rama saldo a cargo del cliente", () => {
     // saldoAntesDe4x1000 = 500.000 − 600.000 = −100.000 (a cargo)
     // 4x1000: base = 500.000 + 100.000 = 600.000 → 600.000 × 0,004 = 2.400
     // saldoFinal = −100.000 − 2.400 = −102.400
-    expect(resultado.saldoFinal).toBe(-102_400n);
-    expect(resultado.saldoACargoCliente).toBe(102_400n);
+    expect(resultado.saldoFinal).toBe(-pesos(102_400));
+    expect(resultado.saldoACargoCliente).toBe(pesos(102_400));
     expect(resultado.saldoAFavorCliente).toBe(0n);
     expect(resultado.aplica4x1000).toBe(false);
   });
@@ -170,17 +178,17 @@ describe("Rama saldo a cargo del cliente", () => {
     // Cuando el saldo queda a cargo del cliente y hay montoLM,
     // saldoACargoLM debe ser el montoLM (rama `montoLM > 0n` de línea 149)
     const resultado = calcularBorrador({
-      totalAnticipoAplicado: 500_000n,
-      pagos: [{ valor: 600_000n, costoBancario: 0n }],
+      totalAnticipoAplicado: pesos(500_000),
+      pagos: [{ valor: pesos(600_000), costoBancario: 0n }],
       comision: 0n,
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
-      montoLM: 50_000n,
+      montoLM: pesos(50_000),
     });
 
     expect(resultado.saldoACargoCliente).toBeGreaterThan(0n);
     expect(resultado.saldoAFavorCliente).toBe(0n);
-    expect(resultado.saldoACargoLM).toBe(50_000n);
+    expect(resultado.saldoACargoLM).toBe(pesos(50_000));
     expect(resultado.saldoAFavorLM).toBe(0n);
     expect(resultado.aplica4x1000).toBe(false);
   });
@@ -192,46 +200,46 @@ describe("Rama saldo a cargo del cliente", () => {
 describe("IVA comisión: override explícito vs. default calculado", () => {
   it("sin ivaComision → usa comision * tasaIva / 100n", () => {
     const resultado = calcularBorrador({
-      totalAnticipoAplicado: 10_000_000n,
+      totalAnticipoAplicado: pesos(10_000_000),
       pagos: [],
-      comision: 200_000n,
+      comision: pesos(200_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
     // 200.000 × 19 / 100 = 38.000
-    expect(resultado.ivaComision).toBe(38_000n);
+    expect(resultado.ivaComision).toBe(pesos(38_000));
   });
 
   it("con ivaComision override → usa el valor dado exacto", () => {
     const resultado = calcularBorrador({
-      totalAnticipoAplicado: 10_000_000n,
+      totalAnticipoAplicado: pesos(10_000_000),
       pagos: [],
-      comision: 200_000n,
-      ivaComision: 76_000n,  // override manual, como en el Excel
+      comision: pesos(200_000),
+      ivaComision: pesos(76_000),  // override manual, como en el Excel
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
-    expect(resultado.ivaComision).toBe(76_000n);
+    expect(resultado.ivaComision).toBe(pesos(76_000));
   });
 
   it("ivaComision override afecta saldoFinal (76.000 vs 38.000)", () => {
     const base = calcularBorrador({
-      totalAnticipoAplicado: 10_000_000n,
+      totalAnticipoAplicado: pesos(10_000_000),
       pagos: [],
-      comision: 200_000n,
+      comision: pesos(200_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
     const conOverride = calcularBorrador({
-      totalAnticipoAplicado: 10_000_000n,
+      totalAnticipoAplicado: pesos(10_000_000),
       pagos: [],
-      comision: 200_000n,
-      ivaComision: 76_000n,
+      comision: pesos(200_000),
+      ivaComision: pesos(76_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
     // saldoFinal con override tiene 38.000 más de IVA → menor saldoFinal
-    expect(conOverride.saldoFinal).toBe(base.saldoFinal - 38_000n);
+    expect(conOverride.saldoFinal).toBe(base.saldoFinal - pesos(38_000));
   });
 });
 
@@ -241,22 +249,22 @@ describe("IVA comisión: override explícito vs. default calculado", () => {
 describe("Determinismo", () => {
   it("mismo input dos veces → mismo output exacto", () => {
     const input = {
-      totalAnticipoAplicado: 45_226_000n,
-      costoRecaudoAnticipo: 1_950n,
+      totalAnticipoAplicado: pesos(45_226_000),
+      costoRecaudoAnticipo: pesos(1_950),
       pagos: [
-        { valor: 1_000_000n, costoBancario: 3_900n },
-        { valor: 2_011_341n, costoBancario: 0n },
-        { valor: 30_854_000n, costoBancario: 0n },
-        { valor: 2_216_233n, costoBancario: 0n },
-        { valor: 760_283n, costoBancario: 3_900n },
-        { valor: 175_787n, costoBancario: 3_900n },
-        { valor: 3_500_000n, costoBancario: 3_900n },
+        { valor: pesos(1_000_000), costoBancario: pesos(3_900) },
+        { valor: pesos(2_011_341), costoBancario: 0n },
+        { valor: pesos(30_854_000), costoBancario: 0n },
+        { valor: pesos(2_216_233), costoBancario: 0n },
+        { valor: pesos(760_283), costoBancario: pesos(3_900) },
+        { valor: pesos(175_787), costoBancario: pesos(3_900) },
+        { valor: pesos(3_500_000), costoBancario: pesos(3_900) },
       ],
-      comision: 200_000n,
-      ivaComision: 76_000n,
+      comision: pesos(200_000),
+      ivaComision: pesos(76_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
-      montoLM: 875_944n,
+      montoLM: pesos(875_944),
     };
 
     const r1 = calcularBorrador(input);
@@ -281,7 +289,7 @@ describe("Casos borde", () => {
     const resultado = calcularBorrador({
       totalAnticipoAplicado: 0n,
       pagos: [],
-      comision: 150_000n,
+      comision: pesos(150_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
@@ -295,7 +303,7 @@ describe("Casos borde", () => {
   it("anticipo cubre exacto comisión+IVA: el 4x1000 (siempre cobrado) deja un pequeño saldo a cargo", () => {
     // comision=150.000, ivaComision=28.500 (default), sin pagos
     // saldoAntesDe4x1000 = anticipo − comision − iva = 0 (límite a favor)
-    const comision = 150_000n;
+    const comision = pesos(150_000);
     const ivaDefault = (comision * TASA_IVA) / 100n; // 28.500
     const anticipo = comision + ivaDefault; // 178.500
 
@@ -309,47 +317,47 @@ describe("Casos borde", () => {
 
     // 4x1000 = anticipo × 0,004 = 178.500 × 0,004 = 714 → saldoFinal = 0 − 714 = −714
     expect(resultado.aplica4x1000).toBe(true);
-    expect(resultado.impuesto4x1000).toBe(714n);
-    expect(resultado.saldoFinal).toBe(-714n);
+    expect(resultado.impuesto4x1000).toBe(pesos(714));
+    expect(resultado.saldoFinal).toBe(-pesos(714));
     expect(resultado.saldoAFavorCliente).toBe(0n);
-    expect(resultado.saldoACargoCliente).toBe(714n);
+    expect(resultado.saldoACargoCliente).toBe(pesos(714));
   });
 
   it("comisión editada manualmente: el IVA default cambia en cascada", () => {
     const base = calcularBorrador({
-      totalAnticipoAplicado: 10_000_000n,
+      totalAnticipoAplicado: pesos(10_000_000),
       pagos: [],
-      comision: 150_000n,
+      comision: pesos(150_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
     const editada = calcularBorrador({
-      totalAnticipoAplicado: 10_000_000n,
+      totalAnticipoAplicado: pesos(10_000_000),
       pagos: [],
-      comision: 200_000n,
+      comision: pesos(200_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
 
     // IVA 150.000 × 19% = 28.500; IVA 200.000 × 19% = 38.000
-    expect(base.ivaComision).toBe(28_500n);
-    expect(editada.ivaComision).toBe(38_000n);
+    expect(base.ivaComision).toBe(pesos(28_500));
+    expect(editada.ivaComision).toBe(pesos(38_000));
     expect(editada.saldoFinal).toBeLessThan(base.saldoFinal);
   });
 
   it("costoRecaudoAnticipo default 0: sin él, misma lógica que antes", () => {
     const sinCosto = calcularBorrador({
-      totalAnticipoAplicado: 5_000_000n,
-      pagos: [{ valor: 1_000_000n, costoBancario: 3_900n }],
-      comision: 100_000n,
+      totalAnticipoAplicado: pesos(5_000_000),
+      pagos: [{ valor: pesos(1_000_000), costoBancario: pesos(3_900) }],
+      comision: pesos(100_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
     const conCeroExplicito = calcularBorrador({
-      totalAnticipoAplicado: 5_000_000n,
+      totalAnticipoAplicado: pesos(5_000_000),
       costoRecaudoAnticipo: 0n,
-      pagos: [{ valor: 1_000_000n, costoBancario: 3_900n }],
-      comision: 100_000n,
+      pagos: [{ valor: pesos(1_000_000), costoBancario: pesos(3_900) }],
+      comision: pesos(100_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
@@ -359,9 +367,9 @@ describe("Casos borde", () => {
 
   it("montoLM default 0: sin LM el saldoAFavorCliente === saldoFinal (cuando a favor)", () => {
     const resultado = calcularBorrador({
-      totalAnticipoAplicado: 10_000_000n,
+      totalAnticipoAplicado: pesos(10_000_000),
       pagos: [],
-      comision: 150_000n,
+      comision: pesos(150_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
@@ -371,14 +379,14 @@ describe("Casos borde", () => {
 
   it("sin pagos ni costos: costosBancarios === costoRecaudoAnticipo solo", () => {
     const resultado = calcularBorrador({
-      totalAnticipoAplicado: 10_000_000n,
-      costoRecaudoAnticipo: 1_950n,
+      totalAnticipoAplicado: pesos(10_000_000),
+      costoRecaudoAnticipo: pesos(1_950),
       pagos: [],
       comision: 0n,
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
     });
-    expect(resultado.costosBancarios).toBe(1_950n);
+    expect(resultado.costosBancarios).toBe(pesos(1_950));
   });
 });
 
@@ -410,14 +418,14 @@ describe("Casos borde", () => {
 // ---------------------------------------------------------------------------
 describe("TEST DORADO NUEVO — BAQ-18453 (excel-lucho-1.xls)", () => {
   const INPUT_BAQ18453 = {
-    totalAnticipoAplicado: 35_074_500n,
+    totalAnticipoAplicado: pesos(35_074_500),
     costoRecaudoAnticipo: 0n,
     pagos: [
       // Total terceros 32.652.000 (incl. 4x1000 130.088 como línea del libro)
-      { valor: 32_652_000n, costoBancario: 0n },
+      { valor: pesos(32_652_000), costoBancario: 0n },
     ],
-    comision: 400_000n,
-    ivaComision: 76_000n,          // override manual del Excel
+    comision: pesos(400_000),
+    ivaComision: pesos(76_000),          // override manual del Excel
     tasaIva: TASA_IVA,
     tasa4x1000: 0n,                // 4x1000 ya está dentro de pagos — no cobrar 2 veces
     montoLM: 0n,
@@ -425,11 +433,11 @@ describe("TEST DORADO NUEVO — BAQ-18453 (excel-lucho-1.xls)", () => {
   };
 
   it("totalPagos === 32.652.000", () => {
-    expect(calcularBorrador(INPUT_BAQ18453).totalPagos).toBe(32_652_000n);
+    expect(calcularBorrador(INPUT_BAQ18453).totalPagos).toBe(pesos(32_652_000));
   });
 
   it("saldoTrasPagos === 2.422.500", () => {
-    expect(calcularBorrador(INPUT_BAQ18453).saldoTrasPagos).toBe(2_422_500n);
+    expect(calcularBorrador(INPUT_BAQ18453).saldoTrasPagos).toBe(pesos(2_422_500));
   });
 
   it("aplica4x1000 === true (saldo positivo) pero impuesto4x1000 === 0 (tasa=0n, 4x1000 embebido en pagos)", () => {
@@ -444,15 +452,15 @@ describe("TEST DORADO NUEVO — BAQ-18453 (excel-lucho-1.xls)", () => {
   });
 
   it("saldoFinal === 1.946.500", () => {
-    expect(calcularBorrador(INPUT_BAQ18453).saldoFinal).toBe(1_946_500n);
+    expect(calcularBorrador(INPUT_BAQ18453).saldoFinal).toBe(pesos(1_946_500));
   });
 
   it("totalFactura === 33.128.000", () => {
-    expect(calcularBorrador(INPUT_BAQ18453).totalFactura).toBe(33_128_000n);
+    expect(calcularBorrador(INPUT_BAQ18453).totalFactura).toBe(pesos(33_128_000));
   });
 
   it("saldoAFavorCliente === 1.946.500", () => {
-    expect(calcularBorrador(INPUT_BAQ18453).saldoAFavorCliente).toBe(1_946_500n);
+    expect(calcularBorrador(INPUT_BAQ18453).saldoAFavorCliente).toBe(pesos(1_946_500));
   });
 
   it("retenciones === 0 en el output", () => {
@@ -485,42 +493,42 @@ describe("TEST DORADO NUEVO — BAQ-18453 (excel-lucho-1.xls)", () => {
 // ---------------------------------------------------------------------------
 describe("TEST DORADO NUEVO — BAQ-18512 (excel-lucho-2.xls, con retenciones)", () => {
   const INPUT_BAQ18512 = {
-    totalAnticipoAplicado: 1_572_000n,
+    totalAnticipoAplicado: pesos(1_572_000),
     costoRecaudoAnticipo: 0n,
     pagos: [
       // Total terceros 1.159.620 (incl. 4x1000 4.620 como línea del libro)
-      { valor: 1_159_620n, costoBancario: 0n },
+      { valor: pesos(1_159_620), costoBancario: 0n },
     ],
-    comision: 140_000n,
-    ivaComision: 26_600n,          // 19% × 140.000, override manual del Excel
+    comision: pesos(140_000),
+    ivaComision: pesos(26_600),          // 19% × 140.000, override manual del Excel
     tasaIva: TASA_IVA,
     tasa4x1000: 0n,                // 4x1000 ya dentro de pagos
     montoLM: 0n,
-    retenciones: 3_990n,           // RETE IVA 0,15 × 26.600 = 3.990
+    retenciones: pesos(3_990),           // RETE IVA 0,15 × 26.600 = 3.990
   };
 
   it("totalPagos === 1.159.620", () => {
-    expect(calcularBorrador(INPUT_BAQ18512).totalPagos).toBe(1_159_620n);
+    expect(calcularBorrador(INPUT_BAQ18512).totalPagos).toBe(pesos(1_159_620));
   });
 
   it("saldoTrasPagos === 412.380", () => {
-    expect(calcularBorrador(INPUT_BAQ18512).saldoTrasPagos).toBe(412_380n);
+    expect(calcularBorrador(INPUT_BAQ18512).saldoTrasPagos).toBe(pesos(412_380));
   });
 
   it("saldoFinal === 245.780 (antes de retenciones)", () => {
-    expect(calcularBorrador(INPUT_BAQ18512).saldoFinal).toBe(245_780n);
+    expect(calcularBorrador(INPUT_BAQ18512).saldoFinal).toBe(pesos(245_780));
   });
 
   it("retenciones === 3.990 en el output", () => {
-    expect(calcularBorrador(INPUT_BAQ18512).retenciones).toBe(3_990n);
+    expect(calcularBorrador(INPUT_BAQ18512).retenciones).toBe(pesos(3_990));
   });
 
   it("saldoAFavorCliente === 249.770 (saldoFinal + retenciones)", () => {
-    expect(calcularBorrador(INPUT_BAQ18512).saldoAFavorCliente).toBe(249_770n);
+    expect(calcularBorrador(INPUT_BAQ18512).saldoAFavorCliente).toBe(pesos(249_770));
   });
 
   it("totalFactura === 1.322.230 (anticipo − saldoAFavorCliente)", () => {
-    expect(calcularBorrador(INPUT_BAQ18512).totalFactura).toBe(1_322_230n);
+    expect(calcularBorrador(INPUT_BAQ18512).totalFactura).toBe(pesos(1_322_230));
   });
 
   it("aplica4x1000 === true (saldo positivo) pero impuesto4x1000 === 0 (tasa=0n)", () => {
@@ -537,41 +545,41 @@ describe("TEST DORADO NUEVO — BAQ-18512 (excel-lucho-2.xls, con retenciones)",
 describe("retenciones=0n produce output idéntico al comportamiento anterior", () => {
   it("retenciones=0n explícito === sin campo retenciones (legacy)", () => {
     const sinRetenciones = calcularBorrador({
-      totalAnticipoAplicado: 45_226_000n,
-      costoRecaudoAnticipo: 1_950n,
+      totalAnticipoAplicado: pesos(45_226_000),
+      costoRecaudoAnticipo: pesos(1_950),
       pagos: [
-        { valor: 1_000_000n, costoBancario: 3_900n },
-        { valor: 2_011_341n, costoBancario: 0n },
-        { valor: 30_854_000n, costoBancario: 0n },
-        { valor: 2_216_233n, costoBancario: 0n },
-        { valor: 760_283n, costoBancario: 3_900n },
-        { valor: 175_787n, costoBancario: 3_900n },
-        { valor: 3_500_000n, costoBancario: 3_900n },
+        { valor: pesos(1_000_000), costoBancario: pesos(3_900) },
+        { valor: pesos(2_011_341), costoBancario: 0n },
+        { valor: pesos(30_854_000), costoBancario: 0n },
+        { valor: pesos(2_216_233), costoBancario: 0n },
+        { valor: pesos(760_283), costoBancario: pesos(3_900) },
+        { valor: pesos(175_787), costoBancario: pesos(3_900) },
+        { valor: pesos(3_500_000), costoBancario: pesos(3_900) },
       ],
-      comision: 200_000n,
-      ivaComision: 76_000n,
+      comision: pesos(200_000),
+      ivaComision: pesos(76_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
-      montoLM: 875_944n,
+      montoLM: pesos(875_944),
     });
 
     const conCeroExplicito = calcularBorrador({
-      totalAnticipoAplicado: 45_226_000n,
-      costoRecaudoAnticipo: 1_950n,
+      totalAnticipoAplicado: pesos(45_226_000),
+      costoRecaudoAnticipo: pesos(1_950),
       pagos: [
-        { valor: 1_000_000n, costoBancario: 3_900n },
-        { valor: 2_011_341n, costoBancario: 0n },
-        { valor: 30_854_000n, costoBancario: 0n },
-        { valor: 2_216_233n, costoBancario: 0n },
-        { valor: 760_283n, costoBancario: 3_900n },
-        { valor: 175_787n, costoBancario: 3_900n },
-        { valor: 3_500_000n, costoBancario: 3_900n },
+        { valor: pesos(1_000_000), costoBancario: pesos(3_900) },
+        { valor: pesos(2_011_341), costoBancario: 0n },
+        { valor: pesos(30_854_000), costoBancario: 0n },
+        { valor: pesos(2_216_233), costoBancario: 0n },
+        { valor: pesos(760_283), costoBancario: pesos(3_900) },
+        { valor: pesos(175_787), costoBancario: pesos(3_900) },
+        { valor: pesos(3_500_000), costoBancario: pesos(3_900) },
       ],
-      comision: 200_000n,
-      ivaComision: 76_000n,
+      comision: pesos(200_000),
+      ivaComision: pesos(76_000),
       tasaIva: TASA_IVA,
       tasa4x1000: TASA_4X1000,
-      montoLM: 875_944n,
+      montoLM: pesos(875_944),
       retenciones: 0n,
     });
 
@@ -584,9 +592,9 @@ describe("retenciones=0n produce output idéntico al comportamiento anterior", (
     expect(conCeroExplicito.saldoAFavorLM).toBe(sinRetenciones.saldoAFavorLM);
 
     // Y cuadran con los valores del caso dorado BUN26-0026
-    expect(conCeroExplicito.totalFactura).toBe(41_868_042n);
-    expect(conCeroExplicito.saldoAFavorCliente).toBe(3_357_958n);
-    expect(conCeroExplicito.saldoAFavorLM).toBe(875_944n);
+    expect(conCeroExplicito.totalFactura).toBe(pesos(41_868_042));
+    expect(conCeroExplicito.saldoAFavorCliente).toBe(pesos(3_357_958));
+    expect(conCeroExplicito.saldoAFavorLM).toBe(pesos(875_944));
     expect(conCeroExplicito.retenciones).toBe(0n);
   });
 });
@@ -596,30 +604,79 @@ describe("retenciones=0n produce output idéntico al comportamiento anterior", (
 // ---------------------------------------------------------------------------
 describe("Saldos intermedios (libro de pagos)", () => {
   it("calcula saldos corrientes línea a línea", () => {
-    const saldos = calcularSaldosIntermedios(10_000_000n, [
-      { valor: 1_000_000n },
-      { valor: 2_000_000n },
-      { valor: 3_000_000n },
+    const saldos = calcularSaldosIntermedios(pesos(10_000_000), [
+      { valor: pesos(1_000_000) },
+      { valor: pesos(2_000_000) },
+      { valor: pesos(3_000_000) },
     ]);
 
-    expect(saldos).toEqual([9_000_000n, 7_000_000n, 4_000_000n]);
+    expect(saldos).toEqual([pesos(9_000_000), pesos(7_000_000), pesos(4_000_000)]);
   });
 
   it("sin pagos retorna arreglo vacío", () => {
-    expect(calcularSaldosIntermedios(5_000_000n, [])).toEqual([]);
+    expect(calcularSaldosIntermedios(pesos(5_000_000), [])).toEqual([]);
   });
 
   it("caso dorado DO.BUN26-0026: saldo tras los 7 pagos === 4.708.356", () => {
     const pagos = [
-      { valor: 1_000_000n },
-      { valor: 2_011_341n },
-      { valor: 30_854_000n },
-      { valor: 2_216_233n },
-      { valor: 760_283n },
-      { valor: 175_787n },
-      { valor: 3_500_000n },
+      { valor: pesos(1_000_000) },
+      { valor: pesos(2_011_341) },
+      { valor: pesos(30_854_000) },
+      { valor: pesos(2_216_233) },
+      { valor: pesos(760_283) },
+      { valor: pesos(175_787) },
+      { valor: pesos(3_500_000) },
     ];
-    const saldos = calcularSaldosIntermedios(45_226_000n, pagos);
-    expect(saldos[saldos.length - 1]).toBe(4_708_356n);
+    const saldos = calcularSaldosIntermedios(pesos(45_226_000), pagos);
+    expect(saldos[saldos.length - 1]).toBe(pesos(4_708_356));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fase centavos (diseño A.6): fronteras de redondeo del motor COMISION.
+// ---------------------------------------------------------------------------
+describe("Redondeos del motor en centavos (A.6)", () => {
+  const base = { pagos: [], tasaIva: TASA_IVA, tasa4x1000: TASA_4X1000 };
+
+  it("IVA de la comisión AL PESO mitad arriba (D-1): 150.050 × 19 % = 28.509,50 → 28.510", () => {
+    const r = calcularBorrador({ ...base, totalAnticipoAplicado: 0n, comision: pesos(150_050) });
+    expect(r.ivaComision).toBe(pesos(28_510));
+  });
+
+  it("IVA de la comisión con comisión múltiplo de 100 pesos: idéntico a hoy ×100", () => {
+    const r = calcularBorrador({ ...base, totalAnticipoAplicado: 0n, comision: pesos(150_000) });
+    expect(r.ivaComision).toBe(pesos(28_500));
+  });
+
+  it("IVA de la comisión con centavos: 150.000,40 × 19 % = 28.500,076 → 28.500", () => {
+    const r = calcularBorrador({ ...base, totalAnticipoAplicado: 0n, comision: 15_000_040n });
+    expect(r.ivaComision).toBe(pesos(28_500));
+  });
+
+  it("4x1000 del motor TRUNCADO al peso (D-2), también con centavos en la base", () => {
+    // 45.226.000 × 0,4 % = 180.904 exacto
+    const exacto = calcularBorrador({ ...base, totalAnticipoAplicado: pesos(45_226_000), comision: 0n, ivaComision: 0n });
+    expect(exacto.impuesto4x1000).toBe(pesos(180_904));
+    // 1.249,99 × 0,4 % = 4,99996 → 4 (truncado, no 5)
+    const trunc = calcularBorrador({ ...base, totalAnticipoAplicado: 124_999n, comision: 0n, ivaComision: 0n });
+    expect(trunc.impuesto4x1000).toBe(pesos(4));
+    // 1.250 × 0,4 % = 5 exacto
+    const cinco = calcularBorrador({ ...base, totalAnticipoAplicado: pesos(1_250), comision: 0n, ivaComision: 0n });
+    expect(cinco.impuesto4x1000).toBe(pesos(5));
+  });
+
+  it("saldos con centavos: exactos al centavo (sin redondeo en sumas y restas)", () => {
+    const r = calcularBorrador({
+      ...base,
+      totalAnticipoAplicado: pesos(1_000_000),
+      pagos: [{ valor: 50_280_145n, costoBancario: 0n }],
+      comision: 0n,
+      ivaComision: 0n,
+    });
+    // 1.000.000 − 502.801,45 = 497.198,55; 4x1000 = 4.000 → 493.198,55
+    expect(r.saldoTrasPagos).toBe(49_719_855n);
+    expect(r.impuesto4x1000).toBe(pesos(4_000));
+    expect(r.saldoFinal).toBe(49_319_855n);
+    expect(r.saldoAFavorCliente).toBe(49_319_855n);
   });
 });

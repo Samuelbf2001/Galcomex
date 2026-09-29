@@ -9,11 +9,15 @@
  * clic y (b) el script de demo. Ninguna regla de precio vive fuera de aquí y
  * de la BD.
  *
+ * Unidades (fase centavos): `valor`/`valorAdicional` en CENTAVOS escritos con
+ * `pesos(…)`; `minimos`/`tramos` en PESOS texto canónico (como se guardan).
+ *
  * Fuentes:
  *   · "TARIFAS GALCOMEX 2026 IMPO - EXPO.pdf"  → LITOPLAS S.A., 2-feb-2026 a 31-ene-2027
  *   · "TARIFAS GALCOMEX 2026.pdf"              → CW ASIA SAS, 11-mar-2026, IPC 5,29 %
  */
 
+import { pesos } from "@/lib/dinero";
 import type { TarifaItemInput } from "@/lib/validations/tarifas";
 
 export type PlantillaTarifario = {
@@ -95,14 +99,14 @@ export const PLANTILLA_LITOPLAS_IMPO: PlantillaTarifario = {
   alcance: "TRAMITE",
   fuente: "TARIFAS GALCOMEX 2026 IMPO - EXPO.pdf (pág. 1)",
   items: [
-    item({ concepto: "GASTOS_TRAMITE", nombrePublico: "Gastos de trámite por embarque", tipoCalculo: "FIJO", valor: 100_000n, orden: 10 }),
-    item({ concepto: "REVISION_DESPACHO", nombrePublico: "Servicios logísticos de revisión e inventario en despacho", tipoCalculo: "FIJO", valor: 180_000n, disparador: "EVENTO", eventoCodigo: "REVISION_DESPACHO", orden: 20 }),
-    item({ concepto: "ENTREGA_DIRECTA", nombrePublico: "Servicios logísticos de despacho entrega directa", tipoCalculo: "FIJO", valor: 200_000n, disparador: "EVENTO", eventoCodigo: "ENTREGA_DIRECTA", orden: 30 }),
-    item({ concepto: "SISTEMATIZACION", nombrePublico: "Sistematización", tipoCalculo: "FIJO", valor: 20_000n, orden: 40 }),
-    item({ concepto: "DOCUMENTACION", nombrePublico: "Documentación", tipoCalculo: "POR_UNIDAD", unidad: "DECLARACION", valor: 10_000n, orden: 50 }),
-    item({ concepto: "DOCUMENTOS_DESPACHO", nombrePublico: "Documentos de despacho", tipoCalculo: "FIJO", valor: 20_000n, orden: 60 }),
-    item({ concepto: "PAPELERIA", nombrePublico: "Papelería", tipoCalculo: "FIJO", valor: 10_000n, orden: 70 }),
-    item({ concepto: "ELABORACION_REGISTRO", nombrePublico: "Elaboración de registro de importación", tipoCalculo: "FIJO", valor: 433_000n, disparador: "EVENTO", eventoCodigo: "ELABORACION_REGISTRO", orden: 80 }),
+    item({ concepto: "GASTOS_TRAMITE", nombrePublico: "Gastos de trámite por embarque", tipoCalculo: "FIJO", valor: pesos(100_000), orden: 10 }),
+    item({ concepto: "REVISION_DESPACHO", nombrePublico: "Servicios logísticos de revisión e inventario en despacho", tipoCalculo: "FIJO", valor: pesos(180_000), disparador: "EVENTO", eventoCodigo: "REVISION_DESPACHO", orden: 20 }),
+    item({ concepto: "ENTREGA_DIRECTA", nombrePublico: "Servicios logísticos de despacho entrega directa", tipoCalculo: "FIJO", valor: pesos(200_000), disparador: "EVENTO", eventoCodigo: "ENTREGA_DIRECTA", orden: 30 }),
+    item({ concepto: "SISTEMATIZACION", nombrePublico: "Sistematización", tipoCalculo: "FIJO", valor: pesos(20_000), orden: 40 }),
+    item({ concepto: "DOCUMENTACION", nombrePublico: "Documentación", tipoCalculo: "POR_UNIDAD", unidad: "DECLARACION", valor: pesos(10_000), orden: 50 }),
+    item({ concepto: "DOCUMENTOS_DESPACHO", nombrePublico: "Documentos de despacho", tipoCalculo: "FIJO", valor: pesos(20_000), orden: 60 }),
+    item({ concepto: "PAPELERIA", nombrePublico: "Papelería", tipoCalculo: "FIJO", valor: pesos(10_000), orden: 70 }),
+    item({ concepto: "ELABORACION_REGISTRO", nombrePublico: "Elaboración de registro de importación", tipoCalculo: "FIJO", valor: pesos(433_000), disparador: "EVENTO", eventoCodigo: "ELABORACION_REGISTRO", orden: 80 }),
   ],
 };
 
@@ -115,7 +119,7 @@ export const PLANTILLA_LITOPLAS_CLASIFICACION: PlantillaTarifario = {
   alcance: "CLASIFICACION",
   fuente: "TARIFAS GALCOMEX 2026 IMPO - EXPO.pdf (pág. 1)",
   items: [
-    item({ concepto: "CLASIFICACION", nombrePublico: "Clasificación arancelaria", tipoCalculo: "PRIMERO_MAS_ADICIONAL", unidad: "ITEM", valor: 380_000n, valorAdicional: 180_000n, orden: 10 }),
+    item({ concepto: "CLASIFICACION", nombrePublico: "Clasificación arancelaria", tipoCalculo: "PRIMERO_MAS_ADICIONAL", unidad: "ITEM", valor: pesos(380_000), valorAdicional: pesos(180_000), orden: 10 }),
   ],
 };
 
@@ -128,13 +132,13 @@ export const PLANTILLA_LITOPLAS_EXPO: PlantillaTarifario = {
   alcance: "EXPORTACION",
   fuente: "TARIFAS GALCOMEX 2026 IMPO - EXPO.pdf (pág. 2)",
   items: [
-    item({ concepto: "GASTOS_TRAMITE", nombrePublico: "Gastos de trámite por embarque", tipoCalculo: "FIJO", valor: 100_000n, orden: 10 }),
-    item({ concepto: "REVISION_DESPACHO", nombrePublico: "Servicios logísticos de revisión e inventario en despacho", tipoCalculo: "FIJO", valor: 200_000n, disparador: "EVENTO", eventoCodigo: "REVISION_DESPACHO", orden: 20 }),
-    item({ concepto: "SISTEMATIZACION", nombrePublico: "Sistematización", tipoCalculo: "FIJO", valor: 20_000n, orden: 30 }),
-    item({ concepto: "DOCUMENTACION", nombrePublico: "Documentación", tipoCalculo: "FIJO", valor: 20_000n, orden: 40 }),
-    item({ concepto: "DOCUMENTOS_DESPACHO", nombrePublico: "Documentos de despacho", tipoCalculo: "FIJO", valor: 20_000n, orden: 50 }),
-    item({ concepto: "PAPELERIA", nombrePublico: "Papelería", tipoCalculo: "FIJO", valor: 30_000n, orden: 60 }),
-    item({ concepto: "ZONA_SECUNDARIA", nombrePublico: "Zona secundaria (inicial y renovación mensual)", tipoCalculo: "POR_UNIDAD", unidad: "MES", valor: 350_000n, disparador: "EVENTO", eventoCodigo: "ZONA_SECUNDARIA", orden: 70 }),
+    item({ concepto: "GASTOS_TRAMITE", nombrePublico: "Gastos de trámite por embarque", tipoCalculo: "FIJO", valor: pesos(100_000), orden: 10 }),
+    item({ concepto: "REVISION_DESPACHO", nombrePublico: "Servicios logísticos de revisión e inventario en despacho", tipoCalculo: "FIJO", valor: pesos(200_000), disparador: "EVENTO", eventoCodigo: "REVISION_DESPACHO", orden: 20 }),
+    item({ concepto: "SISTEMATIZACION", nombrePublico: "Sistematización", tipoCalculo: "FIJO", valor: pesos(20_000), orden: 30 }),
+    item({ concepto: "DOCUMENTACION", nombrePublico: "Documentación", tipoCalculo: "FIJO", valor: pesos(20_000), orden: 40 }),
+    item({ concepto: "DOCUMENTOS_DESPACHO", nombrePublico: "Documentos de despacho", tipoCalculo: "FIJO", valor: pesos(20_000), orden: 50 }),
+    item({ concepto: "PAPELERIA", nombrePublico: "Papelería", tipoCalculo: "FIJO", valor: pesos(30_000), orden: 60 }),
+    item({ concepto: "ZONA_SECUNDARIA", nombrePublico: "Zona secundaria (inicial y renovación mensual)", tipoCalculo: "POR_UNIDAD", unidad: "MES", valor: pesos(350_000), disparador: "EVENTO", eventoCodigo: "ZONA_SECUNDARIA", orden: 70 }),
   ],
 };
 
@@ -155,13 +159,13 @@ export const PLANTILLA_CW_ASIA: PlantillaTarifario = {
       minimos: { SUELTA: "370000", CONTENEDOR_20: "498000", CONTENEDOR_40: "554000" },
       orden: 10,
     }),
-    item({ concepto: "ELABORACION_REGISTRO", nombrePublico: "Elaboración registro de importación en VUCE (mínimo)", tipoCalculo: "FIJO", valor: 280_000n, disparador: "EVENTO", eventoCodigo: "ELABORACION_REGISTRO", orden: 20 }),
-    item({ concepto: "MODIFICACION_REGISTRO", nombrePublico: "Modificación de registro de importación", tipoCalculo: "POR_UNIDAD", valor: 100_000n, disparador: "EVENTO", eventoCodigo: "MODIFICACION_REGISTRO", orden: 30 }),
-    item({ concepto: "GASTOS_TRAMITE", nombrePublico: "Gastos de trámite por contenedor", tipoCalculo: "POR_UNIDAD", unidad: "CONTENEDOR", valor: 100_000n, orden: 40 }),
-    item({ concepto: "DESPACHO_PARCIAL", nombrePublico: "Gastos de trámite por despacho parcial", tipoCalculo: "POR_UNIDAD", valor: 50_000n, disparador: "EVENTO", eventoCodigo: "DESPACHO_PARCIAL", orden: 50 }),
-    item({ concepto: "SISTEMATIZACION", nombrePublico: "Sistematización de archivos", tipoCalculo: "FIJO", valor: 30_000n, orden: 60 }),
-    item({ concepto: "DOCUMENTACION", nombrePublico: "Revisión y clasificación documental por archivo", tipoCalculo: "POR_UNIDAD", unidad: "DOCUMENTO", valor: 20_000n, orden: 70 }),
-    item({ concepto: "INGRESO_ZF", nombrePublico: "Servicio trámite de ingreso ZF por contenedor", tipoCalculo: "POR_UNIDAD", valor: 166_000n, disparador: "EVENTO", eventoCodigo: "INGRESO_ZF", orden: 80 }),
+    item({ concepto: "ELABORACION_REGISTRO", nombrePublico: "Elaboración registro de importación en VUCE (mínimo)", tipoCalculo: "FIJO", valor: pesos(280_000), disparador: "EVENTO", eventoCodigo: "ELABORACION_REGISTRO", orden: 20 }),
+    item({ concepto: "MODIFICACION_REGISTRO", nombrePublico: "Modificación de registro de importación", tipoCalculo: "POR_UNIDAD", valor: pesos(100_000), disparador: "EVENTO", eventoCodigo: "MODIFICACION_REGISTRO", orden: 30 }),
+    item({ concepto: "GASTOS_TRAMITE", nombrePublico: "Gastos de trámite por contenedor", tipoCalculo: "POR_UNIDAD", unidad: "CONTENEDOR", valor: pesos(100_000), orden: 40 }),
+    item({ concepto: "DESPACHO_PARCIAL", nombrePublico: "Gastos de trámite por despacho parcial", tipoCalculo: "POR_UNIDAD", valor: pesos(50_000), disparador: "EVENTO", eventoCodigo: "DESPACHO_PARCIAL", orden: 50 }),
+    item({ concepto: "SISTEMATIZACION", nombrePublico: "Sistematización de archivos", tipoCalculo: "FIJO", valor: pesos(30_000), orden: 60 }),
+    item({ concepto: "DOCUMENTACION", nombrePublico: "Revisión y clasificación documental por archivo", tipoCalculo: "POR_UNIDAD", unidad: "DOCUMENTO", valor: pesos(20_000), orden: 70 }),
+    item({ concepto: "INGRESO_ZF", nombrePublico: "Servicio trámite de ingreso ZF por contenedor", tipoCalculo: "POR_UNIDAD", valor: pesos(166_000), disparador: "EVENTO", eventoCodigo: "INGRESO_ZF", orden: 80 }),
     item({ concepto: "PAGO_REGISTRO", nombrePublico: "Pago del registro de importación (VUCE)", tipoCalculo: "ESPEJO_DE_COSTO", conceptoCosto: "registro", aplicaIva: false, orden: 90 }),
   ],
 };

@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 
 import { calcularDiasYAlerta, seleccionarClientesEnAlertaCartera } from "../service";
+import { pesos } from "@/lib/dinero";
 
 // ─── Función auxiliar ─────────────────────────────────────────────────────────
 
@@ -89,11 +90,11 @@ describe("calcularDiasYAlerta", () => {
 
 /**
  * Tests de seleccionarClientesEnAlertaCartera — alerta de cartera por cliente
- * (reunión 1-jul: saldo neto de cliente por debajo de −$20.000.000 → Guillermo
+ * (reunión 1-jul: saldo neto de cliente por debajo de -$\u00a020.000.000 → Guillermo
  * decide si da otro anticipo).
  */
 describe("seleccionarClientesEnAlertaCartera", () => {
-  const UMBRAL = -20_000_000n;
+  const UMBRAL = -pesos(20_000_000);
 
   it("sin clientes → lista vacía", () => {
     expect(seleccionarClientesEnAlertaCartera([], UMBRAL)).toEqual([]);
@@ -101,7 +102,7 @@ describe("seleccionarClientesEnAlertaCartera", () => {
 
   it("cliente con saldo neto por encima del umbral (deuda menor) → no aparece", () => {
     const result = seleccionarClientesEnAlertaCartera(
-      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -5_000_000n }],
+      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -pesos(5_000_000) }],
       UMBRAL,
     );
     expect(result).toEqual([]);
@@ -117,29 +118,29 @@ describe("seleccionarClientesEnAlertaCartera", () => {
 
   it("cliente con saldo neto positivo (Galcomex le debe) → no aparece", () => {
     const result = seleccionarClientesEnAlertaCartera(
-      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: 10_000_000n }],
+      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: pesos(10_000_000) }],
       UMBRAL,
     );
     expect(result).toEqual([]);
   });
 
-  it("cliente con saldo neto por debajo del umbral → aparece con saldoNeto serializado", () => {
+  it("cliente con saldo neto por debajo del umbral → aparece con saldoNeto en centavos (el serializador de la respuesta lo emite en pesos)", () => {
     const result = seleccionarClientesEnAlertaCartera(
-      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -25_000_000n }],
+      [{ clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -pesos(25_000_000) }],
       UMBRAL,
     );
     expect(result).toEqual([
-      { clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: "-25000000" },
+      { clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: pesos(-25_000_000) },
     ]);
   });
 
   it("varios clientes en alerta → ordena de peor (más negativo) a mejor saldo", () => {
     const result = seleccionarClientesEnAlertaCartera(
       [
-        { clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -21_000_000n },
-        { clienteId: "c2", clienteNombre: "Cliente B", saldoNeto: -50_000_000n },
-        { clienteId: "c3", clienteNombre: "Cliente C", saldoNeto: -5_000_000n }, // fuera de alerta
-        { clienteId: "c4", clienteNombre: "Cliente D", saldoNeto: -30_000_000n },
+        { clienteId: "c1", clienteNombre: "Cliente A", saldoNeto: -pesos(21_000_000) },
+        { clienteId: "c2", clienteNombre: "Cliente B", saldoNeto: -pesos(50_000_000) },
+        { clienteId: "c3", clienteNombre: "Cliente C", saldoNeto: -pesos(5_000_000) }, // fuera de alerta
+        { clienteId: "c4", clienteNombre: "Cliente D", saldoNeto: -pesos(30_000_000) },
       ],
       UMBRAL,
     );

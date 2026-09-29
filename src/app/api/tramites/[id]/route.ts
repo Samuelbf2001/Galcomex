@@ -11,7 +11,7 @@ import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/
 import { jsonResponse } from "@/lib/http/json";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 import { tramiteDetalleInclude, tramiteInclude } from "@/lib/tramites/service";
-import { tramiteUpdateSchema } from "@/lib/validations/tramites";
+import { datosTramiteDeAtributos, tramiteUpdateSchema } from "@/lib/validations/tramites";
 
 type RouteContext = {
   params: Promise<{
@@ -53,7 +53,8 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     umbrales,
   );
 
-  return jsonResponse({ tramite, umbralAlertaSaldo: umbralAlertaSaldo.toString() });
+  // Centavos: el serializador lo emite en pesos texto ("500000.00"), como el resto del dinero.
+  return jsonResponse({ tramite, umbralAlertaSaldo });
 }
 
 /** PATCH: alias of PUT — permite edición parcial de fechas clave desde el detalle. */
@@ -80,7 +81,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
 
       const updated = await tx.tramiteDO.update({
         where: { id },
-        data: payload,
+        data: datosTramiteDeAtributos(payload),
         include: tramiteInclude,
       });
 

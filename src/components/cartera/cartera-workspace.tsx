@@ -28,6 +28,8 @@ import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useRol } from "@/lib/auth/rol-context";
+import { centavosDeTexto, formatoPesos, pesos } from "@/lib/dinero";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import {
   OPCIONES_RECAUDO_PAGO,
   type CarteraData,
@@ -71,29 +73,33 @@ type TipoModal = "ABONO" | "DEVOLUCION";
 
 // ─── Helpers visuales ─────────────────────────────────────────────────────────
 
+/** Centavos de un pesos-texto (API o canónico); 0n si viene vacío o dañado. */
+function centavosSeguro(raw: string): bigint {
+  try {
+    return centavosDeTexto(raw);
+  } catch {
+    return 0n;
+  }
+}
+
 // Convención del ledger (WS-D): cruce = Σ saldoNeto.
 //   cruce > 0 → Galcomex debe (saldo a favor de la parte → devolver)
 //   cruce < 0 → la parte debe a Galcomex (pendiente de cobro)
 function cruceLabelColor(cruceStr: string): string {
-  try {
-    const n = BigInt(cruceStr);
-    if (n > 0n) return "text-violet-700"; // Galcomex debe (devolver)
-    if (n < 0n) return "text-rose-600";   // la parte debe a Galcomex
-    return "text-slate-500";
-  } catch {
-    return "text-slate-500";
-  }
+  const n = centavosSeguro(cruceStr);
+  if (n > 0n) return "text-violet-700"; // Galcomex debe (devolver)
+  if (n < 0n) return "text-rose-600";   // la parte debe a Galcomex
+  return "text-slate-500";
 }
 
 function cruceLabel(cruceStr: string, quien: "cliente" | "lm"): string {
   try {
-    const n = BigInt(cruceStr);
-    const absStr = n < 0n ? (-n).toString() : n.toString();
+    const n = centavosDeTexto(cruceStr);
     if (n > 0n) {
-      return `Galcomex debe ${formatCOP(absStr)}`;
+      return `Galcomex debe ${formatoPesos(n)}`;
     }
     if (n < 0n) {
-      return `${quien === "cliente" ? "Cliente" : "LM"} debe ${formatCOP(absStr)}`;
+      return `${quien === "cliente" ? "Cliente" : "LM"} debe ${formatoPesos(-n)}`;
     }
     return "A mano";
   } catch {
@@ -102,8 +108,8 @@ function cruceLabel(cruceStr: string, quien: "cliente" | "lm"): string {
 }
 
 function saldoChip(aFavor: string, aCargo: string): React.ReactNode {
-  const favor = BigInt(aFavor);
-  const cargo = BigInt(aCargo);
+  const favor = centavosSeguro(aFavor);
+  const cargo = centavosSeguro(aCargo);
   if (favor > 0n) {
     return (
       <span className="text-emerald-700 font-medium">+{formatCOP(aFavor)}</span>
@@ -127,7 +133,7 @@ function LedgerChip({
   pendienteCobro: string;
   pendienteDevolucion: string;
 }) {
-  const sn = BigInt(saldoNeto);
+  const sn = centavosSeguro(saldoNeto);
   if (sn === 0n) {
     return (
       <span className="inline-flex items-center gap-1 border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
@@ -170,7 +176,7 @@ function RegistrarPagoModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [montoRaw, setMontoRaw] = useState("");
-  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [fecha, setFecha] = useState(hoyBogotaISO());
   // Selector combinado: "RECAUDO:BANCOLOMBIA" | "PAGO:TRANSF_BANCOLOMBIA", etc.
   const [opcionSeleccionada, setOpcionSeleccionada] = useState<string>("RECAUDO:BANCOLOMBIA");
   const [verificadoBanco, setVerificadoBanco] = useState(false);
@@ -197,9 +203,9 @@ function RegistrarPagoModal({
       : factura.pendienteDevolucionLM;
 
   const montoValido = parseBigIntInput(montoRaw);
-  const montoN = montoValido ? BigInt(montoValido) : 0n;
-  const pendienteCobroN = BigInt(pendienteCobro);
-  const pendienteDevolucionN = BigInt(pendienteDevolucion);
+  const montoN = montoValido ? centavosSeguro(montoValido) : 0n;
+  const pendienteCobroN = centavosSeguro(pendienteCobro);
+  const pendienteDevolucionN = centavosSeguro(pendienteDevolucion);
 
   // Aviso de sobrepago (abono > pendiente de cobro → generará devolución)
   const esSobrepago =
@@ -252,7 +258,7 @@ function RegistrarPagoModal({
 
     if (excedeDev) {
       setError(
-        `La devolución (${formatCOP(montoValido)}) excede el saldo a favor disponible (${formatCOP(pendienteDevolucion)}).`,
+        `La devolución (${formatoPesos(montoN)}) excede el saldo a favor disponible (${formatCOP(pendienteDevolucion)}).`,
       );
       return;
     }
@@ -285,7 +291,7 @@ function RegistrarPagoModal({
       await registrarAbonoDevolucion(factura.id, input);
       toast({
         title: tipo === "ABONO" ? "Abono registrado" : "Devolución registrada",
-        description: `${formatCOP(montoValido)} · ${factura.numSiigo}`,
+        description: `${formatoPesos(montoN)} · ${factura.numSiigo}`,
         variant: "success",
       });
       onRegistrado();
@@ -323,7 +329,7 @@ function RegistrarPagoModal({
                 Pendiente de cobro
               </p>
               <p className="font-semibold text-sm text-rose-600">
-                {BigInt(pendienteCobro) > 0n ? formatCOP(pendienteCobro) : "—"}
+                {pendienteCobroN > 0n ? formatCOP(pendienteCobro) : "—"}
               </p>
             </div>
             <div>
@@ -331,7 +337,7 @@ function RegistrarPagoModal({
                 Pendiente de devolución
               </p>
               <p className="font-semibold text-sm text-violet-700">
-                {BigInt(pendienteDevolucion) > 0n ? formatCOP(pendienteDevolucion) : "—"}
+                {pendienteDevolucionN > 0n ? formatCOP(pendienteDevolucion) : "—"}
               </p>
             </div>
           </div>
@@ -348,7 +354,7 @@ function RegistrarPagoModal({
               className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
             />
             {montoValido && (
-              <p className="text-xs text-slate-500">{formatCOP(montoValido)}</p>
+              <p className="text-xs text-slate-500">{formatoPesos(montoN)}</p>
             )}
           </label>
 
@@ -358,7 +364,7 @@ function RegistrarPagoModal({
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               El monto supera el pendiente de cobro ({formatCOP(pendienteCobro)}). Si
               continúas, se generará un saldo a favor de{" "}
-              {formatCOP((montoN - pendienteCobroN).toString())} que quedará pendiente
+              {formatoPesos(montoN - pendienteCobroN)} que quedará pendiente
               de devolución.
             </div>
           )}
@@ -385,14 +391,14 @@ function RegistrarPagoModal({
               <optgroup label="Recaudo (entra plata)">
                 {OPCIONES_RECAUDO_PAGO.filter((o) => o.grupo === "RECAUDO").map((o) => (
                   <option key={`${o.grupo}:${o.value}`} value={`${o.grupo}:${o.value}`}>
-                    {o.label} — ${o.costo.toLocaleString("es-CO")}
+                    {o.label} — {formatoPesos(pesos(o.costo))}
                   </option>
                 ))}
               </optgroup>
               <optgroup label="Pago (sale plata)">
                 {OPCIONES_RECAUDO_PAGO.filter((o) => o.grupo === "PAGO").map((o) => (
                   <option key={`${o.grupo}:${o.value}`} value={`${o.grupo}:${o.value}`}>
-                    {o.label} — ${o.costo.toLocaleString("es-CO")}
+                    {o.label} — {formatoPesos(pesos(o.costo))}
                   </option>
                 ))}
               </optgroup>
@@ -401,7 +407,7 @@ function RegistrarPagoModal({
               <p className="text-xs text-slate-500">
                 Costo bancario:{" "}
                 <span className="font-medium text-slate-700">
-                  {formatCOP(String(opcionActual.costo))}
+                  {formatoPesos(pesos(opcionActual.costo))}
                 </span>
                 {" · "}
                 <span className={opcionActual.grupo === "RECAUDO" ? "text-emerald-700" : "text-violet-700"}>
@@ -634,7 +640,7 @@ function PagosList({
                 )}
               </td>
               <td className="px-4 py-1.5 text-right text-slate-600 whitespace-nowrap">
-                {BigInt(p.costoBancario) > 0n ? (
+                {centavosSeguro(p.costoBancario) > 0n ? (
                   <span className="text-amber-700 font-medium">{formatCOP(p.costoBancario)}</span>
                 ) : (
                   <span className="text-slate-300">$0</span>
@@ -763,7 +769,7 @@ function FilaFactura({
   const pendienteDevolucion =
     vista === "cliente" ? factura.pendienteDevolucionCliente : factura.pendienteDevolucionLM;
 
-  const tieneDev = BigInt(pendienteDevolucion) > 0n;
+  const tieneDev = centavosSeguro(pendienteDevolucion) > 0n;
   const pagosDestino = factura.pagos.filter((p) => p.destino === destino);
   const referencia = factura.borrador?.tramite.consecutivo ?? factura.numSiigo;
 
@@ -771,7 +777,7 @@ function FilaFactura({
     <>
       <tr
         className={`border-b border-slate-100 last:border-b-0 transition-colors ${
-          BigInt(saldoNeto) === 0n
+          centavosSeguro(saldoNeto) === 0n
             ? "bg-slate-50/50 text-slate-500"
             : "hover:bg-slate-50"
         }`}
@@ -940,8 +946,8 @@ function CruceTarjetas({
   cruceLM,
   totalFacturas,
 }: CruceTarjetasProps) {
-  const clienteN = BigInt(cruceCliente);
-  const lmN = BigInt(cruceLM);
+  const clienteN = centavosSeguro(cruceCliente);
+  const lmN = centavosSeguro(cruceLM);
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -955,7 +961,7 @@ function CruceTarjetas({
         >
           {clienteN === 0n
             ? "A mano"
-            : formatCOP(clienteN < 0n ? (-clienteN).toString() : cruceCliente)}
+            : formatoPesos(clienteN < 0n ? -clienteN : clienteN)}
         </p>
         <p className="mt-0.5 text-xs text-slate-500">
           {clienteN > 0n
@@ -974,7 +980,7 @@ function CruceTarjetas({
         <p className={`mt-1 text-xl font-bold ${cruceLabelColor(cruceLM)}`}>
           {lmN === 0n
             ? "A mano"
-            : formatCOP(lmN < 0n ? (-lmN).toString() : cruceLM)}
+            : formatoPesos(lmN < 0n ? -lmN : lmN)}
         </p>
         <p className="mt-0.5 text-xs text-slate-500">
           {lmN > 0n
@@ -1251,11 +1257,7 @@ export function CarteraWorkspace() {
   const isElegible = useCallback(
     (f: FacturaRow) => {
       const saldo = vista === "cliente" ? f.saldoNetoCliente : f.saldoNetoLM;
-      try {
-        return BigInt(saldo) !== 0n;
-      } catch {
-        return false;
-      }
+      return centavosSeguro(saldo) !== 0n;
     },
     [vista],
   );
@@ -1277,12 +1279,8 @@ export function CarteraWorkspace() {
     for (const f of facturas) {
       if (!selectedFacturas.has(f.id)) continue;
       const saldoStr = vista === "cliente" ? f.saldoNetoCliente : f.saldoNetoLM;
-      try {
-        const v = BigInt(saldoStr);
-        total += v < 0n ? -v : v;
-      } catch {
-        // ignore
-      }
+      const v = centavosSeguro(saldoStr);
+      total += v < 0n ? -v : v;
     }
     return total;
   }, [facturas, selectedFacturas, vista]);
@@ -1299,15 +1297,19 @@ export function CarteraWorkspace() {
     });
   }, [facturasElegibles]);
 
-  // Poda automática tras recarga: quita de la selección facturas que ya no están en la lista
-  useEffect(() => {
+  // Poda automática tras recarga: quita de la selección facturas que ya no están en la lista.
+  // Se ajusta durante el render (patrón de React «ajustar estado cuando cambia una prop»)
+  // en vez de en un efecto, para no provocar un render en cascada.
+  const [facturasPodadas, setFacturasPodadas] = useState(facturas);
+  if (facturasPodadas !== facturas) {
+    setFacturasPodadas(facturas);
     setSelectedFacturas((prev) => {
       if (prev.size === 0) return prev;
       const ids = new Set(facturas.map((f) => f.id));
       const filtered = new Set(Array.from(prev).filter((id) => ids.has(id)));
       return filtered.size === prev.size ? prev : filtered;
     });
-  }, [facturas]);
+  }
   const nombreCliente = clientes.find((c) => c.id === clienteId)?.nombre ?? "";
 
   // Filtro de rango de fechas: el servidor ya filtra por desde/hasta (feature
@@ -1628,7 +1630,7 @@ export function CarteraWorkspace() {
                         ({vista === "cliente" ? "cliente" : "LM"}):
                       </span>{" "}
                       <span className="font-semibold">
-                        {formatCOP(pendienteTotalSeleccionado.toString())}
+                        {formatoPesos(pendienteTotalSeleccionado)}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1729,7 +1731,7 @@ export function CarteraWorkspace() {
                   {/* Total real a LM: saldoNetoLM − costos bancarios (solo en vista LM) */}
                   {vista === "lm" && (() => {
                     const totalRealLM = facturasVisibles.reduce(
-                      (acc, f) => acc + BigInt(f.totalRealLM),
+                      (acc, f) => acc + centavosSeguro(f.totalRealLM),
                       0n,
                     );
                     return (
@@ -1738,7 +1740,7 @@ export function CarteraWorkspace() {
                         <span className={`font-bold ${totalRealLM < 0n ? "text-rose-600" : totalRealLM > 0n ? "text-violet-700" : "text-slate-500"}`}>
                           {totalRealLM === 0n
                             ? "A mano"
-                            : formatCOP(totalRealLM < 0n ? (-totalRealLM).toString() : totalRealLM.toString())}
+                            : formatoPesos(totalRealLM < 0n ? -totalRealLM : totalRealLM)}
                         </span>
                         {" "}
                         <span className="text-slate-400 font-normal italic">(pendiente confirmar fórmula con Camila)</span>

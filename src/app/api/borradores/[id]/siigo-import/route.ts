@@ -15,11 +15,11 @@ import { esObservacionDevolucion } from "@/lib/borradores/devolver";
 import { prisma } from "@/lib/db/prisma";
 import {
   construirFacturaSiigoImportXlsx,
+  lineasImportDesdeBorrador,
   nombreArchivoSiigoImport,
   SIIGO_IMPORT_CONTENT_TYPE,
   type SiigoFacturaImportDto,
   type SiigoImportConfig,
-  type SiigoLineaDto,
 } from "@/lib/export/siigo-import";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -60,21 +60,14 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Borrador no encontrado" }, { status: 404 });
   }
 
-  // Líneas de la factura: los conceptos del borrador agrupados por sección
-  // (TERCEROS primero, OPERACIONAL después) + comisión (con IVA) + 4x1000 + costos.
-  const PESO_SECCION = { TERCEROS: 0, OPERACIONAL: 1 } as const;
-  const lineasOrdenadas = [...borrador.lineasRevision].sort((a, b) => {
-    const peso = PESO_SECCION[a.seccion] - PESO_SECCION[b.seccion];
-    return peso !== 0 ? peso : a.orden - b.orden;
+  // Líneas de la factura = las LineaRevision (manuales + fijas), sin volver a
+  // sumar los campos espejo: Σ S − retenciones = AC = totalFactura al centavo.
+  const lineas = lineasImportDesdeBorrador(borrador.lineasRevision, {
+    comisionCentavos: borrador.comisionCentavos,
+    ivaComisionCentavos: borrador.ivaComisionCentavos,
+    impuesto4x1000Centavos: borrador.impuesto4x1000Centavos,
+    costosBancariosCentavos: borrador.costosBancariosCentavos,
   });
-
-  const lineas: SiigoLineaDto[] = [
-    ...lineasOrdenadas.map((l) => ({ concepto: l.concepto, valor: l.valor })),
-    { concepto: "COMISION GALCOMEX", valor: borrador.comision, esComision: true },
-    { concepto: "IVA COMISION", valor: borrador.ivaComision },
-    { concepto: "IMPUESTO 4X1000", valor: borrador.impuesto4x1000 },
-    { concepto: "COSTOS BANCARIOS", valor: borrador.costosBancarios },
-  ].filter((l) => l.valor > 0n);
 
   // Observaciones SIIGO (col AE): comentarios de cabecera unidos con saltos de
   // línea. Si el borrador no tiene comentarios, fallback al DO consecutivo.
@@ -99,7 +92,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     fecha: borrador.factura?.fecha ?? borrador.fechaFactura ?? new Date(),
     observaciones,
     lineas,
-    totalFormaPago: borrador.totalFactura,
+    totalFormaPago: borrador.totalFacturaCentavos,
   };
 
   const config = leerConfig();

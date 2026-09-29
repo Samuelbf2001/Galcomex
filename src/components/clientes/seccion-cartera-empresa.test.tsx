@@ -27,29 +27,29 @@ function fila(overrides: Partial<FacturaRow> = {}): FacturaRow {
     clienteId: "c1",
     numSiigo: "BAQ-1",
     fecha: "2026-01-10T00:00:00.000Z",
-    totalFactura: "1000000",
-    saldoAFavorCliente: "0",
-    saldoACargoCliente: "1000000",
-    saldoAFavorLM: "0",
-    saldoACargoLM: "0",
+    totalFactura: "1000000.00",
+    saldoAFavorCliente: "0.00",
+    saldoACargoCliente: "1000000.00",
+    saldoAFavorLM: "0.00",
+    saldoACargoLM: "0.00",
     fechaPagoCliente: null,
     fechaPagoLM: null,
     createdAt: "2026-01-10T00:00:00.000Z",
     updatedAt: "2026-01-10T00:00:00.000Z",
     borrador: { tramiteId: "t1", tramite: { consecutivo: "DO.BAQ26-0001" } },
-    saldoNetoCliente: "-500000",
-    pendienteCobroCliente: "500000",
-    pendienteDevolucionCliente: "0",
-    saldoNetoLM: "0",
-    pendienteCobroLM: "0",
-    pendienteDevolucionLM: "0",
-    costosBancariosCliente: "0",
-    costosBancariosLM: "0",
-    totalRealLM: "0",
+    saldoNetoCliente: "-500000.00",
+    pendienteCobroCliente: "500000.00",
+    pendienteDevolucionCliente: "0.00",
+    saldoNetoLM: "0.00",
+    pendienteCobroLM: "0.00",
+    pendienteDevolucionLM: "0.00",
+    costosBancariosCliente: "0.00",
+    costosBancariosLM: "0.00",
+    totalRealLM: "0.00",
     pagos: [],
     lineaServicio: "TRAMITE",
-    abonosCliente: "0",
-    devolucionesCliente: "0",
+    abonosCliente: "0.00",
+    devolucionesCliente: "0.00",
     ...overrides,
   };
 }
@@ -57,33 +57,33 @@ function fila(overrides: Partial<FacturaRow> = {}): FacturaRow {
 describe("estadoFacturaCartera", () => {
   it("por cobrar cuando queda pendiente de cobro (a cargo del cliente)", () => {
     expect(
-      estadoFacturaCartera({ pendienteCobroCliente: "500000", pendienteDevolucionCliente: "0" }),
+      estadoFacturaCartera({ pendienteCobroCliente: "500000.00", pendienteDevolucionCliente: "0.00" }),
     ).toBe("POR_COBRAR");
   });
 
   it("por devolver cuando queda a favor del cliente", () => {
     expect(
-      estadoFacturaCartera({ pendienteCobroCliente: "0", pendienteDevolucionCliente: "200000" }),
+      estadoFacturaCartera({ pendienteCobroCliente: "0.00", pendienteDevolucionCliente: "200000.00" }),
     ).toBe("POR_DEVOLVER");
   });
 
   it("saldada cuando los dos pendientes están en cero", () => {
     expect(
-      estadoFacturaCartera({ pendienteCobroCliente: "0", pendienteDevolucionCliente: "0" }),
+      estadoFacturaCartera({ pendienteCobroCliente: "0.00", pendienteDevolucionCliente: "0.00" }),
     ).toBe("SALDADA");
   });
 });
 
 describe("calcularKpisCarteraEmpresa", () => {
-  it("suma los pendientes de cobro y de devolución por separado, con BigInt", () => {
+  it("suma los pendientes de cobro y de devolución por separado, en centavos", () => {
     const kpis = calcularKpisCarteraEmpresa([
-      { pendienteCobroCliente: "500000", pendienteDevolucionCliente: "0" },
-      { pendienteCobroCliente: "0", pendienteDevolucionCliente: "200000" },
-      { pendienteCobroCliente: "0", pendienteDevolucionCliente: "0" },
+      { pendienteCobroCliente: "500000.00", pendienteDevolucionCliente: "0.00" },
+      { pendienteCobroCliente: "0.00", pendienteDevolucionCliente: "200000.00" },
+      { pendienteCobroCliente: "0.00", pendienteDevolucionCliente: "0.00" },
     ]);
 
-    expect(kpis.totalACargo).toBe(500_000n);
-    expect(kpis.totalAFavor).toBe(200_000n);
+    expect(kpis.totalACargo).toBe(50_000_000n);
+    expect(kpis.totalAFavor).toBe(20_000_000n);
   });
 
   it("sin facturas, los dos totales quedan en cero", () => {
@@ -93,15 +93,15 @@ describe("calcularKpisCarteraEmpresa", () => {
 
 describe("fraseNetoCartera", () => {
   it("cruce negativo: el cliente le debe a Galcomex", () => {
-    expect(fraseNetoCartera("-300000", "Coldex")).toBe(`Coldex le debe a Galcomex ${formatCOP("300000")}`);
+    expect(fraseNetoCartera("-300000.00", "Coldex")).toBe(`Coldex le debe a Galcomex ${formatCOP("300000.00")}`);
   });
 
   it("cruce positivo: Galcomex le debe al cliente", () => {
-    expect(fraseNetoCartera("300000", "Coldex")).toBe(`Galcomex le debe a Coldex ${formatCOP("300000")}`);
+    expect(fraseNetoCartera("300000.00", "Coldex")).toBe(`Galcomex le debe a Coldex ${formatCOP("300000.00")}`);
   });
 
   it("cruce en cero: saldada", () => {
-    expect(fraseNetoCartera("0", "Coldex")).toBe("Saldada");
+    expect(fraseNetoCartera("0.00", "Coldex")).toBe("Saldada");
   });
 });
 
@@ -136,7 +136,7 @@ describe("SeccionCarteraEmpresa", () => {
   });
 
   it("no consulta ni pinta nada para un rol sin permiso (OPERATIVO)", async () => {
-    await montar({ facturas: [fila()], cruceCliente: "-500000", cruceLM: "0", totalFacturas: 1 }, "OPERATIVO");
+    await montar({ facturas: [fila()], cruceCliente: "-500000.00", cruceLM: "0", totalFacturas: 1 }, "OPERATIVO");
 
     expect(fetchCartera).not.toHaveBeenCalled();
     expect(container.textContent).toBe("");
@@ -148,40 +148,40 @@ describe("SeccionCarteraEmpresa", () => {
         id: "f1",
         numSiigo: "BAQ-1",
         fecha: "2026-01-10T00:00:00.000Z",
-        pendienteCobroCliente: "500000",
-        pendienteDevolucionCliente: "0",
-        abonosCliente: "450000",
-        devolucionesCliente: "50000",
+        pendienteCobroCliente: "500000.00",
+        pendienteDevolucionCliente: "0.00",
+        abonosCliente: "450000.00",
+        devolucionesCliente: "50000.00",
         borrador: { tramiteId: "t1", tramite: { consecutivo: "DO.BAQ26-0001" } },
       }),
       fila({
         id: "f2",
         numSiigo: "BAQ-2",
         fecha: "2026-02-15T00:00:00.000Z",
-        pendienteCobroCliente: "0",
-        pendienteDevolucionCliente: "200000",
+        pendienteCobroCliente: "0.00",
+        pendienteDevolucionCliente: "200000.00",
         borrador: { tramiteId: "t2", tramite: { consecutivo: "DO.BAQ26-0002" } },
       }),
       fila({
         id: "f3",
         numSiigo: "BAQ-3",
         fecha: "2026-03-01T00:00:00.000Z",
-        pendienteCobroCliente: "0",
-        pendienteDevolucionCliente: "0",
+        pendienteCobroCliente: "0.00",
+        pendienteDevolucionCliente: "0.00",
         borrador: null,
       }),
     ];
 
-    await montar({ facturas, cruceCliente: "-300000", cruceLM: "0", totalFacturas: 3 });
+    await montar({ facturas, cruceCliente: "-300000.00", cruceLM: "0", totalFacturas: 3 });
 
     expect(fetchCartera).toHaveBeenCalledWith("c1", false, undefined, undefined, expect.any(AbortSignal));
 
     // KPIs
     expect(container.textContent).toContain("Saldo a cargo del cliente");
-    expect(container.textContent).toContain(formatCOP("500000"));
+    expect(container.textContent).toContain(formatCOP("500000.00"));
     expect(container.textContent).toContain("Saldo a favor del cliente");
-    expect(container.textContent).toContain(formatCOP("200000"));
-    expect(container.textContent).toContain(`Coldex le debe a Galcomex ${formatCOP("300000")}`);
+    expect(container.textContent).toContain(formatCOP("200000.00"));
+    expect(container.textContent).toContain(`Coldex le debe a Galcomex ${formatCOP("300000.00")}`);
 
     // Newest first: BAQ-3, BAQ-2, BAQ-1
     const numeros = [...container.querySelectorAll("tbody tr td:first-child")].map((td) => td.textContent);
@@ -193,7 +193,7 @@ describe("SeccionCarteraEmpresa", () => {
     expect(container.textContent).toContain("Saldada");
 
     // Abonado con la línea de devolución
-    expect(container.textContent).toContain(`Devuelto ${formatCOP("50000")}`);
+    expect(container.textContent).toContain(`Devuelto ${formatCOP("50000.00")}`);
 
     // BAQ-1 enlaza a Facturación (ADMIN); BAQ-3 sin borrador no enlaza.
     const enlaceBaq1 = [...container.querySelectorAll("a")].find((a) => a.textContent === "BAQ-1");

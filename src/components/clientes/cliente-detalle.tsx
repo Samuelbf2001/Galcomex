@@ -22,7 +22,7 @@ import { ContactoEditor } from "@/components/clientes/contacto-editor";
 import { SeccionCapacidades } from "@/components/clientes/seccion-capacidades";
 import { SeccionCarteraEmpresa } from "@/components/clientes/seccion-cartera-empresa";
 import { SeccionCuentaCorriente } from "@/components/clientes/seccion-cuenta-corriente";
-import { SeccionPagosProveedor } from "@/components/clientes/seccion-pagos-proveedor";
+import { SeccionCxpProveedor } from "@/components/clientes/seccion-cxp-proveedor";
 import { SeccionTarifario } from "@/components/clientes/seccion-tarifario";
 import { fetchTarifarios, type TarifarioRow } from "@/components/clientes/tarifas-api";
 import { ModuleState } from "@/components/layout/module-state";
@@ -32,21 +32,27 @@ import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, Skeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin } from "@/lib/auth/rol-context";
+import { centavosDeTextoApi, formatoPesos } from "@/lib/dinero";
 
 // ---------------------------------------------------------------------------
 // Helpers de formato
 // ---------------------------------------------------------------------------
 
+/** Formatea pesos-texto de la API ("45226000.00") como "$ 45.226.000" (D-5: centavos solo si existen). */
 function formatCOP(bigStr: string): string {
   try {
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(BigInt(bigStr)));
+    return formatoPesos(centavosDeTextoApi(bigStr));
   } catch {
     return bigStr;
+  }
+}
+
+/** Centavos de un pesos-texto de la API; 0n si viene vacío o dañado. */
+function centavosSeguro(raw: string): bigint {
+  try {
+    return centavosDeTextoApi(raw);
+  } catch {
+    return 0n;
   }
 }
 
@@ -59,6 +65,39 @@ function formatDate(iso: string | null): string {
     month: "2-digit",
     year: "numeric",
   }).format(d);
+}
+
+// ---------------------------------------------------------------------------
+// Qué sección se ve según el rol de la empresa (§D.1). Puro, probado en
+// cliente-detalle.test.tsx. "Proveedor puro" = esProveedor && !esCliente
+// (Almacarga, Express, Tampa): no consigna anticipos ni tiene cartera de
+// venta, así que esas dos secciones repetirían el estado de cuenta.
+// ---------------------------------------------------------------------------
+
+export type EmpresaParaSecciones = { esCliente: boolean; esProveedor: boolean };
+
+export interface SeccionesDeFicha {
+  /** Cartera (facturas de venta): lo que la empresa le debe a Galcomex como cliente. */
+  cartera: boolean;
+  /** Estado de cuenta con el proveedor + "Pagos realizados" (CxP v2, nuevo). */
+  estadoCuentaProveedor: boolean;
+  /** Cuenta corriente: para un proveedor puro, solo si además tiene cargos manuales. */
+  cuentaCorrienteRequiereCargosManuales: boolean;
+  /** Anticipos: un proveedor puro no consigna anticipos. */
+  anticipos: boolean;
+  /** Trámites: para un proveedor puro se muestra solo si de hecho tiene alguno (dato raro), con aviso. */
+  tramitesSoloSiTiene: boolean;
+}
+
+export function seccionesDeFicha(empresa: EmpresaParaSecciones): SeccionesDeFicha {
+  const proveedorPuro = empresa.esProveedor && !empresa.esCliente;
+  return {
+    cartera: !proveedorPuro,
+    estadoCuentaProveedor: empresa.esProveedor,
+    cuentaCorrienteRequiereCargosManuales: proveedorPuro,
+    anticipos: !proveedorPuro,
+    tramitesSoloSiTiene: proveedorPuro,
+  };
 }
 
 function estadoBadgeClass(estado: string): string {
@@ -282,11 +321,16 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
 // Sub-componente: sección de trámites
 // ---------------------------------------------------------------------------
 
-function SeccionTramites({ tramites }: { tramites: TramiteResumen[] }) {
+function SeccionTramites({ tramites, aviso }: { tramites: TramiteResumen[]; aviso?: string }) {
   const { visibles, pagina, porPagina, total, setPagina, setPorPagina } = usePaginacionLocal(tramites, 25);
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      {aviso ? (
+        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+          {aviso}
+        </div>
+      ) : null}
       <div className="border-b border-slate-200 px-4 py-3">
         <p className="text-sm font-semibold text-slate-900">Trámites ({tramites.length})</p>
       </div>
@@ -385,11 +429,7 @@ function SeccionAnticipos({ anticipos }: { anticipos: AnticipoResumen[] }) {
             </tr>
           ) : (
             anticipos.map((anticipo) => {
-              let restante = "0";
-              try {
-                const r = BigInt(anticipo.monto) - BigInt(anticipo.montoAplicado);
-                restante = r.toString();
-              } catch { /* noop */ }
+              const restante = centavosSeguro(anticipo.monto) - centavosSeguro(anticipo.montoAplicado);
 
               return (
                 <tr
@@ -405,16 +445,11 @@ function SeccionAnticipos({ anticipos }: { anticipos: AnticipoResumen[] }) {
                   </td>
                   <td className="px-4 py-3 text-right font-mono font-semibold">
                     <span
-                      className={(() => {
-                        try {
-                          const n = BigInt(restante);
-                          if (n > 0n) return "text-emerald-700";
-                          if (n < 0n) return "text-rose-600";
-                        } catch { /* noop */ }
-                        return "text-slate-500";
-                      })()}
+                      className={
+                        restante > 0n ? "text-emerald-700" : restante < 0n ? "text-rose-600" : "text-slate-500"
+                      }
                     >
-                      {formatCOP(restante)}
+                      {formatoPesos(restante)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-600">{anticipo.canalPago}</td>
@@ -668,6 +703,13 @@ export function ClienteDetallePage({
   const [tarifarios, setTarifarios] = useState<TarifarioRow[]>([]);
   const [tarifariosReloadKey, setTarifariosReloadKey] = useState(0);
 
+  // Un solo token para "algo movió el saldo con el proveedor": lo bump-ean
+  // tanto un pago/anulación en el estado de cuenta como un cruce en la cuenta
+  // corriente, y las dos secciones lo escuchan — así las dos cifras siempre
+  // quedan al día sin que haya que recargar la ficha entera (arregla N3).
+  const [cxpRefreshToken, setCxpRefreshToken] = useState(0);
+  const bumpCxpRefresh = () => setCxpRefreshToken((k) => k + 1);
+
   useEffect(() => {
     const controller = new AbortController();
 
@@ -733,6 +775,7 @@ export function ClienteDetallePage({
 
   const contactoVacio = !cliente.contactoNombre && !cliente.contactoEmail && !cliente.contactoTel;
   const sinTarifaVigente = !tieneTarifarioVigenteHoy(tarifarios);
+  const secciones = seccionesDeFicha(cliente);
 
   return (
     <section className="space-y-4">
@@ -759,15 +802,36 @@ export function ClienteDetallePage({
         </button>
       </div>
 
-      <SeccionCarteraEmpresa clienteId={cliente.id} nombreEmpresa={cliente.nombre} />
+      {secciones.cartera ? <SeccionCarteraEmpresa clienteId={cliente.id} nombreEmpresa={cliente.nombre} /> : null}
 
-      <SeccionCuentaCorriente clienteId={cliente.id} />
+      <SeccionCuentaCorriente
+        clienteId={cliente.id}
+        proveedorPuro={secciones.cuentaCorrienteRequiereCargosManuales}
+        refreshToken={cxpRefreshToken}
+        onCambio={bumpCxpRefresh}
+      />
 
-      {cliente.esProveedor ? <SeccionPagosProveedor empresaId={cliente.id} nombreEmpresa={cliente.nombre} /> : null}
+      {secciones.estadoCuentaProveedor ? (
+        <SeccionCxpProveedor
+          empresaId={cliente.id}
+          nombreEmpresa={cliente.nombre}
+          refreshToken={cxpRefreshToken}
+          onCambio={bumpCxpRefresh}
+        />
+      ) : null}
 
-      <SeccionTramites tramites={cliente.tramites} />
+      {secciones.tramitesSoloSiTiene && cliente.tramites.length === 0 ? null : (
+        <SeccionTramites
+          tramites={cliente.tramites}
+          aviso={
+            secciones.tramitesSoloSiTiene && cliente.tramites.length > 0
+              ? `Esta empresa está marcada solo como proveedor pero aparece como cliente en ${cliente.tramites.length} trámite${cliente.tramites.length === 1 ? "" : "s"}. Revisa.`
+              : undefined
+          }
+        />
+      )}
 
-      <SeccionAnticipos anticipos={cliente.anticipos} />
+      {secciones.anticipos ? <SeccionAnticipos anticipos={cliente.anticipos} /> : null}
 
       {popup === "funciones" ? (
         <ModalShell

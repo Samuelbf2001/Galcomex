@@ -7,13 +7,14 @@ import { patchJson } from "@/components/configuracion/respuesta-api";
 import { ModuleState } from "@/components/layout/module-state";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { describirError, useToast } from "@/components/ui/toast";
+import { centavosDeTexto, formatoPesos, textoCanonicoDeCentavos } from "@/lib/dinero";
 
 export type MatrizRecaudoRow = {
   id: string;
   tipoRecaudo: string;
   grupo: string;
   descripcion: string;
-  /** BigInt serializado como string (COP enteros). */
+  /** Pesos texto con 2 decimales ("3900.00"), como lo emite el server component. */
   costoFijo: string;
 };
 
@@ -21,7 +22,7 @@ export type MatrizPagoRow = {
   id: string;
   canalPago: string;
   descripcion: string;
-  /** BigInt serializado como string (COP enteros). */
+  /** Pesos texto con 2 decimales ("3900.00"), como lo emite el server component. */
   costoFijo: string;
 };
 
@@ -38,21 +39,6 @@ const LABELS_PAGO: Record<string, string> = {
   PSE: "PSE",
   TRANSF_OTROS_BANCOS: "Transferencia otros bancos",
 };
-
-/** Formatea BigInt-como-string a COP: $5.200 */
-function formatCOP(value: string): string {
-  try {
-    const n = BigInt(value);
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(n));
-  } catch {
-    return value;
-  }
-}
 
 type Tabla = "recaudo" | "pago";
 
@@ -96,13 +82,19 @@ export function MatricesConfig({
     setError(null);
   }
 
+  /** El costo bancario siempre es en pesos enteros (tabla de CLAUDE.md); `valor` viene de `CampoMoneda` con `decimales={false}`. */
   function validarValor(): string | null {
-    const trimmed = valor.trim();
-    if (!/^\d+$/.test(trimmed)) {
-      setError("Ingresa un número entero en COP (sin puntos ni signos)");
+    try {
+      const centavos = centavosDeTexto(valor.trim());
+      if (centavos < 0n) {
+        setError("El costo no puede ser negativo");
+        return null;
+      }
+      return textoCanonicoDeCentavos(centavos);
+    } catch {
+      setError("Ingresa un valor en COP (solo pesos, sin centavos)");
       return null;
     }
-    return trimmed;
   }
 
   /** Un solo camino de guardado para las dos tablas (antes estaba duplicado). */
@@ -129,7 +121,7 @@ export function MatricesConfig({
       }
       toast({
         title: "Costo actualizado",
-        description: `${etiqueta}: ${formatCOP(costoFijo)}`,
+        description: `${etiqueta}: ${formatoPesos(centavosDeTexto(costoFijo))}`,
         variant: "success",
       });
       cerrar();
@@ -144,12 +136,14 @@ export function MatricesConfig({
 
   function renderCelda(key: string, costoFijo: string, etiqueta: string) {
     const [tabla, clave] = key.split(":") as [Tabla, string];
-    if (!(esAdmin && editando === key)) return esAdmin ? <button type="button" disabled={editando !== null} onClick={() => abrir(tabla, clave, costoFijo)} aria-label={`Editar costo de ${etiqueta}`} className="min-h-10 rounded border border-dashed border-slate-300 px-3 font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60">{formatCOP(costoFijo)}</button> : formatCOP(costoFijo);
+    const mostrado = formatoPesos(centavosDeTexto(costoFijo));
+    if (!(esAdmin && editando === key)) return esAdmin ? <button type="button" disabled={editando !== null} onClick={() => abrir(tabla, clave, costoFijo)} aria-label={`Editar costo de ${etiqueta}`} className="min-h-10 rounded border border-dashed border-slate-300 px-3 font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60">{mostrado}</button> : mostrado;
     return (
       <div className="flex flex-col gap-1">
         <CampoMoneda
           value={valor}
           onValueChange={setValor}
+          decimales={false}
           onKeyDown={(e) => {
             if (e.key === "Enter") void guardarCosto(tabla, clave, etiqueta);
             if (e.key === "Escape") cerrar();

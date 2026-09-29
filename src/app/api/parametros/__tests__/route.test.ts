@@ -35,6 +35,14 @@ vi.mock("@/lib/parametros/service", () => ({
       this.name = "ParametroNoEncontradoError";
     }
   },
+  ParametroProtegidoError: class ParametroProtegidoError extends Error {
+    status = 403;
+    codigo = "PARAMETRO_PROTEGIDO";
+    constructor(clave: string) {
+      super(`El parámetro '${clave}' es una marca del sistema y no se puede editar`);
+      this.name = "ParametroProtegidoError";
+    }
+  },
   ParametroSiigoProtegidoError: class ParametroSiigoProtegidoError extends Error {
     status = 400;
     constructor(clave: string) {
@@ -54,6 +62,7 @@ vi.mock("@/lib/parametros/service", () => ({
 import { auth } from "@/lib/auth/auth";
 import {
   ParametroNoEncontradoError,
+  ParametroProtegidoError,
   ParametroSiigoProtegidoError,
   actualizarParametro,
 } from "@/lib/parametros/service";
@@ -177,5 +186,18 @@ describe("PATCH /api/parametros/[clave]", () => {
       routeCtx("SIIGO_VENDEDOR_ID"),
     );
     expect(res.status).toBe(400);
+  });
+
+  it("DINERO_UNIDAD_BD (marca de la fase centavos) → 403 con código", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      makeSession("ADMIN") as any,
+    );
+    vi.mocked(actualizarParametro).mockRejectedValue(new ParametroProtegidoError("DINERO_UNIDAD_BD"));
+
+    const res = await PATCH(makeRequest({ valor: "PESOS" }), routeCtx("DINERO_UNIDAD_BD"));
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.codigo).toBe("PARAMETRO_PROTEGIDO");
   });
 });

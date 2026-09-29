@@ -1,20 +1,13 @@
-import { EstadoMovimiento, Prisma, Rol, TipoRecaudo } from "@prisma/client";
+import { EstadoMovimiento, Rol, TipoRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
+import { formatoPesos } from "@/lib/dinero";
 import { assertTramiteModificable } from "@/lib/tramites/guard";
 
-// ─── Helpers internos ─────────────────────────────────────────────────────────
-
-/**
- * Serializa un snapshot a JSON apto para columnas Json de Prisma, convirtiendo
- * BigInt → string (los montos son BigInt y romperían JSON.stringify crudo).
- * Mismo replacer usado en el resto de services (borradores, pagos, etc.).
- */
-function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(
-    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
-  ) as Prisma.InputJsonValue;
-}
+// Fase centavos: todo monto es CENTAVOS de COP (columnas `…Centavos`). El
+// AuditLog se escribe con `normalizeSerializable` (pesos texto canónico) y las
+// respuestas las emite el serializador único (pesos texto con 2 decimales).
 
 export class VerificarAnticipoPermisoError extends Error {
   public readonly status = 403;
@@ -65,6 +58,7 @@ export class SoporteAnticipoRequeridoError extends Error {
 
 type CrearAnticipoInput = {
   clienteId: string;
+  /** Centavos de COP. */
   monto: bigint;
   fecha: Date;
   tipoRecaudo: TipoRecaudo;
@@ -75,11 +69,15 @@ type CrearAnticipoInput = {
 type AplicarAnticipoInput = {
   anticipoId: string;
   tramiteId: string;
+  /** Centavos de COP. */
   montoAplicado: bigint;
 };
 
 type AplicarAnticipoResult =
-  | { ok: true; aplicacion: { id: string; anticipoId: string; tramiteId: string; montoAplicado: bigint; createdAt: Date } }
+  | {
+      ok: true;
+      aplicacion: { id: string; anticipoId: string; tramiteId: string; montoAplicadoCentavos: bigint; createdAt: Date };
+    }
   | { ok: false; status: number; message: string };
 
 type DesgloseDO = {
@@ -92,10 +90,10 @@ type DesgloseDO = {
 type AnticipoConSaldo = {
   id: string;
   clienteId: string;
-  monto: bigint;
+  montoCentavos: bigint;
   fecha: Date;
   tipoRecaudo: TipoRecaudo;
-  costoRecaudo: bigint;
+  costoRecaudoCentavos: bigint;
   soporteKey: string | null;
   verificadoBanco: boolean;
   createdAt: Date;
@@ -138,18 +136,18 @@ export async function crearAnticipo(
   // Snapshot del costo de recaudo desde la matriz
   const matrizRow = await prisma.matrizRecaudo.findUnique({
     where: { tipoRecaudo: input.tipoRecaudo },
-    select: { costoFijo: true },
+    select: { costoFijoCentavos: true },
   });
-  const costoRecaudo = matrizRow?.costoFijo ?? 0n;
+  const costoRecaudo = matrizRow?.costoFijoCentavos ?? 0n;
 
   return prisma.$transaction(async (tx) => {
     const anticipo = await tx.anticipo.create({
       data: {
         clienteId: input.clienteId,
-        monto: input.monto,
+        montoCentavos: input.monto,
         fecha: input.fecha,
         tipoRecaudo: input.tipoRecaudo,
-        costoRecaudo,
+        costoRecaudoCentavos: costoRecaudo,
         soporteKey: input.soporteKey ?? null,
         verificadoBanco: input.verificadoBanco ?? false,
       },
@@ -183,7 +181,7 @@ export async function aplicarAnticipo(
       where: { id: input.anticipoId },
       include: {
         aplicaciones: {
-          select: { montoAplicado: true },
+          select: { montoAplicadoCentavos: true },
         },
       },
     });
@@ -204,16 +202,16 @@ export async function aplicarAnticipo(
     await assertTramiteModificable(tx, tramite);
 
     const aplicadoActual = anticipo.aplicaciones.reduce(
-      (sum, ap) => sum + ap.montoAplicado,
+      (sum, ap) => sum + ap.montoAplicadoCentavos,
       0n,
     );
 
-    if (aplicadoActual + input.montoAplicado > anticipo.monto) {
-      const restante = anticipo.monto - aplicadoActual;
+    if (aplicadoActual + input.montoAplicado > anticipo.montoCentavos) {
+      const restante = anticipo.montoCentavos - aplicadoActual;
       return {
         ok: false,
         status: 422,
-        message: `Monto excede el saldo disponible del anticipo. Restante: ${restante}`,
+        message: `Monto excede el saldo disponible del anticipo. Restante: ${formatoPesos(restante)}`,
       };
     }
 
@@ -221,7 +219,7 @@ export async function aplicarAnticipo(
       data: {
         anticipoId: input.anticipoId,
         tramiteId: input.tramiteId,
-        montoAplicado: input.montoAplicado,
+        montoAplicadoCentavos: input.montoAplicado,
       },
     });
 
@@ -270,7 +268,7 @@ export async function eliminarAplicacion(
           createdAt: aplicacion.createdAt,
           tramiteId: aplicacion.tramiteId,
           anticipoId: aplicacion.anticipoId,
-          montoAplicado: aplicacion.montoAplicado,
+          montoAplicadoCentavos: aplicacion.montoAplicadoCentavos,
         }
       : deleted;
 
@@ -311,16 +309,16 @@ export async function getAnticipoConSaldo(
   }
 
   const aplicado = anticipo.aplicaciones.reduce(
-    (sum, ap) => sum + ap.montoAplicado,
+    (sum, ap) => sum + ap.montoAplicadoCentavos,
     0n,
   );
-  const restante = anticipo.monto - aplicado;
+  const restante = anticipo.montoCentavos - aplicado;
 
   const aplicaciones: DesgloseDO[] = anticipo.aplicaciones.map((ap) => ({
     aplicacionId: ap.id,
     tramiteId: ap.tramiteId,
     consecutivo: ap.tramite.consecutivo,
-    montoAplicado: ap.montoAplicado,
+    montoAplicado: ap.montoAplicadoCentavos,
   }));
 
   const { aplicaciones: _raw, ...base } = anticipo;
@@ -359,16 +357,16 @@ export async function listarAnticipos(
 
   const resultado: AnticipoConSaldo[] = anticipos.map((anticipo) => {
     const aplicado = anticipo.aplicaciones.reduce(
-      (sum, ap) => sum + ap.montoAplicado,
+      (sum, ap) => sum + ap.montoAplicadoCentavos,
       0n,
     );
-    const restante = anticipo.monto - aplicado;
+    const restante = anticipo.montoCentavos - aplicado;
 
     const aplicaciones: DesgloseDO[] = anticipo.aplicaciones.map((ap) => ({
       aplicacionId: ap.id,
       tramiteId: ap.tramiteId,
       consecutivo: ap.tramite.consecutivo,
-      montoAplicado: ap.montoAplicado,
+      montoAplicado: ap.montoAplicadoCentavos,
     }));
 
     const { aplicaciones: _raw, ...base } = anticipo;

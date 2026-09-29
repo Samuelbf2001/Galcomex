@@ -1,11 +1,14 @@
 /**
  * Helpers de API para el módulo de Cartera.
- * Todos los montos llegan como string (BigInt serializado desde Prisma).
+ * Dinero: pesos como texto con 2 decimales desde el backend (fase CENTAVOS,
+ * diseño §A.2) — parsear con `centavosDeTextoApi` de `@/lib/dinero`.
  */
 
 import type { CanalPago } from "@/components/pagos/pagos-api";
 export type { CanalPago } from "@/components/pagos/pagos-api";
 export { CANALES_PAGO } from "@/components/pagos/pagos-api";
+import { centavosDeTexto, centavosDeTextoApi, formatoPesos, textoCanonicoDeCentavos } from "@/lib/dinero";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 // ─── Tipos de recaudo/pago combinados para el selector UI ────────────────────
 
@@ -534,35 +537,20 @@ export function descargarCarteraExport(clienteId: string): void {
 
 // ─── Utilidades de formato ────────────────────────────────────────────────────
 
-/** Formatea BigInt serializado como COP: $45.226.000 */
+/** Formatea pesos-texto de la API ("45226000.00") como "$ 45.226.000" (D-5: centavos solo si existen). */
 export function formatCOP(value: string): string {
   try {
-    const n = BigInt(value);
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(n));
+    return formatoPesos(centavosDeTextoApi(value));
   } catch {
     return value;
   }
 }
 
-/** Formatea una fecha ISO como dd/mm/aaaa */
+/** Fecha-calendario (factura, pago) como dd/mm/aaaa. Día guardado a 00:00 UTC: nunca reinterpretar en otra zona. */
 export function formatDate(isoString: string | null): string {
   if (!isoString) return "—";
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      timeZone: "America/Bogota",
-    });
-  } catch {
-    return isoString;
-  }
+  const formateada = formatFechaCalendario(isoString);
+  return formateada || isoString;
 }
 
 /**
@@ -636,19 +624,16 @@ export async function conciliarLote(
   };
 }
 
-/** Parsea un input de monto COP sin formato → BigInt string. */
+/**
+ * Lee el texto canónico que entrega `CampoMoneda` (pesos, hasta 2 decimales)
+ * y devuelve el mismo texto canónico si es válido y > 0; null si no.
+ */
 export function parseBigIntInput(raw: string): string | null {
-  const cleaned = raw
-    .replace(/\./g, "")
-    .replace(/,/g, "")
-    .replace(/\$/g, "")
-    .replace(/COP/g, "")
-    .trim();
-  if (!cleaned || cleaned === "-") return null;
+  const limpio = raw.trim();
+  if (!limpio || limpio === "-") return null;
   try {
-    const v = BigInt(cleaned);
-    if (v <= 0n) return null;
-    return v.toString();
+    const c = centavosDeTexto(limpio);
+    return c > 0n ? textoCanonicoDeCentavos(c) : null;
   } catch {
     return null;
   }

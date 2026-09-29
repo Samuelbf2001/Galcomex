@@ -9,11 +9,19 @@
  * - getCarteraCliente: lista facturas enriquecidas con saldoNeto, abonos, devoluciones
  * - getFacturaConPagos: detalle de factura con lista de PagoFactura
  * - registrarPagoFactura (DEPRECADO): escribe fechaPagoCliente/LM directamente (compat)
+ *
+ * Fase centavos: todo monto es CENTAVOS de COP (columnas `…Centavos`). Las
+ * respuestas las emite el serializador único (pesos texto con 2 decimales);
+ * el AuditLog va con `normalizeSerializable` (pesos texto canónico) y los
+ * mensajes con `formatoPesos`. D-4 (redondeo automático < $1) NO aplica a
+ * cartera por decisión de Ernesto: un abono deja el saldo exacto al centavo.
  */
 
 import { CanalPago, DestinoPago, EstadoMovimiento, Prisma, Rol, TipoPagoFactura, TipoRecaudo } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
+import { formatoPesos } from "@/lib/dinero";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -58,7 +66,7 @@ export type ConciliarLoteItem = {
 };
 
 export type ConciliarLoteItemResult =
-  | { facturaId: string; destino: DestinoPago; ok: true; pagoId: string; saldoNeto: string }
+  | { facturaId: string; destino: DestinoPago; ok: true; pagoId: string; saldoNeto: bigint }
   | { facturaId: string; destino: DestinoPago; ok: false; status: number; error: string };
 
 export type ConciliarLoteResult = {
@@ -80,14 +88,6 @@ type GetCarteraClienteInput = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function normalizeSerializable(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(
-    JSON.stringify(value, (_, v) =>
-      typeof v === "bigint" ? v.toString() : v,
-    ),
-  ) as Prisma.InputJsonValue;
-}
 
 /**
  * Ledger unificado por (factura, destino).
@@ -174,12 +174,12 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
     const matrizRec = await prisma.matrizRecaudo.findUnique({
       where: { tipoRecaudo },
     });
-    costoBancario = matrizRec?.costoFijo ?? 0n;
+    costoBancario = matrizRec?.costoFijoCentavos ?? 0n;
   } else if (hasCanal && canalPago) {
     const matrizPago = await prisma.matrizPago.findUnique({
       where: { canalPago },
     });
-    costoBancario = matrizPago?.costoFijo ?? 0n;
+    costoBancario = matrizPago?.costoFijoCentavos ?? 0n;
   }
 
   const lockKey = `pago_factura:${facturaId}:${destino}`;
@@ -193,7 +193,7 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
       include: {
         pagos: {
           where: { destino },
-          select: { tipo: true, monto: true },
+          select: { tipo: true, montoCentavos: true },
         },
       },
     });
@@ -203,19 +203,19 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
     }
 
     const saldoAFavor = destino === DestinoPago.CLIENTE
-      ? factura.saldoAFavorCliente
-      : factura.saldoAFavorLM;
+      ? factura.saldoAFavorClienteCentavos
+      : factura.saldoAFavorLMCentavos;
     const saldoACargo = destino === DestinoPago.CLIENTE
-      ? factura.saldoACargoCliente
-      : factura.saldoACargoLM;
+      ? factura.saldoACargoClienteCentavos
+      : factura.saldoACargoLMCentavos;
 
     const pagosDestino = factura.pagos;
     const abonosActuales = pagosDestino
       .filter((p) => p.tipo === TipoPagoFactura.ABONO)
-      .reduce((sum, p) => sum + p.monto, 0n);
+      .reduce((sum, p) => sum + p.montoCentavos, 0n);
     const devolucionesActuales = pagosDestino
       .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
-      .reduce((sum, p) => sum + p.monto, 0n);
+      .reduce((sum, p) => sum + p.montoCentavos, 0n);
 
     const saldoNetoActual = calcularSaldoNeto({
       saldoAFavor,
@@ -230,14 +230,14 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
         return {
           ok: false as const,
           status: 422,
-          message: `No hay saldo a favor disponible para devolver en el destino ${destino}. Saldo neto actual: ${saldoNetoActual}`,
+          message: `No hay saldo a favor disponible para devolver en el destino ${destino}. Saldo neto actual: ${formatoPesos(saldoNetoActual)}`,
         };
       }
       if (monto > saldoNetoActual) {
         return {
           ok: false as const,
           status: 422,
-          message: `La devolución (${monto}) excede el saldo a favor disponible (${saldoNetoActual}) para el destino ${destino}`,
+          message: `La devolución (${formatoPesos(monto)}) excede el saldo a favor disponible (${formatoPesos(saldoNetoActual)}) para el destino ${destino}`,
         };
       }
     }
@@ -248,11 +248,11 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
         facturaId,
         destino,
         tipo,
-        monto,
+        montoCentavos: monto,
         fecha,
         tipoRecaudo: tipoRecaudo ?? null,
         canalPago: canalPago ?? null,
-        costoBancario,
+        costoBancarioCentavos: costoBancario,
         comprobanteKey: comprobanteKey ?? null,
         verificadoBanco: verificadoBanco ?? false,
         compensacionId: input.compensacionId ?? null,
@@ -301,14 +301,14 @@ export async function registrarPagoFacturaAbono(input: RegistrarPagoFacturaInput
           facturaId,
           destino,
           tipo,
-          monto: monto.toString(),
+          monto,
           fecha,
           tipoRecaudo: tipoRecaudo ?? null,
           canalPago: canalPago ?? null,
-          costoBancario: costoBancario.toString(),
+          costoBancario,
           compensacionId: input.compensacionId ?? null,
-          saldoNetoAntes: saldoNetoActual.toString(),
-          saldoNetoNuevo: saldoNetoNuevo.toString(),
+          saldoNetoAntes: saldoNetoActual,
+          saldoNetoNuevo,
         }),
       },
     });
@@ -353,11 +353,11 @@ export async function eliminarPagoFactura(
       facturaId: pago.facturaId,
       destino: pago.destino,
       tipo: pago.tipo,
-      monto: pago.monto.toString(),
+      monto: pago.montoCentavos,
       fecha: pago.fecha,
       tipoRecaudo: pago.tipoRecaudo ?? null,
       canalPago: pago.canalPago ?? null,
-      costoBancario: pago.costoBancario.toString(),
+      costoBancario: pago.costoBancarioCentavos,
     });
 
     await tx.pagoFactura.delete({ where: { id: pagoId } });
@@ -365,23 +365,23 @@ export async function eliminarPagoFactura(
     // Recalcular saldoNeto desde cero con los pagos restantes
     const pagosRestantes = await tx.pagoFactura.findMany({
       where: { facturaId: pago.facturaId, destino: pago.destino },
-      select: { tipo: true, monto: true },
+      select: { tipo: true, montoCentavos: true },
     });
 
     const factura = pago.factura;
     const saldoAFavor = pago.destino === DestinoPago.CLIENTE
-      ? factura.saldoAFavorCliente
-      : factura.saldoAFavorLM;
+      ? factura.saldoAFavorClienteCentavos
+      : factura.saldoAFavorLMCentavos;
     const saldoACargo = pago.destino === DestinoPago.CLIENTE
-      ? factura.saldoACargoCliente
-      : factura.saldoACargoLM;
+      ? factura.saldoACargoClienteCentavos
+      : factura.saldoACargoLMCentavos;
 
     const abonos = pagosRestantes
       .filter((p) => p.tipo === TipoPagoFactura.ABONO)
-      .reduce((sum, p) => sum + p.monto, 0n);
+      .reduce((sum, p) => sum + p.montoCentavos, 0n);
     const devoluciones = pagosRestantes
       .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
-      .reduce((sum, p) => sum + p.monto, 0n);
+      .reduce((sum, p) => sum + p.montoCentavos, 0n);
 
     const saldoNetoNuevo = calcularSaldoNeto({ saldoAFavor, saldoACargo, abonos, devoluciones });
 
@@ -405,7 +405,7 @@ export async function eliminarPagoFactura(
         accion: "DELETE",
         usuarioId,
         antes: snapshotAntes,
-        despues: normalizeSerializable({ saldoNetoNuevo: saldoNetoNuevo.toString() }),
+        despues: normalizeSerializable({ saldoNetoNuevo }),
       },
     });
 
@@ -477,37 +477,37 @@ export async function getCarteraCliente(input: GetCarteraClienteInput) {
 
     const abonosCliente = pagosCliente
       .filter((p) => p.tipo === TipoPagoFactura.ABONO)
-      .reduce((sum, p) => sum + p.monto, 0n);
+      .reduce((sum, p) => sum + p.montoCentavos, 0n);
     const devolucionesCliente = pagosCliente
       .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
-      .reduce((sum, p) => sum + p.monto, 0n);
+      .reduce((sum, p) => sum + p.montoCentavos, 0n);
     const saldoNetoCliente = calcularSaldoNeto({
-      saldoAFavor: f.saldoAFavorCliente,
-      saldoACargo: f.saldoACargoCliente,
+      saldoAFavor: f.saldoAFavorClienteCentavos,
+      saldoACargo: f.saldoACargoClienteCentavos,
       abonos: abonosCliente,
       devoluciones: devolucionesCliente,
     });
 
     const abonosLM = pagosLM
       .filter((p) => p.tipo === TipoPagoFactura.ABONO)
-      .reduce((sum, p) => sum + p.monto, 0n);
+      .reduce((sum, p) => sum + p.montoCentavos, 0n);
     const devolucionesLM = pagosLM
       .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
-      .reduce((sum, p) => sum + p.monto, 0n);
+      .reduce((sum, p) => sum + p.montoCentavos, 0n);
     const saldoNetoLM = calcularSaldoNeto({
-      saldoAFavor: f.saldoAFavorLM,
-      saldoACargo: f.saldoACargoLM,
+      saldoAFavor: f.saldoAFavorLMCentavos,
+      saldoACargo: f.saldoACargoLMCentavos,
       abonos: abonosLM,
       devoluciones: devolucionesLM,
     });
 
     // Campos derivados aditivos — costos bancarios por destino
     const costosBancariosCliente = pagosCliente.reduce(
-      (sum, p) => sum + p.costoBancario,
+      (sum, p) => sum + p.costoBancarioCentavos,
       0n,
     );
     const costosBancariosLM = pagosLM.reduce(
-      (sum, p) => sum + p.costoBancario,
+      (sum, p) => sum + p.costoBancarioCentavos,
       0n,
     );
     // NOTA: Fórmula pendiente de confirmar con Camila.
@@ -595,27 +595,33 @@ export async function getFacturaConPagos(facturaId: string) {
   const pagosCliente = factura.pagos.filter((p) => p.destino === DestinoPago.CLIENTE);
   const pagosLM = factura.pagos.filter((p) => p.destino === DestinoPago.LM);
 
-  const abonosCliente = pagosCliente.filter((p) => p.tipo === TipoPagoFactura.ABONO).reduce((s, p) => s + p.monto, 0n);
-  const devolucionesCliente = pagosCliente.filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION).reduce((s, p) => s + p.monto, 0n);
+  const abonosCliente = pagosCliente
+    .filter((p) => p.tipo === TipoPagoFactura.ABONO)
+    .reduce((s, p) => s + p.montoCentavos, 0n);
+  const devolucionesCliente = pagosCliente
+    .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
+    .reduce((s, p) => s + p.montoCentavos, 0n);
   const saldoNetoCliente = calcularSaldoNeto({
-    saldoAFavor: factura.saldoAFavorCliente,
-    saldoACargo: factura.saldoACargoCliente,
+    saldoAFavor: factura.saldoAFavorClienteCentavos,
+    saldoACargo: factura.saldoACargoClienteCentavos,
     abonos: abonosCliente,
     devoluciones: devolucionesCliente,
   });
 
-  const abonosLM = pagosLM.filter((p) => p.tipo === TipoPagoFactura.ABONO).reduce((s, p) => s + p.monto, 0n);
-  const devolucionesLM = pagosLM.filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION).reduce((s, p) => s + p.monto, 0n);
+  const abonosLM = pagosLM.filter((p) => p.tipo === TipoPagoFactura.ABONO).reduce((s, p) => s + p.montoCentavos, 0n);
+  const devolucionesLM = pagosLM
+    .filter((p) => p.tipo === TipoPagoFactura.DEVOLUCION)
+    .reduce((s, p) => s + p.montoCentavos, 0n);
   const saldoNetoLM = calcularSaldoNeto({
-    saldoAFavor: factura.saldoAFavorLM,
-    saldoACargo: factura.saldoACargoLM,
+    saldoAFavor: factura.saldoAFavorLMCentavos,
+    saldoACargo: factura.saldoACargoLMCentavos,
     abonos: abonosLM,
     devoluciones: devolucionesLM,
   });
 
   // Campos derivados aditivos — costos bancarios por destino
-  const costosBancariosCliente = pagosCliente.reduce((s, p) => s + p.costoBancario, 0n);
-  const costosBancariosLM = pagosLM.reduce((s, p) => s + p.costoBancario, 0n);
+  const costosBancariosCliente = pagosCliente.reduce((s, p) => s + p.costoBancarioCentavos, 0n);
+  const costosBancariosLM = pagosLM.reduce((s, p) => s + p.costoBancarioCentavos, 0n);
   // NOTA: Fórmula pendiente de confirmar con Camila.
   const totalRealLM = saldoNetoLM - costosBancariosCliente - costosBancariosLM;
 
@@ -786,7 +792,7 @@ export async function conciliarLoteFacturas(input: {
           destino: item.destino,
           ok: true,
           pagoId: r.pago.id,
-          saldoNeto: r.saldoNeto.toString(),
+          saldoNeto: r.saldoNeto,
         });
       } else {
         results.push({

@@ -17,6 +17,11 @@ R Cantidad · **S Valor unitario** · T Descuento · U Base AIU · V Id ingreso 
 X Cargo 2 · Y Retención · Z ReteICA · AA ReteIVA · **AB Forma de pago** · AC Valor forma de pago ·
 AD Fecha vencimiento · AE Observaciones.
 
+**Dinero (fase CENTAVOS):** las columnas **S** (valor unitario) y **AC** (valor forma
+de pago) son celdas numéricas en pesos con 2 decimales y formato `#,##0.00`
+(`502801.45` se ve «502,801.45» en Excel y SIIGO lo lee con sus centavos). Se
+arman con `numeroDeCentavos` desde los centavos del borrador.
+
 ## Códigos propios de tu cuenta SIIGO (variables de entorno)
 El archivo se llena solo, pero estos códigos dependen de TU configuración contable en SIIGO.
 Mientras no estén definidos se emiten como marcadores (`<TIPO_FV>`, `<COD_PRODUCTO>`).

@@ -9,8 +9,9 @@ vi.mock("./cuenta-api", async () => {
   const actual = await vi.importActual<typeof import("./cuenta-api")>("./cuenta-api");
   return { ...actual, registrarMovimiento: vi.fn() };
 });
+const toastMock = vi.hoisted(() => vi.fn());
 vi.mock("@/components/ui/toast", () => ({
-  useToast: () => ({ toast: vi.fn() }),
+  useToast: () => ({ toast: toastMock }),
   describirError: (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback),
 }));
 
@@ -28,11 +29,12 @@ if (typeof HTMLDialogElement.prototype.close !== "function") {
 
 const cuenta: CuentaCorriente = {
   empresa: { id: "cliente-1", nombre: "AGENCIA DE ADUANAS COLDEX S.A.S NIVEL DOS", nit: "900111222", esCliente: true, esProveedor: true },
-  totalACargo: "0",
-  totalAFavor: "0",
-  neto: "0",
-  pendienteCliente: "0",
-  pendienteProveedor: "3000000",
+  // Formato de la API en fase CENTAVOS: pesos-texto con 2 decimales.
+  totalACargo: "0.00",
+  totalAFavor: "0.00",
+  neto: "0.00",
+  pendienteCliente: "0.00",
+  pendienteProveedor: "3000000.00",
   porLinea: [],
   movimientos: [
     {
@@ -41,7 +43,7 @@ const cuenta: CuentaCorriente = {
       lineaServicio: "TRAMITE",
       concepto: "Quincenas agosto",
       fecha: "2026-08-15T00:00:00.000Z",
-      valor: "-1000000",
+      valor: "-1000000.00",
       referencia: null,
       tramiteId: null,
       facturaId: null,
@@ -55,7 +57,7 @@ const cuenta: CuentaCorriente = {
   habilitada: true,
   permiteCargosManuales: true,
   cuentaCorrienteActiva: true,
-  maximoCompensable: "0",
+  maximoCompensable: "0.00",
   compensables: { facturasVenta: [], facturasProveedor: [] },
 };
 
@@ -124,7 +126,7 @@ describe("RegistrarFacturaContraparteModal", () => {
   });
 
   it("envía los valores fijos correctos: ABONO + PROVEEDOR + CARGO_MANUAL + TRAMITE", async () => {
-    vi.mocked(registrarMovimiento).mockResolvedValueOnce({ ...cuenta, pendienteProveedor: "7500000" });
+    vi.mocked(registrarMovimiento).mockResolvedValueOnce({ ...cuenta, pendienteProveedor: "7500000.00" });
     await montar();
 
     await escribir(campoPorLabel("Concepto"), "Servicios aduaneros");
@@ -147,8 +149,29 @@ describe("RegistrarFacturaContraparteModal", () => {
     });
     expect(payload.soporte).toBeUndefined();
     expect(payload.fecha).toContain("2026-09-20");
-    expect(onGuardado).toHaveBeenCalledWith(expect.objectContaining({ pendienteProveedor: "7500000" }));
+    expect(onGuardado).toHaveBeenCalledWith(expect.objectContaining({ pendienteProveedor: "7500000.00" }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("centavos: un valor con centavos viaja tal cual en pesos-texto (no ×100) y el aviso muestra los centavos", async () => {
+    vi.mocked(registrarMovimiento).mockResolvedValueOnce({ ...cuenta, pendienteProveedor: "7500000.45" });
+    await montar();
+
+    await escribir(campoPorLabel("Concepto"), "Servicios aduaneros");
+    await escribir(campoPorLabel("N° de factura"), "FE-9998");
+    // Lo que escribe una persona en Colombia: miles con punto, centavos con coma.
+    await escribir(campoPorLabel("Valor (COP)"), "4.500.000,45");
+    await escribir(campoPorLabel("Fecha de la factura"), "2026-09-20");
+    await enviar();
+
+    expect(registrarMovimiento).toHaveBeenCalledTimes(1);
+    const [, payload] = vi.mocked(registrarMovimiento).mock.calls[0];
+    // Antes (rama Coldex en pesos) se le quitaba todo lo que no fuera dígito:
+    // "4500000.45" → "450000045" = 100 veces más plata.
+    expect(payload.valor).toBe("4500000.45");
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ description: expect.stringContaining("7.500.000,45") }),
+    );
   });
 
   it("muestra en el desplegable los conceptos manuales ya usados y los sugeridos", async () => {

@@ -12,7 +12,8 @@
  *   BAQ-18512: Σlíneas 1.159.620 + comisión 140.000 + IVA 26.600 − reteIVA 3.990 = 1.322.230
  *              anticipo 1.572.000 → saldo a favor 249.770
  *
- * INVARIANTE: todo BigInt (COP enteros, sin flotantes). Función pura, sin BD.
+ * INVARIANTE: todo BigInt en CENTAVOS de COP, sin flotantes (sumas y restas
+ * exactas, sin redondeo). Función pura, sin BD.
  *
  * NOTA: el 4x1000 NO se suma aparte — va dentro de una línea de "terceros"
  * (en el Excel de Lucho el 4x1000 es un ítem más de la sección de terceros).

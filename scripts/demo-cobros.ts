@@ -20,14 +20,16 @@ import {
 import { generarBorrador, transicionarBorrador } from "../src/lib/borradores/service";
 import { registrarPagoFacturaAbono } from "../src/lib/cartera/service";
 import { prisma } from "../src/lib/db/prisma";
+import { formatoPesos, pesos } from "../src/lib/dinero";
 import { crearPago } from "../src/lib/pagos/service";
 
 const CONSECUTIVO = "DO.CTG26-9009";
 const NIT_DEMO = "DEMO-COBROS-NIT";
 const MARKER = "DEMO:COBROS";
 
-function fmt(n: bigint): string {
-  return new Intl.NumberFormat("es-CO").format(n);
+/** Centavos → "$ 1.234.567" (núcleo de dinero). */
+function fmt(c: bigint): string {
+  return formatoPesos(c);
 }
 
 async function limpiarPrevio() {
@@ -83,20 +85,20 @@ async function main() {
     },
   });
 
-  const anticipoMonto = 5_000_000n;
+  const anticipoMonto = pesos(5_000_000);
   const anticipo = await prisma.anticipo.create({
     data: {
       clienteId: cliente.id,
-      monto: anticipoMonto,
+      montoCentavos: anticipoMonto,
       fecha: new Date("2026-05-02"),
       tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-      costoRecaudo: 1_950n,
+      costoRecaudoCentavos: pesos(1_950),
       soporteKey: MARKER,
       verificadoBanco: true,
     },
   });
   await prisma.aplicacionAnticipo.create({
-    data: { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicado: anticipoMonto },
+    data: { anticipoId: anticipo.id, tramiteId: tramite.id, montoAplicadoCentavos: anticipoMonto },
   });
 
   // Pagos > anticipo → sobregiro → saldo a cargo del cliente
@@ -104,14 +106,14 @@ async function main() {
     tramiteId: tramite.id,
     concepto: "IMPUESTOS DE ADUANAS DIAN",
     numSoporte: "DECL-9009",
-    valor: 7_000_000n,
+    valor: pesos(7_000_000),
     canalPago: CanalPago.PSE,
     usuarioId: admin.id,
   });
 
   const borrador = await generarBorrador({
     tramiteId: tramite.id,
-    comision: 200_000n,
+    comision: pesos(200_000),
     usuarioId: admin.id,
   });
 
@@ -129,14 +131,14 @@ async function main() {
 
   const factura = await prisma.factura.findFirst({
     where: { borrador: { tramiteId: tramite.id } },
-    select: { id: true, saldoACargoCliente: true, numSiigo: true },
+    select: { id: true, saldoACargoClienteCentavos: true, numSiigo: true },
   });
   if (!factura) throw new Error("No se creó la factura de demo");
 
-  console.log(`\n✅ Factura A CARGO ${factura.numSiigo}: cliente debe ${fmt(factura.saldoACargoCliente)}`);
+  console.log(`\n✅ Factura A CARGO ${factura.numSiigo}: cliente debe ${fmt(factura.saldoACargoClienteCentavos)}`);
 
   // Dos abonos parciales del cliente
-  for (const [i, monto] of [800_000n, 800_000n].entries()) {
+  for (const [i, monto] of [pesos(800_000), pesos(800_000)].entries()) {
     const res = await registrarPagoFacturaAbono({
       facturaId: factura.id,
       destino: DestinoPago.CLIENTE,
@@ -150,13 +152,13 @@ async function main() {
     if (!res.ok) throw new Error(`Abono falló: ${res.message}`);
     console.log(`   ✚ Abono ${i + 1}: ${fmt(monto)}`);
   }
-  const pendiente = factura.saldoACargoCliente - 1_600_000n;
+  const pendiente = factura.saldoACargoClienteCentavos - pesos(1_600_000);
   console.log(`   → Pendiente de cobro: ${fmt(pendiente)} (parcial)`);
 
   // ── 2. Devolución sobre la factura real BUN26-0026 (saldo a favor) ──────────
   const facturaBun = await prisma.factura.findFirst({
     where: { numSiigo: "BAQ-18288" },
-    select: { id: true, saldoAFavorCliente: true, saldoAFavorLM: true },
+    select: { id: true, saldoAFavorClienteCentavos: true, saldoAFavorLMCentavos: true },
   });
   if (facturaBun) {
     // Limpia devoluciones de demo previas para idempotencia
@@ -168,27 +170,27 @@ async function main() {
       facturaId: facturaBun.id,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.DEVOLUCION,
-      monto: 1_000_000n,
+      monto: pesos(1_000_000),
       fecha: new Date("2026-04-01"),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       verificadoBanco: true,
       usuarioId: admin.id,
     });
     if (!devCliente.ok) throw new Error(`Devolución cliente falló: ${devCliente.message}`);
-    console.log(`\n✅ BAQ-18288: devolución parcial al cliente 1.000.000 (de ${fmt(facturaBun.saldoAFavorCliente)})`);
+    console.log(`\n✅ BAQ-18288: devolución parcial al cliente 1.000.000 (de ${fmt(facturaBun.saldoAFavorClienteCentavos)})`);
 
     const devLM = await registrarPagoFacturaAbono({
       facturaId: facturaBun.id,
       destino: DestinoPago.LM,
       tipo: TipoPagoFactura.DEVOLUCION,
-      monto: facturaBun.saldoAFavorLM,
+      monto: facturaBun.saldoAFavorLMCentavos,
       fecha: new Date("2026-04-01"),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       verificadoBanco: true,
       usuarioId: admin.id,
     });
     if (!devLM.ok) throw new Error(`Devolución LM falló: ${devLM.message}`);
-    console.log(`   ✚ Devolución total a LM ${fmt(facturaBun.saldoAFavorLM)} → LM saldado`);
+    console.log(`   ✚ Devolución total a LM ${fmt(facturaBun.saldoAFavorLMCentavos)} → LM saldado`);
   }
 
   console.log(`\n🎉 Escenario de demo listo. Cliente DEMO COBROS S.A.S. y factura BAQ-18288.\n`);

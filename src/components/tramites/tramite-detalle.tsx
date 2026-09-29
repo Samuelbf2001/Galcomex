@@ -26,6 +26,8 @@ import { describirError, useToast } from "@/components/ui/toast";
 import type { Rol } from "@/lib/auth/auth";
 import { useRol } from "@/lib/auth/rol-context";
 import { fechasClaveVisibles, visibilidadCabeceraDo } from "@/lib/tramites/cabecera-do";
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
+import { centavosDeTextoApi, formatoPesos } from "@/lib/dinero";
 
 import {
   RegistrarAnticipoTramiteModal,
@@ -173,15 +175,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Fecha-calendario (00:00 UTC del día): se muestra en UTC para no correrse un día. */
 function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(date);
+  return formatFechaCalendario(iso) || "—";
 }
 
 function formatDateTime(iso: string | null | undefined): string {
@@ -194,22 +190,10 @@ function formatDateTime(iso: string | null | undefined): string {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: "America/Bogota",
   }).format(date);
 }
 
-function formatCOP(bigStr: string | null | undefined): string {
-  if (!bigStr) return "$0";
-  try {
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(BigInt(bigStr)));
-  } catch {
-    return bigStr;
-  }
-}
 
 /** Converts a Date ISO string to YYYY-MM-DD for <input type="date"> */
 function isoToDateInput(iso: string | null | undefined): string {
@@ -526,7 +510,7 @@ function SeccionBorradores({
             <div>
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Total factura</p>
               <p className="mt-0.5 font-mono font-semibold text-slate-900 text-sm">
-                {formatCOP(b.factura?.totalFactura ?? b.totalFactura)}
+                {formatoPesos(centavosDeTextoApi(b.factura?.totalFactura ?? b.totalFactura))}
               </p>
             </div>
             <div>
@@ -536,8 +520,8 @@ function SeccionBorradores({
                   const fav = b.factura?.saldoAFavorCliente ?? b.saldoAFavorCliente;
                   const car = b.factura?.saldoACargoCliente ?? b.saldoACargoCliente;
                   try {
-                    if (BigInt(fav) > 0n) return <span className="text-emerald-700 font-semibold">+{formatCOP(fav)}</span>;
-                    if (BigInt(car) > 0n) return <span className="text-rose-600 font-semibold">-{formatCOP(car)}</span>;
+                    if (centavosDeTextoApi(fav) > 0n) return <span className="text-emerald-700 font-semibold">+{formatoPesos(centavosDeTextoApi(fav))}</span>;
+                    if (centavosDeTextoApi(car) > 0n) return <span className="text-rose-600 font-semibold">-{formatoPesos(centavosDeTextoApi(car))}</span>;
                   } catch { /* noop */ }
                   return <span className="text-slate-500">$0</span>;
                 })()}
@@ -550,8 +534,8 @@ function SeccionBorradores({
                   const fav = b.factura?.saldoAFavorLM ?? b.saldoAFavorLM;
                   const car = b.factura?.saldoACargoLM ?? b.saldoACargoLM;
                   try {
-                    if (BigInt(fav) > 0n) return <span className="text-emerald-700 font-semibold">+{formatCOP(fav)}</span>;
-                    if (BigInt(car) > 0n) return <span className="text-rose-600 font-semibold">-{formatCOP(car)}</span>;
+                    if (centavosDeTextoApi(fav) > 0n) return <span className="text-emerald-700 font-semibold">+{formatoPesos(centavosDeTextoApi(fav))}</span>;
+                    if (centavosDeTextoApi(car) > 0n) return <span className="text-rose-600 font-semibold">-{formatoPesos(centavosDeTextoApi(car))}</span>;
                   } catch { /* noop */ }
                   return <span className="text-slate-500">$0</span>;
                 })()}
@@ -1294,6 +1278,37 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
     return () => controller.abort();
   }, [tramiteId, reloadKey]);
 
+  // Aviso "Histórico": el texto dice "sin anticipos, pagos ni factura" solo si
+  // de verdad no los tiene (un DO histórico importado del Drive 2026 puede sí
+  // tener pagos o facturas ya cargados). Anticipos se sabe de una vez (ya viene
+  // en la carga del trámite); pagos/facturas se revisan una sola vez por DO
+  // histórico con una consulta liviana, no en cada recarga: es un aviso
+  // informativo, no dato crítico.
+  const tieneAnticipos = (tramite?.aplicacionesAnticipo?.length ?? 0) > 0;
+  const [tienePagosOFacturas, setTienePagosOFacturas] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!tramite?.esHistorico || tieneAnticipos || tienePagosOFacturas !== null) return;
+    const controller = new AbortController();
+    Promise.all([
+      fetch(`/api/tramites/${tramite.id}/pagos`, { cache: "no-store", signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+      fetch(`/api/tramites/${tramite.id}/facturas-proveedor`, { cache: "no-store", signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+    ])
+      .then(([libro, facturas]) => {
+        const tienePagos =
+          isRecord(libro) && Array.isArray(libro.pagos) ? libro.pagos.length > 0 : false;
+        const tieneFacturas =
+          isRecord(facturas) && Array.isArray(facturas.facturas) ? facturas.facturas.length > 0 : false;
+        setTienePagosOFacturas(tienePagos || tieneFacturas);
+      })
+      .catch(() => setTienePagosOFacturas(false));
+    return () => controller.abort();
+  }, [tramite?.esHistorico, tramite?.id, tieneAnticipos, tienePagosOFacturas]);
+  const tieneDatosFinancieros = tieneAnticipos || tienePagosOFacturas === true;
+
   const selectTab = useCallback((tab: TabId) => {
     setActiveTab(tab);
     setVisitedTabs((prev) => (prev.includes(tab) ? prev : [...prev, tab]));
@@ -1349,21 +1364,23 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
     }
   }
 
+  // "Pagar $saldo" (§D.3, §D.4): prellena el pago simple con el SALDO de la
+  // factura, no su valor — una factura Abonada solo debe lo que le falta.
   const handlePagarFacturaProveedor = useCallback((factura: FacturaProveedorRow) => {
     const beneficiarios: BeneficiarioSeleccion[] =
       factura.beneficiarioId
         ? [{
             id: factura.beneficiarioId,
-            nombre: factura.proveedorNombre,
+            nombre: factura.beneficiario?.nombreCorto || factura.proveedorNombre,
             nit: factura.proveedorNit,
           }]
         : [];
 
     setPagoPrefill({
-      concepto: factura.concepto?.trim() || `Pago factura ${factura.numFactura}`,
+      concepto: factura.concepto?.trim() || `Pago factura ${factura.numFacturaVisible}`,
       facturaIds: [factura.id],
       beneficiarios,
-      valor: factura.valor,
+      valor: factura.saldo,
     });
     selectTab("pagos");
     setTopAction("pago");
@@ -1435,11 +1452,20 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
           <span className="inline-flex h-5 shrink-0 items-center border border-amber-300 bg-white px-1.5 text-[11px] font-semibold text-amber-800">
             Histórico
           </span>
-          <p className="min-w-0">
-            Trámite cargado desde el archivo histórico (Drive 2026): tiene su carpeta y sus documentos, pero no
-            anticipos, pagos ni factura en la plataforma. Los archivos que quedaron en <span className="font-semibold">Otro</span> se
-            pueden reordenar desde la pestaña Documentos o desde Archivos.
-          </p>
+          {tieneDatosFinancieros ? (
+            <p className="min-w-0">
+              Trámite cargado desde el archivo histórico (Drive 2026): tiene carpeta y documentos, y también
+              anticipos, pagos o facturas de proveedor ya registrados. Los archivos que quedaron en{" "}
+              <span className="font-semibold">Otro</span> se pueden reordenar desde la pestaña Documentos o desde
+              Archivos.
+            </p>
+          ) : (
+            <p className="min-w-0">
+              Trámite cargado desde el archivo histórico (Drive 2026): tiene su carpeta y sus documentos, pero no
+              anticipos, pagos ni factura en la plataforma. Los archivos que quedaron en <span className="font-semibold">Otro</span> se
+              pueden reordenar desde la pestaña Documentos o desde Archivos.
+            </p>
+          )}
         </div>
       ) : null}
 
@@ -1605,7 +1631,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
         ) : null}
         {visitedTabs.includes("pagos") ? (
           <div id="panel-pagos" role="tabpanel" aria-labelledby="tab-pagos" hidden={activeTab !== "pagos"}>
-            <LibroPagos tramiteId={tramiteId} refreshToken={reloadKey} />
+            <LibroPagos tramiteId={tramiteId} refreshToken={reloadKey} onCambio={reload} />
           </div>
         ) : null}
         {visitedTabs.includes("facturas-proveedor") ? (
@@ -1618,6 +1644,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
             <SeccionFacturasProveedor
               tramiteId={tramiteId}
               onPagarFactura={handlePagarFacturaProveedor}
+              tramiteCerrado={esCerrado}
               refreshToken={reloadKey}
             />
           </div>

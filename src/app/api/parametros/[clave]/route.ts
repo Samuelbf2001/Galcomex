@@ -4,6 +4,9 @@
  * Actualiza el valor de un Parametro genérico del sistema (ADMIN).
  * Los parámetros SIIGO_* (integración con Siigo) NO se editan aquí — ver
  * /api/configuracion/siigo/parametros y siigo-parametros.tsx.
+ * `DINERO_UNIDAD_BD` (marca de la fase centavos) responde 403: no se edita.
+ * Las claves de dinero (`COMISION_LM`, `UMBRAL_*`) reciben PESOS texto
+ * ("150000" o "150000.50") y se guardan en forma canónica.
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { z, ZodError } from "zod";
@@ -13,6 +16,7 @@ import { validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import {
   ParametroNoEncontradoError,
+  ParametroProtegidoError,
   ParametroSiigoProtegidoError,
   ParametroValorInvalidoError,
   actualizarParametro,
@@ -55,6 +59,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     );
     return jsonResponse({ parametro });
   } catch (error) {
+    if (error instanceof ParametroProtegidoError) {
+      return NextResponse.json({ error: error.message, codigo: error.codigo }, { status: error.status });
+    }
     if (error instanceof ParametroNoEncontradoError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }

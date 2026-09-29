@@ -12,13 +12,13 @@ import "dotenv/config";
 import { AgenciaAduanas, CanalPago, CategoriaDocumento, Ciudad, EstadoFacturaProveedor, Rol, TipoCliente, TipoRecaudo } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { FacturaDeOtroDoError, FacturaSinSaldoError, MontoExcedeSaldoError } from "@/lib/cxp/errores";
+import { cargarContextoDos } from "@/lib/cxp/pagabilidad-bd";
 import { prisma } from "@/lib/db/prisma";
-import { FacturaProveedorNoModificableError } from "@/lib/facturas-proveedor/service";
 import {
   DocumentoDeOtroTramiteError,
   DocumentoNoEncontradoParaPagoError,
   MatrizCanalNoEncontradoError,
-  PagoFacturaDeOtroTramiteError,
   SinAnticipoAplicadoError,
   SinAnticipoAplicadoMultiDOError,
   actualizarPago,
@@ -27,7 +27,9 @@ import {
   eliminarPago,
   getLibroPagos,
   listarFacturasElegiblesMultiDO,
+  listarPagosGlobal,
 } from "../service";
+import { pesos } from "@/lib/dinero";
 
 // ─── Constantes del test ─────────────────────────────────────────────────────
 
@@ -88,6 +90,8 @@ async function cleanupTestData() {
   await prisma.aplicacionAnticipo.deleteMany({
     where: { tramiteId: { in: tramiteIds } },
   });
+  // Borradores (y sus líneas/enlaces a facturas) antes que las facturas.
+  await prisma.borradorFactura.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
   // Desvincular PagoTramite de FacturaProveedor (pivot N↔N) antes de borrar
   // y borrar FacturaProveedor antes de PagoTramite para evitar violaciones de FK.
   await prisma.pagoTramiteFactura.deleteMany({
@@ -96,9 +100,24 @@ async function cleanupTestData() {
   await prisma.facturaProveedor.deleteMany({
     where: { tramiteId: { in: tramiteIds } },
   });
+  // CxP v2: cabeceras PagoGrupo de los bloques de prueba (después de sus
+  // PagoTramite: FK pago_tramite.grupoPagoId → pago_grupo).
+  const grupos = await prisma.pagoTramite.findMany({
+    where: { tramiteId: { in: tramiteIds }, grupoPagoId: { not: null } },
+    select: { grupoPagoId: true },
+  });
   await prisma.pagoTramite.deleteMany({
     where: { tramiteId: { in: tramiteIds } },
   });
+  await prisma.pagoGrupo.deleteMany({
+    where: {
+      OR: [
+        { id: { in: grupos.flatMap((g) => (g.grupoPagoId ? [g.grupoPagoId] : [])) } },
+        { creadoPorId: { in: userIds } },
+      ],
+    },
+  });
+  await prisma.empresaCapacidad.deleteMany({ where: { empresaId: { in: clienteIds } } });
 
   // Limpiar anticipos del cliente de test
   const testAnticipos = await prisma.anticipo.findMany({
@@ -172,6 +191,7 @@ function ensureDb(ctx: { skip: (note?: string) => void }): Fixture {
 async function crearTramiteTest(
   db: Fixture,
   numero: number,
+  clienteId: string = db.clienteId,
 ): Promise<string> {
   const tramite = await prisma.tramiteDO.create({
     data: {
@@ -179,7 +199,7 @@ async function crearTramiteTest(
       ciudad: Ciudad.BUN,
       anio: stateYear,
       numero,
-      clienteId: db.clienteId,
+      clienteId,
       agenciaAduanas: AgenciaAduanas.COLDEX,
       creadoPorId: db.userId,
       comentarios: `${TEST_PREFIX}:${runId}`,
@@ -200,10 +220,10 @@ async function aplicarAnticipoTest(
   const anticipo = await prisma.anticipo.create({
     data: {
       clienteId: db.clienteId,
-      monto,
+      montoCentavos: monto,
       fecha: new Date("3002-01-10"),
       tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-      costoRecaudo: 1_950n,
+      costoRecaudoCentavos: pesos(1_950),
       verificadoBanco: true,
     },
   });
@@ -212,14 +232,15 @@ async function aplicarAnticipoTest(
     data: {
       anticipoId: anticipo.id,
       tramiteId,
-      montoAplicado: monto,
+      montoAplicadoCentavos: monto,
     },
   });
 }
 
 /**
  * Crea una FacturaProveedor de prueba en estado REGISTRADA.
- * `beneficiarioId` es opcional — requerido para los tests de pago multi-DO.
+ * CxP v2 (R7): toda factura pagable tiene ficha de pago; si no se pasa
+ * `beneficiarioId`, se crea una ficha "Proveedor Vitest" propia.
  */
 async function crearFacturaProveedorTest(
   db: Fixture,
@@ -232,9 +253,9 @@ async function crearFacturaProveedorTest(
     data: {
       tramiteId,
       proveedorNombre: "Proveedor Vitest",
-      beneficiarioId: beneficiarioId ?? null,
+      beneficiarioId: beneficiarioId ?? (await crearBeneficiarioTest("Proveedor Vitest")),
       numFactura,
-      valor,
+      valorCentavos: valor,
       fecha: new Date("3002-02-01"),
       subidaPorId: db.userId,
     },
@@ -311,7 +332,7 @@ describe("pagos service con Postgres local", () => {
     const tramiteId = await crearTramiteTest(db, 26);
 
     // Anticipo aplicado: 45.226.000
-    await aplicarAnticipoTest(db, tramiteId, 45_226_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(45_226_000));
 
     /**
      * Pagos en orden (valores del Excel GRUPO E PAPIS 2026 DO.BUN26-0026):
@@ -328,13 +349,13 @@ describe("pagos service con Postgres local", () => {
      * saldoFinal = 4.708.356 (exacto, tolerancia 0).
      */
     const pagosConfig: Array<{ valor: bigint; canal: CanalPago }> = [
-      { valor: 1_000_000n, canal: CanalPago.TRANSF_BANCOLOMBIA },
-      { valor: 2_011_341n, canal: CanalPago.TRANSF_BANCOLOMBIA },
-      { valor: 30_854_000n, canal: CanalPago.PSE },
-      { valor: 2_216_233n, canal: CanalPago.PSE },
-      { valor: 760_283n, canal: CanalPago.PSE },
-      { valor: 175_787n, canal: CanalPago.PSE },
-      { valor: 3_500_000n, canal: CanalPago.TRANSF_BANCOLOMBIA },
+      { valor: pesos(1_000_000), canal: CanalPago.TRANSF_BANCOLOMBIA },
+      { valor: pesos(2_011_341), canal: CanalPago.TRANSF_BANCOLOMBIA },
+      { valor: pesos(30_854_000), canal: CanalPago.PSE },
+      { valor: pesos(2_216_233), canal: CanalPago.PSE },
+      { valor: pesos(760_283), canal: CanalPago.PSE },
+      { valor: pesos(175_787), canal: CanalPago.PSE },
+      { valor: pesos(3_500_000), canal: CanalPago.TRANSF_BANCOLOMBIA },
     ];
 
     for (const cfg of pagosConfig) {
@@ -350,33 +371,33 @@ describe("pagos service con Postgres local", () => {
     const libro = await getLibroPagos(tramiteId);
 
     // Verificar anticipo aplicado
-    expect(libro.totalAnticipoAplicado).toBe(45_226_000n);
+    expect(libro.totalAnticipoAplicado).toBe(pesos(45_226_000));
 
     // Verificar total de pagos: suma exacta
     const totalEsperado =
-      1_000_000n +
-      2_011_341n +
-      30_854_000n +
-      2_216_233n +
-      760_283n +
-      175_787n +
-      3_500_000n;
+      pesos(1_000_000) +
+      pesos(2_011_341) +
+      pesos(30_854_000) +
+      pesos(2_216_233) +
+      pesos(760_283) +
+      pesos(175_787) +
+      pesos(3_500_000);
     // = 40.517.644
     expect(libro.totalPagos).toBe(totalEsperado);
 
     // ─── CRITERIO BLOQUEANTE ────────────────────────────────────────────────
     // saldoFinal = 45.226.000 − 40.517.644 = 4.708.356 (tolerancia: 0 pesos)
-    expect(libro.saldoFinal).toBe(4_708_356n);
+    expect(libro.saldoFinal).toBe(pesos(4_708_356));
 
     // Verificar saldos intermedios exactos
     const saldosEsperados: bigint[] = [
-      45_226_000n - 1_000_000n,                        // 44.226.000
-      45_226_000n - 1_000_000n - 2_011_341n,           // 42.214.659
-      45_226_000n - 1_000_000n - 2_011_341n - 30_854_000n, // 11.360.659
-      45_226_000n - 1_000_000n - 2_011_341n - 30_854_000n - 2_216_233n, // 9.144.426
-      45_226_000n - 1_000_000n - 2_011_341n - 30_854_000n - 2_216_233n - 760_283n, // 8.384.143
-      45_226_000n - 1_000_000n - 2_011_341n - 30_854_000n - 2_216_233n - 760_283n - 175_787n, // 8.208.356
-      4_708_356n, // saldo final
+      pesos(45_226_000) - pesos(1_000_000),                        // 44.226.000
+      pesos(45_226_000) - pesos(1_000_000) - pesos(2_011_341),           // 42.214.659
+      pesos(45_226_000) - pesos(1_000_000) - pesos(2_011_341) - pesos(30_854_000), // 11.360.659
+      pesos(45_226_000) - pesos(1_000_000) - pesos(2_011_341) - pesos(30_854_000) - pesos(2_216_233), // 9.144.426
+      pesos(45_226_000) - pesos(1_000_000) - pesos(2_011_341) - pesos(30_854_000) - pesos(2_216_233) - pesos(760_283), // 8.384.143
+      pesos(45_226_000) - pesos(1_000_000) - pesos(2_011_341) - pesos(30_854_000) - pesos(2_216_233) - pesos(760_283) - pesos(175_787), // 8.208.356
+      pesos(4_708_356), // saldo final
     ];
 
     expect(libro.saldos).toHaveLength(7);
@@ -387,20 +408,20 @@ describe("pagos service con Postgres local", () => {
     }
 
     // costosBancarios = 3 × 3.900 = 11.700 (determinista con los canales asignados)
-    expect(libro.costosBancarios).toBe(11_700n);
+    expect(libro.costosBancarios).toBe(pesos(11_700));
   });
 
   // ─── Cambiar canal recalcula costoBancario en cascada ─────────────────────
   it("cambiar canal PSE → BANCOLOMBIA_TRANSFERENCIA recalcula costosBancarios (+3.900)", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 100);
-    await aplicarAnticipoTest(db, tramiteId, 10_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(10_000_000));
 
     // Crear dos pagos: uno PSE, uno BANCOLOMBIA_TRANSFERENCIA
     const pagoPse = await crearPago({
       tramiteId,
       concepto: "Pago PSE",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
     });
@@ -408,14 +429,14 @@ describe("pagos service con Postgres local", () => {
     await crearPago({
       tramiteId,
       concepto: "Pago transferencia",
-      valor: 500_000n,
+      valor: pesos(500_000),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
     });
 
     const libroAntes = await getLibroPagos(tramiteId);
     // costos antes: 0 (PSE) + 3.900 (transferencia) = 3.900
-    expect(libroAntes.costosBancarios).toBe(3_900n);
+    expect(libroAntes.costosBancarios).toBe(pesos(3_900));
 
     // Cambiar el pago PSE a BANCOLOMBIA_TRANSFERENCIA
     await actualizarPago(
@@ -426,9 +447,9 @@ describe("pagos service con Postgres local", () => {
 
     const libroDespues = await getLibroPagos(tramiteId);
     // costos después: 3.900 + 3.900 = 7.800 (+3.900 vs antes)
-    expect(libroDespues.costosBancarios).toBe(7_800n);
+    expect(libroDespues.costosBancarios).toBe(pesos(7_800));
     expect(libroDespues.costosBancarios - libroAntes.costosBancarios).toBe(
-      3_900n,
+      pesos(3_900),
     );
   });
 
@@ -436,7 +457,7 @@ describe("pagos service con Postgres local", () => {
   it("canal inexistente en la matriz → lanza MatrizCanalNoEncontradoError (status 400)", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 200);
-    await aplicarAnticipoTest(db, tramiteId, 2_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(2_000_000));
 
     /**
      * CanalPago es un enum de Prisma que refleja los valores del schema.
@@ -464,7 +485,7 @@ describe("pagos service con Postgres local", () => {
         crearPago({
           tramiteId,
           concepto: "Pago con canal eliminado",
-          valor: 1_000_000n,
+          valor: pesos(1_000_000),
           canalPago: canalBorrado,
           usuarioId: db.userId,
         }),
@@ -482,7 +503,7 @@ describe("pagos service con Postgres local", () => {
           id: original.id,
           canalPago: original.canalPago,
           descripcion: original.descripcion,
-          costoFijo: original.costoFijo,
+          costoFijoCentavos: original.costoFijoCentavos,
         },
       });
     }
@@ -493,7 +514,7 @@ describe("pagos service con Postgres local", () => {
   it("getLibroPagos sin pagos retorna saldoFinal = totalAnticipoAplicado", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 300);
-    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(5_000_000));
 
     const libro = await getLibroPagos(tramiteId);
 
@@ -501,19 +522,19 @@ describe("pagos service con Postgres local", () => {
     expect(libro.saldos).toHaveLength(0);
     expect(libro.totalPagos).toBe(0n);
     expect(libro.costosBancarios).toBe(0n);
-    expect(libro.totalAnticipoAplicado).toBe(5_000_000n);
-    expect(libro.saldoFinal).toBe(5_000_000n);
+    expect(libro.totalAnticipoAplicado).toBe(pesos(5_000_000));
+    expect(libro.saldoFinal).toBe(pesos(5_000_000));
   });
 
   it("eliminarPago reduce el total de pagos y recalcula el saldo", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 400);
-    await aplicarAnticipoTest(db, tramiteId, 10_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(10_000_000));
 
     const pago1 = await crearPago({
       tramiteId,
       concepto: "Pago 1",
-      valor: 3_000_000n,
+      valor: pesos(3_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
     });
@@ -521,46 +542,46 @@ describe("pagos service con Postgres local", () => {
     await crearPago({
       tramiteId,
       concepto: "Pago 2",
-      valor: 2_000_000n,
+      valor: pesos(2_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
     });
 
     const libroCon2 = await getLibroPagos(tramiteId);
-    expect(libroCon2.totalPagos).toBe(5_000_000n);
-    expect(libroCon2.saldoFinal).toBe(5_000_000n);
+    expect(libroCon2.totalPagos).toBe(pesos(5_000_000));
+    expect(libroCon2.saldoFinal).toBe(pesos(5_000_000));
 
     await eliminarPago(pago1.id, db.userId);
 
     const libroCon1 = await getLibroPagos(tramiteId);
     expect(libroCon1.pagos).toHaveLength(1);
-    expect(libroCon1.totalPagos).toBe(2_000_000n);
-    expect(libroCon1.saldoFinal).toBe(8_000_000n);
+    expect(libroCon1.totalPagos).toBe(pesos(2_000_000));
+    expect(libroCon1.saldoFinal).toBe(pesos(8_000_000));
   });
 
   it("crearPago asigna costoBancario correcto desde la matriz", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 500);
-    await aplicarAnticipoTest(db, tramiteId, 2_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(2_000_000));
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Pago transferencia otros bancos",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       canalPago: CanalPago.TRANSF_OTROS_BANCOS,
       usuarioId: db.userId,
     });
 
     // TRANSF_OTROS_BANCOS = 7.300 según la matriz de pagos
-    expect(pago.costoBancario).toBe(7_300n);
+    expect(pago.costoBancarioCentavos).toBe(pesos(7_300));
   });
 
   it("los pagos se retornan ordenados por campo 'orden' ascendente", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 600);
-    await aplicarAnticipoTest(db, tramiteId, 20_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(20_000_000));
 
-    const valores = [5_000_000n, 3_000_000n, 7_000_000n];
+    const valores = [pesos(5_000_000), pesos(3_000_000), pesos(7_000_000)];
     for (const valor of valores) {
       await crearPago({
         tramiteId,
@@ -572,7 +593,7 @@ describe("pagos service con Postgres local", () => {
     }
 
     const libro = await getLibroPagos(tramiteId);
-    expect(libro.pagos.map((p) => p.valor)).toEqual(valores);
+    expect(libro.pagos.map((p) => p.valorCentavos)).toEqual(valores);
     // Orden asignado secuencialmente: 1, 2, 3
     expect(libro.pagos.map((p) => p.orden)).toEqual([1, 2, 3]);
   });
@@ -582,14 +603,14 @@ describe("pagos service con Postgres local", () => {
   it("crearPago vinculado a una FacturaProveedor REGISTRADA la marca como PAGADA y guarda el vínculo", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 700);
-    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(5_000_000));
 
-    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-700-001", 2_000_000n);
+    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-700-001", pesos(2_000_000));
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Pago vinculado a FP",
-      valor: 2_000_000n,
+      valor: pesos(2_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
       facturaProveedorIds: [fpId],
@@ -606,68 +627,190 @@ describe("pagos service con Postgres local", () => {
     expect(fpActualizada?.estado).toBe(EstadoFacturaProveedor.PAGADA);
   });
 
-  // Decisión de negocio confirmada: una FacturaProveedor PAGADA SÍ admite más
-  // pagos (abonos parciales/adicionales). Solo FACTURADA_CLIENTE bloquea.
-  it("crearPago con facturaProveedorId de una FP ya PAGADA se acepta (abono adicional) y la FP sigue PAGADA", async (ctx) => {
+  // CxP v2 (decisión de Ernesto, PRD 13.19): se INVIERTE la decisión anterior.
+  // Una factura PAGADA no se vuelve a pagar por ningún camino (FACTURA_SIN_SALDO).
+  it("crearPago sobre una FP ya PAGADA se rechaza (FACTURA_SIN_SALDO) y no crea ni enlaza nada", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 800);
-    await aplicarAnticipoTest(db, tramiteId, 10_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(10_000_000));
 
-    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-800-001", 3_000_000n);
+    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-800-001", pesos(3_000_000));
 
-    // Primer pago: vincula y marca PAGADA
-    const primerPago = await crearPago({
+    await crearPago({
       tramiteId,
       concepto: "Primer pago",
-      valor: 3_000_000n,
+      valor: pesos(3_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
       facturaProveedorIds: [fpId],
     });
 
-    // Segundo pago (abono adicional) sobre la misma FP ya PAGADA → se acepta
-    const segundoPago = await crearPago({
-      tramiteId,
-      concepto: "Segundo pago sobre FP ya pagada",
-      valor: 1_000_000n,
-      canalPago: CanalPago.PSE,
-      usuarioId: db.userId,
-      facturaProveedorIds: [fpId],
-    });
+    await expect(
+      crearPago({
+        tramiteId,
+        concepto: "Segundo pago sobre FP ya pagada",
+        valor: pesos(1_000_000),
+        canalPago: CanalPago.PSE,
+        usuarioId: db.userId,
+        facturaProveedorIds: [fpId],
+      }),
+    ).rejects.toThrow(FacturaSinSaldoError);
 
-    expect(segundoPago.id).not.toBe(primerPago.id);
-
-    // La FP sigue PAGADA — no cambia de estado ni se bloquea
     const fpFinal = await prisma.facturaProveedor.findUnique({ where: { id: fpId } });
     expect(fpFinal?.estado).toBe(EstadoFacturaProveedor.PAGADA);
-
-    // Ambos pagos existen y quedan vinculados a la FP
     const pagos = await prisma.pagoTramite.findMany({ where: { tramiteId } });
-    expect(pagos).toHaveLength(2);
+    expect(pagos).toHaveLength(1);
     const vinculos = await prisma.pagoTramiteFactura.findMany({ where: { facturaId: fpId } });
-    expect(vinculos).toHaveLength(2);
+    expect(vinculos).toHaveLength(1);
+    expect(vinculos[0]!.montoCentavos).toBe(pesos(3_000_000));
   });
 
-  it("crearPago con facturaProveedorId de OTRO trámite lanza PagoFacturaDeOtroTramiteError", async (ctx) => {
+  it("dos abonos por `aplicaciones` dejan la FP PARCIAL y luego PAGADA; un tercero se rechaza", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 810);
+    await aplicarAnticipoTest(db, tramiteId, pesos(10_000_000));
+    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-810-001", pesos(300_000));
+
+    await crearPago({
+      tramiteId,
+      concepto: "Abono 1",
+      valor: pesos(100_000),
+      canalPago: CanalPago.PSE,
+      aplicaciones: [{ facturaProveedorId: fpId, monto: pesos(100_000) }],
+      usuarioId: db.userId,
+    });
+    let fp = await prisma.facturaProveedor.findUniqueOrThrow({ where: { id: fpId } });
+    expect(fp.estado).toBe(EstadoFacturaProveedor.PARCIAL);
+
+    // Pagar más que el saldo (200.000) se rechaza con el mensaje exacto.
+    await expect(
+      crearPago({
+        tramiteId,
+        concepto: "Abono de más",
+        valor: pesos(300_000),
+        canalPago: CanalPago.PSE,
+        aplicaciones: [{ facturaProveedorId: fpId, monto: pesos(300_000) }],
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow("A la factura FP-810-001 solo le faltan $\u00a0200.000 por pagar; no se le pueden aplicar $\u00a0300.000.");
+
+    await crearPago({
+      tramiteId,
+      concepto: "Abono 2",
+      valor: pesos(200_000),
+      canalPago: CanalPago.PSE,
+      aplicaciones: [{ facturaProveedorId: fpId, monto: pesos(200_000) }],
+      usuarioId: db.userId,
+    });
+    fp = await prisma.facturaProveedor.findUniqueOrThrow({ where: { id: fpId } });
+    expect(fp.estado).toBe(EstadoFacturaProveedor.PAGADA);
+
+    await expect(
+      crearPago({
+        tramiteId,
+        concepto: "Abono 3",
+        valor: pesos(1),
+        canalPago: CanalPago.PSE,
+        aplicaciones: [{ facturaProveedorId: fpId, monto: pesos(1) }],
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow(/ya está pagada/);
+
+    const libro = await getLibroPagos(tramiteId);
+    expect(libro.pagos.map((p) => p.aplicaciones.map((a) => a.monto))).toEqual([[pesos(100_000)], [pesos(200_000)]]);
+    expect(libro.pagos.every((p) => p.tieneFacturas && !p.editableDinero && !p.esBloque)).toBe(true);
+  });
+
+  it("aplicaciones que no suman el valor del pago → PAGO_NO_CUADRA; valor mayor que los saldos (heredado) → PAGO_EXCEDE_SALDO", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 820);
+    await aplicarAnticipoTest(db, tramiteId, pesos(10_000_000));
+    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-820-001", pesos(464_077));
+
+    await expect(
+      crearPago({
+        tramiteId,
+        concepto: "No cuadra",
+        valor: pesos(500_000),
+        canalPago: CanalPago.PSE,
+        aplicaciones: [{ facturaProveedorId: fpId, monto: pesos(464_077) }],
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow("El valor del pago ($\u00a0500.000) debe ser igual a lo aplicado a las facturas ($\u00a0464.077).");
+
+    await expect(
+      crearPago({
+        tramiteId,
+        concepto: "Pago de más",
+        valor: pesos(928_154),
+        canalPago: CanalPago.PSE,
+        facturaProveedorIds: [fpId],
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow(
+      "El pago ($\u00a0928.154) es mayor que lo que falta por pagar de las facturas escogidas ($\u00a0464.077). No se puede pagar de más.",
+    );
+
+    expect(await prisma.pagoTramite.count({ where: { tramiteId } })).toBe(0);
+  });
+
+  it("entrada heredada: el valor que no alcanza para todas las facturas → FACTURA_SIN_MONTO (nunca enlaza a medias)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const tramiteId = await crearTramiteTest(db, 830);
+    await aplicarAnticipoTest(db, tramiteId, pesos(10_000_000));
+    const beneficiarioId = await crearBeneficiarioTest("Proveedor FIFO");
+    const a = await crearFacturaProveedorTest(db, tramiteId, "FE-830-A", pesos(200_000), beneficiarioId);
+    const b = await crearFacturaProveedorTest(db, tramiteId, "FE-830-B", pesos(150_000), beneficiarioId);
+
+    await expect(
+      crearPago({
+        tramiteId,
+        concepto: "Solo alcanza para una",
+        valor: pesos(200_000),
+        canalPago: CanalPago.PSE,
+        facturaProveedorIds: [a, b],
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow("El valor ($\u00a0200.000) solo alcanza para FE-830-A; quita las demás facturas o indica el monto de cada una.");
+
+    // Un valor que cubre una y abona la otra se reparte FIFO (fecha, creación).
+    const pago = await crearPago({
+      tramiteId,
+      concepto: "FIFO",
+      valor: pesos(250_000),
+      canalPago: CanalPago.PSE,
+      facturaProveedorIds: [b, a],
+      usuarioId: db.userId,
+    });
+    const puentes = await prisma.pagoTramiteFactura.findMany({ where: { pagoId: pago.id } });
+    const porFactura = new Map(puentes.map((p) => [p.facturaId, p.montoCentavos]));
+    expect(porFactura.get(a)).toBe(pesos(200_000));
+    expect(porFactura.get(b)).toBe(pesos(50_000));
+    // El pago sin beneficiarios quedó con el proveedor de sus facturas.
+    const benef = await prisma.pagoTramiteBeneficiario.findMany({ where: { pagoId: pago.id } });
+    expect(benef.map((x) => x.beneficiarioId)).toEqual([beneficiarioId]);
+  });
+
+  it("crearPago con facturaProveedorId de OTRO trámite lanza FacturaDeOtroDoError", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId1 = await crearTramiteTest(db, 900);
     const tramiteId2 = await crearTramiteTest(db, 901);
-    await aplicarAnticipoTest(db, tramiteId2, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId2, pesos(5_000_000));
 
     // FP pertenece al trámite 1
-    const fpId = await crearFacturaProveedorTest(db, tramiteId1, "FP-900-001", 1_500_000n);
+    const fpId = await crearFacturaProveedorTest(db, tramiteId1, "FP-900-001", pesos(1_500_000));
 
     // Intentar vincular esa FP al crear un pago del trámite 2 → error
     await expect(
       crearPago({
         tramiteId: tramiteId2,
         concepto: "Pago con FP de otro trámite",
-        valor: 1_500_000n,
+        valor: pesos(1_500_000),
         canalPago: CanalPago.PSE,
         usuarioId: db.userId,
         facturaProveedorIds: [fpId],
       }),
-    ).rejects.toThrow(PagoFacturaDeOtroTramiteError);
+    ).rejects.toThrow(FacturaDeOtroDoError);
 
     // Verificar que no se creó ningún pago en tramiteId2
     const pagos = await prisma.pagoTramite.findMany({ where: { tramiteId: tramiteId2 } });
@@ -677,14 +820,14 @@ describe("pagos service con Postgres local", () => {
   it("eliminarPago de un pago vinculado revierte la FacturaProveedor a REGISTRADA", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1000);
-    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(5_000_000));
 
-    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-1000-001", 2_500_000n);
+    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-1000-001", pesos(2_500_000));
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Pago a eliminar",
-      valor: 2_500_000n,
+      valor: pesos(2_500_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
       facturaProveedorIds: [fpId],
@@ -709,12 +852,12 @@ describe("pagos service con Postgres local", () => {
   it("crearPago sin facturaProveedorId sigue funcionando (no rompe el flujo manual)", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1100);
-    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(5_000_000));
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Pago manual sin FP",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
     });
@@ -726,7 +869,7 @@ describe("pagos service con Postgres local", () => {
 
     const libro = await getLibroPagos(tramiteId);
     expect(libro.pagos).toHaveLength(1);
-    expect(libro.saldoFinal).toBe(4_000_000n);
+    expect(libro.saldoFinal).toBe(pesos(4_000_000));
   });
 
   // ─── B3: sin anticipo → SinAnticipoAplicadoError ─────────────────────────
@@ -739,7 +882,7 @@ describe("pagos service con Postgres local", () => {
       crearPago({
         tramiteId,
         concepto: "Pago sin anticipo",
-        valor: 1_000_000n,
+        valor: pesos(1_000_000),
         canalPago: CanalPago.PSE,
         usuarioId: db.userId,
       }),
@@ -753,26 +896,26 @@ describe("pagos service con Postgres local", () => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1250);
     // La clasificadora: la paga Galcomex, no sale del anticipo del cliente.
-    const propia = await crearFacturaProveedorTest(db, tramiteId, `${runId}-CLAS`, 250_000n);
+    const propia = await crearFacturaProveedorTest(db, tramiteId, `${runId}-CLAS`, pesos(250_000));
     await prisma.facturaProveedor.update({ where: { id: propia }, data: { repercutible: false } });
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Clasificación arancelaria — informe 2140",
-      valor: 250_000n,
+      valor: pesos(250_000),
       canalPago: CanalPago.PSE,
       facturaProveedorIds: [propia],
       usuarioId: db.userId,
     });
-    expect(pago.valor).toBe(250_000n);
+    expect(pago.valorCentavos).toBe(pesos(250_000));
 
     // Una factura que sí se le cobra al cliente sigue exigiendo anticipo.
-    const deTercero = await crearFacturaProveedorTest(db, tramiteId, `${runId}-TER`, 100_000n);
+    const deTercero = await crearFacturaProveedorTest(db, tramiteId, `${runId}-TER`, pesos(100_000));
     await expect(
       crearPago({
         tramiteId,
         concepto: "Pago de tercero sin anticipo",
-        valor: 100_000n,
+        valor: pesos(100_000),
         canalPago: CanalPago.PSE,
         facturaProveedorIds: [deTercero],
         usuarioId: db.userId,
@@ -790,16 +933,16 @@ describe("pagos service con Postgres local", () => {
       update: { habilitado: false },
     });
     try {
-      const deTercero = await crearFacturaProveedorTest(db, tramiteId, `${runId}-CRED`, 262_750n);
+      const deTercero = await crearFacturaProveedorTest(db, tramiteId, `${runId}-CRED`, pesos(262_750));
       const pago = await crearPago({
         tramiteId,
         concepto: "VACIO SPRB FACT. 1003997130",
-        valor: 262_750n,
+        valor: pesos(262_750),
         canalPago: CanalPago.PSE,
         facturaProveedorIds: [deTercero],
         usuarioId: db.userId,
       });
-      expect(pago.valor).toBe(262_750n);
+      expect(pago.valorCentavos).toBe(pesos(262_750));
     } finally {
       await prisma.empresaCapacidad.deleteMany({ where: { empresaId: db.clienteId, codigo: "anticipos_cliente" } });
     }
@@ -812,22 +955,22 @@ describe("pagos service con Postgres local", () => {
     const anticipo = await prisma.anticipo.create({
       data: {
         clienteId: db.clienteId,
-        monto: 5_000_000n,
+        montoCentavos: pesos(5_000_000),
         fecha: new Date("3002-01-10"),
         tipoRecaudo: TipoRecaudo.BANCOLOMBIA,
-        costoRecaudo: 1_950n,
+        costoRecaudoCentavos: pesos(1_950),
         verificadoBanco: false,
         estado: "REALIZADO",
       },
     });
     await prisma.aplicacionAnticipo.create({
-      data: { anticipoId: anticipo.id, tramiteId, montoAplicado: 5_000_000n },
+      data: { anticipoId: anticipo.id, tramiteId, montoAplicadoCentavos: pesos(5_000_000) },
     });
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Pago con anticipo no verificado",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
     });
@@ -835,7 +978,7 @@ describe("pagos service con Postgres local", () => {
     expect(pago.id).toBeTruthy();
     const libro = await getLibroPagos(tramiteId);
     expect(libro.pagos).toHaveLength(1);
-    expect(libro.saldoFinal).toBe(4_000_000n);
+    expect(libro.saldoFinal).toBe(pesos(4_000_000));
   });
 
   // ─── Doble comprobante: documentoId / comprobanteComercioId ─────────────
@@ -843,13 +986,13 @@ describe("pagos service con Postgres local", () => {
   it("crearPago con comprobanteComercioId válido del mismo trámite lo guarda", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1460);
-    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(5_000_000));
     const docId = await crearDocumentoTest(db, tramiteId, CategoriaDocumento.COMPROBANTE_COMERCIO);
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Pago con comprobante de comercio",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
       comprobanteComercioId: docId,
@@ -862,7 +1005,7 @@ describe("pagos service con Postgres local", () => {
     const db = ensureDb(ctx);
     const tramiteId1 = await crearTramiteTest(db, 1450);
     const tramiteId2 = await crearTramiteTest(db, 1451);
-    await aplicarAnticipoTest(db, tramiteId2, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId2, pesos(5_000_000));
 
     const docId = await crearDocumentoTest(db, tramiteId1, CategoriaDocumento.COMPROBANTE_COMERCIO);
 
@@ -870,7 +1013,7 @@ describe("pagos service con Postgres local", () => {
       crearPago({
         tramiteId: tramiteId2,
         concepto: "Pago con comprobante de otro trámite",
-        valor: 1_000_000n,
+        valor: pesos(1_000_000),
         canalPago: CanalPago.PSE,
         usuarioId: db.userId,
         comprobanteComercioId: docId,
@@ -884,13 +1027,13 @@ describe("pagos service con Postgres local", () => {
   it("crearPago con comprobanteComercioId inexistente lanza DocumentoNoEncontradoParaPagoError", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1470);
-    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(5_000_000));
 
     await expect(
       crearPago({
         tramiteId,
         concepto: "Pago con comprobante inexistente",
-        valor: 1_000_000n,
+        valor: pesos(1_000_000),
         canalPago: CanalPago.PSE,
         usuarioId: db.userId,
         comprobanteComercioId: "id-inexistente",
@@ -906,12 +1049,12 @@ describe("pagos service con Postgres local", () => {
   it("faltaComprobante = true al crear sin documentoId y false tras actualizarPago con el comprobante", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1480);
-    await aplicarAnticipoTest(db, tramiteId, 3_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(3_000_000));
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Pago sin comprobante bancario",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
     });
@@ -935,13 +1078,13 @@ describe("pagos service con Postgres local", () => {
   it("crearPago con documentoId ya arranca con faltaComprobante = false", async (ctx) => {
     const db = ensureDb(ctx);
     const tramiteId = await crearTramiteTest(db, 1490);
-    await aplicarAnticipoTest(db, tramiteId, 3_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(3_000_000));
     const docId = await crearDocumentoTest(db, tramiteId, CategoriaDocumento.COMPROBANTE_BANCARIO);
 
     const pago = await crearPago({
       tramiteId,
       concepto: "Pago con comprobante desde el inicio",
-      valor: 1_000_000n,
+      valor: pesos(1_000_000),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
       documentoId: docId,
@@ -959,10 +1102,10 @@ describe("pagos service con Postgres local", () => {
     const beneficiarioId = await crearBeneficiarioTest("Beneficiario MultiDO Listado");
     const tramiteConAnticipo = await crearTramiteTest(db, 1440);
     const tramiteSinAnticipo = await crearTramiteTest(db, 1441);
-    await aplicarAnticipoTest(db, tramiteConAnticipo, 3_000_000n);
+    await aplicarAnticipoTest(db, tramiteConAnticipo, pesos(3_000_000));
 
-    await crearFacturaProveedorTest(db, tramiteConAnticipo, "FP-MULTI-040", 500_000n, beneficiarioId);
-    await crearFacturaProveedorTest(db, tramiteSinAnticipo, "FP-MULTI-041", 700_000n, beneficiarioId);
+    await crearFacturaProveedorTest(db, tramiteConAnticipo, "FP-MULTI-040", pesos(500_000), beneficiarioId);
+    await crearFacturaProveedorTest(db, tramiteSinAnticipo, "FP-MULTI-041", pesos(700_000), beneficiarioId);
 
     const facturas = await listarFacturasElegiblesMultiDO(beneficiarioId);
     expect(facturas).toHaveLength(2);
@@ -972,34 +1115,40 @@ describe("pagos service con Postgres local", () => {
     expect(fSinAnticipo?.tieneAnticipoAplicado).toBe(false);
   });
 
-  it("crearPagoMultiDO feliz: 2 DOs, 3 facturas — un PagoTramite por DO, costoBancario solo en el primero", async (ctx) => {
+  it("crearPagoMultiDO feliz: 2 DOs, 3 facturas — un PagoTramite por DO, costo PRIMER_DO una sola vez", async (ctx) => {
     const db = ensureDb(ctx);
     const beneficiarioId = await crearBeneficiarioTest("Beneficiario MultiDO Feliz");
 
     const tramiteA = await crearTramiteTest(db, 1400);
     const tramiteB = await crearTramiteTest(db, 1401);
-    await aplicarAnticipoTest(db, tramiteA, 10_000_000n);
-    await aplicarAnticipoTest(db, tramiteB, 10_000_000n);
+    await aplicarAnticipoTest(db, tramiteA, pesos(10_000_000));
+    await aplicarAnticipoTest(db, tramiteB, pesos(10_000_000));
 
-    const fp1 = await crearFacturaProveedorTest(db, tramiteA, "FP-MULTI-001", 1_000_000n, beneficiarioId);
-    const fp2 = await crearFacturaProveedorTest(db, tramiteA, "FP-MULTI-002", 500_000n, beneficiarioId);
-    const fp3 = await crearFacturaProveedorTest(db, tramiteB, "FP-MULTI-003", 2_000_000n, beneficiarioId);
+    const fp1 = await crearFacturaProveedorTest(db, tramiteA, "FP-MULTI-001", pesos(1_000_000), beneficiarioId);
+    const fp2 = await crearFacturaProveedorTest(db, tramiteA, "FP-MULTI-002", pesos(500_000), beneficiarioId);
+    const fp3 = await crearFacturaProveedorTest(db, tramiteB, "FP-MULTI-003", pesos(2_000_000), beneficiarioId);
 
     const documentoId = await crearDocumentoTest(db, tramiteA, CategoriaDocumento.COMPROBANTE_BANCARIO);
 
     const resultado = await crearPagoMultiDO({
       beneficiarioId,
       facturas: [
-        { facturaProveedorId: fp1, monto: 1_000_000n },
-        { facturaProveedorId: fp2, monto: 500_000n },
-        { facturaProveedorId: fp3, monto: 2_000_000n },
+        { facturaProveedorId: fp3, monto: pesos(2_000_000) },
+        { facturaProveedorId: fp1, monto: pesos(1_000_000) },
+        { facturaProveedorId: fp2, monto: pesos(500_000) },
       ],
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       documentoId,
+      // Explícito (D-1): el costo va entero al primer DO (por consecutivo) que puede absorberlo.
+      costoAsumidoPor: "PRIMER_DO",
       usuarioId: db.userId,
     });
 
+    expect(resultado.repetido).toBe(false);
+    expect(resultado.costoAsumidoPor).toBe("PRIMER_DO");
     expect(resultado.pagos).toHaveLength(2); // uno por DO, no uno por factura
+    // Ordenados por consecutivo aunque la selección llegó en otro orden.
+    expect(resultado.pagos.map((p) => p.tramiteId)).toEqual([tramiteA, tramiteB]);
     for (const pago of resultado.pagos) {
       expect(pago.grupoPagoId).toBe(resultado.grupoPagoId);
       expect(pago.documentoId).toBe(documentoId);
@@ -1007,14 +1156,16 @@ describe("pagos service con Postgres local", () => {
 
     const pagoA = resultado.pagos.find((p) => p.tramiteId === tramiteA)!;
     const pagoB = resultado.pagos.find((p) => p.tramiteId === tramiteB)!;
-    expect(pagoA.valor).toBe(1_500_000n); // 1.000.000 + 500.000
-    expect(pagoB.valor).toBe(2_000_000n);
+    expect(pagoA.valorCentavos).toBe(pesos(1_500_000)); // 1.000.000 + 500.000
+    expect(pagoB.valorCentavos).toBe(pesos(2_000_000));
 
-    // El costo bancario del canal (TRANSF_BANCOLOMBIA = 3.900) se cobra UNA
-    // sola vez — en el primer pago del grupo (orden de las facturas: fp1 es
-    // de tramiteA, así que tramiteA se lleva el costo).
-    expect(pagoA.costoBancario).toBe(3_900n);
-    expect(pagoB.costoBancario).toBe(0n);
+    // TRANSF_BANCOLOMBIA = 3.900 UNA sola vez, en el primer DO por consecutivo.
+    expect(pagoA.costoBancarioCentavos).toBe(pesos(3_900));
+    expect(pagoB.costoBancarioCentavos).toBe(0n);
+    const cabecera = await prisma.pagoGrupo.findUniqueOrThrow({ where: { id: resultado.grupoPagoId } });
+    expect(cabecera.costoBancarioCentavos).toBe(pesos(3_900));
+    expect(cabecera.totalAplicadoCentavos).toBe(pesos(3_500_000));
+    expect(cabecera.costoAsumidoPor).toBe("PRIMER_DO");
 
     // Las 3 facturas quedan PAGADA
     for (const fpId of [fp1, fp2, fp3]) {
@@ -1022,17 +1173,21 @@ describe("pagos service con Postgres local", () => {
       expect(fp?.estado).toBe(EstadoFacturaProveedor.PAGADA);
     }
 
-    // Los pivots PagoTramiteFactura quedan correctamente vinculados (2 en A, 1 en B)
+    // Los pivots PagoTramiteFactura quedan vinculados con su monto (2 en A, 1 en B)
     const vinculosA = await prisma.pagoTramiteFactura.findMany({ where: { pagoId: pagoA.id } });
     const vinculosB = await prisma.pagoTramiteFactura.findMany({ where: { pagoId: pagoB.id } });
+    expect(vinculosA.map((v) => v.montoCentavos).reduce((s, m) => s + m, 0n)).toBe(pesos(1_500_000));
     expect(vinculosA).toHaveLength(2);
-    expect(vinculosB).toHaveLength(1);
+    expect(vinculosB.map((v) => v.montoCentavos)).toEqual([pesos(2_000_000)]);
 
     // El libro de pagos de cada DO expone los "otros DOs" del grupo (badge multi-DO)
     const libroA = await getLibroPagos(tramiteA);
     const filaA = libroA.pagos.find((p) => p.id === pagoA.id)!;
     expect(filaA.grupoOtrosDOs).toHaveLength(1);
     expect(filaA.grupoOtrosDOs[0].tramiteId).toBe(tramiteB);
+    expect(filaA.esBloque).toBe(true);
+    expect(filaA.editableDinero).toBe(false);
+    expect(filaA.grupo?.costoAsumidoPor).toBe("PRIMER_DO");
   });
 
   it("crearPagoMultiDO rechaza el grupo completo si UN DO no tiene anticipo aplicado (indica cuál)", async (ctx) => {
@@ -1041,21 +1196,23 @@ describe("pagos service con Postgres local", () => {
 
     const tramiteConAnticipo = await crearTramiteTest(db, 1410);
     const tramiteSinAnticipo = await crearTramiteTest(db, 1411);
-    await aplicarAnticipoTest(db, tramiteConAnticipo, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteConAnticipo, pesos(5_000_000));
     // tramiteSinAnticipo: sin AplicacionAnticipo a propósito
 
-    const fp1 = await crearFacturaProveedorTest(db, tramiteConAnticipo, "FP-MULTI-010", 1_000_000n, beneficiarioId);
-    const fp2 = await crearFacturaProveedorTest(db, tramiteSinAnticipo, "FP-MULTI-011", 1_000_000n, beneficiarioId);
+    const fp1 = await crearFacturaProveedorTest(db, tramiteConAnticipo, "FP-MULTI-010", pesos(1_000_000), beneficiarioId);
+    const fp2 = await crearFacturaProveedorTest(db, tramiteSinAnticipo, "FP-MULTI-011", pesos(1_000_000), beneficiarioId);
+    const documentoId = await crearDocumentoTest(db, tramiteConAnticipo);
 
     let capturado: unknown;
     try {
       await crearPagoMultiDO({
         beneficiarioId,
         facturas: [
-          { facturaProveedorId: fp1, monto: 1_000_000n },
-          { facturaProveedorId: fp2, monto: 1_000_000n },
+          { facturaProveedorId: fp1, monto: pesos(1_000_000) },
+          { facturaProveedorId: fp2, monto: pesos(1_000_000) },
         ],
         canalPago: CanalPago.PSE,
+        documentoId,
         usuarioId: db.userId,
       });
     } catch (error) {
@@ -1064,67 +1221,328 @@ describe("pagos service con Postgres local", () => {
 
     expect(capturado).toBeInstanceOf(SinAnticipoAplicadoMultiDOError);
     expect((capturado as SinAnticipoAplicadoMultiDOError).tramiteId).toBe(tramiteSinAnticipo);
+    expect((capturado as SinAnticipoAplicadoMultiDOError).codigo).toBe("SIN_ANTICIPO");
 
-    // Transacción completa revertida: NINGÚN pago creado en ninguno de los 2 DOs
+    // Transacción completa revertida: NINGÚN pago ni cabecera en ninguno de los 2 DOs
     const pagosA = await prisma.pagoTramite.findMany({ where: { tramiteId: tramiteConAnticipo } });
     const pagosB = await prisma.pagoTramite.findMany({ where: { tramiteId: tramiteSinAnticipo } });
     expect(pagosA).toHaveLength(0);
     expect(pagosB).toHaveLength(0);
+    expect(await prisma.pagoGrupo.count({ where: { beneficiarioId } })).toBe(0);
 
-    // Las facturas siguen REGISTRADA (no se marcaron PAGADA)
+    // Las facturas siguen REGISTRADA
     const fp1Final = await prisma.facturaProveedor.findUnique({ where: { id: fp1 } });
     expect(fp1Final?.estado).toBe(EstadoFacturaProveedor.REGISTRADA);
   });
 
-  it("crearPagoMultiDO rechaza si una factura seleccionada está FACTURADA_CLIENTE", async (ctx) => {
+  it("crearPagoMultiDO sin comprobante bancario se rechaza (COMPROBANTE_OBLIGATORIO, D-5)", async (ctx) => {
     const db = ensureDb(ctx);
-    const beneficiarioId = await crearBeneficiarioTest("Beneficiario MultiDO Facturada");
+    const beneficiarioId = await crearBeneficiarioTest("Beneficiario MultiDO SinComprobante");
     const tramiteId = await crearTramiteTest(db, 1420);
-    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
-
-    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-MULTI-020", 1_000_000n, beneficiarioId);
-    await prisma.facturaProveedor.update({
-      where: { id: fpId },
-      data: { estado: EstadoFacturaProveedor.FACTURADA_CLIENTE },
-    });
+    await aplicarAnticipoTest(db, tramiteId, pesos(5_000_000));
+    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-MULTI-020", pesos(1_000_000), beneficiarioId);
 
     await expect(
       crearPagoMultiDO({
         beneficiarioId,
-        facturas: [{ facturaProveedorId: fpId, monto: 1_000_000n }],
+        facturas: [{ facturaProveedorId: fpId, monto: pesos(1_000_000) }],
         canalPago: CanalPago.PSE,
         usuarioId: db.userId,
       }),
-    ).rejects.toThrow(FacturaProveedorNoModificableError);
+    ).rejects.toThrow("Adjunta el comprobante del banco.");
 
-    const pagos = await prisma.pagoTramite.findMany({ where: { tramiteId } });
-    expect(pagos).toHaveLength(0);
+    expect(await prisma.pagoTramite.count({ where: { tramiteId } })).toBe(0);
   });
 
-  it("crearPagoMultiDO permite montos parciales por factura (abono no cubre el 100%)", async (ctx) => {
+  it("crearPagoMultiDO: abono deja la factura PARCIAL con su saldo; el siguiente bloque paga el resto; un tercero se rechaza", async (ctx) => {
     const db = ensureDb(ctx);
     const beneficiarioId = await crearBeneficiarioTest("Beneficiario MultiDO Parcial");
     const tramiteId = await crearTramiteTest(db, 1430);
-    await aplicarAnticipoTest(db, tramiteId, 5_000_000n);
+    await aplicarAnticipoTest(db, tramiteId, pesos(5_000_000));
+    const documentoId = await crearDocumentoTest(db, tramiteId);
 
-    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-MULTI-030", 2_000_000n, beneficiarioId);
+    const fpId = await crearFacturaProveedorTest(db, tramiteId, "FP-MULTI-030", pesos(2_000_000), beneficiarioId);
 
     const resultado = await crearPagoMultiDO({
       beneficiarioId,
-      facturas: [{ facturaProveedorId: fpId, monto: 1_200_000n }], // parcial: 1.2M de 2M
+      facturas: [{ facturaProveedorId: fpId, monto: pesos(1_200_000) }], // abono: 1.2M de 2M
       canalPago: CanalPago.PSE,
+      documentoId,
       usuarioId: db.userId,
     });
 
     expect(resultado.pagos).toHaveLength(1);
-    expect(resultado.pagos[0].valor).toBe(1_200_000n);
-    // Sin grupo real (un solo DO) igual se asigna grupoPagoId — consistente
-    // con el resto de pagos multi-DO (permite auditoría uniforme).
+    expect(resultado.pagos[0].valorCentavos).toBe(pesos(1_200_000));
     expect(resultado.pagos[0].grupoPagoId).toBe(resultado.grupoPagoId);
 
-    // La factura queda PAGADA aunque el monto pagado fue parcial — el sistema
-    // no rastrea "saldo pendiente" por FP (igual que el resto del módulo).
-    const fp = await prisma.facturaProveedor.findUnique({ where: { id: fpId } });
-    expect(fp?.estado).toBe(EstadoFacturaProveedor.PAGADA);
+    // CxP v2: queda Abonada con saldo 800.000 y sigue en el pendiente.
+    let fp = await prisma.facturaProveedor.findUniqueOrThrow({ where: { id: fpId } });
+    expect(fp.estado).toBe(EstadoFacturaProveedor.PARCIAL);
+    const elegibles = await listarFacturasElegiblesMultiDO(beneficiarioId);
+    expect(elegibles).toHaveLength(1);
+    expect(elegibles[0].saldo).toBe(pesos(800_000));
+    expect(elegibles[0].aplicado).toBe(pesos(1_200_000));
+
+    // Más que el saldo → rechazo exacto.
+    await expect(
+      crearPagoMultiDO({
+        beneficiarioId,
+        facturas: [{ facturaProveedorId: fpId, monto: pesos(800_001) }],
+        canalPago: CanalPago.PSE,
+        documentoId,
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow(MontoExcedeSaldoError);
+
+    await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [{ facturaProveedorId: fpId, monto: pesos(800_000) }],
+      canalPago: CanalPago.PSE,
+      documentoId,
+      usuarioId: db.userId,
+    });
+    fp = await prisma.facturaProveedor.findUniqueOrThrow({ where: { id: fpId } });
+    expect(fp.estado).toBe(EstadoFacturaProveedor.PAGADA);
+    expect(await listarFacturasElegiblesMultiDO(beneficiarioId)).toHaveLength(0);
+
+    await expect(
+      crearPagoMultiDO({
+        beneficiarioId,
+        facturas: [{ facturaProveedorId: fpId, monto: pesos(1) }],
+        canalPago: CanalPago.PSE,
+        documentoId,
+        usuarioId: db.userId,
+      }),
+    ).rejects.toThrow(/ya está pagada/);
+  });
+
+  // ─── Costo bancario del bloque (D-1, R8) ──────────────────────────────────
+
+  it("D-1: cliente con factura_conceptos_iva → ningún DO absorbe el costo: lo asume Galcomex (PagoTramite en 0, costo en la cabecera y en /pagos una vez)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const clienteIva = await prisma.cliente.create({
+      data: { nombre: "Cliente Conceptos IVA", nit: `${TEST_PREFIX}-iva-${runId}`, tipo: TipoCliente.PROPIO },
+    });
+    await prisma.empresaCapacidad.create({
+      data: { empresaId: clienteIva.id, codigo: "factura_conceptos_iva", habilitado: true },
+    });
+    const beneficiarioId = await crearBeneficiarioTest("Beneficiario D1 Galcomex");
+    const a = await crearTramiteTest(db, 1550, clienteIva.id);
+    const b = await crearTramiteTest(db, 1551, clienteIva.id);
+    await aplicarAnticipoTest(db, a, pesos(2_000_000));
+    await aplicarAnticipoTest(db, b, pesos(2_000_000));
+    const fa = await crearFacturaProveedorTest(db, a, "FE-D1-A", pesos(433_361), beneficiarioId);
+    const fb = await crearFacturaProveedorTest(db, b, "FE-D1-B", pesos(464_077), beneficiarioId);
+    const documentoId = await crearDocumentoTest(db, a);
+
+    const r = await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [
+        { facturaProveedorId: fa, monto: pesos(433_361) },
+        { facturaProveedorId: fb, monto: pesos(464_077) },
+      ],
+      canalPago: CanalPago.TRANSF_BANCOLOMBIA,
+      documentoId,
+      usuarioId: db.userId,
+    });
+    expect(r.costoAsumidoPor).toBe("GALCOMEX");
+    expect(r.costoBancario).toBe(pesos(3_900));
+    expect(r.pagos.map((p) => p.costoBancarioCentavos)).toEqual([0n, 0n]);
+    const cabecera = await prisma.pagoGrupo.findUniqueOrThrow({ where: { id: r.grupoPagoId } });
+    expect(cabecera.costoAsumidoPor).toBe("GALCOMEX");
+    expect(cabecera.costoBancarioCentavos).toBe(pesos(3_900));
+
+    const global = await listarPagosGlobal({ beneficiarioId });
+    expect(global.costosAsumidosGalcomex).toBe(pesos(3_900));
+    expect(global.costosBancarios).toBe(pesos(3_900)); // una sola vez, aunque sean 2 pagos
+    expect(global.resumenProveedor?.pendiente).toBe(0n);
+    expect(global.resumenProveedor?.pagado).toBe(pesos(897_438));
+  });
+
+  it("D-1: PRORRATEADO reparte al peso entre los DOs que pueden absorberlo (1.244 / 1.332 / 1.324 = 3.900)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const beneficiarioId = await crearBeneficiarioTest("Beneficiario D1 Prorrateo");
+    const t1 = await crearTramiteTest(db, 1560);
+    const t2 = await crearTramiteTest(db, 1561);
+    const t3 = await crearTramiteTest(db, 1562);
+    for (const t of [t1, t2, t3]) await aplicarAnticipoTest(db, t, pesos(1_000_000));
+    const f1 = await crearFacturaProveedorTest(db, t1, "FE-PR-1", pesos(433_361), beneficiarioId);
+    const f2 = await crearFacturaProveedorTest(db, t2, "FE-PR-2", pesos(464_077), beneficiarioId);
+    const f3 = await crearFacturaProveedorTest(db, t3, "FE-PR-3", pesos(461_377), beneficiarioId);
+    const documentoId = await crearDocumentoTest(db, t1);
+
+    const r = await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [
+        { facturaProveedorId: f1, monto: pesos(433_361) },
+        { facturaProveedorId: f2, monto: pesos(464_077) },
+        { facturaProveedorId: f3, monto: pesos(461_377) },
+      ],
+      canalPago: CanalPago.TRANSF_BANCOLOMBIA,
+      costoAsumidoPor: "PRORRATEADO",
+      documentoId,
+      usuarioId: db.userId,
+    });
+    expect(r.costoAsumidoPor).toBe("PRORRATEADO");
+    expect(r.pagos.map((p) => p.costoBancarioCentavos)).toEqual([pesos(1_244), pesos(1_332), pesos(1_324)]);
+    expect(r.pagos.reduce((s, p) => s + p.costoBancarioCentavos, 0n)).toBe(pesos(3_900));
+  });
+
+  it("D-1: por defecto el costo salta el DO ya FACTURADO y va al siguiente, con aviso COSTO_NO_COBRABLE", async (ctx) => {
+    const db = ensureDb(ctx);
+    const beneficiarioId = await crearBeneficiarioTest("Beneficiario D1 Facturado");
+    const t1 = await crearTramiteTest(db, 1570);
+    const t2 = await crearTramiteTest(db, 1571);
+    await aplicarAnticipoTest(db, t1, pesos(1_000_000));
+    await aplicarAnticipoTest(db, t2, pesos(1_000_000));
+    await prisma.borradorFactura.create({
+      data: {
+        tramiteId: t1,
+        comisionCentavos: 0n,
+        ivaComisionCentavos: 0n,
+        impuesto4x1000Centavos: 0n,
+        costosBancariosCentavos: 0n,
+        totalAnticipoCentavos: 0n,
+        totalPagosCentavos: 0n,
+        totalFacturaCentavos: 0n,
+        estado: "FACTURADO",
+        numFacturaSiigo: "BAQ-99999",
+      },
+    });
+    const f1 = await crearFacturaProveedorTest(db, t1, "FE-FA-1", pesos(100_000), beneficiarioId);
+    const f2 = await crearFacturaProveedorTest(db, t2, "FE-FA-2", pesos(200_000), beneficiarioId);
+    const documentoId = await crearDocumentoTest(db, t1);
+
+    const r = await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [
+        { facturaProveedorId: f1, monto: pesos(100_000) },
+        { facturaProveedorId: f2, monto: pesos(200_000) },
+      ],
+      canalPago: CanalPago.TRANSF_BANCOLOMBIA,
+      documentoId,
+      usuarioId: db.userId,
+    });
+    expect(r.costoAsumidoPor).toBe("PRIMER_DO");
+    expect(r.pagos.map((p) => p.costoBancarioCentavos)).toEqual([0n, pesos(3_900)]);
+    const aviso = r.advertencias.find((a) => a.codigo === "COSTO_NO_COBRABLE");
+    expect(aviso?.mensaje).toMatch(/ya tiene la factura de venta facturada: este costo ya no se le puede cobrar/);
+  });
+  // ─── Asesoría (NO SE COBRA) en el bloque y en el libro ────────────────────
+
+  it("D-1 + asesoría: el costo del bloque salta el DO de solo asesoría y va al primer DO con algo cobrable; el libro no baja el saldo del cliente por la asesoría", async (ctx) => {
+    const db = ensureDb(ctx);
+    const beneficiarioId = await crearBeneficiarioTest("Beneficiario Asesoría Bloque");
+    const tAsesoria = await crearTramiteTest(db, 1590);
+    const tTransporte = await crearTramiteTest(db, 1591);
+    await aplicarAnticipoTest(db, tAsesoria, pesos(1_000_000));
+    await aplicarAnticipoTest(db, tTransporte, pesos(2_000_000));
+
+    const fAsesoria = await crearFacturaProveedorTest(db, tAsesoria, "S-ASE-1", pesos(300_000), beneficiarioId);
+    await prisma.facturaProveedor.update({ where: { id: fAsesoria }, data: { repercutible: false } });
+    const fTransporte = await crearFacturaProveedorTest(db, tTransporte, "T-ASE-1", pesos(1_000_000), beneficiarioId);
+    const documentoId = await crearDocumentoTest(db, tAsesoria);
+
+    const r = await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [
+        { facturaProveedorId: fAsesoria, monto: pesos(300_000) },
+        { facturaProveedorId: fTransporte, monto: pesos(1_000_000) },
+      ],
+      canalPago: CanalPago.TRANSF_BANCOLOMBIA,
+      documentoId,
+      usuarioId: db.userId,
+    });
+    // Antes: PRIMER_DO dejaba los 3.900 en el DO de solo asesoría, cuyo borrador
+    // no los cobra (pago sin parte cobrable) → nadie los pagaba.
+    expect(r.costoAsumidoPor).toBe("PRIMER_DO");
+    expect(r.pagos.map((p) => p.tramiteId)).toEqual([tAsesoria, tTransporte]);
+    expect(r.pagos.map((p) => p.costoBancarioCentavos)).toEqual([0n, pesos(3_900)]);
+
+    // Libro del DO de asesoría: el pago se ve, pero lo asume Galcomex.
+    const libroAsesoria = await getLibroPagos(tAsesoria);
+    expect(libroAsesoria.totalPagos).toBe(pesos(300_000));
+    expect(libroAsesoria.totalNoCobrable).toBe(pesos(300_000));
+    expect(libroAsesoria.totalPagosCobrables).toBe(0n);
+    expect(libroAsesoria.pagos[0].noCobrable).toBe(pesos(300_000));
+    expect(libroAsesoria.saldoFinal).toBe(pesos(1_000_000)); // el anticipo del cliente no se toca
+
+    // Libro del DO de transporte: todo se cobra, con su costo.
+    const libroTransporte = await getLibroPagos(tTransporte);
+    expect(libroTransporte.totalNoCobrable).toBe(0n);
+    expect(libroTransporte.costosBancariosCobrables).toBe(pesos(3_900));
+    expect(libroTransporte.saldoFinal).toBe(pesos(1_000_000));
+  });
+
+  it("saldo del DO con asesoría: el libro, el contexto de CxP y el aviso del bloque dicen lo mismo (hallazgo 3 de la revisión final)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const beneficiarioId = await crearBeneficiarioTest("Beneficiario Saldo Asesoría");
+    const t = await crearTramiteTest(db, 1592);
+    await aplicarAnticipoTest(db, t, pesos(1_000_000));
+    const fAsesoria = await crearFacturaProveedorTest(db, t, "S-SAL-1", pesos(300_000), beneficiarioId);
+    await prisma.facturaProveedor.update({ where: { id: fAsesoria }, data: { repercutible: false } });
+    const fTransporte = await crearFacturaProveedorTest(db, t, "T-SAL-1", pesos(900_000), beneficiarioId);
+    const documentoId = await crearDocumentoTest(db, t);
+
+    // 1. Galcomex paga la asesoría (300.000): no toca el anticipo del cliente.
+    await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [{ facturaProveedorId: fAsesoria, monto: pesos(300_000) }],
+      canalPago: CanalPago.PSE,
+      documentoId,
+      usuarioId: db.userId,
+    });
+    const libro = await getLibroPagos(t);
+    const contexto = (await cargarContextoDos(prisma, [t])).get(t);
+    expect(libro.saldoFinal).toBe(pesos(1_000_000));
+    // Antes: 700.000 (anticipo − todos los pagos, asesoría incluida).
+    expect(contexto?.saldoTramite).toBe(libro.saldoFinal);
+    expect(contexto?.totalPagos).toBe(0n);
+
+    // 2. Transporte de 900.000: al cliente le quedan 100.000, sin aviso de
+    //    «anticipo insuficiente» (antes: 700.000 − 900.000 < 0).
+    const r = await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [{ facturaProveedorId: fTransporte, monto: pesos(900_000) }],
+      canalPago: CanalPago.PSE,
+      documentoId,
+      usuarioId: db.userId,
+    });
+    expect(r.advertencias.filter((a) => a.codigo === "ANTICIPO_INSUFICIENTE")).toEqual([]);
+    const libroDespues = await getLibroPagos(t);
+    const contextoDespues = (await cargarContextoDos(prisma, [t])).get(t);
+    expect(libroDespues.saldoFinal).toBe(pesos(100_000));
+    expect(contextoDespues?.saldoTramite).toBe(libroDespues.saldoFinal);
+  });
+
+  it("PRORRATEADO pesa solo lo que se cobra: DO1 (T 100.000 + asesoría 900.000) y DO2 (T 1.000.000), costo 7.300 → 664 / 6.636 (hallazgo 7)", async (ctx) => {
+    const db = ensureDb(ctx);
+    const beneficiarioId = await crearBeneficiarioTest("Beneficiario Prorrateo Asesoría");
+    const t1 = await crearTramiteTest(db, 1593);
+    const t2 = await crearTramiteTest(db, 1594);
+    await aplicarAnticipoTest(db, t1, pesos(2_000_000));
+    await aplicarAnticipoTest(db, t2, pesos(2_000_000));
+    const fT1 = await crearFacturaProveedorTest(db, t1, "T-PRA-1", pesos(100_000), beneficiarioId);
+    const fA1 = await crearFacturaProveedorTest(db, t1, "S-PRA-1", pesos(900_000), beneficiarioId);
+    await prisma.facturaProveedor.update({ where: { id: fA1 }, data: { repercutible: false } });
+    const fT2 = await crearFacturaProveedorTest(db, t2, "T-PRA-2", pesos(1_000_000), beneficiarioId);
+    const documentoId = await crearDocumentoTest(db, t1);
+
+    const r = await crearPagoMultiDO({
+      beneficiarioId,
+      facturas: [
+        { facturaProveedorId: fT1, monto: pesos(100_000) },
+        { facturaProveedorId: fA1, monto: pesos(900_000) },
+        { facturaProveedorId: fT2, monto: pesos(1_000_000) },
+      ],
+      canalPago: CanalPago.TRANSF_OTROS_BANCOS,
+      costoAsumidoPor: "PRORRATEADO",
+      documentoId,
+      usuarioId: db.userId,
+    });
+    expect(r.costoAsumidoPor).toBe("PRORRATEADO");
+    expect(r.pagos.map((p) => p.tramiteId)).toEqual([t1, t2]);
+    // Antes: 3.650 / 3.650 (el DO1 pesaba 1.000.000 con la asesoría).
+    expect(r.pagos.map((p) => p.costoBancarioCentavos)).toEqual([pesos(664), pesos(6_636)]);
   });
 });

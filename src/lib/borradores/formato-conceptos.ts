@@ -8,7 +8,8 @@
  *   - Cada concepto del tarifario es una línea OPERACIONAL con su producto Siigo
  *     y `aplicaIva`; no hay línea "COMISION GALCOMEX" ni costos bancarios.
  *   - Las líneas de terceros nacen de las facturas de proveedor repercutibles
- *     del trámite ("ALMACENAJE ALMACARGA FACT. FE-11298").
+ *     del trámite ("ALMACENAJE ALMACARGA FACT. FE 11298", R15 de CxP v2: nombre
+ *     corto de la ficha y número con el formato de la ficha).
  *   - La línea IVA_COMISION guarda la suma del IVA por ítem y la línea
  *     IMPUESTO_4X1000 el 0,4 % de los terceros. Ambas son derivadas: se
  *     recalculan cada vez que cambian las líneas (`sincronizarLineasDerivadas`).
@@ -16,6 +17,10 @@
  *
  * La matemática vive en `@/lib/calculations/factura-conceptos` (pura, con casos
  * dorados BAQ-18385 y BAQ-18357).
+ *
+ * Fase centavos: las líneas de terceros copian el valor EXACTO de la factura de
+ * proveedor en centavos (FE-11298 = 502.801,45); IVA por ítem y ReteIVA al
+ * CENTAVO (D-1, como Siigo); 4x1000 al peso.
  */
 
 import { EstadoBorrador, type Prisma, SeccionLinea } from "@prisma/client";
@@ -24,6 +29,7 @@ import { z } from "zod";
 import { calcularFacturaConceptos } from "@/lib/calculations/factura-conceptos";
 import { configDe, tiene } from "@/lib/capacidades/resolver";
 import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
+import { numeroFacturaVisible } from "@/lib/cxp/saldos";
 import { getParametrosSistema } from "@/lib/parametros/service";
 
 import { resolverProductosLineasFijas } from "./lineas-fijas";
@@ -66,16 +72,29 @@ export async function formatoFacturaDeEmpresa(empresaId: string): Promise<Format
   };
 }
 
-/** "ALMACENAJE ALMACARGA FACT. FE-11298": concepto, proveedor y n° de factura, como en Siigo. */
+/**
+ * Texto de la línea de terceros como en Siigo (R15 de CxP v2):
+ * `{concepto} {nombre corto de la ficha ?? proveedor} FACT. {número}`.
+ * El número sale "FE 11298" solo si la ficha está marcada «Numerar como
+ * FE 11298» (Almacarga, Express); si no, tal cual se digitó ("REG-50151039").
+ *   "ALMACENAJE ALMACARGA FACT. FE 11298" (BAQ-18385)
+ *   "PAGO VUCE FACT. REG-50151039", "LIBERACION TAMPA CARGO FACT. 71388844"
+ */
 export function conceptoLineaTercero(factura: {
   concepto: string | null;
   proveedorNombre: string;
   numFactura: string;
   siigoProducto: { nombre: string } | null;
+  beneficiario?: { nombreCorto: string | null; numFacturaConEspacio: boolean } | null;
 }): string {
   const base =
     factura.concepto?.trim() || factura.siigoProducto?.nombre.trim() || "PAGO A TERCEROS";
-  return `${base} ${factura.proveedorNombre.trim()} FACT. ${factura.numFactura.trim()}`
+  const proveedor = factura.beneficiario?.nombreCorto?.trim() || factura.proveedorNombre.trim();
+  const numero = numeroFacturaVisible(
+    factura.numFactura,
+    factura.beneficiario?.numFacturaConEspacio ?? false,
+  );
+  return `${base} ${proveedor} FACT. ${numero}`
     .replace(/\s+/g, " ")
     .toUpperCase();
 }
@@ -83,6 +102,8 @@ export function conceptoLineaTercero(factura: {
 /**
  * Líneas TERCEROS para `lineasRevision.create`: una por factura de proveedor
  * repercutible del trámite que no esté ya en un borrador aprobado o facturado.
+ * Pagada al proveedor y facturada al cliente son independientes (R13): el
+ * estado de pago de la factura no cuenta aquí (`FACTURADA_CLIENTE` se retiró).
  */
 export async function lineasTercerosDesdeFacturas(
   tx: Tx,
@@ -92,7 +113,6 @@ export async function lineasTercerosDesdeFacturas(
     where: {
       tramiteId,
       repercutible: true,
-      estado: { not: "FACTURADA_CLIENTE" },
       lineasRevision: {
         none: {
           linea: {
@@ -109,16 +129,17 @@ export async function lineasTercerosDesdeFacturas(
       concepto: true,
       proveedorNombre: true,
       numFactura: true,
-      valor: true,
+      valorCentavos: true,
       siigoProductoId: true,
       siigoProducto: { select: { nombre: true } },
+      beneficiario: { select: { nombreCorto: true, numFacturaConEspacio: true } },
     },
   });
 
   return facturas.map((factura, index) => ({
     concepto: conceptoLineaTercero(factura),
     numSoporte: factura.numFactura,
-    valor: factura.valor,
+    valorCentavos: factura.valorCentavos,
     orden: index + 1,
     origen: "AUTO",
     seccion: SeccionLinea.TERCEROS,
@@ -132,7 +153,7 @@ export async function lineasTercerosDesdeFacturas(
 
 type LineaParaSincronizar = {
   id: string;
-  valor: bigint;
+  valorCentavos: bigint;
   seccion: SeccionLinea;
   tipoFija: string | null;
   aplicaIva: boolean;
@@ -152,8 +173,8 @@ async function fijarLineaDerivada(
     return;
   }
   if (existente) {
-    if (existente.valor !== valor) {
-      await tx.lineaRevision.update({ where: { id: existente.id }, data: { valor } });
+    if (existente.valorCentavos !== valor) {
+      await tx.lineaRevision.update({ where: { id: existente.id }, data: { valorCentavos: valor } });
     }
     return;
   }
@@ -162,7 +183,7 @@ async function fijarLineaDerivada(
     data: {
       borradorId,
       concepto: esIva ? CONCEPTO_LINEA_IVA : CONCEPTO_LINEA_4X1000,
-      valor,
+      valorCentavos: valor,
       orden: esIva ? 992 : 995,
       origen: "AUTO",
       seccion: esIva ? SeccionLinea.OPERACIONAL : SeccionLinea.TERCEROS,
@@ -184,9 +205,9 @@ export async function sincronizarLineasDerivadas(tx: Tx, borradorId: string): Pr
     select: {
       formatoFactura: true,
       reteIvaPorcentaje: true,
-      retenciones: true,
+      retencionesCentavos: true,
       lineasRevision: {
-        select: { id: true, valor: true, seccion: true, tipoFija: true, aplicaIva: true },
+        select: { id: true, valorCentavos: true, seccion: true, tipoFija: true, aplicaIva: true },
       },
     },
   });
@@ -197,14 +218,14 @@ export async function sincronizarLineasDerivadas(tx: Tx, borradorId: string): Pr
   const calc = calcularFacturaConceptos({
     terceros: lineas
       .filter((l) => l.seccion === SeccionLinea.TERCEROS && !l.tipoFija)
-      .map((l) => l.valor),
+      .map((l) => l.valorCentavos),
     conceptos: lineas
       .filter((l) => l.seccion === SeccionLinea.OPERACIONAL && !l.tipoFija)
-      .map((l) => ({ valor: l.valor, aplicaIva: l.aplicaIva })),
+      .map((l) => ({ valor: l.valorCentavos, aplicaIva: l.aplicaIva })),
     tasaIva: params.tasaIva,
     tasa4x1000: params.tasa4x1000,
     reteIvaPorcentaje: borrador.reteIvaPorcentaje,
-    retencionesManuales: borrador.retenciones,
+    retencionesManuales: borrador.retencionesCentavos,
     totalAnticipo: 0n,
   });
 
@@ -228,10 +249,10 @@ export async function sincronizarLineasDerivadas(tx: Tx, borradorId: string): Pr
     productos.producto4x1000Id,
   );
 
-  if (borrador.reteIvaPorcentaje !== null && borrador.retenciones !== calc.retenciones) {
+  if (borrador.reteIvaPorcentaje !== null && borrador.retencionesCentavos !== calc.retenciones) {
     await tx.borradorFactura.update({
       where: { id: borradorId },
-      data: { retenciones: calc.retenciones },
+      data: { retencionesCentavos: calc.retenciones },
     });
   }
 }

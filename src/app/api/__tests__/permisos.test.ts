@@ -74,6 +74,7 @@ import { PATCH as borradorPATCH } from "@/app/api/borradores/[id]/route";
 import { POST as anticiposPOST } from "@/app/api/anticipos/route";
 import { POST as aplicacionesPOST } from "@/app/api/anticipos/[id]/aplicaciones/route";
 import { DELETE as aplicacionDELETE } from "@/app/api/anticipos/[id]/aplicaciones/[aplicacionId]/route";
+import { pesos } from "@/lib/dinero";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -331,7 +332,7 @@ describe("A1-T9 — Permisos por rol", () => {
       vi.mocked(crearAnticipo).mockResolvedValueOnce({
         id: "ant-1",
         clienteId: "cliente-1",
-        monto: 1_000_000n,
+        monto: pesos(1_000_000),
         fecha: new Date("2026-01-01"),
         tipoRecaudo: "BANCOLOMBIA",
         costoRecaudo: 0n,
@@ -389,7 +390,7 @@ describe("A1-T9 — Permisos por rol", () => {
           id: "apl-1",
           anticipoId: "ant-1",
           tramiteId: "tram-1",
-          montoAplicado: 500_000n,
+          montoAplicadoCentavos: pesos(500_000),
           createdAt: new Date(),
         },
       });
@@ -413,7 +414,7 @@ describe("A1-T9 — Permisos por rol", () => {
         id: "apl-1",
         anticipoId: "ant-1",
         tramiteId: "tram-1",
-        montoAplicado: 500_000n,
+        montoAplicado: pesos(500_000),
         createdAt: new Date(),
       } as never);
 

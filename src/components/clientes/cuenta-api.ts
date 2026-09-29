@@ -1,6 +1,7 @@
 /**
  * Cliente HTTP de la cuenta corriente por contraparte (M5).
- * BigInt serializado como string desde el backend.
+ * Dinero: pesos como texto con 2 decimales desde el backend (fase CENTAVOS,
+ * diseño §A.2) — leer con `centavosDeTextoApi` de `@/lib/dinero`.
  */
 
 export type MovimientoCuentaRow = {

@@ -1,7 +1,10 @@
 /**
  * Helpers de API para el módulo de Liquidación LM (cuenta Lucho).
- * Todos los montos llegan como string (BigInt serializado desde Prisma).
+ * Dinero = pesos texto con 2 decimales, siempre ("45226000.00"), tal como lo
+ * emite el servidor. Se lee con `centavosDeTextoApi` de `@/lib/dinero`.
  */
+
+import { formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 export type LiquidacionTramiteRow = {
   facturaId: string;
@@ -12,9 +15,9 @@ export type LiquidacionTramiteRow = {
   clienteNombre: string;
   numFacturaSiigo: string | null;
   fechaFactura: string | null;
-  saldoLMInterno: string; // BigInt as string
-  saldoAFavorCliente: string; // BigInt as string
-  saldoLM: string; // BigInt as string; <0 Lucho debe; >0 Galcomex debe
+  saldoLMInterno: string; // pesos texto
+  saldoAFavorCliente: string; // pesos texto
+  saldoLM: string; // pesos texto; <0 Lucho debe; >0 Galcomex debe
 };
 
 export type LiquidacionResumen = {
@@ -115,31 +118,11 @@ export async function fetchLiquidacionLM(
   };
 }
 
-/** Formatea BigInt serializado como COP: $45.226.000 (negativos con signo). */
-export function formatCOP(value: string): string {
-  try {
-    const n = BigInt(value);
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(n));
-  } catch {
-    return value;
-  }
-}
+// Sin formateador local (D.1): las pantallas leen con `centavosDeTextoApi` y
+// muestran con `formatoPesos`, ambos de `@/lib/dinero`.
 
+/** Fecha-calendario (fechaFactura): día guardado a 00:00 UTC, se muestra en UTC. */
 export function formatDate(isoString: string | null): string {
   if (!isoString) return "—";
-  try {
-    return new Date(isoString).toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      timeZone: "America/Bogota",
-    });
-  } catch {
-    return isoString;
-  }
+  return formatFechaCalendario(isoString) || isoString;
 }

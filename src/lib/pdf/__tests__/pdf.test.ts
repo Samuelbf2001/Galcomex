@@ -8,6 +8,12 @@
 
 import { describe, it, expect } from "vitest";
 
+import { pesos } from "@/lib/dinero";
+import { $ } from "@/lib/dinero/test-utils";
+
+import {
+  prepararDatosEstadoCuentaPdf,
+} from "../estado-cuenta-pdf";
 import {
   prepararDatosBorradorPdf,
   renderBorradorPdf,
@@ -28,37 +34,37 @@ const CASO_DORADO_DTO: BorradorPdfDto = {
   estado: "APROBADO",
 
   lineas: [
-    { orden: 1, concepto: "Flete nacional", numSoporte: "FN-001", valor: 1_000_000n },
-    { orden: 2, concepto: "Impuesto DIAN", numSoporte: "DIAN-2026-001", valor: 2_011_341n },
+    { orden: 1, concepto: "Flete nacional", numSoporte: "FN-001", valor: pesos(1_000_000) },
+    { orden: 2, concepto: "Impuesto DIAN", numSoporte: "DIAN-2026-001", valor: pesos(2_011_341) },
     {
       orden: 3,
       concepto: "Gastos portuarios Buenaventura",
       numSoporte: null,
-      valor: 30_854_000n,
+      valor: pesos(30_854_000),
     },
     {
       orden: 4,
       concepto: "Almacenamiento",
       numSoporte: "ALM-0042",
-      valor: 2_216_233n,
+      valor: pesos(2_216_233),
     },
-    { orden: 5, concepto: "Transporte interno", numSoporte: "TI-009", valor: 760_283n },
-    { orden: 6, concepto: "Gastos varios", numSoporte: "GV-003", valor: 175_787n },
-    { orden: 7, concepto: "Honorarios agencia", numSoporte: "HA-2026", valor: 3_500_000n },
+    { orden: 5, concepto: "Transporte interno", numSoporte: "TI-009", valor: pesos(760_283) },
+    { orden: 6, concepto: "Gastos varios", numSoporte: "GV-003", valor: pesos(175_787) },
+    { orden: 7, concepto: "Honorarios agencia", numSoporte: "HA-2026", valor: pesos(3_500_000) },
   ],
 
-  totalAnticipo: 45_226_000n,
-  totalPagos: 40_517_644n,
-  comision: 200_000n,
-  ivaComision: 76_000n,
-  costosBancarios: 17_550n,
-  impuesto4x1000: 180_904n,
-  totalFactura: 41_868_042n,
+  totalAnticipo: pesos(45_226_000),
+  totalPagos: pesos(40_517_644),
+  comision: pesos(200_000),
+  ivaComision: pesos(76_000),
+  costosBancarios: pesos(17_550),
+  impuesto4x1000: pesos(180_904),
+  totalFactura: pesos(41_868_042),
 
-  saldoAFavorCliente: 3_357_958n,
-  saldoACargoCliente: 0n,
-  saldoAFavorLM: 875_944n,
-  saldoACargoLM: 0n,
+  saldoAFavorCliente: pesos(3_357_958),
+  saldoACargoCliente: pesos(0),
+  saldoAFavorLM: pesos(875_944),
+  saldoACargoLM: pesos(0),
 };
 
 // ─── Tests de función pura de preparación ────────────────────────────────────
@@ -70,47 +76,47 @@ describe("prepararDatosBorradorPdf — caso dorado BUN26-0026", () => {
     // Intl.NumberFormat es-CO puede usar espacio angosto o punto como separador
     // Verificamos que el valor numérico parseado coincida
     const sinPrefijo = renderData.totalFacturaStr.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("41868042");
+    expect(sinPrefijo).toBe("4186804200");
   });
 
   it("saldoAFavorClienteStr contiene '3.357.958'", () => {
     const sinPrefijo = renderData.saldoAFavorClienteStr.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("3357958");
+    expect(sinPrefijo).toBe("335795800");
   });
 
   it("saldoAFavorLMStr contiene '875.944'", () => {
     const sinPrefijo = renderData.saldoAFavorLMStr.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("875944");
+    expect(sinPrefijo).toBe("87594400");
   });
 
   it("saldoACargoClienteStr contiene '0'", () => {
     const sinPrefijo = renderData.saldoACargoClienteStr.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("0");
+    expect(sinPrefijo).toBe("000");
   });
 
   it("totalAnticipoStr contiene '45.226.000'", () => {
     const sinPrefijo = renderData.totalAnticipoStr.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("45226000");
+    expect(sinPrefijo).toBe("4522600000");
   });
 
   it("comisionStr contiene '200.000'", () => {
     const sinPrefijo = renderData.comisionStr.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("200000");
+    expect(sinPrefijo).toBe("20000000");
   });
 
   it("ivaComisionStr contiene '76.000'", () => {
     const sinPrefijo = renderData.ivaComisionStr.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("76000");
+    expect(sinPrefijo).toBe("7600000");
   });
 
   it("impuesto4x1000Str contiene '180.904'", () => {
     const sinPrefijo = renderData.impuesto4x1000Str.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("180904");
+    expect(sinPrefijo).toBe("18090400");
   });
 
   it("costosBancariosStr contiene '17.550'", () => {
     const sinPrefijo = renderData.costosBancariosStr.replace(/[^0-9]/g, "");
-    expect(sinPrefijo).toBe("17550");
+    expect(sinPrefijo).toBe("1755000");
   });
 
   it("consecutivoDO se preserva tal cual", () => {
@@ -146,4 +152,55 @@ describe("renderBorradorPdf — genera Buffer PDF válido", () => {
     const header = buffer.slice(0, 4).toString("ascii");
     expect(header).toBe("%PDF");
   }, 15_000); // react-pdf puede tardar en arrancar — timeout generoso en CI
+});
+
+// ─── Fase centavos: el PDF muestra los centavos reales y ",00" siempre ────────
+
+describe("PDF con centavos (fase centavos, D-5)", () => {
+  it("borrador BAQ-18385: línea 502.801,45 y total 1.487.623,45 / a cargo 69.623,45", () => {
+    const data = prepararDatosBorradorPdf({
+      ...CASO_DORADO_DTO,
+      lineas: [{ orden: 1, concepto: "ALMACENAJE ALMACARGA FACT. FE 11298", numSoporte: "FE-11298", valor: $("502.801,45") }],
+      totalFactura: $("1.487.623,45"),
+      saldoAFavorCliente: 0n,
+      saldoACargoCliente: $("69.623,45"),
+    });
+    expect(data.lineas[0]!.valorStr).toBe("$\u00a0502.801,45");
+    expect(data.totalFacturaStr).toBe("$\u00a01.487.623,45");
+    expect(data.saldoACargoClienteStr).toBe("$\u00a069.623,45");
+    expect(data.comisionStr).toBe("$\u00a0200.000,00");
+    expect(data.saldoAFavorClienteStr).toBe("$\u00a00,00");
+  });
+
+  it("estado de cuenta: montos con centavos y cruces en valor absoluto", () => {
+    const data = prepararDatosEstadoCuentaPdf({
+      nombreCliente: "LITOPLAS S.A.",
+      nitCliente: "802009663-3",
+      fechaEmision: new Date("2026-09-24"),
+      facturas: [
+        {
+          id: "f1",
+          numSiigo: "BAQ-18385",
+          consecutivoDO: "DO.26-0069",
+          fecha: new Date("2026-09-10"),
+          totalFactura: $("1.487.623,45"),
+          saldoAFavorCliente: 0n,
+          saldoACargoCliente: $("69.623,45"),
+          saldoAFavorLM: 0n,
+          saldoACargoLM: 0n,
+          fechaPagoCliente: null,
+          fechaPagoLM: null,
+        },
+      ],
+      cruceCliente: $("69.623,45"),
+      cruceLM: -pesos(1_000),
+      totalFacturas: 1,
+    });
+    expect(data.filas[0]!.totalFacturaStr).toBe("$\u00a01.487.623,45");
+    expect(data.filas[0]!.saldoClienteStr).toBe("$\u00a069.623,45");
+    expect(data.filas[0]!.saldoClienteEsFavor).toBe(false);
+    expect(data.cruceClienteStr).toBe("$\u00a069.623,45");
+    expect(data.cruceLMStr).toBe("$\u00a01.000,00");
+    expect(data.cruceLMEsDeuda).toBe(false);
+  });
 });

@@ -78,11 +78,12 @@ export async function GET(request: NextRequest) {
     numSiigo: f.numSiigo,
     consecutivoDO: f.borrador.tramite?.consecutivo ?? "—",
     fecha: f.fecha,
-    totalFactura: f.totalFactura,
-    saldoAFavorCliente: f.saldoAFavorCliente,
-    saldoACargoCliente: f.saldoACargoCliente,
-    saldoAFavorLM: f.saldoAFavorLM,
-    saldoACargoLM: f.saldoACargoLM,
+    // Centavos de COP (el PDF los muestra siempre con ",00").
+    totalFactura: f.totalFacturaCentavos,
+    saldoAFavorCliente: f.saldoAFavorClienteCentavos,
+    saldoACargoCliente: f.saldoACargoClienteCentavos,
+    saldoAFavorLM: f.saldoAFavorLMCentavos,
+    saldoACargoLM: f.saldoACargoLMCentavos,
     fechaPagoCliente: f.fechaPagoCliente,
     fechaPagoLM: f.fechaPagoLM,
   }));

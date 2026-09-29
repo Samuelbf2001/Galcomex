@@ -17,7 +17,11 @@ import {
 } from "@react-pdf/renderer";
 import React from "react";
 
+import { formatoPesos } from "@/lib/dinero";
+
 // ─── Tipos de datos del DTO ───────────────────────────────────────────────────
+// Dinero: todo `bigint` = CENTAVOS de COP (fase centavos). El PDF lo muestra
+// siempre con ",00" (D-5), como las facturas reales: "$ 26.844.137,00".
 
 export type LineaPdfDto = {
   orden: number;
@@ -85,19 +89,12 @@ export type BorradorPdfRenderData = {
 
 // ─── Helpers de formato ───────────────────────────────────────────────────────
 
-const COP_FMT = new Intl.NumberFormat("es-CO", {
-  style: "currency",
-  currency: "COP",
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-});
-
 /**
- * Formatea un BigInt de COP a string: "$45.226.000"
- * Función pura — testeable sin render.
+ * Centavos → texto del PDF, siempre con ",00": 4522600000n → "$ 45.226.000,00";
+ * 50280145n → "$ 502.801,45". Usa el formateador único del núcleo (`formatoPesos`).
  */
-export function formatCOP(value: bigint): string {
-  return COP_FMT.format(Number(value));
+function cop(centavos: bigint): string {
+  return formatoPesos(centavos, { decimales: "siempre" });
 }
 
 function formatDate(date: Date): string {
@@ -126,21 +123,21 @@ export function prepararDatosBorradorPdf(dto: BorradorPdfDto): BorradorPdfRender
       orden: l.orden,
       concepto: l.concepto,
       numSoporte: l.numSoporte ?? "—",
-      valorStr: formatCOP(l.valor),
+      valorStr: cop(l.valor),
     })),
 
-    totalAnticipoStr: formatCOP(dto.totalAnticipo),
-    totalPagosStr: formatCOP(dto.totalPagos),
-    comisionStr: formatCOP(dto.comision),
-    ivaComisionStr: formatCOP(dto.ivaComision),
-    costosBancariosStr: formatCOP(dto.costosBancarios),
-    impuesto4x1000Str: formatCOP(dto.impuesto4x1000),
-    totalFacturaStr: formatCOP(dto.totalFactura),
+    totalAnticipoStr: cop(dto.totalAnticipo),
+    totalPagosStr: cop(dto.totalPagos),
+    comisionStr: cop(dto.comision),
+    ivaComisionStr: cop(dto.ivaComision),
+    costosBancariosStr: cop(dto.costosBancarios),
+    impuesto4x1000Str: cop(dto.impuesto4x1000),
+    totalFacturaStr: cop(dto.totalFactura),
 
-    saldoAFavorClienteStr: formatCOP(dto.saldoAFavorCliente),
-    saldoACargoClienteStr: formatCOP(dto.saldoACargoCliente),
-    saldoAFavorLMStr: formatCOP(dto.saldoAFavorLM),
-    saldoACargoLMStr: formatCOP(dto.saldoACargoLM),
+    saldoAFavorClienteStr: cop(dto.saldoAFavorCliente),
+    saldoACargoClienteStr: cop(dto.saldoACargoCliente),
+    saldoAFavorLMStr: cop(dto.saldoAFavorLM),
+    saldoACargoLMStr: cop(dto.saldoACargoLM),
   };
 }
 
@@ -536,7 +533,7 @@ export function BorradorFacturaPDF({ data }: Props) {
           <View
             style={[
               styles.saldoCard,
-              data.saldoAFavorClienteStr !== formatCOP(0n)
+              data.saldoAFavorClienteStr !== cop(0n)
                 ? styles.saldoCardFavor
                 : styles.saldoCardNeutral,
             ]}
@@ -552,7 +549,7 @@ export function BorradorFacturaPDF({ data }: Props) {
           <View
             style={[
               styles.saldoCard,
-              data.saldoACargoClienteStr !== formatCOP(0n)
+              data.saldoACargoClienteStr !== cop(0n)
                 ? styles.saldoCardCargo
                 : styles.saldoCardNeutral,
             ]}
@@ -568,7 +565,7 @@ export function BorradorFacturaPDF({ data }: Props) {
           <View
             style={[
               styles.saldoCard,
-              data.saldoAFavorLMStr !== formatCOP(0n)
+              data.saldoAFavorLMStr !== cop(0n)
                 ? styles.saldoCardFavor
                 : styles.saldoCardNeutral,
             ]}
@@ -584,7 +581,7 @@ export function BorradorFacturaPDF({ data }: Props) {
           <View
             style={[
               styles.saldoCard,
-              data.saldoACargoLMStr !== formatCOP(0n)
+              data.saldoACargoLMStr !== cop(0n)
                 ? styles.saldoCardCargo
                 : styles.saldoCardNeutral,
             ]}

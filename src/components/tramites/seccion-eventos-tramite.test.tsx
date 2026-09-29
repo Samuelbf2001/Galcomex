@@ -33,7 +33,7 @@ vi.mock("@/components/ui/toast", () => ({
 
 import { fetchCapacidades } from "@/components/clientes/capacidades-api";
 import { fetchEventosCatalogo } from "@/components/clientes/tarifas-api";
-import { fetchEventosTramite, fetchPropuestaTarifa } from "@/components/tramites/eventos-api";
+import { fetchEventosTramite, fetchPropuestaTarifa, guardarAtributosTramite } from "@/components/tramites/eventos-api";
 
 function capacidad(codigo: string, habilitado: boolean): CapacidadRow {
   return {
@@ -186,5 +186,56 @@ describe("muestraListaEventos — función pura", () => {
   it("ausente (respuesta vieja) = sin restricción de tipo", () => {
     expect(muestraListaEventos(undefined, true)).toBe(true);
     expect(muestraListaEventos(null, true)).toBe(true);
+  });
+});
+
+describe("SeccionEventosTramite — un CIF u OC mal escrito no borra lo guardado (hallazgo 1)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchCapacidades).mockResolvedValue([
+      capacidad("tarifario_propio", true),
+      capacidad("eventos_facturables", false),
+      capacidad("base_cif", true),
+      capacidad("orden_compra_en_revision", true),
+    ]);
+    vi.mocked(fetchPropuestaTarifa).mockResolvedValue({
+      ...PROPUESTA_SIN_TARIFARIO,
+      contexto: { ...PROPUESTA_SIN_TARIFARIO.contexto, valorCif: "300000000.00", ordenCompraValor: "4500000.00" },
+    });
+    vi.mocked(guardarAtributosTramite).mockResolvedValue(undefined as never);
+  });
+
+  async function escribir(input: HTMLInputElement, texto: string) {
+    await act(async () => input.focus());
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, texto);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => input.blur());
+  }
+  const cif = () => container.querySelector<HTMLInputElement>('input[placeholder="300000000"]')!;
+  const oc = () => container.querySelector<HTMLInputElement>('input[placeholder="4500000"]')!;
+  const guardar = () => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Guardar base de cálculo"))!;
+
+  it.each([
+    ["CIF", cif, "250,000"],
+    ["CIF", cif, "300.000.000,555"],
+    ["OC", oc, "4.500.000,555"],
+  ])("%s = %s: no guarda (no manda null)", async (_campo, input, texto) => {
+    await montar();
+    expect(cif().value).toBe("300.000.000");
+    await escribir(input(), texto);
+    await act(async () => guardar().click());
+    expect(guardarAtributosTramite).not.toHaveBeenCalled();
+  });
+
+  it("vacío de verdad sí limpia (null) y un valor válido se manda canónico", async () => {
+    await montar();
+    await escribir(cif(), "250.000.000,5");
+    await escribir(oc(), "");
+    await act(async () => guardar().click());
+    expect(guardarAtributosTramite).toHaveBeenCalledWith(
+      "tramite-1",
+      expect.objectContaining({ valorCif: "250000000.50", ordenCompraValor: null }),
+    );
   });
 });

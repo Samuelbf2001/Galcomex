@@ -39,6 +39,7 @@ import { capacidadesActivas } from "../src/lib/capacidades/resolver";
 import { capacidadesDeEmpresa, setCapacidadesEmpresa } from "../src/lib/capacidades/service";
 import { registrarMovimientoCuenta } from "../src/lib/cuenta-corriente/service";
 import { prisma } from "../src/lib/db/prisma";
+import { formatoPesos, pesos } from "../src/lib/dinero";
 import { marcarEventosTramite } from "../src/lib/eventos/service";
 import { PLANTILLAS_TARIFARIO } from "../src/lib/tarifas/plantillas";
 import { cambiarEstadoTarifario, crearTarifario, propuestaParaTramite } from "../src/lib/tarifas/service";
@@ -241,7 +242,8 @@ const CAPACIDADES_GRUPO_POLYREC: Capacidad[] = [
 const ok = (t: string) => console.log(`    ✓ ${t}`);
 const aviso = (t: string) => console.log(`    ⚠ ${t}`);
 const nota = (t: string) => console.log(`      ${t}`);
-const cop = (v: bigint) => `$ ${v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
+/** Centavos → "$ 1.234.567" (núcleo de dinero). */
+const cop = (v: bigint) => formatoPesos(v);
 
 function titulo(t: string) {
   console.log(`\n${"─".repeat(78)}\n${t}\n${"─".repeat(78)}`);
@@ -631,9 +633,9 @@ async function ejemplos(ids: Map<string, string>, usuarioId: string) {
     }
     await prisma.tramiteDO.update({
       where: { id: oc.id },
-      data: { ordenCompraNumero: "OC-EJEMPLO-2026-0154", ordenCompraValor: 4_500_000n, numContenedores: 1 },
+      data: { ordenCompraNumero: "OC-EJEMPLO-2026-0154", ordenCompraValorCentavos: pesos(4_500_000), numContenedores: 1 },
     });
-    ok(`5. Polyrec ${oc.consecutivo}: agencia Cortes, OC-EJEMPLO-2026-0154 por ${cop(4_500_000n)} sin IVA — al generar el borrador la cabecera lleva "ORDEN DE COMPRA N° …" y la revisión contrasta el valor`);
+    ok(`5. Polyrec ${oc.consecutivo}: agencia Cortes, OC-EJEMPLO-2026-0154 por ${cop(pesos(4_500_000))} sin IVA — al generar el borrador la cabecera lleva "ORDEN DE COMPRA N° …" y la revisión contrasta el valor`);
   }
 
   // 6. Coldex: cargo manual a favor del proveedor (mensualidad variable).
@@ -652,7 +654,7 @@ async function ejemplos(ids: Map<string, string>, usuarioId: string) {
         origen: OrigenMovimientoCuenta.CARGO_MANUAL,
         lineaServicio: "TRAMITE",
         concepto: `${MARCA_EJEMPLO} Servicios aduaneros + quincenas y primas del mes`,
-        valor: 4_000_000n,
+        valor: pesos(4_000_000),
         fecha: new Date(),
         usuarioId,
       });

@@ -17,7 +17,9 @@ import { existsSync } from "node:fs";
 
 import { describe, it, expect } from "vitest";
 
-import { parseBorradorLucho, reconciliar } from "../borrador-lucho";
+import { pesos } from "@/lib/dinero";
+
+import { CeldaDineroInvalidaError, centavosDeCelda, parseBorradorLucho, reconciliar } from "../borrador-lucho";
 
 const EXCEL_1 = process.env.LUCHO_EXCEL_1 ?? "C:\\Users\\samue\\Galcomex\\excel-lucho-1.xls";
 const EXCEL_2 = process.env.LUCHO_EXCEL_2 ?? "C:\\Users\\samue\\Galcomex\\excel-lucho-2.xls";
@@ -70,11 +72,11 @@ describe.skipIf(!excel1Disponible)("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", 
   it("línea 4x1000 tiene valor 130.088", () => {
     const cuatro = parsed.terceros.find((t) => t.es4x1000);
     expect(cuatro).toBeDefined();
-    expect(cuatro!.valor).toBe(130_088n);
+    expect(cuatro!.valor).toBe(pesos(130_088));
   });
 
   it("total terceros = 32.652.000", () => {
-    expect(parsed.totalTerceros).toBe(32_652_000n);
+    expect(parsed.totalTerceros).toBe(pesos(32_652_000));
   });
 
   // Operacionales
@@ -83,11 +85,11 @@ describe.skipIf(!excel1Disponible)("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", 
   });
 
   it("total operacionales = 400.000", () => {
-    expect(parsed.totalOperacionales).toBe(400_000n);
+    expect(parsed.totalOperacionales).toBe(pesos(400_000));
   });
 
   it("IVA = 76.000", () => {
-    expect(parsed.iva).toBe(76_000n);
+    expect(parsed.iva).toBe(pesos(76_000));
   });
 
   it("sin retenciones", () => {
@@ -97,15 +99,15 @@ describe.skipIf(!excel1Disponible)("BAQ-18453 — GRUPO EMPRESARIAL PAPIS SAS", 
 
   // Totales dorados
   it("TOTAL FACTURA = 33.128.000 (caso dorado)", () => {
-    expect(parsed.totalFactura).toBe(33_128_000n);
+    expect(parsed.totalFactura).toBe(pesos(33_128_000));
   });
 
   it("ANTICIPO = 35.074.500", () => {
-    expect(parsed.anticipo).toBe(35_074_500n);
+    expect(parsed.anticipo).toBe(pesos(35_074_500));
   });
 
   it("SALDO A FAVOR = 1.946.500 (caso dorado)", () => {
-    expect(parsed.saldoAFavor).toBe(1_946_500n);
+    expect(parsed.saldoAFavor).toBe(pesos(1_946_500));
   });
 
   // Reconciliación
@@ -195,11 +197,11 @@ describe.skipIf(!excel2Disponible)("BAQ-18512 — LITOPLAS S.A.", () => {
   it("línea 4x1000 tiene valor 4.620", () => {
     const cuatro = parsed.terceros.find((t) => t.es4x1000);
     expect(cuatro).toBeDefined();
-    expect(cuatro!.valor).toBe(4_620n);
+    expect(cuatro!.valor).toBe(pesos(4_620));
   });
 
   it("total terceros = 1.159.620 (incl. 4x1000)", () => {
-    expect(parsed.totalTerceros).toBe(1_159_620n);
+    expect(parsed.totalTerceros).toBe(pesos(1_159_620));
   });
 
   // Operacionales (3 líneas)
@@ -210,51 +212,51 @@ describe.skipIf(!excel2Disponible)("BAQ-18512 — LITOPLAS S.A.", () => {
   it("operacional REVISION DOCUMENTOS = 20.000", () => {
     const rev = parsed.operacionales.find((o) => o.concepto.includes("REVISION"));
     expect(rev).toBeDefined();
-    expect(rev!.valor).toBe(20_000n);
+    expect(rev!.valor).toBe(pesos(20_000));
   });
 
   it("operacional SISTEMATIZACION DE ARCHIVOS = 20.000", () => {
     const sist = parsed.operacionales.find((o) => o.concepto.includes("SISTEMATIZACION"));
     expect(sist).toBeDefined();
-    expect(sist!.valor).toBe(20_000n);
+    expect(sist!.valor).toBe(pesos(20_000));
   });
 
   it("operacional LOGISTICA OPERATIVA = 100.000", () => {
     const log = parsed.operacionales.find((o) => o.concepto.includes("LOGISTICA"));
     expect(log).toBeDefined();
-    expect(log!.valor).toBe(100_000n);
+    expect(log!.valor).toBe(pesos(100_000));
   });
 
   it("total operacionales = 140.000", () => {
-    expect(parsed.totalOperacionales).toBe(140_000n);
+    expect(parsed.totalOperacionales).toBe(pesos(140_000));
   });
 
   it("IVA = 26.600", () => {
-    expect(parsed.iva).toBe(26_600n);
+    expect(parsed.iva).toBe(pesos(26_600));
   });
 
   // Retenciones: RETE IVA 3.990
   it("extrae 1 retención (RETE IVA)", () => {
     expect(parsed.retenciones).toHaveLength(1);
     expect(parsed.retenciones[0]!.concepto).toMatch(/RETE IVA/i);
-    expect(parsed.retenciones[0]!.valor).toBe(3_990n);
+    expect(parsed.retenciones[0]!.valor).toBe(pesos(3_990));
   });
 
   it("total retenciones = 3.990", () => {
-    expect(parsed.totalRetenciones).toBe(3_990n);
+    expect(parsed.totalRetenciones).toBe(pesos(3_990));
   });
 
   // Totales dorados
   it("TOTAL FACTURA = 1.322.230 (caso dorado)", () => {
-    expect(parsed.totalFactura).toBe(1_322_230n);
+    expect(parsed.totalFactura).toBe(pesos(1_322_230));
   });
 
   it("ANTICIPO = 1.572.000", () => {
-    expect(parsed.anticipo).toBe(1_572_000n);
+    expect(parsed.anticipo).toBe(pesos(1_572_000));
   });
 
   it("SALDO A FAVOR = 249.770 (caso dorado)", () => {
-    expect(parsed.saldoAFavor).toBe(249_770n);
+    expect(parsed.saldoAFavor).toBe(pesos(249_770));
   });
 
   // Reconciliación
@@ -268,5 +270,24 @@ describe.skipIf(!excel2Disponible)("BAQ-18512 — LITOPLAS S.A.", () => {
     const sprb = parsed.terceros.find((t) => t.concepto.includes("SPRB"));
     expect(sprb).toBeDefined();
     expect(sprb!.referencias.map((r) => r.numFactura)).toContain("1003982615");
+  });
+});
+
+// ─── Fase centavos: lectura de celdas ─────────────────────────────────────────
+
+describe("centavosDeCelda — celdas del Excel de Lucho a centavos", () => {
+  it("lee centavos reales y enteros heredados", () => {
+    expect(centavosDeCelda(502801.45, "I12")).toBe(50_280_145n);
+    expect(centavosDeCelda(130088, "I20")).toBe(pesos(130_088));
+    expect(centavosDeCelda(null, "I1")).toBe(0n);
+  });
+
+  it("tolera el ruido binario de Excel (0,1 + 0,2)", () => {
+    expect(centavosDeCelda(0.1 + 0.2, "I3")).toBe(30n);
+  });
+
+  it("más de 2 decimales (fórmula sin redondear) es error visible con la celda", () => {
+    expect(() => centavosDeCelda(130087.648, "I20")).toThrow(CeldaDineroInvalidaError);
+    expect(() => centavosDeCelda(130087.648, "I20")).toThrow(/Celda I20/);
   });
 });

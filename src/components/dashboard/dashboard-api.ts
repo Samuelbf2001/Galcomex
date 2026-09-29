@@ -1,7 +1,10 @@
 /**
  * Helpers de API para el módulo de Dashboard.
- * Todos los montos llegan como string (BigInt serializado).
+ * Dinero = pesos texto con 2 decimales, siempre ("45226000.00"), tal como lo
+ * emite el servidor. Se lee con `centavosDeTextoApi` de `@/lib/dinero`.
  */
+
+import { formatFechaCalendario, formatInstanteBogota } from "@/lib/tiempo/bogota";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -231,36 +234,21 @@ export async function fetchDashboard(
 }
 
 // ─── Utilidades de formato ────────────────────────────────────────────────────
+//
+// Sin formateador local (diseño D.1): las pantallas leen los campos de dinero
+// de este archivo con `centavosDeTextoApi` (estricto) y muestran con
+// `formatoPesos`, ambos de `@/lib/dinero`.
 
-/** Formatea BigInt serializado como COP: $45.226.000 */
-export function formatCOP(value: string): string {
-  try {
-    const n = BigInt(value);
-    return new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(Number(n));
-  } catch {
-    return value;
-  }
-}
-
-/** Formatea una fecha ISO como dd/mm/aaaa */
+/** Fecha-calendario (fechaRef, fechaFactura): día guardado a 00:00 UTC, se muestra en UTC. */
 export function formatDate(isoString: string | null): string {
   if (!isoString) return "—";
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString("es-CO", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      timeZone: "America/Bogota",
-    });
-  } catch {
-    return isoString;
-  }
+  return formatFechaCalendario(isoString) || isoString;
+}
+
+/** Instante real (createdAt de auditoría): se muestra en el día de Bogotá. */
+export function formatDateTime(isoString: string | null): string {
+  if (!isoString) return "—";
+  return formatInstanteBogota(isoString) || isoString;
 }
 
 /** Etiqueta legible del estado del DO */

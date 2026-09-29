@@ -12,7 +12,12 @@
  *
  * Aislamiento: todo payload de botón empieza por "gx_" y lleva el id de la
  * solicitud. El webhook ignora cualquier botón que no sea suyo.
+ *
+ * Dinero (fase centavos): el valor del pago PSE llega en CENTAVOS y se muestra
+ * con `formatoPesos` del núcleo ("$ 502.801,45"; sin centavos si no los hay).
  */
+
+import { formatoPesos } from "@/lib/dinero";
 
 // ─── Respuestas que se entienden ─────────────────────────────────────────────
 
@@ -92,12 +97,6 @@ export interface DatosPlantillaPse {
 function parametroSeguro(texto: string | null | undefined, porDefecto = "Sin especificar"): string {
   const limpio = (texto ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
   return limpio === "" ? porDefecto : limpio;
-}
-
-export function formatoPesos(valor: bigint): string {
-  const negativo = valor < 0n;
-  const digitos = (negativo ? -valor : valor).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `${negativo ? "-" : ""}$${digitos}`;
 }
 
 export function parametrosPlantillaPse(d: DatosPlantillaPse): string[] {

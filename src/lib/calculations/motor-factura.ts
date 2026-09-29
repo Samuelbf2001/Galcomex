@@ -11,15 +11,22 @@
  * 4. impuesto4x1000 SIEMPRE SE COBRA:
  *    - Si saldo antes del 4x1000 ≥ 0 (a favor) → base = anticipo
  *    - Si saldo antes del 4x1000 < 0 (a cargo)  → base = anticipo + |saldoACargo|
- *    impuesto4x1000 = (base × tasa4x1000) / 100_000
+ *    impuesto4x1000 = (base × tasa4x1000) / 100_000, TRUNCADO AL PESO (D-2)
  * 5. saldoFinal = saldoTrasPagos − comision − ivaComision − impuesto4x1000 − costosBancarios
  * 6. saldoAFavorCliente = saldoFinal − montoLM   (cuando saldoFinal > 0)
  * 7. saldoAFavorLM     = montoLM                  (cuando saldoFinal > 0)
  * 8. totalFactura      = anticipo − saldoAFavorCliente
  *
- * INVARIANTE CRÍTICA: todos los valores son BigInt (COP enteros, sin flotantes).
- * Tolerancia en tests: 0 pesos.
+ * INVARIANTE CRÍTICA: todos los valores son BigInt en CENTAVOS de COP (fase
+ * centavos, diseño A.2), sin flotantes. Tolerancia en tests: 0 centavos.
+ *
+ * Redondeo (diseño A.6), todo vía el núcleo `@/lib/dinero`:
+ *   - IVA de la comisión: AL PESO, mitad hacia arriba (D-1; antes truncado:
+ *     idéntico cuando la comisión es múltiplo de 100 pesos).
+ *   - 4x1000 del motor COMISION: AL PESO, TRUNCADO (D-2, como hoy).
  */
+
+import { porcentajeDe, type Centavos } from "@/lib/dinero";
 
 export interface PagoInput {
   valor: bigint;
@@ -29,16 +36,16 @@ export interface PagoInput {
 export interface CalculoInput {
   totalAnticipoAplicado: bigint;
   /**
-   * Costo bancario del recaudo del anticipo (ej. BANCOLOMBIA = 1.950).
+   * Costo bancario del recaudo del anticipo (ej. BANCOLOMBIA $1.950 = 195_000n centavos).
    * En el Excel es la celda D18. Default 0n.
    */
   costoRecaudoAnticipo?: bigint;
   pagos: PagoInput[];
-  comision: bigint;         // Default 150_000n, editable por factura
+  comision: Centavos;       // Default 15_000_000n ($150.000), editable por factura
   /**
    * Override explícito de IVA de la comisión.
    * En el Excel BUN26-0026 es una celda manual = 76.000 (no es 19% × comisión).
-   * Si no se pasa, se calcula automáticamente como comision * tasaIva / 100n.
+   * Si no se pasa, se calcula como comision × tasaIva / 100 AL PESO (mitad arriba).
    */
   ivaComision?: bigint;
   tasaIva: bigint;          // Porcentaje entero (ej. 19n para 19%)
@@ -83,7 +90,7 @@ export interface CalculoResultado {
  * Servicio puro y determinista. No toca base de datos.
  * Ejecutar dos veces con el mismo input produce el mismo output.
  *
- * Caso dorado DO.BUN26-0026 (tolerancia 0):
+ * Caso dorado DO.BUN26-0026 (tolerancia 0; en pesos; en centavos es ×100):
  *   anticipo=45.226.000, costoRecaudoAnticipo=1.950, 7 pagos,
  *   comision=200.000, ivaComision=76.000 (override), montoLM=875.944
  *   → costosBancarios=17.550, saldoTrasPagos=4.708.356,
@@ -114,11 +121,11 @@ export function calcularBorrador(input: CalculoInput): CalculoResultado {
   const saldoTrasPagos = totalAnticipoAplicado - totalPagos;
 
   // IVA comisión: si se pasa como override explícito (caso Excel manual), se usa tal cual.
-  // Si no, se calcula como comision * tasaIva / 100n (truncado, BigInt).
+  // Si no, comision × tasaIva / 100 AL PESO, mitad hacia arriba (A.6 / D-1).
   const ivaComision =
     input.ivaComision !== undefined
       ? input.ivaComision
-      : (comision * tasaIva) / 100n;
+      : porcentajeDe(comision, tasaIva, 100n, { precision: "PESO" });
 
   // Paso 4: 4x1000 — SIEMPRE se cobra.
   // Para determinar la base, calculamos el saldo ANTES del 4x1000.
@@ -132,8 +139,11 @@ export function calcularBorrador(input: CalculoInput): CalculoResultado {
     ? totalAnticipoAplicado
     : totalAnticipoAplicado + (-saldoAntesDe4x1000);
   // Sin anticipo no hay movimiento financiero que gravar → 4x1000 = 0.
+  // Al peso, TRUNCADO (D-2: se conserva el comportamiento de hoy).
   const impuesto4x1000 =
-    totalAnticipoAplicado > 0n ? (base4x1000 * tasa4x1000) / 100_000n : 0n;
+    totalAnticipoAplicado > 0n
+      ? porcentajeDe(base4x1000, tasa4x1000, 100_000n, { precision: "PESO", modo: "TRUNCAR" })
+      : 0n;
 
   // Paso 5: saldo final
   const saldoFinal =

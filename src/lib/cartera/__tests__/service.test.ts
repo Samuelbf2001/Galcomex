@@ -30,6 +30,7 @@ import {
   registrarPagoFactura,
   registrarPagoFacturaAbono,
 } from "../service";
+import { pesos } from "@/lib/dinero";
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -222,19 +223,19 @@ async function crearFacturaDirecta(
   const borrador = await prisma.borradorFactura.create({
     data: {
       tramiteId: tramite.id,
-      comision: 150_000n,
-      ivaComision: 28_500n,
-      impuesto4x1000: 0n,
-      costosBancarios: 0n,
-      totalAnticipo: 10_000_000n,
-      totalPagos: 10_000_000n,
-      totalFactura: saldoAFavorCliente > 0n
-        ? 10_000_000n - saldoAFavorCliente
-        : 10_000_000n + saldoACargoCliente,
-      saldoAFavorCliente,
-      saldoACargoCliente,
-      saldoAFavorLM,
-      saldoACargoLM,
+      comisionCentavos: pesos(150_000),
+      ivaComisionCentavos: pesos(28_500),
+      impuesto4x1000Centavos: 0n,
+      costosBancariosCentavos: 0n,
+      totalAnticipoCentavos: pesos(10_000_000),
+      totalPagosCentavos: pesos(10_000_000),
+      totalFacturaCentavos: saldoAFavorCliente > 0n
+        ? pesos(10_000_000) - saldoAFavorCliente
+        : pesos(10_000_000) + saldoACargoCliente,
+      saldoAFavorClienteCentavos: saldoAFavorCliente,
+      saldoACargoClienteCentavos: saldoACargoCliente,
+      saldoAFavorLMCentavos: saldoAFavorLM,
+      saldoACargoLMCentavos: saldoACargoLM,
       estado: EstadoBorrador.FACTURADO,
       aprobadoPorId: db.userId,
       fechaAprobacion: new Date(`${stateYear}-01-10`),
@@ -248,11 +249,11 @@ async function crearFacturaDirecta(
       clienteId: db.clienteId,
       numSiigo: `TST-${runId.slice(-6)}-${numero}`,
       fecha: new Date(`${stateYear}-01-15`),
-      totalFactura: borrador.totalFactura,
-      saldoAFavorCliente,
-      saldoACargoCliente,
-      saldoAFavorLM,
-      saldoACargoLM,
+      totalFacturaCentavos: borrador.totalFacturaCentavos,
+      saldoAFavorClienteCentavos: saldoAFavorCliente,
+      saldoACargoClienteCentavos: saldoACargoCliente,
+      saldoAFavorLMCentavos: saldoAFavorLM,
+      saldoACargoLMCentavos: saldoACargoLM,
       fechaPagoCliente,
     },
   });
@@ -294,23 +295,23 @@ describe("cartera service con Postgres local", () => {
     // Caso: saldo a cargo del cliente
     expect(calcularSaldoNeto({
       saldoAFavor: 0n,
-      saldoACargo: 500_000n,
+      saldoACargo: pesos(500_000),
       abonos: 0n,
       devoluciones: 0n,
-    })).toBe(-500_000n);
+    })).toBe(-pesos(500_000));
 
     // Caso: saldo a favor del cliente (Galcomex debe)
     expect(calcularSaldoNeto({
-      saldoAFavor: 3_357_958n,
+      saldoAFavor: pesos(3_357_958),
       saldoACargo: 0n,
       abonos: 0n,
       devoluciones: 0n,
-    })).toBe(3_357_958n);
+    })).toBe(pesos(3_357_958));
 
     // Caso: saldado (sin pagos, saldos iguales)
     expect(calcularSaldoNeto({
-      saldoAFavor: 100_000n,
-      saldoACargo: 100_000n,
+      saldoAFavor: pesos(100_000),
+      saldoACargo: pesos(100_000),
       abonos: 0n,
       devoluciones: 0n,
     })).toBe(0n);
@@ -320,17 +321,17 @@ describe("cartera service con Postgres local", () => {
     // Cargo 500.000, abono 200.000 → pendiente cobro 300.000
     expect(calcularSaldoNeto({
       saldoAFavor: 0n,
-      saldoACargo: 500_000n,
-      abonos: 200_000n,
+      saldoACargo: pesos(500_000),
+      abonos: pesos(200_000),
       devoluciones: 0n,
-    })).toBe(-300_000n);
+    })).toBe(-pesos(300_000));
   });
 
   it("calcularSaldoNeto: abono exacto salda (saldoNeto = 0)", () => {
     expect(calcularSaldoNeto({
       saldoAFavor: 0n,
-      saldoACargo: 500_000n,
-      abonos: 500_000n,
+      saldoACargo: pesos(500_000),
+      abonos: pesos(500_000),
       devoluciones: 0n,
     })).toBe(0n);
   });
@@ -338,30 +339,30 @@ describe("cartera service con Postgres local", () => {
   it("calcularSaldoNeto: sobrepago → saldoNeto positivo (Galcomex debe devolver)", () => {
     expect(calcularSaldoNeto({
       saldoAFavor: 0n,
-      saldoACargo: 500_000n,
-      abonos: 700_000n,
+      saldoACargo: pesos(500_000),
+      abonos: pesos(700_000),
       devoluciones: 0n,
-    })).toBe(200_000n);
+    })).toBe(pesos(200_000));
   });
 
   it("calcularSaldoNeto: golden case — saldoAFavor 3.357.958, devolucion salda", () => {
     // Factura con saldo a favor del cliente = 3.357.958
     // Devolución de 3.357.958 → saldoNeto = 0
     expect(calcularSaldoNeto({
-      saldoAFavor: 3_357_958n,
+      saldoAFavor: pesos(3_357_958),
       saldoACargo: 0n,
       abonos: 0n,
-      devoluciones: 3_357_958n,
+      devoluciones: pesos(3_357_958),
     })).toBe(0n);
   });
 
   it("calcularSaldoNeto: devolución parcial del saldo a favor", () => {
     expect(calcularSaldoNeto({
-      saldoAFavor: 3_357_958n,
+      saldoAFavor: pesos(3_357_958),
       saldoACargo: 0n,
       abonos: 0n,
-      devoluciones: 1_000_000n,
-    })).toBe(2_357_958n);
+      devoluciones: pesos(1_000_000),
+    })).toBe(pesos(2_357_958));
   });
 
   // ─── Cartera con facturas mixtas (a cargo y a favor) ─────────────────────
@@ -370,13 +371,13 @@ describe("cartera service con Postgres local", () => {
     const db = ensureDb(ctx);
 
     // 3 facturas a cargo del cliente
-    await crearFacturaDirecta(db, { saldoACargoCliente: 500_000n });
-    await crearFacturaDirecta(db, { saldoACargoCliente: 300_000n });
-    await crearFacturaDirecta(db, { saldoACargoCliente: 200_000n });
+    await crearFacturaDirecta(db, { saldoACargoCliente: pesos(500_000) });
+    await crearFacturaDirecta(db, { saldoACargoCliente: pesos(300_000) });
+    await crearFacturaDirecta(db, { saldoACargoCliente: pesos(200_000) });
 
     // 2 facturas a favor del cliente (Galcomex debe)
-    await crearFacturaDirecta(db, { saldoAFavorCliente: 150_000n });
-    await crearFacturaDirecta(db, { saldoAFavorCliente: 250_000n });
+    await crearFacturaDirecta(db, { saldoAFavorCliente: pesos(150_000) });
+    await crearFacturaDirecta(db, { saldoAFavorCliente: pesos(250_000) });
 
     const cartera = await getCarteraCliente({ clienteId: db.clienteId });
 
@@ -386,14 +387,14 @@ describe("cartera service con Postgres local", () => {
     // PERO el cruce histórico era positivo cuando cliente debe.
     // Con el nuevo ledger: saldoNeto < 0 → cliente debe → pendiente de cobro.
     // cruceCliente = suma de saldoNeto = -600.000
-    const sumACargo = 500_000n + 300_000n + 200_000n;
-    const sumAFavor = 150_000n + 250_000n;
+    const sumACargo = pesos(500_000) + pesos(300_000) + pesos(200_000);
+    const sumAFavor = pesos(150_000) + pesos(250_000);
     // saldoNeto por factura: -(saldoACargo) + saldoAFavor
     // El cruce = Σ saldoNeto = Σ(saldoAFavor - saldoACargo) = sumAFavor - sumACargo
     const cruceEsperado = sumAFavor - sumACargo; // -600.000
 
     expect(cartera.cruceCliente).toBe(cruceEsperado);
-    expect(cartera.cruceCliente).toBe(-600_000n);
+    expect(cartera.cruceCliente).toBe(-pesos(600_000));
     expect(cartera.totalFacturas).toBeGreaterThanOrEqual(5);
   });
 
@@ -402,13 +403,13 @@ describe("cartera service con Postgres local", () => {
   it("abono parcial reduce pendiente de cobro", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 1_000_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(1_000_000) });
 
     const result = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 400_000n,
+      monto: pesos(400_000),
       fecha: new Date(`${stateYear}-02-01`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -417,13 +418,13 @@ describe("cartera service con Postgres local", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       // saldoNeto = (0 - 1.000.000) + 400.000 - 0 = -600.000
-      expect(result.saldoNeto).toBe(-600_000n);
+      expect(result.saldoNeto).toBe(-pesos(600_000));
       // No se saldó aún
       expect(result.factura.fechaPagoCliente).toBeNull();
     }
 
     const detalle = await getFacturaConPagos(facturaId);
-    expect(detalle?.pendienteCobroCliente).toBe(600_000n);
+    expect(detalle?.pendienteCobroCliente).toBe(pesos(600_000));
     expect(detalle?.pendienteDevolucionCliente).toBe(0n);
   });
 
@@ -432,14 +433,14 @@ describe("cartera service con Postgres local", () => {
   it("varios abonos hasta saldar setean fechaPagoCliente", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 900_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(900_000) });
 
     // Primer abono parcial
     await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 300_000n,
+      monto: pesos(300_000),
       fecha: new Date(`${stateYear}-02-01`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -450,7 +451,7 @@ describe("cartera service con Postgres local", () => {
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 300_000n,
+      monto: pesos(300_000),
       fecha: new Date(`${stateYear}-02-15`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -462,7 +463,7 @@ describe("cartera service con Postgres local", () => {
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 300_000n,
+      monto: pesos(300_000),
       fecha: fechaPago,
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -485,13 +486,13 @@ describe("cartera service con Postgres local", () => {
   it("sobrepago genera pendiente de devolución (no es error)", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 500_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(500_000) });
 
     const result = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 700_000n, // 200.000 de sobrepago
+      monto: pesos(700_000), // 200.000 de sobrepago
       fecha: new Date(`${stateYear}-02-01`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -500,14 +501,14 @@ describe("cartera service con Postgres local", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       // saldoNeto = (0 - 500.000) + 700.000 = 200.000 > 0 → Galcomex debe devolver
-      expect(result.saldoNeto).toBe(200_000n);
+      expect(result.saldoNeto).toBe(pesos(200_000));
       // Se marca como "saldada" en fecha del abono (saldo a favor = 200.000, no 0)
       // En realidad saldoNeto != 0, entonces fechaPago no se setea
       expect(result.factura.fechaPagoCliente).toBeNull();
     }
 
     const detalle = await getFacturaConPagos(facturaId);
-    expect(detalle?.pendienteDevolucionCliente).toBe(200_000n);
+    expect(detalle?.pendienteDevolucionCliente).toBe(pesos(200_000));
     expect(detalle?.pendienteCobroCliente).toBe(0n);
   });
 
@@ -516,11 +517,11 @@ describe("cartera service con Postgres local", () => {
   it("golden case: devolución de 3.357.958 salda factura con saldo a favor", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const facturaId = await crearFacturaDirecta(db, { saldoAFavorCliente: 3_357_958n });
+    const facturaId = await crearFacturaDirecta(db, { saldoAFavorCliente: pesos(3_357_958) });
 
     // saldoNeto inicial = 3.357.958 (Galcomex debe devolver)
     const detaleInicial = await getFacturaConPagos(facturaId);
-    expect(detaleInicial?.saldoNetoCliente).toBe(3_357_958n);
+    expect(detaleInicial?.saldoNetoCliente).toBe(pesos(3_357_958));
 
     // Devolver exactamente el saldo a favor
     const fechaDev = new Date(`${stateYear}-04-01`);
@@ -528,7 +529,7 @@ describe("cartera service con Postgres local", () => {
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.DEVOLUCION,
-      monto: 3_357_958n,
+      monto: pesos(3_357_958),
       fecha: fechaDev,
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -551,13 +552,13 @@ describe("cartera service con Postgres local", () => {
   it("devolución que excede saldo a favor → 422", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const facturaId = await crearFacturaDirecta(db, { saldoAFavorCliente: 1_000_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoAFavorCliente: pesos(1_000_000) });
 
     const result = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.DEVOLUCION,
-      monto: 1_500_000n, // excede el saldo a favor
+      monto: pesos(1_500_000), // excede el saldo a favor
       fecha: new Date(`${stateYear}-04-01`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -573,13 +574,13 @@ describe("cartera service con Postgres local", () => {
     const db = ensureDb(ctx);
 
     // Factura con saldo a cargo (Galcomex no debe nada, el cliente debe)
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 500_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(500_000) });
 
     const result = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.DEVOLUCION,
-      monto: 100_000n,
+      monto: pesos(100_000),
       fecha: new Date(`${stateYear}-04-01`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -596,14 +597,14 @@ describe("cartera service con Postgres local", () => {
   it("eliminar pago revierte saldoNeto y limpia fechaPago", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 500_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(500_000) });
 
     // Pagar completo → saldoNeto = 0, fechaPago setada
     const r1 = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 500_000n,
+      monto: pesos(500_000),
       fecha: new Date(`${stateYear}-02-01`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -619,7 +620,7 @@ describe("cartera service con Postgres local", () => {
     const r2 = await eliminarPagoFactura(pagoId, db.userId);
     expect(r2.ok).toBe(true);
     if (r2.ok) {
-      expect(r2.saldoNeto).toBe(-500_000n);
+      expect(r2.saldoNeto).toBe(-pesos(500_000));
       expect(r2.factura.fechaPagoCliente).toBeNull();
     }
 
@@ -647,12 +648,12 @@ describe("cartera service con Postgres local", () => {
     const db = ensureDb(ctx);
 
     // Factura con cargo 1.000.000; abono de 400.000
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 1_000_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(1_000_000) });
     await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 400_000n,
+      monto: pesos(400_000),
       fecha: new Date(`${stateYear}-02-01`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -662,9 +663,9 @@ describe("cartera service con Postgres local", () => {
     const f = cartera.facturas.find((x) => x.id === facturaId);
 
     expect(f).toBeDefined();
-    expect(f?.saldoNetoCliente).toBe(-600_000n);
-    expect(f?.pendienteCobroCliente).toBe(600_000n);
-    expect(f?.abonosCliente).toBe(400_000n);
+    expect(f?.saldoNetoCliente).toBe(-pesos(600_000));
+    expect(f?.pendienteCobroCliente).toBe(pesos(600_000));
+    expect(f?.abonosCliente).toBe(pesos(400_000));
   });
 
   // ─── LM independiente: solo registrar fechaPagoLM ────────────────────────
@@ -673,7 +674,7 @@ describe("cartera service con Postgres local", () => {
     const db = ensureDb(ctx);
 
     const facturaId = await crearFacturaDirecta(db, {
-      saldoAFavorLM: 50_000n,
+      saldoAFavorLM: pesos(50_000),
     });
 
     // Solo registrar pago de LM (endpoint legacy — escribe fecha directamente)
@@ -694,9 +695,9 @@ describe("cartera service con Postgres local", () => {
   it("cruceLM se calcula correctamente con saldos LM mixtos", async (ctx) => {
     const db = ensureDb(ctx);
 
-    await crearFacturaDirecta(db, { saldoACargoLM: 800_000n });
-    await crearFacturaDirecta(db, { saldoACargoLM: 400_000n });
-    await crearFacturaDirecta(db, { saldoAFavorLM: 300_000n });
+    await crearFacturaDirecta(db, { saldoACargoLM: pesos(800_000) });
+    await crearFacturaDirecta(db, { saldoACargoLM: pesos(400_000) });
+    await crearFacturaDirecta(db, { saldoAFavorLM: pesos(300_000) });
 
     const cartera = await getCarteraCliente({ clienteId: db.clienteId });
 
@@ -733,7 +734,7 @@ describe("cartera service con Postgres local", () => {
       facturaId: "id-inexistente-vitest-abono",
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 100_000n,
+      monto: pesos(100_000),
       fecha: new Date(),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -759,13 +760,13 @@ describe("cartera service con Postgres local", () => {
       return;
     }
 
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 500_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(500_000) });
 
     const result = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 200_000n,
+      monto: pesos(200_000),
       fecha: new Date(`${stateYear}-05-01`),
       tipoRecaudo: "BANCOLOMBIA",
       usuarioId: db.userId,
@@ -774,7 +775,7 @@ describe("cartera service con Postgres local", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       // costoBancario debe ser el snapshot de matrix_recaudo para BANCOLOMBIA
-      expect(result.pago.costoBancario).toBe(matrizBancolombia.costoFijo);
+      expect(result.pago.costoBancarioCentavos).toBe(matrizBancolombia.costoFijoCentavos);
       expect(result.pago.tipoRecaudo).toBe("BANCOLOMBIA");
       expect(result.pago.canalPago).toBeNull();
     }
@@ -792,13 +793,13 @@ describe("cartera service con Postgres local", () => {
       return;
     }
 
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoLM: 300_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoLM: pesos(300_000) });
 
     const result = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.LM,
       tipo: TipoPagoFactura.ABONO,
-      monto: 150_000n,
+      monto: pesos(150_000),
       fecha: new Date(`${stateYear}-05-02`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -807,7 +808,7 @@ describe("cartera service con Postgres local", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       // costoBancario debe ser el snapshot de matriz_pago para TRANSF_BANCOLOMBIA
-      expect(result.pago.costoBancario).toBe(matrizTransf.costoFijo);
+      expect(result.pago.costoBancarioCentavos).toBe(matrizTransf.costoFijoCentavos);
       expect(result.pago.canalPago).toBe("TRANSF_BANCOLOMBIA");
       expect(result.pago.tipoRecaudo).toBeNull();
     }
@@ -818,8 +819,8 @@ describe("cartera service con Postgres local", () => {
 
     // Factura con cargos en ambos destinos
     const facturaId = await crearFacturaDirecta(db, {
-      saldoACargoCliente: 1_000_000n,
-      saldoACargoLM: 500_000n,
+      saldoACargoCliente: pesos(1_000_000),
+      saldoACargoLM: pesos(500_000),
     });
 
     // Abono cliente con PSE (costo=0); si no hay datos en BD usar canalPago directamente
@@ -833,15 +834,15 @@ describe("cartera service con Postgres local", () => {
     });
 
     // Si no hay matriz cargada, los costos serán 0 (snapshot desde BD = 0)
-    const costoEsperadoCliente = matrizTransf?.costoFijo ?? 0n;
-    const costoEsperadoPSE = matrizPSE?.costoFijo ?? 0n;
+    const costoEsperadoCliente = matrizTransf?.costoFijoCentavos ?? 0n;
+    const costoEsperadoPSE = matrizPSE?.costoFijoCentavos ?? 0n;
 
     // Pago de cliente con TRANSF_BANCOLOMBIA
     await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 1_000_000n,
+      monto: pesos(1_000_000),
       fecha: new Date(`${stateYear}-05-03`),
       canalPago: CanalPago.TRANSF_BANCOLOMBIA,
       usuarioId: db.userId,
@@ -852,7 +853,7 @@ describe("cartera service con Postgres local", () => {
       facturaId,
       destino: DestinoPago.LM,
       tipo: TipoPagoFactura.ABONO,
-      monto: 500_000n,
+      monto: pesos(500_000),
       fecha: new Date(`${stateYear}-05-04`),
       canalPago: CanalPago.PSE,
       usuarioId: db.userId,
@@ -876,13 +877,13 @@ describe("cartera service con Postgres local", () => {
   it("validación: pasar tipoRecaudo Y canalPago → retorna 400", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 100_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(100_000) });
 
     const result = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 50_000n,
+      monto: pesos(50_000),
       fecha: new Date(`${stateYear}-05-05`),
       // Ambos seteados → debe rechazarse
       tipoRecaudo: "BANCOLOMBIA",
@@ -899,14 +900,14 @@ describe("cartera service con Postgres local", () => {
   it("validación: no pasar ni tipoRecaudo ni canalPago → retorna 400", async (ctx) => {
     const db = ensureDb(ctx);
 
-    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: 100_000n });
+    const facturaId = await crearFacturaDirecta(db, { saldoACargoCliente: pesos(100_000) });
 
     // Forzamos ninguno pasando undefined explícitamente
     const result = await registrarPagoFacturaAbono({
       facturaId,
       destino: DestinoPago.CLIENTE,
       tipo: TipoPagoFactura.ABONO,
-      monto: 50_000n,
+      monto: pesos(50_000),
       fecha: new Date(`${stateYear}-05-06`),
       // tipoRecaudo: undefined → omitido
       // canalPago: undefined → omitido

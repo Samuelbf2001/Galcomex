@@ -22,6 +22,15 @@ import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { describirError, useToast } from "@/components/ui/toast";
 import { ModuleState } from "@/components/layout/module-state";
+import { centavosDeTexto, centavosDeTextoApi, formatoPesos, textoCanonicoDeCentavos } from "@/lib/dinero";
+
+import {
+  contarLineasSinProducto,
+  lineaSinProductoSiigo,
+  lineaVaASiigo,
+  mensajeSinProductoSiigo,
+  ocultarAvisoPorLinea,
+} from "./linea-producto-siigo";
 
 import {
   actualizarComentariosCabecera as apiActualizarComentarios,
@@ -29,9 +38,8 @@ import {
   actualizarLinea as apiActualizarLinea,
   crearLineaManual as apiCrearLinea,
   eliminarLinea as apiEliminarLinea,
-  formatCOP,
-  parseBigIntInput,
   type BorradorRow,
+  type EstadoBorrador,
   type LineaRevisionRow,
   type SeccionLinea,
 } from "./facturacion-api";
@@ -207,7 +215,7 @@ function FacturasMultiSelect({
                       otraClave ? "text-slate-400" : "text-slate-500"
                     }`}
                   >
-                    {f.numFactura} · {formatCOP(f.valor)}
+                    {f.numFactura} · {formatoPesos(centavosDeTextoApi(f.valor))}
                   </span>
                 </span>
               </button>
@@ -227,6 +235,29 @@ type SiigoProductoSelectProps = {
   onSelect: (producto: SiigoProductoRow | null) => void;
   disabled?: boolean;
   placeholder?: string;
+  /**
+   * Prefijo del `aria-label` del botón (p. ej. "Producto Siigo de la línea
+   * 3"). El componente le agrega ": <texto visible>" — el mismo texto que
+   * ya se ve en el botón (código y nombre del producto, la etiqueta de
+   * respaldo, o `placeholder` si no hay nada elegido) — para que un lector
+   * de pantalla anuncie el valor actual, no solo qué es el control.
+   */
+  ariaLabel?: string;
+  /**
+   * Abre el menú dentro del flujo (`relative`) en vez de superpuesto
+   * (`absolute`). Usar dentro de una tabla con `overflow-x-auto`: ese
+   * contenedor también vuelve `auto` el eje vertical, así que un menú
+   * `absolute` queda recortado (mismo patrón que `FacturasMultiSelect`, que
+   * ya se abre en el flujo).
+   */
+  enLinea?: boolean;
+  /**
+   * Etiqueta de respaldo cuando `value` no está en `productos` (catálogo
+   * aún cargando, catálogo vacío por falta de permiso del rol, o el producto
+   * ya no está activo en Siigo). Sin esto el botón muestra "Sin producto
+   * SIIGO" aunque la línea sí tenga uno asignado.
+   */
+  etiquetaActual?: string;
 };
 
 function SiigoProductoSelect({
@@ -235,6 +266,9 @@ function SiigoProductoSelect({
   onSelect,
   disabled = false,
   placeholder = "— Seleccionar —",
+  ariaLabel,
+  enLinea = false,
+  etiquetaActual,
 }: SiigoProductoSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -267,6 +301,16 @@ function SiigoProductoSelect({
   }, [open]);
 
   const seleccionado = productos.find((p) => p.id === value) ?? null;
+  // Si `value` no está vacío pero el catálogo no trae ese producto, usamos la
+  // etiqueta de respaldo en vez de mostrar "Sin producto SIIGO" sobre una
+  // línea que sí lo tiene.
+  const etiquetaRespaldo = value !== "" && !seleccionado ? etiquetaActual : undefined;
+  const hayEtiqueta = Boolean(seleccionado) || Boolean(etiquetaRespaldo);
+  // Mismo texto que se ve en el botón (ver el `<span>` de abajo) — se reusa
+  // también en el aria-label para que ambos nunca se desalineen.
+  const textoVisible = seleccionado
+    ? `${seleccionado.codigo} — ${seleccionado.nombre}`
+    : (etiquetaRespaldo ?? placeholder);
 
   const filtrados = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -284,17 +328,16 @@ function SiigoProductoSelect({
         type="button"
         disabled={disabled}
         aria-expanded={open}
+        aria-label={ariaLabel ? `${ariaLabel}: ${textoVisible}` : undefined}
         onClick={() => setOpen((o) => !o)}
         className={`mt-1 flex h-[34px] w-full items-center justify-between gap-2 border border-slate-300 bg-white px-2 py-1 text-left text-sm transition ${
           disabled ? "cursor-default opacity-70" : "hover:border-slate-400"
         }`}
       >
         <span
-          className={`truncate ${seleccionado ? "text-slate-700" : "text-slate-400"}`}
+          className={`truncate ${hayEtiqueta ? "text-slate-700" : "text-slate-400"}`}
         >
-          {seleccionado
-            ? `${seleccionado.codigo} — ${seleccionado.nombre}`
-            : placeholder}
+          {textoVisible}
         </span>
         <ChevronDown
           className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`}
@@ -303,7 +346,9 @@ function SiigoProductoSelect({
       </button>
 
       {open && !disabled ? (
-        <div className="absolute z-30 mt-1 max-h-96 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+        <div
+          className={`${enLinea ? "relative z-20" : "absolute z-30"} mt-1 max-h-96 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg`}
+        >
           <div className="border-b border-slate-200 p-2">
             <input
               ref={searchRef}
@@ -557,15 +602,22 @@ function ComisionEditable({
     return (
       <div className="flex w-full max-w-md justify-between">
         <span className="text-slate-500">+ Comisión</span>
-        <span className="text-slate-800">{formatCOP(borrador.comision)}</span>
+        <span className="text-slate-800">{formatoPesos(centavosDeTextoApi(borrador.comision))}</span>
       </div>
     );
   }
 
   async function commitValor(valorRaw: string) {
     if (cancelarBlurLibre.current) { cancelarBlurLibre.current = false; return; }
-    const parsed = parseBigIntInput(valorRaw);
-    if (parsed === null || parsed === borrador.comision) return;
+    let centavos: bigint;
+    try {
+      centavos = centavosDeTexto(valorRaw);
+    } catch {
+      return;
+    }
+    if (centavos <= 0n) return;
+    const parsed = textoCanonicoDeCentavos(centavos);
+    if (parsed === textoCanonicoDeCentavos(centavosDeTexto(borrador.comision))) return;
     await ejecutar(() => apiActualizarComision(borrador.id, parsed));
   }
 
@@ -629,11 +681,24 @@ type EditorLineasProps = {
 function sumaLineas(lineas: LineaRevisionRow[]): bigint {
   return lineas.reduce((acc, l) => {
     try {
-      return acc + BigInt(l.valor);
+      return acc + centavosDeTextoApi(l.valor);
     } catch {
       return acc;
     }
   }, 0n);
+}
+
+/**
+ * ¿Es el mismo monto? Compara en CENTAVOS, no como texto: el campo emite el
+ * canónico ("486075") y la API manda "486075.00". Como texto nunca coincidían y
+ * cada paso por el campo guardaba de nuevo (PATCH + AuditLog idénticos).
+ */
+export function mismoMonto(a: string, b: string): boolean {
+  try {
+    return centavosDeTexto(a) === centavosDeTexto(b);
+  } catch {
+    return false;
+  }
 }
 
 // ─── Subsección (tabla + formulario "Nueva línea") ───────────────────────────
@@ -648,6 +713,8 @@ function CampoLinea({ valor, etiqueta, numerico = false, guardando, guardar }: {
   const [local, setLocal] = useState(valor);
   const [anterior, setAnterior] = useState(valor);
   const [errorCampo, setErrorCampo] = useState<string | null>(null);
+  /** Mensaje del CampoMoneda si lo escrito no es un monto válido (no es lo mismo que vacío). */
+  const [errorMonto, setErrorMonto] = useState<string | null>(null);
   const pendiente = useRef(false);
   const cancelarBlur = useRef(false);
   // Una respuesta a otro campo no puede borrar un cambio local pendiente.
@@ -659,12 +726,26 @@ function CampoLinea({ valor, etiqueta, numerico = false, guardando, guardar }: {
   async function commit() {
     if (cancelarBlur.current) { cancelarBlur.current = false; return; }
     if (pendiente.current) return;
-    const limpio = numerico ? parseBigIntInput(local) : local.trim();
-    if (limpio === null || limpio === "" || (numerico && BigInt(limpio) <= 0n)) {
+    if (numerico && errorMonto) {
+      setErrorCampo(errorMonto);
+      return;
+    }
+    let limpio: string | null;
+    if (numerico) {
+      try {
+        const centavos = centavosDeTexto(local);
+        limpio = centavos > 0n ? textoCanonicoDeCentavos(centavos) : null;
+      } catch {
+        limpio = null;
+      }
+    } else {
+      limpio = local.trim();
+    }
+    if (limpio === null || limpio === "") {
       setErrorCampo(numerico ? "Escribe un valor mayor que cero en COP." : "Escribe el concepto de la línea.");
       return;
     }
-    if (limpio === valor) { setErrorCampo(null); return; }
+    if (numerico ? mismoMonto(limpio, valor) : limpio === valor) { setErrorCampo(null); return; }
     pendiente.current = true;
     const ok = await guardar(limpio);
     pendiente.current = false;
@@ -678,6 +759,7 @@ function CampoLinea({ valor, etiqueta, numerico = false, guardando, guardar }: {
       cancelarBlur.current = true;
       setLocal(valor);
       setErrorCampo(null);
+      setErrorMonto(null);
     }
     if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
   };
@@ -687,7 +769,8 @@ function CampoLinea({ valor, etiqueta, numerico = false, guardando, guardar }: {
       {numerico ? (
         <CampoMoneda
           value={local}
-          onValueChange={(digitos) => { setLocal(digitos); setErrorCampo(null); }}
+          onValueChange={(digitos, detalle) => { setLocal(digitos); setErrorCampo(null); setErrorMonto(detalle.ok ? null : detalle.mensaje); }}
+          mostrarError={false}
           aria-label={etiqueta}
           aria-invalid={Boolean(errorCampo)}
           disabled={guardando}
@@ -726,6 +809,9 @@ type SubseccionProps = {
   subtotal: bigint;
   facturas: FacturaProveedorRow[];
   productos: SiigoProductoRow[];
+  /** `!catalogos.cargando && productos.length > 0` — ver `SiigoProductoSelect`. */
+  catalogoDisponible: boolean;
+  estadoBorrador: EstadoBorrador;
   puedeEditar: boolean;
   guardando: boolean;
   borradorId: string;
@@ -741,6 +827,8 @@ function SubseccionLineas({
   subtotal,
   facturas,
   productos,
+  catalogoDisponible,
+  estadoBorrador,
   puedeEditar,
   guardando,
   borradorId,
@@ -768,7 +856,7 @@ function SubseccionLineas({
   async function handleEliminar(linea: LineaRevisionRow) {
     const ok = await confirmar({
       title: "¿Eliminar esta línea del borrador?",
-      description: `${linea.concepto} · ${formatCOP(linea.valor)}. Esta acción no se puede deshacer.`,
+      description: `${linea.concepto} · ${formatoPesos(centavosDeTextoApi(linea.valor))}. Esta acción no se puede deshacer.`,
       confirmText: "Eliminar línea",
       variant: "danger",
     });
@@ -777,11 +865,17 @@ function SubseccionLineas({
   }
 
   async function handleCrear() {
-    const valor = parseBigIntInput(nuevoValor);
-    if (!nuevoConcepto.trim() || valor === null || BigInt(valor) <= 0n) {
+    let valorCentavos: bigint | null = null;
+    try {
+      valorCentavos = nuevoValor === "" ? null : centavosDeTexto(nuevoValor);
+    } catch {
+      valorCentavos = null;
+    }
+    if (!nuevoConcepto.trim() || valorCentavos === null || valorCentavos <= 0n) {
       setError("Concepto y valor (positivo) son obligatorios.");
       return;
     }
+    const valor = textoCanonicoDeCentavos(valorCentavos);
     // En TERCEROS el N° de soporte se deriva de la factura vinculada (server-side),
     // por eso no se envía numSoporte desde el formulario.
     const facturaIds = compacto ? [] : nuevasFacturas;
@@ -824,6 +918,17 @@ function SubseccionLineas({
     );
   }
 
+  // Solo toca siigoProductoId: el concepto es la descripción que Siigo manda
+  // como `description` del ítem y nunca se pisa al elegir el producto.
+  async function cambiarProductoLinea(linea: LineaRevisionRow, p: SiigoProductoRow | null) {
+    const nuevo = p?.id ?? null;
+    if (nuevo === (linea.siigoProductoId ?? null)) return;
+    await ejecutar(
+      () => apiActualizarLinea(borradorId, linea.id, { siigoProductoId: nuevo }),
+      nuevo ? "Producto SIIGO asignado" : "Producto SIIGO quitado",
+    );
+  }
+
   function toggleNuevaFactura(id: string) {
     setNuevasFacturas((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
@@ -843,6 +948,9 @@ function SubseccionLineas({
   }
 
   // Columnas visibles: #, Concepto, [N°], Valor, [Facturas], [acciones]
+  // IVA de la subsección = línea(s) fija(s) IVA_COMISION (null si no hay: no se estima nada).
+  const lineasIva = lineas.filter((l) => l.tipoFija === "IVA_COMISION");
+  const ivaSeccion = lineasIva.length > 0 ? sumaLineas(lineasIva) : null;
   const colsAntes = compacto ? 2 : 3; // #, Concepto, [N°]
   const colsDespues = (compacto ? 0 : 1) + (puedeEditar ? 1 : 0); // [Facturas], [acciones]
 
@@ -899,16 +1007,81 @@ function SubseccionLineas({
                     <span className="ml-2 text-[11px] text-slate-500">{linea.aplicaIva ? "IVA 19 %" : "Sin IVA"}</span>
                   )
                 ) : null}
-                {linea.siigoProductoId ? (
-                  <span className="ml-1 text-[10px] text-slate-400">
-                    {linea.siigoProductoCodigo}
-                    {" · "}
-                    {
-                      badgeImpuestoProducto(
-                        productos.find((p) => p.id === linea.siigoProductoId) ?? null,
-                      ).label
-                    }
-                  </span>
+                {(() => {
+                  // Rescate: si la línea es fija pero le falta producto (p. ej.
+                  // falta el parámetro SIIGO_PRODUCTO_*), también se puede
+                  // asignar aquí. Y si YA tiene producto pero se eligió mal, se
+                  // deja corregir igual — antes quedaba en solo lectura apenas
+                  // tenía uno, sin forma de arreglar un error de asignación.
+                  // La condición de fondo sigue siendo "esta línea de verdad
+                  // viaja a Siigo con este formato" (`lineaVaASiigo`): una fija
+                  // que nunca se envía (p. ej. IVA_COMISION en CONCEPTOS_IVA)
+                  // no necesita selector, tenga o no producto.
+                  // El selector solo se ofrece con catálogo disponible: vacío
+                  // (cargando, o 403 — el catálogo exige rol ADMIN) es una
+                  // lista sin nada que elegir, y "Quitar selección" borraría
+                  // el producto de la línea sin forma de volver a ponerlo.
+                  const puedeElegirProducto =
+                    puedeEditar &&
+                    catalogoDisponible &&
+                    (!linea.tipoFija || lineaVaASiigo(linea, formato));
+                  if (puedeElegirProducto) {
+                    return (
+                      <div className="mt-1">
+                        <SiigoProductoSelect
+                          productos={productos}
+                          value={linea.siigoProductoId ?? ""}
+                          placeholder="Sin producto SIIGO"
+                          ariaLabel={`Producto Siigo de la línea ${linea.orden}`}
+                          // Respaldo por si el producto de la línea no está en
+                          // el catálogo cargado (p. ej. ya no está activo en Siigo).
+                          etiquetaActual={
+                            linea.siigoProductoId
+                              ? `${linea.siigoProductoCodigo ?? ""}${
+                                  linea.siigoProductoNombre ? ` — ${linea.siigoProductoNombre}` : ""
+                                }`
+                              : undefined
+                          }
+                          enLinea
+                          disabled={guardando}
+                          onSelect={(p) => void cambiarProductoLinea(linea, p)}
+                        />
+                        {linea.tipoFija && linea.siigoProductoId ? (
+                          <span className="mt-1 block text-[10px] text-slate-500">
+                            Producto por defecto del sistema; cámbialo solo si está mal.
+                          </span>
+                        ) : null}
+                        {linea.siigoProductoId ? (
+                          <span className="mt-1 block text-[10px] text-slate-400">
+                            {
+                              badgeImpuestoProducto(
+                                productos.find((p) => p.id === linea.siigoProductoId) ?? null,
+                              ).label
+                            }
+                          </span>
+                        ) : null}
+                      </div>
+                    );
+                  }
+                  if (linea.siigoProductoId) {
+                    return (
+                      <span className="ml-1 text-[10px] text-slate-400">
+                        {linea.siigoProductoCodigo}
+                        {" · "}
+                        {
+                          badgeImpuestoProducto(
+                            productos.find((p) => p.id === linea.siigoProductoId) ?? null,
+                          ).label
+                        }
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
+                {lineaSinProductoSiigo(linea, formato) && !ocultarAvisoPorLinea(estadoBorrador) ? (
+                  <p className="mt-1 text-xs font-medium text-rose-700">
+                    Sin producto SIIGO: no se podrá enviar.
+                  </p>
                 ) : null}
               </td>
               {!compacto ? (
@@ -919,7 +1092,7 @@ function SubseccionLineas({
               <td className="px-2 py-2 text-right font-semibold text-slate-900">
                 {puedeEditar && !linea.tipoFija ? (
                   <CampoLinea valor={linea.valor} etiqueta={`Valor en COP de la línea ${linea.orden}`} numerico guardando={guardando} guardar={(valor) => ejecutar(() => apiActualizarLinea(borradorId, linea.id, { valor }))} />
-                ) : formatCOP(linea.valor)}
+                ) : formatoPesos(centavosDeTextoApi(linea.valor))}
               </td>
               {!compacto ? (
                 <td className="px-2 py-2">
@@ -1015,34 +1188,35 @@ function SubseccionLineas({
               Subtotal {titulo}
             </td>
             <td className="px-2 py-2 text-right font-semibold text-slate-900">
-              {formatCOP(subtotal.toString())}
+              {formatoPesos(subtotal)}
             </td>
             {colsDespues > 0 ? <td colSpan={colsDespues} /> : null}
           </tr>
-          {compacto && !ivaPorItem ? (
+          {compacto && !ivaPorItem && ivaSeccion !== null ? (
             <>
+              {/* Formato COMISION: el IVA ya es la línea fija IVA_COMISION de
+                  esta subsección (calculada por el servidor con el parámetro
+                  IVA_COMISION), así que el subtotal YA lo incluye. Antes se
+                  estimaba 19 % fijo SOBRE ese subtotal: tasa fija y doble IVA
+                  en la vista previa. Ahora se desglosa lo que hay. */}
               <tr className="bg-slate-50">
                 <td
                   colSpan={colsAntes}
                   className="px-2 py-2 text-right text-xs font-medium uppercase tracking-wide text-slate-500"
                 >
-                  IVA (19%)
+                  De ellos, IVA
                 </td>
-                <td className="px-2 py-2 text-right text-slate-700">
-                  {formatCOP((subtotal * 19n / 100n).toString())}
-                </td>
+                <td className="px-2 py-2 text-right text-slate-700">{formatoPesos(ivaSeccion)}</td>
                 {colsDespues > 0 ? <td colSpan={colsDespues} /> : null}
               </tr>
-              <tr className="border-t border-slate-200 bg-slate-50">
+              <tr className="bg-slate-50">
                 <td
                   colSpan={colsAntes}
-                  className="px-2 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-700"
+                  className="px-2 py-2 text-right text-xs font-medium uppercase tracking-wide text-slate-500"
                 >
-                  Total con IVA
+                  Sin IVA
                 </td>
-                <td className="px-2 py-2 text-right font-bold text-slate-900">
-                  {formatCOP((subtotal + subtotal * 19n / 100n).toString())}
-                </td>
+                <td className="px-2 py-2 text-right text-slate-700">{formatoPesos(subtotal - ivaSeccion)}</td>
                 {colsDespues > 0 ? <td colSpan={colsDespues} /> : null}
               </tr>
             </>
@@ -1229,7 +1403,7 @@ export function EditorLineas({
   // ivaComision aparte para evitar doble cuenta.
   const totalLineasVivo = useMemo(() => {
     try {
-      return subtotalTerceros + subtotalOperacional - BigInt(borrador.retenciones);
+      return subtotalTerceros + subtotalOperacional - centavosDeTextoApi(borrador.retenciones);
     } catch {
       return 0n;
     }
@@ -1237,13 +1411,36 @@ export function EditorLineas({
 
   const totalMotor = (() => {
     try {
-      return BigInt(borrador.totalFactura);
+      return centavosDeTextoApi(borrador.totalFactura);
     } catch {
       return 0n;
     }
   })();
 
   const desviacion = totalLineasVivo - totalMotor;
+
+  const lineasSinProducto = useMemo(
+    () => contarLineasSinProducto(borrador.lineasRevision, borrador.formatoFactura),
+    [borrador.lineasRevision, borrador.formatoFactura],
+  );
+  // Catálogo listo para elegir de él (ver `SiigoProductoSelect.etiquetaActual`
+  // y el gate de `puedeElegirProducto` en `SubseccionLineas`).
+  const catalogoDisponible = !catalogos.cargando && productos.length > 0;
+  // El aviso solo puede prometer "elige el producto aquí mismo" cuando ambas
+  // cosas son ciertas: el rol puede editar Y el catálogo de verdad está
+  // disponible. Con `puedeEditar=true` pero catálogo caído/sin permiso (p.
+  // ej. SOCIO: `/api/configuracion/siigo/productos` exige ADMIN) no hay
+  // ningún selector en pantalla, así que `mensajeSinProductoSiigo` recibe
+  // `false` y cae en el texto "pide a un ADMIN" (o "devuelve a BORRADOR"),
+  // nunca en "elige el producto en cada línea marcada".
+  const puedeAsignarProducto = puedeEditar && catalogoDisponible;
+  // Mientras el catálogo carga no se sabe todavía si va a estar disponible:
+  // se oculta el aviso general en vez de arriesgar un texto que un instante
+  // después puede quedar equivocado (el aviso por línea ya cubre lo esencial).
+  const mensajeAvisoProducto =
+    lineasSinProducto > 0 && !catalogos.cargando
+      ? mensajeSinProductoSiigo(borrador.estado, puedeAsignarProducto)
+      : null;
 
   const ejecutar: Ejecutar = async (accion, exito) => {
     if (guardandoRef.current) { setError("Hay otro cambio guardándose. Reintenta el nuevo cambio cuando termine."); return false; }
@@ -1278,6 +1475,15 @@ export function EditorLineas({
           </span>
         </div>
       ) : null}
+      {mensajeAvisoProducto ? (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+        >
+          <p className="font-medium">{lineasSinProducto} línea(s) sin producto SIIGO</p>
+          <p className="mt-1 text-amber-700">{mensajeAvisoProducto}</p>
+        </div>
+      ) : null}
       {catalogos.cargando ? (
         <ModuleState type="loading" title="Cargando facturas y productos…" detail="Preparando las opciones para vincular cada línea." />
       ) : catalogos.errores.length > 0 ? (
@@ -1302,6 +1508,8 @@ export function EditorLineas({
         subtotal={subtotalTerceros}
         facturas={facturas}
         productos={productos}
+        catalogoDisponible={catalogoDisponible}
+        estadoBorrador={borrador.estado}
         puedeEditar={puedeEditar}
         guardando={guardando}
         borradorId={borrador.id}
@@ -1317,6 +1525,8 @@ export function EditorLineas({
         subtotal={subtotalOperacional}
         facturas={facturas}
         productos={productos}
+        catalogoDisponible={catalogoDisponible}
+        estadoBorrador={borrador.estado}
         puedeEditar={puedeEditar}
         guardando={guardando}
         borradorId={borrador.id}
@@ -1328,13 +1538,13 @@ export function EditorLineas({
         <div className="flex w-full max-w-md justify-between">
           <span className="text-slate-600">Σ Ingresos para terceros</span>
           <span className="text-slate-800">
-            {formatCOP(subtotalTerceros.toString())}
+            {formatoPesos(subtotalTerceros)}
           </span>
         </div>
         <div className="flex w-full max-w-md justify-between border-b border-slate-200 pb-1">
           <span className="text-slate-600">Σ Ingresos operacionales</span>
           <span className="text-slate-800">
-            {formatCOP(subtotalOperacional.toString())}
+            {formatoPesos(subtotalOperacional)}
           </span>
         </div>
         {/* Comisión Galcomex e IVA comisión ya viven como líneas fijas dentro
@@ -1345,11 +1555,11 @@ export function EditorLineas({
           <>
             <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
               <span>↳ Conceptos propios (base del IVA)</span>
-              <span>{formatCOP(borrador.comision)}</span>
+              <span>{formatoPesos(centavosDeTextoApi(borrador.comision))}</span>
             </div>
             <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
               <span>↳ IVA por ítem (incluido en operacional)</span>
-              <span>{formatCOP(borrador.ivaComision)}</span>
+              <span>{formatoPesos(centavosDeTextoApi(borrador.ivaComision))}</span>
             </div>
           </>
         ) : (
@@ -1365,13 +1575,13 @@ export function EditorLineas({
             />
             <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
               <span>↳ IVA comisión (incluido en operacional)</span>
-              <span>{formatCOP(borrador.ivaComision)}</span>
+              <span>{formatoPesos(centavosDeTextoApi(borrador.ivaComision))}</span>
             </div>
           </>
         )}
         {(() => {
           try {
-            return BigInt(borrador.retenciones) > 0n;
+            return centavosDeTextoApi(borrador.retenciones) > 0n;
           } catch {
             return false;
           }
@@ -1381,20 +1591,20 @@ export function EditorLineas({
               − {borrador.reteIvaPorcentaje !== null ? `ReteIVA ${borrador.reteIvaPorcentaje} %` : "Retenciones"}
             </span>
             <span className="text-slate-800">
-              {formatCOP(borrador.retenciones)}
+              {formatoPesos(centavosDeTextoApi(borrador.retenciones))}
             </span>
           </div>
         ) : null}
         <div className="flex w-full max-w-md justify-between border-t-2 border-slate-300 pt-1">
           <span className="font-semibold text-slate-900">= Total factura</span>
           <span className="font-bold text-slate-900">
-            {formatCOP(totalLineasVivo.toString())}
+            {formatoPesos(totalLineasVivo)}
           </span>
         </div>
         <div className="mt-1 flex w-full max-w-md justify-between text-xs">
           <span className="text-slate-400">Total guardado (BD)</span>
           <span className="text-slate-500">
-            {formatCOP(totalMotor.toString())}
+            {formatoPesos(totalMotor)}
           </span>
         </div>
         {desviacion !== 0n ? (
@@ -1403,7 +1613,7 @@ export function EditorLineas({
               Pendiente de guardar
             </span>
             <span className="font-bold text-amber-700">
-              {formatCOP(desviacion.toString())}
+              {formatoPesos(desviacion)}
             </span>
           </div>
         ) : null}

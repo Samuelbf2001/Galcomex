@@ -36,11 +36,12 @@ import {
   fetchCruceFacturas,
   fetchFormasPagoSiigo,
   fetchValidacionesCruce,
-  formatCOP,
   formatDate,
+  formatDateTime,
   sincronizarFacturaDesdeSiigo,
   transicionarBorrador,
 } from "@/components/facturacion/facturacion-api";
+import { AvisoPagosPorRevisar, conservarPagosPorRevisar } from "@/components/facturacion/aviso-pagos-por-revisar";
 import {
   type FacturaProveedorRow,
   fetchFacturasProveedor,
@@ -51,7 +52,9 @@ import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { describirError, useToast } from "@/components/ui/toast";
 import { ModuleState } from "@/components/layout/module-state";
+import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import { fetchDocumentos } from "@/components/documentos/documentos-api";
+import { centavosDeTextoApi, formatoPesos } from "@/lib/dinero";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
 
@@ -88,7 +91,7 @@ type FacturarModalProps = {
 function FacturarModal({ borradorId, onClose, onFacturado }: FacturarModalProps) {
   const { toast } = useToast();
   const [numSiigo, setNumSiigo] = useState("");
-  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [fecha, setFecha] = useState(hoyBogotaISO());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -395,7 +398,7 @@ function ConfirmarEnvioSiigoModal({
                 <p className="font-semibold">Ya hay un borrador enviado</p>
                 <p className="text-xs">
                   {enviadoASiigoEn
-                    ? `Último envío: ${formatDate(enviadoASiigoEn)}. `
+                    ? `Último envío: ${formatDateTime(enviadoASiigoEn)}. `
                     : null}
                   Reenviar creará un nuevo borrador en SIIGO. El anterior debe
                   descartarse manualmente desde el portal si aún no se estampó.
@@ -464,7 +467,7 @@ function VisorSoporte({ linea, facturasByNumFactura, facturasById, downloadUrlBy
 
       <div className="border border-slate-200 bg-white p-4">
         <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Valor</p>
-        <p className="mt-1 text-lg font-bold text-slate-900">{formatCOP(linea.valor)}</p>
+        <p className="mt-1 text-lg font-bold text-slate-900">{formatoPesos(centavosDeTextoApi(linea.valor))}</p>
       </div>
 
       {/* Visor/enlace de documento adjunto de factura de proveedor */}
@@ -760,7 +763,10 @@ export function RevisorBorrador({
     setTransicionando(true);
     setErrorTransicion(null);
     try {
-      const updated = await transicionarBorrador(borradorActual.id, { nuevoEstado });
+      const updated = conservarPagosPorRevisar(
+        await transicionarBorrador(borradorActual.id, { nuevoEstado }),
+        borradorActual,
+      );
       setBorradorActual(updated);
       // Conserva las marcas internas del revisor durante la sesión.
       setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
@@ -778,14 +784,16 @@ export function RevisorBorrador({
     }
   }
 
-  function handleFacturado(updated: BorradorRow) {
+  function handleFacturado(respuesta: BorradorRow) {
+    const updated = conservarPagosPorRevisar(respuesta, borradorActual);
     setModalFacturar(false);
     setBorradorActual(updated);
     setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
     onBorradorActualizado(updated);
   }
 
-  function handleDevuelto(updated: BorradorRow) {
+  function handleDevuelto(respuesta: BorradorRow) {
+    const updated = conservarPagosPorRevisar(respuesta, borradorActual);
     setModalDevolver(false);
     setErrorTransicion(null);
     setBorradorActual(updated);
@@ -824,7 +832,11 @@ export function RevisorBorrador({
           ? caught.message
           : describirError(caught, "Error al sincronizar con SIIGO.");
       setErrorTransicion(mensaje);
-      toast({ title: "No se pudo sincronizar con SIIGO", description: mensaje, variant: "error" });
+      const titulo =
+        caught instanceof FacturacionApiError && caught.codigo === "SIIGO_TOTAL_DISTINTO"
+          ? "SIIGO liquidó un total distinto al del borrador"
+          : "No se pudo sincronizar con SIIGO";
+      toast({ title: titulo, description: mensaje, variant: "error" });
     } finally {
       setSincronizandoSiigo(false);
     }
@@ -1065,7 +1077,7 @@ export function RevisorBorrador({
               disabled={enviandoSiigo}
               title={
                 borradorActual.siigoDraftId
-                  ? `Ya enviado a SIIGO${borradorActual.enviadoASiigoEn ? ` (${formatDate(borradorActual.enviadoASiigoEn)})` : ""}. Reenviar lo recreará en SIIGO.`
+                  ? `Ya enviado a SIIGO${borradorActual.enviadoASiigoEn ? ` (${formatDateTime(borradorActual.enviadoASiigoEn)})` : ""}. Reenviar lo recreará en SIIGO.`
                   : "Enviar a SIIGO como borrador (pendiente de validar por un superior)"
               }
               className="inline-flex h-9 items-center gap-2 border border-cyan-300 bg-cyan-50 px-3 text-sm font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
@@ -1087,7 +1099,7 @@ export function RevisorBorrador({
             >
               Borrador en SIIGO
               {borradorActual.enviadoASiigoEn
-                ? ` · ${formatDate(borradorActual.enviadoASiigoEn)}`
+                ? ` · ${formatDateTime(borradorActual.enviadoASiigoEn)}`
                 : ""}
             </span>
           ) : null}
@@ -1188,9 +1200,11 @@ export function RevisorBorrador({
       {/* Orden de compra del cliente (capacidad orden_compra_en_revision, caso Polyrec):
           la factura debe dar el valor de la OC sin IVA y llevar su número en la descripción. */}
       {tramite.ordenCompraNumero ? (() => {
-        const oc = tramite.ordenCompraValor ? BigInt(tramite.ordenCompraValor) : null;
+        const oc = tramite.ordenCompraValor ? centavosDeTextoApi(tramite.ordenCompraValor) : null;
         const sinIva =
-          BigInt(borradorActual.totalFacturaLineas) - BigInt(borradorActual.ivaComision) + BigInt(borradorActual.retenciones);
+          centavosDeTextoApi(borradorActual.totalFacturaLineas) -
+          centavosDeTextoApi(borradorActual.ivaComision) +
+          centavosDeTextoApi(borradorActual.retenciones);
         const diferencia = oc === null ? null : sinIva - oc;
         const cuadra = diferencia === 0n;
         return (
@@ -1204,19 +1218,22 @@ export function RevisorBorrador({
             <div>
               <p className="font-semibold">
                 Orden de compra N° {tramite.ordenCompraNumero}
-                {oc !== null ? ` por ${formatCOP(oc.toString())} (sin IVA)` : " (sin valor registrado en el DO)"}
+                {oc !== null ? ` por ${formatoPesos(oc)} (sin IVA)` : " (sin valor registrado en el DO)"}
               </p>
               <p className="text-xs">
                 {oc === null
                   ? "Registra el valor de la OC en el Resumen del DO para contrastarla aquí."
                   : cuadra
-                    ? `La factura sin IVA suma ${formatCOP(sinIva.toString())}: cuadra con la OC. El número ya va en la cabecera.`
-                    : `La factura sin IVA suma ${formatCOP(sinIva.toString())}: ${diferencia! > 0n ? "supera" : "queda por debajo de"} la OC en ${formatCOP((diferencia! < 0n ? -diferencia! : diferencia!).toString())}. Revisa antes de aprobar.`}
+                    ? `La factura sin IVA suma ${formatoPesos(sinIva)}: cuadra con la OC. El número ya va en la cabecera.`
+                    : `La factura sin IVA suma ${formatoPesos(sinIva)}: ${diferencia! > 0n ? "supera" : "queda por debajo de"} la OC en ${formatoPesos(diferencia! < 0n ? -diferencia! : diferencia!)}. Revisa antes de aprobar.`}
               </p>
             </div>
           </div>
         );
       })() : null}
+
+      {/* Pagos de un trámite con asesoría (NO SE COBRA) cuyo reparto no es seguro. Solo ADMIN/REVISOR reciben la lista; nunca va a comentariosCabecera (viaja a SIIGO). */}
+      <AvisoPagosPorRevisar pagos={borradorActual.pagosPorRevisar} />
 
       {/* Observaciones de cabecera del borrador. Incluyen las notas
           "DEVUELTO POR …" que deja el revisor al devolverlo; esas NO salen en
@@ -1273,7 +1290,8 @@ export function RevisorBorrador({
           ) : null}
           {cargandoFormas ? <p role="status" className="px-4 py-2 text-sm text-slate-500">Cargando formas de pago…</p> : puedeAprobar && !erroresConsulta.formas && formasPago.length === 0 ? <p role="status" className="px-4 py-2 text-sm text-slate-500">No hay formas de pago disponibles en Siigo.</p> : null}
           {/* Líneas de revisión */}
-          <div className="overflow-x-auto border-b border-slate-200">
+          {/* shrink-0: dentro de la columna flex con scroll propio, un hijo con overflow tiene min-height 0 y flexbox lo encogía a ~1px (22-sep). */}
+          <div className="shrink-0 overflow-x-auto border-b border-slate-200">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-2.5">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                 Líneas del borrador ({lineas.length})
@@ -1326,7 +1344,7 @@ export function RevisorBorrador({
                           {linea.numSoporte ?? <span className="text-slate-300">—</span>}
                         </td>
                         <td className="px-3 py-2 text-right font-semibold text-slate-900">
-                          {formatCOP(linea.valor)}
+                          {formatoPesos(centavosDeTextoApi(linea.valor))}
                         </td>
                         <td className="px-3 py-2 text-center">
                           {/* Botones de aprobación/observación por línea — solo roles con permisos */}
@@ -1408,13 +1426,13 @@ export function RevisorBorrador({
               <div className="flex justify-between gap-4">
                 <dt className="text-slate-600">Total pagos</dt>
                 <dd className="font-semibold text-slate-900">
-                  {formatCOP(borradorActual.totalPagos)}
+                  {formatoPesos(centavosDeTextoApi(borradorActual.totalPagos))}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
                 <dt className="text-slate-600">Anticipo aplicado</dt>
                 <dd className="font-semibold text-slate-900">
-                  {formatCOP(borradorActual.totalAnticipo)}
+                  {formatoPesos(centavosDeTextoApi(borradorActual.totalAnticipo))}
                 </dd>
               </div>
 
@@ -1425,7 +1443,7 @@ export function RevisorBorrador({
                   {borradorActual.formatoFactura === "CONCEPTOS_IVA" ? "Conceptos propios" : "Comisión Galcomex/LM"}
                 </dt>
                 <dd className="font-semibold text-slate-900">
-                  {formatCOP(borradorActual.comision)}
+                  {formatoPesos(centavosDeTextoApi(borradorActual.comision))}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
@@ -1433,22 +1451,22 @@ export function RevisorBorrador({
                   {borradorActual.formatoFactura === "CONCEPTOS_IVA" ? "IVA por ítem (19%)" : "IVA comisión (19%)"}
                 </dt>
                 <dd className="font-semibold text-slate-900">
-                  {formatCOP(borradorActual.ivaComision)}
+                  {formatoPesos(centavosDeTextoApi(borradorActual.ivaComision))}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
                 <dt className="text-slate-600">Impuesto 4×1000</dt>
                 <dd className="font-semibold text-slate-900">
-                  {formatCOP(borradorActual.impuesto4x1000)}
+                  {formatoPesos(centavosDeTextoApi(borradorActual.impuesto4x1000))}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
                 <dt className="text-slate-600">Costos bancarios</dt>
                 <dd className="font-semibold text-slate-900">
-                  {formatCOP(borradorActual.costosBancarios)}
+                  {formatoPesos(centavosDeTextoApi(borradorActual.costosBancarios))}
                 </dd>
               </div>
-              {BigInt(borradorActual.retenciones) > 0n ? (
+              {centavosDeTextoApi(borradorActual.retenciones) > 0n ? (
                 <div className="flex justify-between gap-4">
                   <dt className="text-slate-600">
                     {borradorActual.reteIvaPorcentaje !== null
@@ -1456,7 +1474,7 @@ export function RevisorBorrador({
                       : "Retenciones (RETE IVA/FTE/ICA)"}
                   </dt>
                   <dd className="font-semibold text-slate-900">
-                    {formatCOP(borradorActual.retenciones)}
+                    {formatoPesos(centavosDeTextoApi(borradorActual.retenciones))}
                   </dd>
                 </div>
               ) : null}
@@ -1466,41 +1484,41 @@ export function RevisorBorrador({
               <div className="flex justify-between gap-4 text-base">
                 <dt className="font-bold text-slate-900">Total factura</dt>
                 <dd className="font-bold text-slate-950">
-                  {formatCOP(borradorActual.totalFactura)}
+                  {formatoPesos(centavosDeTextoApi(borradorActual.totalFactura))}
                 </dd>
               </div>
 
               <div className="my-2 border-t border-slate-200" />
 
-              {BigInt(borradorActual.saldoAFavorCliente) > 0n ? (
+              {centavosDeTextoApi(borradorActual.saldoAFavorCliente) > 0n ? (
                 <div className="flex justify-between gap-4">
                   <dt className="text-slate-600">Saldo a favor cliente</dt>
                   <dd className="font-semibold text-emerald-700">
-                    {formatCOP(borradorActual.saldoAFavorCliente)}
+                    {formatoPesos(centavosDeTextoApi(borradorActual.saldoAFavorCliente))}
                   </dd>
                 </div>
               ) : null}
-              {BigInt(borradorActual.saldoACargoCliente) > 0n ? (
+              {centavosDeTextoApi(borradorActual.saldoACargoCliente) > 0n ? (
                 <div className="flex justify-between gap-4">
                   <dt className="text-slate-600">Saldo a cargo cliente</dt>
                   <dd className="font-semibold text-rose-600">
-                    {formatCOP(borradorActual.saldoACargoCliente)}
+                    {formatoPesos(centavosDeTextoApi(borradorActual.saldoACargoCliente))}
                   </dd>
                 </div>
               ) : null}
-              {BigInt(borradorActual.saldoAFavorLM) > 0n ? (
+              {centavosDeTextoApi(borradorActual.saldoAFavorLM) > 0n ? (
                 <div className="flex justify-between gap-4">
                   <dt className="text-slate-600">Saldo a favor LM</dt>
                   <dd className="font-semibold text-emerald-700">
-                    {formatCOP(borradorActual.saldoAFavorLM)}
+                    {formatoPesos(centavosDeTextoApi(borradorActual.saldoAFavorLM))}
                   </dd>
                 </div>
               ) : null}
-              {BigInt(borradorActual.saldoACargoLM) > 0n ? (
+              {centavosDeTextoApi(borradorActual.saldoACargoLM) > 0n ? (
                 <div className="flex justify-between gap-4">
                   <dt className="text-slate-600">Saldo a cargo LM</dt>
                   <dd className="font-semibold text-rose-600">
-                    {formatCOP(borradorActual.saldoACargoLM)}
+                    {formatoPesos(centavosDeTextoApi(borradorActual.saldoACargoLM))}
                   </dd>
                 </div>
               ) : null}
@@ -1508,7 +1526,7 @@ export function RevisorBorrador({
 
             {borradorActual.fechaAprobacion ? (
               <p className="mt-4 text-xs text-slate-500">
-                Aprobado el {formatDate(borradorActual.fechaAprobacion)}
+                Aprobado el {formatDateTime(borradorActual.fechaAprobacion)}
               </p>
             ) : null}
           </div>
@@ -1539,7 +1557,7 @@ export function RevisorBorrador({
                 ) : (
                   <div className="space-y-2">
                     {validaciones.proveedores.map((v) => {
-                      const dif = globalThis.BigInt(v.diferencia);
+                      const dif = centavosDeTextoApi(v.diferencia);
                       return (
                         <div
                           key={v.proveedorId}
@@ -1573,13 +1591,13 @@ export function RevisorBorrador({
                             <div>
                               <dt className="text-slate-500">Facturas</dt>
                               <dd className="font-semibold text-slate-800">
-                                {formatCOP(v.totalFacturas)}
+                                {formatoPesos(centavosDeTextoApi(v.totalFacturas))}
                               </dd>
                             </div>
                             <div>
                               <dt className="text-slate-500">Pagos</dt>
                               <dd className="font-semibold text-slate-800">
-                                {formatCOP(v.totalPagos)}
+                                {formatoPesos(centavosDeTextoApi(v.totalPagos))}
                               </dd>
                             </div>
                             <div>
@@ -1594,10 +1612,10 @@ export function RevisorBorrador({
                                 }`}
                               >
                                 {v.cuadra
-                                  ? formatCOP("0")
+                                  ? formatoPesos(0n)
                                   : dif > 0n
-                                    ? `+${formatCOP(v.diferencia)}`
-                                    : formatCOP(v.diferencia)}
+                                    ? `+${formatoPesos(dif)}`
+                                    : formatoPesos(dif)}
                               </dd>
                             </div>
                           </dl>
@@ -1624,7 +1642,7 @@ export function RevisorBorrador({
                               ) : null}
                             </span>
                             <span className="shrink-0 font-semibold text-slate-700">
-                              {formatCOP(p.valor)}
+                              {formatoPesos(centavosDeTextoApi(p.valor))}
                             </span>
                           </div>
                         ))}
@@ -1654,20 +1672,26 @@ export function RevisorBorrador({
                 ) : (
                   <div className="space-y-2">
                     {cruce.map((fp) => {
-                      const dif = globalThis.BigInt(fp.diferencia);
+                      const dif = centavosDeTextoApi(fp.diferencia);
                       // Una factura que no se traslada al cliente (asesoría a
                       // nombre de Galcomex) nunca tiene línea de venta: su
                       // desfase no es un problema y no se pinta como alerta.
                       const cuadra = !fp.esDesviacion;
+                      // Lo facturado al cliente pasa del valor de la factura, o
+                      // una asesoría NO SE COBRA tiene líneas de venta: se le
+                      // estaría cobrando de más. Alerta roja, siempre.
+                      const cobraDeMas = fp.facturadoExcedeValor || fp.noCobrableFacturada;
                       return (
                         <div
                           key={fp.id}
                           className={`border px-3 py-2.5 text-sm ${
-                            !fp.repercutible
-                              ? "border-slate-200 bg-slate-50"
-                              : cuadra
-                                ? "border-emerald-200 bg-emerald-50"
-                                : "border-amber-200 bg-amber-50"
+                            cobraDeMas
+                              ? "border-rose-300 bg-rose-50"
+                              : !fp.repercutible
+                                ? "border-slate-200 bg-slate-50"
+                                : cuadra
+                                  ? "border-emerald-200 bg-emerald-50"
+                                  : "border-amber-200 bg-amber-50"
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
@@ -1681,18 +1705,24 @@ export function RevisorBorrador({
                             </div>
                             <span
                               className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 border ${
-                                !fp.repercutible
-                                  ? "border-slate-300 bg-slate-100 text-slate-600"
-                                  : cuadra
-                                    ? "border-emerald-300 bg-emerald-100 text-emerald-700"
-                                    : "border-amber-300 bg-amber-100 text-amber-700"
+                                cobraDeMas
+                                  ? "border-rose-300 bg-rose-100 text-rose-700"
+                                  : !fp.repercutible
+                                    ? "border-slate-300 bg-slate-100 text-slate-600"
+                                    : cuadra
+                                      ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                                      : "border-amber-300 bg-amber-100 text-amber-700"
                               }`}
                             >
-                              {!fp.repercutible
-                                ? "No se cobra al cliente"
-                                : cuadra
-                                  ? "Cuadra"
-                                  : "Desfase"}
+                              {fp.noCobrableFacturada
+                                ? "No se cobra, pero está facturada"
+                                : fp.facturadoExcedeValor
+                                  ? "Facturado pasa del valor"
+                                  : !fp.repercutible
+                                    ? "No se cobra al cliente"
+                                    : cuadra
+                                      ? "Cuadra"
+                                      : "Desfase"}
                             </span>
                           </div>
 
@@ -1700,13 +1730,13 @@ export function RevisorBorrador({
                             <div>
                               <dt className="text-slate-500">Pagado</dt>
                               <dd className="font-semibold text-slate-800">
-                                {formatCOP(fp.montoPagado)}
+                                {formatoPesos(centavosDeTextoApi(fp.montoPagado))}
                               </dd>
                             </div>
                             <div>
                               <dt className="text-slate-500">Facturado</dt>
                               <dd className="font-semibold text-slate-800">
-                                {formatCOP(fp.montoFacturado)}
+                                {formatoPesos(centavosDeTextoApi(fp.montoFacturado))}
                               </dd>
                             </div>
                             <div>
@@ -1723,13 +1753,20 @@ export function RevisorBorrador({
                                 }`}
                               >
                                 {dif === 0n
-                                  ? formatCOP("0")
+                                  ? formatoPesos(0n)
                                   : dif > 0n
-                                    ? `+${formatCOP(fp.diferencia)}`
-                                    : formatCOP(fp.diferencia)}
+                                    ? `+${formatoPesos(dif)}`
+                                    : formatoPesos(dif)}
                               </dd>
                             </div>
                           </dl>
+                          {cobraDeMas ? (
+                            <p className="mt-2 text-xs font-medium text-rose-700">
+                              {fp.noCobrableFacturada
+                                ? `Esta factura no se le cobra al cliente (la asume Galcomex), pero hay líneas de la factura de venta por ${formatoPesos(centavosDeTextoApi(fp.montoFacturado))} vinculadas a ella. Quítalas antes de aprobar.`
+                                : `Las líneas de terceros vinculadas suman ${formatoPesos(centavosDeTextoApi(fp.montoFacturado))} y la factura del proveedor vale ${formatoPesos(centavosDeTextoApi(fp.valor))}: al cliente se le cobraría más de lo facturado. Corrige las líneas antes de aprobar.`}
+                            </p>
+                          ) : null}
                         </div>
                       );
                     })}
@@ -1775,9 +1812,4 @@ export function RevisorBorrador({
   );
 }
 
-// Helper pequeño reutilizable para que el compilador no se queje del BigInt literal
-// en contextos donde el valor puede ser "0" como string
-function BigInt(v: string): bigint {
-  return globalThis.BigInt(v);
-}
 

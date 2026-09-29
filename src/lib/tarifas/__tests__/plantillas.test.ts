@@ -1,6 +1,29 @@
 import { describe, expect, it } from "vitest";
 
-import { CONCEPTOS_VENTA_DEMO, PLANTILLAS_TARIFARIO } from "../plantillas";
+import { entradaDeItemTarifa, tarifaItemSchema } from "@/lib/validations/tarifas";
+
+import { CONCEPTOS_VENTA_DEMO, PLANTILLAS_TARIFARIO, PLANTILLA_LITOPLAS_IMPO } from "../plantillas";
+
+// Fase centavos: valores de plantilla en CENTAVOS (pesos(…)); al cargar una
+// plantilla el servicio los re-valida con el esquema (que recibe PESOS texto).
+describe("PLANTILLAS_TARIFARIO — dinero en centavos", () => {
+  it("Gastos de trámite Litoplas = $100.000 = 10.000.000 centavos", () => {
+    const gastos = PLANTILLA_LITOPLAS_IMPO.items.find((i) => i.concepto === "GASTOS_TRAMITE");
+    expect(gastos?.valor).toBe(10_000_000n);
+  });
+
+  it("todo ítem de plantilla sobrevive la re-validación del esquema sin cambiar de valor", () => {
+    for (const p of PLANTILLAS_TARIFARIO) {
+      for (const item of p.items) {
+        const reparsed = tarifaItemSchema.parse(entradaDeItemTarifa(item));
+        expect(reparsed.valor, `${p.codigo} · ${item.concepto}`).toBe(item.valor);
+        expect(reparsed.valorAdicional ?? null).toBe(item.valorAdicional ?? null);
+        expect(reparsed.minimos ?? null).toEqual(item.minimos ?? null);
+        expect(reparsed.tramos ?? null).toEqual(item.tramos ?? null);
+      }
+    }
+  });
+});
 
 // B2 (22-sep): "Arrancar desde" muestra de quién es cada plantilla.
 describe("PLANTILLAS_TARIFARIO — cliente de cada propuesta (B2)", () => {

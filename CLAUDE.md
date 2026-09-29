@@ -74,7 +74,7 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 
 **Cálculo del borrador:**
 1. `costosBancarios = Σ(pago.costoBancario)` — de tabla `MatrizRecaudoPago`
-2. `ivaComision = comision × 19 / 100` (BigInt, truncado)
+2. `ivaComision = comision × 19 / 100` (BigInt en centavos, al peso mitad arriba; formato COMISION: la línea la escribimos nosotros, Siigo no la recalcula)
 3. **4x1000 CONDICIONAL:** solo si `saldoPrevio − comision − iva − costos > 0` (saldo a favor)
    - Base = `totalAnticipoAplicado`, tarifa = 0.4%
    - Si queda a cargo del cliente → `impuesto4x1000 = 0`
@@ -112,11 +112,11 @@ Todo en `src/lib/calculations/motor-factura.ts`. **Función pura, sin BD.**
 Verificado contra 331 facturas reales 2026 leídas de Siigo (Litoplas, Polyrec, Polyrec ZF, CW ASIA, Sesderma, Coldex). Se fija por borrador en `BorradorFactura.formatoFactura` al generarlo; los borradores viejos quedan en `"COMISION"`.
 - **Conceptos:** cada ítem del tarifario (o concepto manual) es una línea OPERACIONAL con su producto Siigo y `LineaRevision.aplicaIva`. No hay línea COMISION ni COSTOS_BANCARIOS.
 - **Terceros:** nacen de las facturas de proveedor repercutibles del trámite ("ALMACENAJE ALMACARGA FACT. FE-11298"), sin IVA, con el NIT del proveedor.
-- **Líneas calculadas:** IVA_COMISION ("IVA 19%") = Σ IVA por ítem redondeado al peso; IMPUESTO_4X1000 = 0,4 % de Σ terceros (redondeo al peso; sin terceros no hay 4x1000). Las recalcula `sincronizarLineasDerivadas` dentro de `recalcularTotalBorrador` cada vez que cambian las líneas.
-- **ReteIVA:** `% de la función × IVA` (15 % por defecto, snapshot en `BorradorFactura.reteIvaPorcentaje`); con null las retenciones son manuales.
+- **Líneas calculadas:** IVA_COMISION ("IVA 19%") = Σ IVA por ítem redondeado **al centavo** (D-1, como liquida Siigo: FV-2-18702 6.632.007 → 1.260.081,33); IMPUESTO_4X1000 = 0,4 % de Σ terceros (redondeo **al peso**; sin terceros no hay 4x1000). Precisiones exportadas en `factura-conceptos.ts` (`PRECISION_IVA`, `PRECISION_RETEIVA`, `PRECISION_4X1000_FACTURA`). Las recalcula `sincronizarLineasDerivadas` dentro de `recalcularTotalBorrador` cada vez que cambian las líneas.
+- **ReteIVA:** `% de la función × IVA` **al centavo** (15 % por defecto, snapshot en `BorradorFactura.reteIvaPorcentaje`; FV-2-18772: 15 % de 208.050 = 31.207,50); con null las retenciones son manuales.
 - **Siigo:** la línea de IVA no se envía; los ítems gravados llevan `taxes: [{id: IVA 19%}]`, la ReteIVA va en `retentions`, `payments.value` = total. Armador puro en `src/lib/siigo/items-factura.ts`.
 - **Observaciones:** "NO PRACTICAR RETEFUENTE NI RETEICA" + "DO… IM… PROVEEDOR" + totales con "SALDO A FAVOR/A CARGO" (sin "SU").
-- **Casos dorados:** BAQ-18385 (terceros + 4x1000 + ReteIVA, total 1.487.623, a cargo 69.623) y BAQ-18357 (sin terceros, a favor 11.400) en `src/lib/calculations/__tests__/factura-conceptos.test.ts`.
+- **Casos dorados:** BAQ-18385 (terceros + 4x1000 + ReteIVA, total 1.487.623,45, a cargo 69.623,45), BAQ-18357 (sin terceros, a favor 11.400), FV-2-18702 (total 10.209.744,43) y FV-2-18772 (total 2.821.466,50) en `src/lib/calculations/__tests__/factura-conceptos.test.ts`.
 
 ## Capacidades por empresa (M1) — cómo se configura el comportamiento
 
@@ -186,14 +186,63 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   cálculo y eventos" en el Resumen del DO (`seccion-eventos-tramite.tsx`),
   PDF en `GET /api/tarifarios/[id]/pdf`. Demo: `npx tsx scripts/demo-tarifario.ts`.
 
+## Cuentas por pagar a proveedores (CxP v2)
+
+Lo que Galcomex le debe a cada proveedor, factura por factura, sin pagar dos
+veces. Detalle completo (reglas R1–R20, migraciones M1–M5, runbook, reversa):
+`docs/CXP-PROVEEDORES.md`.
+
+- **Saldo** = `valor − Σ PagoTramiteFactura.monto − Σ ajustes − montoCompensado`,
+  siempre `0 ≤ saldo ≤ valor`. **Estado = función del saldo** (`estadoDe` en
+  `src/lib/cxp/saldos.ts`): `REGISTRADA` (saldo = valor) · `PARCIAL` (0 < saldo
+  < valor) · `PAGADA` (saldo 0). En pantalla: **Pendiente / Abonada / Pagada**
+  (+ "Cruzada" y "Pagada con ajuste"). `FACTURADA_CLIENTE` está deprecado: pagada
+  al proveedor y cobrada al cliente son cosas independientes.
+- **Única puerta:** `aplicarSaldo` (`src/lib/cxp/aplicar.ts`) es lo ÚNICO que baja
+  el saldo; `revertirSaldo` lo único que lo devuelve; `recalcularEstadoFactura`
+  lo único que escribe el estado. Los 4 caminos pasan por ahí: pago suelto
+  (`crearPago` con `aplicaciones`), "Generar pago" (`generarPagoDesdeFactura`),
+  pago en bloque (`crearPagoMultiDO`) y cruce de cuenta corriente
+  (`registrarCompensacion`); la conciliación usa `enlazarPagoExistente` o un
+  bloque histórico. Nunca escribas `pago_tramite_factura` ni `estado` a mano.
+- **Orden de bloqueo** en toda mutación de CxP y al cerrar un DO: cabecera de
+  idempotencia → `bloquearTramites` → `bloquearFacturas` (ambos por id,
+  `FOR UPDATE`). Así dos pagos simultáneos no pagan la misma factura y no hay
+  deadlocks (probado en `src/lib/pagos/__tests__/concurrencia-cxp.test.ts`).
+- **Reglas:** nunca más que el saldo (abono = queda Abonada); un pago va a un
+  solo proveedor (clave `NIT:<nitBase>` de la ficha o `BEN:<id>`); ficha de pago
+  obligatoria al registrar la factura; una factura por proveedor + número
+  normalizado (índice único) y aviso si coinciden los dígitos; pago en bloque =
+  un `PagoGrupo` con comprobante obligatorio (salvo histórico), costo bancario
+  una sola vez (`PRIMER_DO` / `GALCOMEX` / `PRORRATEADO`); un pago de bloque no se
+  borra ni se le cambia valor/canal: se anula el bloque completo (solo ADMIN,
+  motivo); un DO `CERRADO` no admite pagos ni anulaciones, y no se cierra con
+  facturas Pendientes o Abonadas; USD: manda el valor en pesos, la re-expresión
+  es solo ADMIN; `claveIdempotencia` (UUID de la pantalla) evita el doble clic.
+- **Base de datos** (triggers, primera vez en el proyecto; Prisma no los ve):
+  llaves (`nitBase`, `numFacturaNormalizado`, `proveedorClave`) y **guardianes
+  de saldo** (M5): cualquier escritura que deje aplicado + ajustes + compensado
+  > valor falla con `CXP_SOBREAPLICACION` (el dominio lo traduce a 409). El NIT
+  **no adivina el DV**: `800154017` y `8001540178` son llaves distintas; el DV solo
+  se separa si viene con guion. Probado en `src/lib/cxp/__tests__/triggers.integration.test.ts`.
+- **Roles:** ADMIN y REVISOR ven el estado de cuenta completo (REVISOR nunca ve
+  botones de acción); OPERATIVO ve solo lo pendiente y puede pagar; anular
+  bloque, quitar ajuste LEGADO, re-expresar USD, histórico y conciliación: solo ADMIN.
+- **Fechas-calendario** (factura, pago, TRM, cruce): 00:00 UTC del día; "hoy" =
+  día en Bogotá (`hoyBogotaISO`, `src/lib/tiempo/bogota.ts`).
+- **Excel de Camila = maestro.** `scripts/cxp/conciliar-excel.ts` (simulacro por
+  defecto; escribe solo con `--modo aplicar --aplicar`, usuario ADMIN) y
+  `scripts/cxp/verificar-invariantes.ts` (I1–I7, sale con código 1 si hay
+  violaciones). Corre el verificador antes y después de desplegar o conciliar.
+
 ## Invariantes de código — NUNCA violar
 
-1. **Dinero SIEMPRE como `BigInt` (COP enteros).** Cero flotantes en cálculos financieros.
+1. **Dinero SIEMPRE como `BigInt` en CENTAVOS de COP** (columnas `…Centavos`); todo texto de dinero (API, MCP, JSON guardados, `Parametro`) son PESOS. Cero flotantes. Solo `src/lib/dinero` convierte, formatea y redondea (ver `docs/DINERO-CENTAVOS.md`).
 2. Sin `any` en TypeScript — el build falla si hay `any`.
 3. Validación Zod en TODOS los endpoints API (entrada).
 4. Autorización en middleware, no en componentes React.
 5. Toda mutación crítica (DOs, pagos, borradores, facturas) genera registro en `AuditLog` con snapshot JSON antes/después.
-6. Tests de cálculo con tolerancia **0 pesos** (exactos, sin redondeos).
+6. Tests de cálculo con tolerancia **0 centavos** (exactos, sin redondeos).
 7. **Cero ramas por empresa.** Prohibido ramificar por `TipoCliente`, por NIT o
    por nombre de empresa para decidir comportamiento de negocio: eso es una
    capacidad (ver arriba). Tampoco se agrega un tercer valor a `TipoCliente`.

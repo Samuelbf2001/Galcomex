@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 import { prisma as db } from "@/lib/db/prisma";
+import { normalizeSerializable } from "@/lib/db/serializable";
 import { decryptPseCode, encryptPseCode, generatePseToken } from "@/lib/crypto/pse";
 
 import { CLAVE_APROBADORES_PSE, aprobadorPorTelefono, parsearAprobadores, type Aprobador } from "./aprobadores";
@@ -74,7 +75,7 @@ export async function solicitarCodigoPse(input: SolicitarCodigoInput): Promise<S
         token,
         solicitadoPor: input.usuarioId,
         expiresAt,
-        valor: input.valor,
+        valorCentavos: input.valor,
         beneficiario: input.beneficiario,
         concepto: input.concepto,
       },
@@ -87,12 +88,13 @@ export async function solicitarCodigoPse(input: SolicitarCodigoInput): Promise<S
         accion: "CREATE",
         usuarioId: input.usuarioId,
         tramiteId: input.tramiteId,
-        despues: {
-          valor: input.valor?.toString() ?? null,
+        // Pesos texto canónico en el AuditLog (misma forma que la historia).
+        despues: normalizeSerializable({
+          valor: input.valor,
           beneficiario: input.beneficiario,
           concepto: input.concepto,
           expiresAt: expiresAt.toISOString(),
-        },
+        }),
       },
     });
     return creada;
