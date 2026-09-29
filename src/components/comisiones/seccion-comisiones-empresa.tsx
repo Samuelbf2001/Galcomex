@@ -1,18 +1,22 @@
 "use client";
 
-import { HandCoins, RotateCcw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { HandCoins, Loader2, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { formatCOP } from "@/components/clientes/tarifas-api";
 import {
+  facturarComisiones,
   fetchComisionesEmpresa,
   type ComisionesEmpresaRow,
+  type LiquidacionComisionesRow,
 } from "@/components/comisiones/comisiones-api";
 import { ModuleState } from "@/components/layout/module-state";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { TableSkeleton } from "@/components/ui/skeleton";
-import { describirError } from "@/components/ui/toast";
+import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
+import { totalesComision } from "@/lib/comisiones/calculo";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -20,14 +24,26 @@ type LoadState = "loading" | "ready" | "error";
  * Ficha de la empresa que paga comisión por contenedor (LTRANS): qué DOs
  * llevan comisión, cuántos contenedores y cuánto va por facturar (+ IVA).
  * Solo aparece si la empresa tiene «Comisión a cobrar por contenedor».
+ *
+ * B10 (Diseño B): el ADMIN marca las comisiones por facturar y con "Facturar
+ * seleccionadas" crea un «Otros» a nombre de la empresa; las comisiones pasan
+ * a "Ya facturadas" con el número de ese «Otros».
  */
 export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
   // GET /api/clientes/[id]/comisiones → ADMIN y REVISOR (los que ven cartera).
   const puedeVer = usePermiso(["ADMIN", "REVISOR"]);
+  // POST /api/clientes/[id]/comisiones/liquidar → solo ADMIN.
+  const puedeFacturar = usePermiso(["ADMIN"]);
+  const { toast } = useToast();
+  const confirmar = useConfirm();
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [datos, setDatos] = useState<ComisionesEmpresaRow | null>(null);
   const [reintento, setReintento] = useState(0);
+  /** Ids de comisión marcados para facturar. Se marcan todas al cargar. */
+  const [marcadas, setMarcadas] = useState<ReadonlySet<string>>(new Set());
+  const [facturando, setFacturando] = useState(false);
+  const [ultimaFactura, setUltimaFactura] = useState<LiquidacionComisionesRow | null>(null);
 
   useEffect(() => {
     if (!puedeVer) return;
@@ -35,6 +51,7 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
     fetchComisionesEmpresa(empresaId, controller.signal)
       .then((respuesta) => {
         setDatos(respuesta);
+        setMarcadas(new Set(respuesta.filas.map((f) => f.comisionId)));
         setLoadState("ready");
       })
       .catch((caught: unknown) => {
@@ -45,13 +62,71 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
     return () => controller.abort();
   }, [empresaId, puedeVer, reintento]);
 
+  // Lo marcado y lo que se facturaría: la misma cuenta que hace el servidor.
+  const seleccion = useMemo(() => {
+    if (!datos) return null;
+    const valorUnitario = BigInt(datos.valorUnitario);
+    return totalesComision(
+      datos.filas
+        .filter((f) => marcadas.has(f.comisionId))
+        .map((f) => ({ unidades: f.unidades, valorUnitario })),
+      BigInt(datos.tasaIva),
+    );
+  }, [datos, marcadas]);
+
   if (!puedeVer) return null;
-  if (loadState === "ready" && datos && !datos.habilitada && datos.filas.length === 0) return null;
+  if (
+    loadState === "ready" &&
+    datos &&
+    !datos.habilitada &&
+    datos.filas.length === 0 &&
+    datos.facturadas.length === 0
+  ) {
+    return null;
+  }
 
   const recargar = () => {
     setLoadState("loading");
     setReintento((k) => k + 1);
   };
+
+  const alternar = (comisionId: string) =>
+    setMarcadas((previas) => {
+      const siguientes = new Set(previas);
+      if (siguientes.has(comisionId)) siguientes.delete(comisionId);
+      else siguientes.add(comisionId);
+      return siguientes;
+    });
+
+  async function facturarSeleccionadas() {
+    if (!datos || !seleccion || facturando || marcadas.size === 0) return;
+    const ok = await confirmar({
+      title: `¿Facturar ${seleccion.unidades} contenedor${seleccion.unidades === 1 ? "" : "es"}?`,
+      description: `Se crea un servicio «Otros» a nombre de esta empresa por ${formatCOP(String(seleccion.subtotal))} + IVA (${formatCOP(String(seleccion.total))} con IVA) y estas comisiones dejan de estar por facturar. Después se manda a facturar como cualquier «Otros».`,
+      confirmText: "Facturar comisiones",
+    });
+    if (!ok) return;
+    setFacturando(true);
+    try {
+      const creada = await facturarComisiones(empresaId, [...marcadas]);
+      setUltimaFactura(creada);
+      toast({
+        title: `Comisiones facturadas en ${creada.consecutivo}`,
+        description: `${creada.unidades} contenedores · ${formatCOP(creada.total)} + IVA. Mándalo a facturar desde ese servicio.`,
+        variant: "success",
+      });
+    } catch (caught) {
+      toast({
+        title: "No se pudieron facturar las comisiones",
+        description: describirError(caught),
+        variant: "error",
+      });
+    } finally {
+      setFacturando(false);
+      // Éxito o 409 (otra persona ya facturó): recargar muestra lo que sigue por facturar.
+      recargar();
+    }
+  }
 
   return (
     <section className="border border-slate-200 bg-white p-5">
@@ -93,6 +168,17 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
             </p>
           ) : null}
 
+          {ultimaFactura ? (
+            <p role="status" className="border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+              Comisiones facturadas en{" "}
+              <strong>
+                <EnlaceTramite id={ultimaFactura.tramiteId}>{ultimaFactura.consecutivo}</EnlaceTramite>
+              </strong>{" "}
+              ({ultimaFactura.unidades} contenedores · {formatCOP(ultimaFactura.total)} + IVA). Abre ese servicio y
+              mándalo a facturar.
+            </p>
+          ) : null}
+
           <dl className="grid gap-3 sm:grid-cols-4">
             <div className="border border-slate-200 p-3">
               <dt className="text-xs uppercase tracking-wide text-slate-500">Contenedores</dt>
@@ -115,14 +201,25 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
           {datos.filas.length === 0 ? (
             <ModuleState
               type="empty"
-              title="Todavía no hay DOs con comisión"
-              detail="Se marcan dentro de cada DO de traslado, en «Comisión por contenedor»."
+              title={
+                datos.facturadas.length > 0 ? "No hay comisiones por facturar" : "Todavía no hay DOs con comisión"
+              }
+              detail={
+                datos.facturadas.length > 0
+                  ? "Todo lo registrado ya está facturado (abajo)."
+                  : "Se marcan dentro de cada DO de traslado, en «Comisión por contenedor»."
+              }
             />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[640px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
+                    {puedeFacturar ? (
+                      <th className="w-8 px-2 py-2">
+                        <span className="sr-only">Facturar</span>
+                      </th>
+                    ) : null}
                     <th className="px-2 py-2">DO</th>
                     <th className="px-2 py-2">Empresa del DO</th>
                     <th className="px-2 py-2">Referencia</th>
@@ -133,7 +230,19 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {datos.filas.map((f) => (
-                    <tr key={f.tramiteId}>
+                    <tr key={f.comisionId || f.tramiteId}>
+                      {puedeFacturar ? (
+                        <td className="px-2 py-2">
+                          <input
+                            type="checkbox"
+                            checked={marcadas.has(f.comisionId)}
+                            disabled={facturando}
+                            onChange={() => alternar(f.comisionId)}
+                            aria-label={`Facturar la comisión de ${f.consecutivo}`}
+                            className="h-4 w-4"
+                          />
+                        </td>
+                      ) : null}
                       <td className="px-2 py-2 font-medium">
                         <EnlaceTramite id={f.tramiteId}>{f.consecutivo}</EnlaceTramite>
                       </td>
@@ -148,6 +257,62 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
               </table>
             </div>
           )}
+
+          {puedeFacturar && datos.filas.length > 0 && seleccion ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-slate-500">
+                Se crea un servicio «Otros» a nombre de esta empresa; las comisiones marcadas quedan ligadas a él y
+                ya no se pueden cambiar ni cobrar otra vez.
+              </p>
+              <button
+                type="button"
+                onClick={() => void facturarSeleccionadas()}
+                disabled={facturando || marcadas.size === 0 || datos.valorUnitario === "0"}
+                className="inline-flex h-10 items-center justify-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
+              >
+                {facturando ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                Facturar seleccionadas ({seleccion.unidades} contenedor{seleccion.unidades === 1 ? "" : "es"} ·{" "}
+                {formatCOP(String(seleccion.subtotal))} + IVA)
+              </button>
+            </div>
+          ) : null}
+
+          {datos.facturadas.length > 0 ? (
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-slate-900">Ya facturadas</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px] text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <th className="px-2 py-2">DO</th>
+                      <th className="px-2 py-2">Empresa del DO</th>
+                      <th className="px-2 py-2 text-right">Contenedores</th>
+                      <th className="px-2 py-2">Facturada en</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {datos.facturadas.map((f) => (
+                      <tr key={f.comisionId}>
+                        <td className="px-2 py-2 font-medium">
+                          <EnlaceTramite id={f.tramiteId}>{f.consecutivo}</EnlaceTramite>
+                        </td>
+                        <td className="px-2 py-2 text-slate-700">{f.empresaDo}</td>
+                        <td className="px-2 py-2 text-right font-semibold text-slate-900">{f.unidades}</td>
+                        <td className="px-2 py-2 text-slate-700">
+                          <EnlaceTramite id={f.otros.id}>{f.otros.consecutivo}</EnlaceTramite>
+                          {f.otros.valorServicio ? (
+                            <span className="ml-2 text-xs text-slate-500">
+                              {formatCOP(f.otros.valorServicio)} + IVA (toda la factura)
+                            </span>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
     </section>

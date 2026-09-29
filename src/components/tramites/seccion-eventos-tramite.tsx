@@ -19,6 +19,7 @@ import {
   type TipoCarga,
 } from "@/components/tramites/eventos-api";
 import type { ChecklistItem } from "@/components/tramites/checklist-api";
+import { BotonCotizacionPdf } from "@/components/tramites/boton-cotizacion-pdf";
 import { SubirRequisito } from "@/components/tramites/subir-requisito";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { TableSkeleton } from "@/components/ui/skeleton";
@@ -586,6 +587,11 @@ export function SeccionEventosTramite({
                   ) : null}
                   {resultado.manuales.length > 0 ? (
                     <p className="text-xs text-slate-500">A mano, si aplica: {resultado.manuales.map((m) => m.nombrePublico).join(", ")}.</p>
+                  ) : null}
+                  {resultado.lineas.length > 0 && resultado.pendientes.length === 0 ? (
+                    <div className="flex justify-end">
+                      <BotonCotizacionPdf tramiteId={tramiteId} />
+                    </div>
                   ) : null}
                 </div>
               ) : null}

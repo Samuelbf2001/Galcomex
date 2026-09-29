@@ -180,7 +180,9 @@ export function SeccionComisionTramite({
                     {contenedores(c.unidades)} × {formatCOP(c.valorUnitario)} ={" "}
                     <strong>{formatCOP(c.subtotal)}</strong> <span className="text-slate-500">+ IVA</span>
                   </span>
-                  {puedeEditar ? (
+                  {c.facturadaEn ? (
+                    <span className="text-xs font-medium text-emerald-800">Facturada en {c.facturadaEn}</span>
+                  ) : puedeEditar ? (
                     <button
                       type="button"
                       disabled={guardando}
@@ -233,18 +235,23 @@ export function SeccionComisionTramite({
                   value={unidades}
                   placeholder={actual ? String(actual.unidades) : libres !== null ? `Máx. ${libres}` : ""}
                   onChange={(e) => setUnidades(e.target.value.replace(/\D/g, ""))}
-                  disabled={guardando || !empresaElegida}
+                  disabled={guardando || !empresaElegida || Boolean(actual?.facturadaEn)}
                   className={INPUT}
                 />
               </label>
               <button
                 type="submit"
-                disabled={guardando || !empresaElegida || unidades === ""}
+                disabled={guardando || !empresaElegida || unidades === "" || Boolean(actual?.facturadaEn)}
                 className="inline-flex h-10 items-center justify-center gap-2 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
               >
                 {guardando ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
                 {actual ? "Cambiar" : "Guardar comisión"}
               </button>
+              {actual?.facturadaEn ? (
+                <p className="text-xs text-slate-600 sm:col-span-3">
+                  Esta comisión ya se facturó en {actual.facturadaEn}: no se puede cambiar ni quitar.
+                </p>
+              ) : null}
               {empresaElegida && empresaElegida.valorUnitario === "0" ? (
                 <p className="text-xs text-amber-800 sm:col-span-3">
                   {empresaElegida.nombre} no tiene configurado el valor por contenedor (su ficha → Funciones →

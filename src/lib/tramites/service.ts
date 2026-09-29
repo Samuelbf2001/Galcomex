@@ -100,6 +100,15 @@ export type OrigenTramite = "INTERNO" | "SOLICITUD_PUBLICA";
 
 export type CreateTramiteOptions = {
   origen?: OrigenTramite;
+  /**
+   * B10 — gancho que corre DENTRO de la transacción de creación, después del
+   * AuditLog. Si lanza, se deshace todo (no queda un DO huérfano). Lo usa
+   * `liquidarComisiones` para ligar las comisiones al «Otros» recién creado.
+   */
+  alCrear?: (
+    tx: Prisma.TransactionClient,
+    tramite: { id: string; consecutivo: string },
+  ) => Promise<void>;
 };
 
 /**
@@ -212,6 +221,20 @@ export class ServicioConBorradorExistenteError extends Error {
   }
 }
 
+/**
+ * B10: un «Otros» creado por "Facturar comisiones" (LTRANS) toma su valor y su
+ * concepto de las comisiones ligadas a él; cambiarlos rompería la cuenta.
+ */
+export class ServicioDeComisionesLiquidadasError extends Error {
+  public readonly status = 409;
+  constructor() {
+    super(
+      "El valor sale de las comisiones facturadas en este servicio: no se puede cambiar el valor ni el concepto.",
+    );
+    this.name = "ServicioDeComisionesLiquidadasError";
+  }
+}
+
 /** Estados desde los que un flujo corto ya no se edita en el DO (A2/B-N3): igual que la ficha. */
 const ESTADOS_SERVICIO_BLOQUEADO: readonly EstadoTramite[] = [
   EstadoTramite.ENVIADO_A_FACTURAR,
@@ -277,6 +300,22 @@ export async function verificarServicioFlujoCorto(args: {
 
   if (tocaServicio && !tipo?.flujoCorto) {
     throw new ServicioFlujoCortoNoPermitidoError(tipo?.nombre ?? args.tipoTramiteCodigo);
+  }
+
+  // B10: el «Otros» de "Facturar comisiones" no cambia su valor ni su concepto
+  // (un PATCH que reenvía los mismos valores no cambia nada y pasa).
+  if (tocaServicio && args.tramiteId) {
+    const cambia =
+      !args.antes ||
+      (args.valorServicio !== undefined && args.valorServicio !== args.antes.valorServicio) ||
+      (args.conceptoServicioCodigo !== undefined &&
+        args.conceptoServicioCodigo !== args.antes.conceptoServicioCodigo);
+    if (
+      cambia &&
+      (await prisma.comisionTramite.count({ where: { liquidacionTramiteId: args.tramiteId } })) > 0
+    ) {
+      throw new ServicioDeComisionesLiquidadasError();
+    }
   }
 
   // El bloqueo por borrador/estado solo aplica a un DO flujoCorto; otros
@@ -833,6 +872,10 @@ export async function createTramite(
               despues: normalizeSerializable(tramite),
             },
           });
+
+          if (opciones.alCrear) {
+            await opciones.alCrear(tx, { id: tramite.id, consecutivo: tramite.consecutivo });
+          }
 
           return tramite;
         },

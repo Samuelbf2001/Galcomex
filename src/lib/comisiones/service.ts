@@ -112,6 +112,8 @@ export interface ComisionDeTramite {
   unidades: number;
   valorUnitario: bigint;
   subtotal: bigint;
+  /** B10 — consecutivo del «Otros» donde ya se facturó (null = por facturar; no se puede cambiar ni quitar). */
+  facturadaEn: string | null;
 }
 
 export interface ComisionesTramite {
@@ -136,7 +138,12 @@ export async function comisionesDeTramite(tramiteId: string): Promise<Comisiones
       numContenedores: true,
       tipoCarga: true,
       comisiones: {
-        select: { empresaId: true, unidades: true, empresa: { select: { nombre: true } } },
+        select: {
+          empresaId: true,
+          unidades: true,
+          empresa: { select: { nombre: true } },
+          liquidacion: { select: { consecutivo: true } },
+        },
         orderBy: { createdAt: "asc" },
       },
     },
@@ -159,6 +166,7 @@ export async function comisionesDeTramite(tramiteId: string): Promise<Comisiones
       unidades: c.unidades,
       valorUnitario,
       subtotal: BigInt(c.unidades) * valorUnitario,
+      facturadaEn: c.liquidacion?.consecutivo ?? null,
     };
   });
 
@@ -196,13 +204,33 @@ export async function registrarComisionTramite(input: {
         clienteId: true,
         numContenedores: true,
         tipoCarga: true,
-        comisiones: { select: { id: true, empresaId: true, unidades: true } },
+        comisiones: {
+          select: {
+            id: true,
+            empresaId: true,
+            unidades: true,
+            liquidacionTramiteId: true,
+            liquidacion: { select: { consecutivo: true } },
+          },
+        },
       },
     });
     if (!tramite) throw new TramiteComisionNoEncontradoError();
     await assertTramiteModificable(tx, tramite);
 
     const anterior = tramite.comisiones.find((c) => c.empresaId === input.empresaId) ?? null;
+
+    // B10 — una comisión ya facturada (ligada a un «Otros») no se cambia ni se
+    // quita: se cobraría distinto de lo que salió en la factura. Reenviar las
+    // mismas unidades no cambia nada y pasa.
+    if (anterior?.liquidacionTramiteId) {
+      if (input.unidades === anterior.unidades) {
+        return tx.comisionTramite.findUniqueOrThrow({ where: { id: anterior.id } });
+      }
+      throw new ComisionInvalidaError(
+        `Esta comisión ya se facturó en ${anterior.liquidacion?.consecutivo ?? "un servicio «Otros»"}: no se puede cambiar ni quitar.`,
+      );
+    }
 
     if (input.unidades === 0) {
       if (!anterior) return null;
@@ -301,6 +329,8 @@ export async function verificarComisionesAlEditar(
 }
 
 export interface FilaComisionEmpresa {
+  /** Id de la fila de comisión (lo que se manda a "Facturar comisiones"). */
+  comisionId: string;
   tramiteId: string;
   consecutivo: string;
   empresaDo: string;
@@ -311,17 +341,33 @@ export interface FilaComisionEmpresa {
   subtotal: bigint;
 }
 
+/** B10 — comisión ya facturada: sin subtotal recalculado (el valor por contenedor pudo cambiar después). */
+export interface FilaComisionFacturada {
+  comisionId: string;
+  tramiteId: string;
+  consecutivo: string;
+  empresaDo: string;
+  unidades: number;
+  liquidadaEn: Date | null;
+  /** El «Otros» a nombre de la empresa donde se facturó. */
+  otros: { id: string; consecutivo: string; estado: string; valorServicio: bigint | null };
+}
+
 export interface ComisionesDeEmpresa {
   habilitada: boolean;
   valorUnitario: bigint;
   tasaIva: bigint;
+  /** Por facturar: solo las comisiones sin liquidar (los `totales` cuentan solo estas). */
   filas: FilaComisionEmpresa[];
   totales: TotalesComision;
+  /** B10 — ya facturadas, con el «Otros» donde salieron. */
+  facturadas: FilaComisionFacturada[];
 }
 
 /**
- * Comisiones por facturar de la empresa que paga (ficha de LTRANS). Todavía
- * no hay facturación de comisiones: todo lo registrado está "por facturar".
+ * Comisiones de la empresa que paga (ficha de LTRANS): `filas` = por facturar
+ * (sin liquidar; los `totales` solo cuentan estas) y `facturadas` = ya ligadas
+ * a un «Otros» (B10, `liquidarComisiones`).
  */
 export async function comisionesDeEmpresa(empresaId: string): Promise<ComisionesDeEmpresa> {
   const [capacidades, parametros, registros] = await Promise.all([
@@ -330,7 +376,12 @@ export async function comisionesDeEmpresa(empresaId: string): Promise<Comisiones
     prisma.comisionTramite.findMany({
       where: { empresaId },
       select: {
+        id: true,
         unidades: true,
+        liquidadaEn: true,
+        liquidacion: {
+          select: { id: true, consecutivo: true, estado: true, valorServicio: true },
+        },
         tramite: {
           select: {
             id: true,
@@ -347,7 +398,29 @@ export async function comisionesDeEmpresa(empresaId: string): Promise<Comisiones
   ]);
 
   const valorUnitario = valorUnitarioDe(capacidades);
-  const filas = registros.map((r) => ({
+  const porFacturar = registros.filter((r) => !r.liquidacion);
+  const facturadas: FilaComisionFacturada[] = registros.flatMap((r) =>
+    r.liquidacion
+      ? [
+          {
+            comisionId: r.id,
+            tramiteId: r.tramite.id,
+            consecutivo: r.tramite.consecutivo,
+            empresaDo: r.tramite.cliente.nombre,
+            unidades: r.unidades,
+            liquidadaEn: r.liquidadaEn,
+            otros: {
+              id: r.liquidacion.id,
+              consecutivo: r.liquidacion.consecutivo,
+              estado: r.liquidacion.estado,
+              valorServicio: r.liquidacion.valorServicio,
+            },
+          },
+        ]
+      : [],
+  );
+  const filas = porFacturar.map((r) => ({
+    comisionId: r.id,
     tramiteId: r.tramite.id,
     consecutivo: r.tramite.consecutivo,
     empresaDo: r.tramite.cliente.nombre,
@@ -367,5 +440,6 @@ export async function comisionesDeEmpresa(empresaId: string): Promise<Comisiones
       filas.map((f) => ({ unidades: f.unidades, valorUnitario })),
       parametros.tasaIva,
     ),
+    facturadas,
   };
 }
