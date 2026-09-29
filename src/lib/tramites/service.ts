@@ -1036,6 +1036,8 @@ export const tramiteDetalleInclude = {
   },
   checklistItems: {
     orderBy: { descripcion: "asc" },
+    // Cuántos archivos cubren cada requisito (fotos de la revisión, registro…).
+    include: { _count: { select: { documentos: { where: { eliminado: false } } } } },
   },
   estadoLogs: {
     orderBy: { createdAt: "desc" },

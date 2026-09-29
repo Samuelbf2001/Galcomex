@@ -50,6 +50,7 @@ async function renderFila(rol: Rol, editable: boolean) {
             editable={editable}
             esCuadre
             onChanged={() => {}}
+            onSubido={() => {}}
           />
         </ul>
       </RolProvider>,

@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CapacidadRow } from "@/components/clientes/capacidades-api";
 import type { EventoCatalogoRow } from "@/components/clientes/tarifas-api";
+import type { ChecklistItem } from "@/components/tramites/checklist-api";
 import type { EventoTramiteRow, PropuestaTarifaRow } from "@/components/tramites/eventos-api";
+import { RolProvider } from "@/lib/auth/rol-context";
 
 import {
   camposBaseCalculoVisibles,
@@ -190,5 +192,77 @@ describe("muestraListaEventos — función pura", () => {
   it("ausente (respuesta vieja) = sin restricción de tipo", () => {
     expect(muestraListaEventos(undefined, true)).toBe(true);
     expect(muestraListaEventos(null, true)).toBe(true);
+  });
+});
+
+const EVENTO_REVISION: EventoCatalogoRow = {
+  codigo: "REVISION_DESPACHO",
+  nombre: "Revisión e inventario en despacho",
+  descripcion: null,
+  documentosRequeridos: ["Fotos de la revisión de la carga"],
+  permiteCantidad: false,
+};
+
+const REVISION_MARCADA: EventoTramiteRow = {
+  codigo: "REVISION_DESPACHO",
+  nombre: "Revisión e inventario en despacho",
+  cantidad: 1,
+  observacion: null,
+  marcadoPor: "Camila",
+  marcadoAt: "2026-09-24T12:00:00.000Z",
+  documentosRequeridos: ["Fotos de la revisión de la carga"],
+};
+
+function fotos(recibido: boolean, archivos: number): ChecklistItem {
+  return { id: "item-fotos", descripcion: "Fotos de la revisión de la carga", requerido: true, recibido, _count: { documentos: archivos } };
+}
+
+describe("SeccionEventosTramite — documentos que exige un evento (revisión 24-sep)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchEventosCatalogo).mockResolvedValue([EVENTO_REVISION]);
+  });
+
+  it("sin marcar: avisa qué pedirá, sin botón de subir", async () => {
+    await montar({ checklistItems: [] });
+
+    expect(container.textContent).toContain("Al marcarlo pide: Fotos de la revisión de la carga");
+    expect(container.querySelector("[aria-label=\"Subir archivos de Fotos de la revisión de la carga\"]")).toBeNull();
+  });
+
+  it("marcada y sin fotos: pide subirlas ahí mismo", async () => {
+    vi.mocked(fetchEventosTramite).mockResolvedValue([REVISION_MARCADA]);
+    await montar({ checklistItems: [fotos(false, 0)] });
+
+    expect(container.textContent).toContain("Falta 1 documento: súbelo aquí");
+    const boton = container.querySelector("[aria-label=\"Subir archivos de Fotos de la revisión de la carga\"]");
+    expect(boton?.textContent).toContain("Subir");
+    const input = container.querySelector("input[type=file]");
+    expect(input?.hasAttribute("multiple")).toBe(true);
+  });
+
+  it("con las fotos subidas: completo y muestra cuántas", async () => {
+    vi.mocked(fetchEventosTramite).mockResolvedValue([REVISION_MARCADA]);
+    await montar({ checklistItems: [fotos(true, 12)] });
+
+    expect(container.textContent).toContain("Documentos completos");
+    expect(container.textContent).toContain("12 archivos");
+    expect(container.textContent).toContain("Subir más");
+  });
+
+  it("el REVISOR ve el estado pero no puede subir (el servidor no se lo permite)", async () => {
+    vi.mocked(fetchEventosTramite).mockResolvedValue([REVISION_MARCADA]);
+    await act(async () =>
+      root.render(
+        <RolProvider rol="REVISOR">
+          <SeccionEventosTramite tramiteId="tramite-1" clienteId="cliente-1" puedeEditar checklistItems={[fotos(false, 0)]} />
+        </RolProvider>,
+      ),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(container.textContent).toContain("Falta 1 documento");
+    expect(container.querySelector("input[type=file]")).toBeNull();
   });
 });

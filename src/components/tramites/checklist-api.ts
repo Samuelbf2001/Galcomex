@@ -11,6 +11,8 @@ export type ChecklistItem = {
   descripcion: string;
   requerido: boolean;
   recibido: boolean;
+  /** Archivos subidos desde el requisito (solo en el detalle del DO). */
+  _count?: { documentos: number };
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────

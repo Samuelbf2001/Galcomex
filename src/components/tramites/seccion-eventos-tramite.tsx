@@ -1,6 +1,6 @@
 "use client";
 
-import { Calculator, Loader2, RotateCcw, Save } from "lucide-react";
+import { Calculator, CheckCircle2, Circle, Loader2, RotateCcw, Save } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { fetchCapacidades } from "@/components/clientes/capacidades-api";
@@ -16,6 +16,8 @@ import {
   type PropuestaTarifaRow,
   type TipoCarga,
 } from "@/components/tramites/eventos-api";
+import type { ChecklistItem } from "@/components/tramites/checklist-api";
+import { SubirRequisito } from "@/components/tramites/subir-requisito";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -117,6 +119,7 @@ export function SeccionEventosTramite({
   onRefresh,
   camposBaseCalculo,
   usaEventos,
+  checklistItems = [],
 }: {
   tramiteId: string;
   clienteId: string;
@@ -126,6 +129,8 @@ export function SeccionEventosTramite({
   camposBaseCalculo?: string[] | null;
   /** El tipo de trámite usa la lista de eventos (M4). Ausente = true (histórico). */
   usaEventos?: boolean | null;
+  /** Checklist del DO: de aquí salen los documentos que exige cada evento marcado. */
+  checklistItems?: ChecklistItem[];
 }) {
   const { toast } = useToast();
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -366,7 +371,8 @@ export function SeccionEventosTramite({
                     const marcado = marcados.find((m) => m.codigo === ev.codigo);
                     const ocupado = guardandoEvento === ev.codigo;
                     return (
-                      <li key={ev.codigo} className="flex items-start gap-3 px-3 py-2">
+                      <li key={ev.codigo} className="px-3 py-2">
+                        <div className="flex items-start gap-3">
                         <input
                           type="checkbox"
                           id={`evento-${ev.codigo}`}
@@ -378,8 +384,8 @@ export function SeccionEventosTramite({
                         <label htmlFor={`evento-${ev.codigo}`} className="min-w-0 flex-1 cursor-pointer">
                           <span className="block text-sm font-medium text-slate-900">{ev.nombre}</span>
                           {ev.descripcion ? <span className="block text-xs text-slate-500">{ev.descripcion}</span> : null}
-                          {ev.documentosRequeridos.length > 0 ? (
-                            <span className="block text-xs text-amber-700">Exige: {ev.documentosRequeridos.join(", ")}</span>
+                          {!marcado && ev.documentosRequeridos.length > 0 ? (
+                            <span className="block text-xs text-slate-500">Al marcarlo pide: {ev.documentosRequeridos.join(", ")}</span>
                           ) : null}
                           {marcado ? (
                             <span className="block text-[11px] text-slate-400">
@@ -400,6 +406,15 @@ export function SeccionEventosTramite({
                           />
                         ) : null}
                         {ocupado ? <Loader2 className="mt-1 h-4 w-4 animate-spin text-slate-400" aria-hidden="true" /> : null}
+                        </div>
+                        {marcado && ev.documentosRequeridos.length > 0 ? (
+                          <DocumentosDelEvento
+                            tramiteId={tramiteId}
+                            documentos={ev.documentosRequeridos}
+                            checklistItems={checklistItems}
+                            onSubido={() => onRefresh?.()}
+                          />
+                        ) : null}
                       </li>
                     );
                   })}
@@ -481,6 +496,64 @@ export function SeccionEventosTramite({
           ) : null}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Lo que exige un evento marcado, con su botón para subirlo ahí mismo
+ * (revisión de Ernesto 24-sep-2026, reunión del 31-ago min 40–50: las fotos de
+ * la revisión del contenedor las sube el Sr. Lucho desde el DO).
+ */
+function DocumentosDelEvento({
+  tramiteId,
+  documentos,
+  checklistItems,
+  onSubido,
+}: {
+  tramiteId: string;
+  documentos: string[];
+  checklistItems: ChecklistItem[];
+  onSubido: () => void;
+}) {
+  const requisitos = documentos.map((descripcion) => ({
+    descripcion,
+    item: checklistItems.find((i) => i.descripcion === descripcion) ?? null,
+  }));
+  const faltan = requisitos.filter((r) => !r.item?.recibido).length;
+
+  return (
+    <div
+      className={`mt-2 ml-7 border-l-2 pl-3 ${faltan > 0 ? "border-amber-400" : "border-emerald-500"}`}
+    >
+      <p className={`text-xs font-semibold ${faltan > 0 ? "text-amber-800" : "text-emerald-700"}`}>
+        {faltan === 0
+          ? "Documentos completos"
+          : faltan === 1
+            ? "Falta 1 documento: súbelo aquí"
+            : `Faltan ${faltan} documentos: súbelos aquí`}
+      </p>
+      <ul className="mt-1 space-y-1.5">
+        {requisitos.map(({ descripcion, item }) => (
+          <li key={descripcion} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+            {item?.recibido ? (
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-label="Recibido" />
+            ) : (
+              <Circle className="h-4 w-4 shrink-0 text-amber-500" aria-label="Pendiente" />
+            )}
+            <span className="text-slate-800">{descripcion}</span>
+            {item ? (
+              <SubirRequisito
+                tramiteId={tramiteId}
+                requisito={{ id: item.id, descripcion, recibido: item.recibido, archivos: item._count?.documentos }}
+                onSubido={onSubido}
+              />
+            ) : (
+              <span className="text-xs text-slate-400">preparando…</span>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

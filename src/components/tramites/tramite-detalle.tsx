@@ -63,6 +63,7 @@ import { HojaTramite } from "@/components/tramites/hoja-tramite";
 import { SeccionComisionTramite } from "@/components/comisiones/seccion-comision-tramite";
 import { SeccionEventosTramite } from "@/components/tramites/seccion-eventos-tramite";
 import { ForzarFacturadoModal } from "@/components/tramites/forzar-facturado-modal";
+import { SubirRequisito } from "@/components/tramites/subir-requisito";
 import {
   TramitesApiError,
   cambiarEstadoTramite,
@@ -816,6 +817,7 @@ export function ChecklistItemRow({
   editable,
   esCuadre = false,
   onChanged,
+  onSubido,
 }: {
   item: ChecklistItem;
   tramiteId: string;
@@ -823,6 +825,8 @@ export function ChecklistItemRow({
   /** Ítem "CUADRE DE PLATA HISTÓRICA" de un DO histórico (lo cierran ADMIN/REVISOR). */
   esCuadre?: boolean;
   onChanged: (updated: ChecklistItem) => void;
+  /** Se subieron archivos desde el requisito: recargar el DO. */
+  onSubido: () => void;
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -897,6 +901,18 @@ export function ChecklistItemRow({
         {saving ? (
           <Loader2 className="h-3 w-3 animate-spin text-slate-400" aria-hidden="true" />
         ) : null}
+        {/* El cuadre de plata histórica solo lo cierra ADMIN/REVISOR con su casilla:
+            subir un archivo desde aquí lo marcaría como recibido (D0). */}
+        {esCuadre ? null : (
+          <span className="ml-auto">
+            <SubirRequisito
+              tramiteId={tramiteId}
+              requisito={{ id: item.id, descripcion: item.descripcion, recibido: item.recibido, archivos: item._count?.documentos }}
+              onSubido={onSubido}
+              compacto
+            />
+          </span>
+        )}
       </div>
       {error ? (
         <p className="flex items-center gap-1 pl-6 text-xs text-rose-600">
@@ -1190,6 +1206,7 @@ function TabResumen({
                 editable={itemEditable(item)}
                 esCuadre={esCuadreHistorico(tramite, item)}
                 onChanged={onChecklistItemChanged}
+                onSubido={onRefresh}
               />
             ))}
           </ul>
@@ -1206,6 +1223,7 @@ function TabResumen({
         onRefresh={onRefresh}
         camposBaseCalculo={tramite.tipoTramite?.camposBaseCalculo ?? null}
         usaEventos={tramite.tipoTramite?.usaEventos ?? true}
+        checklistItems={tramite.checklistItems}
       />
 
       {/* Comisión por contenedor (caso LTRANS): cuántos contenedores del DO
@@ -1647,8 +1665,9 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
       prev
         ? {
             ...prev,
+            // Merge: el PATCH no trae el conteo de archivos del requisito.
             checklistItems: prev.checklistItems.map((it) =>
-              it.id === updatedItem.id ? updatedItem : it,
+              it.id === updatedItem.id ? { ...it, ...updatedItem } : it,
             ),
           }
         : prev,
