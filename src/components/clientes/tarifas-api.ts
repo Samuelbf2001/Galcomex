@@ -77,6 +77,10 @@ export type TarifaItemRow = {
   porcentajeBps: number | null;
   minimos: MinimosTarifa | null;
   conceptoCosto: string | null;
+  /** B6 — ESPEJO_DE_COSTO "por proveedor": NIT base del proveedor cuyas facturas se espejan. */
+  nitProveedorCosto: string | null;
+  /** B6 — ESPEJO_DE_COSTO "por proveedor": producto Siigo de esas facturas (opcional). */
+  productoCosto: string | null;
   tramos: TramoTarifa[] | null;
   aplicaIva: boolean;
   notas: string | null;
@@ -117,6 +121,8 @@ export type TarifaItemForm = {
   porcentajeBps?: number | null;
   minimos?: MinimosTarifa | null;
   conceptoCosto?: string | null;
+  nitProveedorCosto?: string | null;
+  productoCosto?: string | null;
   tramos?: TramoTarifa[] | null;
   aplicaIva: boolean;
   notas?: string | null;
@@ -211,6 +217,8 @@ function normalizeItem(row: unknown): TarifaItemRow | null {
     porcentajeBps: typeof row.porcentajeBps === "number" ? row.porcentajeBps : null,
     minimos: normalizeMinimos(row.minimos),
     conceptoCosto: strOrNull(row.conceptoCosto),
+    nitProveedorCosto: strOrNull(row.nitProveedorCosto),
+    productoCosto: strOrNull(row.productoCosto),
     tramos: normalizeTramos(row.tramos),
     aplicaIva: row.aplicaIva !== false,
     notas: strOrNull(row.notas),
@@ -486,6 +494,16 @@ export function describirCalculo(item: TarifaItemRow): string {
     case "PRIMERO_MAS_ADICIONAL":
       return `${formatCOP(item.valor)} el primer ${etiquetaUnidad(item.unidad)} + ${formatCOP(item.valorAdicional)} cada adicional`;
     case "ESPEJO_DE_COSTO":
+      // B6 — modo "por proveedor": cada pago del proveedor, con mínimo.
+      if (item.nitProveedorCosto || item.productoCosto) {
+        const quien = [
+          item.nitProveedorCosto ? `NIT ${item.nitProveedorCosto}` : null,
+          item.productoCosto ? `producto ${item.productoCosto}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return `Espeja ${quien}${item.valor !== "0" ? ` · mín. ${formatCOP(item.valor)}` : ""}`;
+      }
       return `Lo que costó "${item.conceptoCosto ?? ""}"`;
     case "POR_TRAMO": {
       const tramos = item.tramos ?? [];

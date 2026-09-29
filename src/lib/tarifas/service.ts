@@ -248,6 +248,8 @@ export function itemCalculableDe(item: TarifaItem): ItemTarifaCalculable {
     porcentajeBps: item.porcentajeBps,
     minimos: minimosDe(item.minimos),
     conceptoCosto: item.conceptoCosto,
+    nitProveedorCosto: item.nitProveedorCosto,
+    productoCosto: item.productoCosto,
     tramos: tramosDe(item.tramos),
     aplicaIva: item.aplicaIva,
     orden: item.orden,
@@ -306,6 +308,8 @@ function itemCreateData(
     porcentajeBps: item.porcentajeBps ?? null,
     minimos: item.minimos ? normalizeSerializable(item.minimos) : undefined,
     conceptoCosto: item.conceptoCosto ?? null,
+    nitProveedorCosto: item.nitProveedorCosto ?? null,
+    productoCosto: item.productoCosto ?? null,
     tramos: item.tramos ? normalizeSerializable(item.tramos) : undefined,
     aplicaIva: item.aplicaIva,
     notas: item.notas ?? null,
@@ -673,6 +677,8 @@ function copiarItemsDeTarifario(
       porcentajeBps: it.porcentajeBps,
       minimos: minimosAjustados ? normalizeSerializable(minimosAjustados) : undefined,
       conceptoCosto: it.conceptoCosto,
+      nitProveedorCosto: it.nitProveedorCosto,
+      productoCosto: it.productoCosto,
       tramos: tramosAjustados ? normalizeSerializable(tramosAjustados) : undefined,
       aplicaIva: it.aplicaIva,
       notas: it.notas,
@@ -1054,7 +1060,18 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
       ordenCompraValor: true,
       agenciaAduanas: true,
       eventos: { select: { eventoCodigo: true, cantidad: true } },
-      facturasProveedor: { where: { repercutible: true }, select: { concepto: true, valor: true } },
+      facturasProveedor: {
+        where: { repercutible: true },
+        select: {
+          concepto: true,
+          valor: true,
+          numFactura: true,
+          proveedorClave: true,
+          siigoProducto: { select: { codigo: true } },
+        },
+        // B6: el espejo "por proveedor" cobra una línea por factura; el orden fija el de las líneas.
+        orderBy: [{ fecha: "asc" }, { numFactura: "asc" }],
+      },
     },
   });
   if (!tramite) throw new TarifarioNoEncontradoError(tramiteId);
@@ -1069,7 +1086,16 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
 
   const costos = [
     ...costosDePagos,
-    ...tramite.facturasProveedor.filter((f) => f.concepto).map((f) => ({ concepto: f.concepto ?? "", valor: f.valor })),
+    // B6: una factura sin concepto de texto también cuenta (el espejo "por proveedor" la
+    // identifica por NIT/producto); el espejo por texto no puede tomarla (concepto vacío).
+    ...tramite.facturasProveedor.map((f) => ({
+      concepto: f.concepto ?? "",
+      valor: f.valor,
+      // Solo las facturas de proveedor traen proveedor/producto/número (los pagos del libro no).
+      proveedorClave: f.proveedorClave,
+      productoCodigo: f.siigoProducto?.codigo ?? null,
+      referencia: f.numFactura,
+    })),
   ];
 
   const agenciamiento = await agenciamientoEstandarDe(tramite.agenciaAduanas);

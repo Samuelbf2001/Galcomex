@@ -261,6 +261,21 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   de camino. `duplicarTarifario` copia las ciudades del origen (el payload
   las puede cambiar: así se hace "Duplicar para Bogotá");
   `crearTarifarioDesde` también las copia si el payload no las manda.
+- **Registro VUCE: «el mayor entre el mínimo y lo pagado», por registro (B6,
+  Diseño B, 29-sep-2026):** un ítem `ESPEJO_DE_COSTO` con
+  `TarifaItem.nitProveedorCosto` (NIT base sin DV, p. ej. `830115297` =
+  Ministerio de Comercio) y/o `productoCosto` (código de producto Siigo) entra
+  en modo «por proveedor»: espeja CADA factura de proveedor del DO que se le
+  cobre al cliente (`repercutible`) de ese NIT y producto, una línea por
+  factura, cobrando `máx(mínimo, pagado)`. El mínimo es el `valor` del ítem
+  (0 = espejo puro; sube con el IPC al duplicar). Se filtra por NIT y no solo
+  por producto porque el INVIMA usa el mismo producto Siigo que el Ministerio.
+  Con disparador EVENTO el número de pagos tiene que ser igual a la cantidad
+  marcada; si no, `pendiente` `COSTO_PROVEEDOR` (nunca se cobra a medias en
+  silencio); con SIEMPRE y sin registro no hay línea ni pendiente. Motor puro
+  `src/lib/tarifas/espejo-por-proveedor.ts` (llamado desde `calcularLineasTarifa`);
+  los ítems espejo viejos (solo `conceptoCosto`) no cambian. Dorado:
+  DO.CTG26-0148 / FV-2-18521 = 150.000 + 419.000 → total 5.082.367 sin correcciones.
 
 ## Anticipo por factura (B8, Diseño A, 27-sep-2026) — no se descuenta dos veces
 

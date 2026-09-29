@@ -27,6 +27,7 @@
  */
 
 import { restarAgenciamiento } from "./resta-agenciamiento";
+import { espejarPorProveedor } from "./espejo-por-proveedor";
 
 export type TipoCalculoTarifa =
   | "FIJO"
@@ -77,6 +78,14 @@ export interface ItemTarifaCalculable {
   restaAgenciamiento?: boolean;
   /** B1 — solo con `restaAgenciamiento` y `PORCENTAJE_MIN`: mínimo NETO (false, lo que cobra Galcomex) o TOTAL (true, lo que paga el cliente). */
   minimoEsDelTotal?: boolean;
+  /**
+   * B6 — ESPEJO_DE_COSTO "por proveedor": NIT base del proveedor cuyas facturas se
+   * espejan (una línea por factura, cobrando máx(`valor` = mínimo, lo pagado)).
+   * Opcional: los ítems viejos no lo traen y siguen espejando por `conceptoCosto`.
+   */
+  nitProveedorCosto?: string | null;
+  /** B6 — ESPEJO_DE_COSTO "por proveedor": código del producto Siigo de esas facturas (filtro adicional). */
+  productoCosto?: string | null;
 }
 
 export interface EventoMarcado {
@@ -101,6 +110,12 @@ export interface ContextoTarifa {
 export interface CostoEspejable {
   concepto: string;
   valor: bigint;
+  /** B6 — solo facturas de proveedor: clave del proveedor (`NIT:<nitBase>` / `BEN:<id>`). */
+  proveedorClave?: string | null;
+  /** B6 — solo facturas de proveedor: código del producto Siigo. */
+  productoCodigo?: string | null;
+  /** B6 — solo facturas de proveedor: número de la factura. */
+  referencia?: string;
 }
 
 export interface LineaPropuesta {
@@ -460,6 +475,47 @@ export function calcularLineasTarifa(
     if (item.disparador === "EVENTO") {
       if (!item.eventoCodigo || !eventos.has(item.eventoCodigo)) continue;
       cantidadEvento = Math.max(1, eventos.get(item.eventoCodigo) ?? 1);
+    }
+
+    // B6 — espejo "por proveedor": una línea por cada pago del proveedor (el
+    // registro VUCE: máx(mínimo, pagado) por registro). Los ítems espejo viejos
+    // (solo `conceptoCosto`) y todo lo demás siguen por `calcularItem`.
+    if (item.tipoCalculo === "ESPEJO_DE_COSTO" && (item.nitProveedorCosto || item.productoCosto)) {
+      const espejo = espejarPorProveedor({
+        minimo: item.valor,
+        nitProveedor: item.nitProveedorCosto ?? null,
+        producto: item.productoCosto ?? null,
+        // Solo facturas de proveedor (traen `proveedorClave`/`productoCodigo`, aunque sea null);
+        // los pagos del libro no traen ninguno de los dos y no entran a este modo.
+        costos: ctx.costos
+          .filter((c) => c.proveedorClave !== undefined || c.productoCodigo !== undefined)
+          .map((c) => ({
+            valor: c.valor,
+            proveedorClave: c.proveedorClave ?? null,
+            productoCodigo: c.productoCodigo ?? null,
+            referencia: c.referencia ?? "",
+          })),
+        cantidadEvento,
+        nombreItem: item.nombrePublico,
+      });
+      if (!espejo.ok) {
+        pendientes.push({ concepto: item.concepto, nombrePublico: item.nombrePublico, motivo: espejo.motivo, causa: espejo.causa });
+        continue;
+      }
+      for (const l of espejo.lineas) {
+        lineas.push({
+          concepto: item.concepto,
+          nombrePublico: item.nombrePublico,
+          siigoCodigo: item.siigoCodigo,
+          cantidad: 1,
+          valorUnitario: l.valor,
+          valor: l.valor,
+          aplicaIva: item.aplicaIva,
+          origen: item.disparador === "EVENTO" ? "EVENTO" : "SIEMPRE",
+          detalle: l.detalle,
+        });
+      }
+      continue;
     }
 
     const calculo = calcularItem(item, ctx, cantidadEvento);

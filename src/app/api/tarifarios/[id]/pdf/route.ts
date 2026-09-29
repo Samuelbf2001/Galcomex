@@ -75,6 +75,8 @@ export async function GET(_request: NextRequest, context: RouteContext) {
         porcentajeBps: i.porcentajeBps,
         minimos: minimosDe(i.minimos),
         conceptoCosto: i.conceptoCosto,
+        nitProveedorCosto: i.nitProveedorCosto,
+        productoCosto: i.productoCosto,
         tramos: tramosDe(i.tramos),
         aplicaIva: i.aplicaIva,
         notas: i.notas,

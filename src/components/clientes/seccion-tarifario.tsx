@@ -431,6 +431,9 @@ type ItemFormState = {
   min20: string;
   min40: string;
   conceptoCosto: string;
+  /** B6 — ESPEJO_DE_COSTO "por proveedor": NIT base del proveedor (solo dígitos) y producto Siigo (opcional). */
+  nitProveedorCosto: string;
+  productoCosto: string;
   /** POR_TRAMO: filas "hasta N unidades → valor". `hasta` vacío = en adelante. */
   tramos: { hasta: string; valor: string }[];
   aplicaIva: boolean;
@@ -463,6 +466,8 @@ function estadoDesdeItem(item: TarifaItemRow | null, orden: number): ItemFormSta
     min20: item?.minimos?.CONTENEDOR_20 ?? "",
     min40: item?.minimos?.CONTENEDOR_40 ?? "",
     conceptoCosto: item?.conceptoCosto ?? "",
+    nitProveedorCosto: item?.nitProveedorCosto ?? "",
+    productoCosto: item?.productoCosto ?? "",
     tramos: item?.tramos?.length
       ? item.tramos.map((t) => ({ hasta: t.hasta === null ? "" : String(t.hasta), valor: t.valor }))
       : TRAMOS_VACIOS.map((t) => ({ ...t })),
@@ -496,6 +501,8 @@ function formDesdeEstado(s: ItemFormState): TarifaItemForm {
     porcentajeBps: s.tipoCalculo === "PORCENTAJE_MIN" && !Number.isNaN(pct) ? Math.round(pct * 100) : null,
     minimos: minimos && Object.keys(minimos).length ? minimos : null,
     conceptoCosto: s.tipoCalculo === "ESPEJO_DE_COSTO" ? s.conceptoCosto.trim() || null : null,
+    nitProveedorCosto: s.tipoCalculo === "ESPEJO_DE_COSTO" ? s.nitProveedorCosto.trim() || null : null,
+    productoCosto: s.tipoCalculo === "ESPEJO_DE_COSTO" ? s.productoCosto.trim() || null : null,
     tramos:
       s.tipoCalculo === "POR_TRAMO"
         ? s.tramos
@@ -953,10 +960,51 @@ function ItemModal({
           ) : null}
 
           {s.tipoCalculo === "ESPEJO_DE_COSTO" ? (
-            <label className="block space-y-1 sm:col-span-2">
-              <span className={LABEL}>Texto del pago o factura de proveedor que se espeja *</span>
-              <input value={s.conceptoCosto} onChange={(e) => set("conceptoCosto", e.target.value)} required className={INPUT} placeholder="registro" />
-            </label>
+            <>
+              <label className="block space-y-1 sm:col-span-2">
+                <span className={LABEL}>
+                  Texto del pago o factura de proveedor que se espeja{s.nitProveedorCosto.trim() || s.productoCosto.trim() ? "" : " *"}
+                </span>
+                <input
+                  value={s.conceptoCosto}
+                  onChange={(e) => set("conceptoCosto", e.target.value)}
+                  required={!s.nitProveedorCosto.trim() && !s.productoCosto.trim()}
+                  className={INPUT}
+                  placeholder="registro"
+                />
+              </label>
+              <div className="space-y-2 border border-slate-200 bg-slate-50 p-2.5 sm:col-span-2">
+                <p className="text-xs text-slate-600">
+                  Para cobrar el mayor entre un mínimo y lo pagado, por cada pago de un proveedor (p. ej. el registro
+                  VUCE), escribe el proveedor. Se cobra una línea por cada factura de ese proveedor.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block space-y-1">
+                    <span className={LABEL}>Proveedor del costo (NIT)</span>
+                    <input
+                      value={s.nitProveedorCosto}
+                      onChange={(e) => set("nitProveedorCosto", soloDigitos(e.target.value))}
+                      inputMode="numeric"
+                      className={INPUT}
+                      placeholder="830115297"
+                    />
+                    <span className="block text-xs text-slate-500">
+                      Sin dígito de verificación ni puntos. Ministerio de Comercio (registro VUCE): 830115297.
+                    </span>
+                  </label>
+                  <label className="block space-y-1">
+                    <span className={LABEL}>Producto Siigo del costo (opcional)</span>
+                    <input value={s.productoCosto} onChange={(e) => set("productoCosto", e.target.value)} className={INPUT} placeholder="24" />
+                  </label>
+                </div>
+                {s.nitProveedorCosto.trim() || s.productoCosto.trim() ? (
+                  <label className="block space-y-1 sm:max-w-xs">
+                    <span className={LABEL}>Mínimo por cada pago (COP; 0 = sin mínimo)</span>
+                    <CampoMoneda value={s.valor} onValueChange={(v) => set("valor", v)} className={INPUT} placeholder="150.000" />
+                  </label>
+                ) : null}
+              </div>
+            </>
           ) : null}
 
           <label className="block space-y-1">

@@ -206,7 +206,7 @@ describe("contextoDeTramite — costos espejables sin asesoría NO SE COBRA, con
     await crearPago(tramiteId, "Bloque Ascinter", 1_300_000n, 3, [transporte, asesoria2]);
 
     const contexto = await contextoDeTramite(tramiteId);
-    expect(contexto.costos).toEqual([
+    expect(contexto.costos.map(({ concepto, valor }) => ({ concepto, valor }))).toEqual([
       { concepto: "Registro VUCE", valor: 230_000n },
       { concepto: "Bloque Ascinter", valor: 1_000_000n },
       { concepto: "Transporte terrestre", valor: 1_000_000n },
@@ -240,7 +240,7 @@ describe("contextoDeTramite — costos espejables sin asesoría NO SE COBRA, con
     await crearPago(tramiteId, "Ajuste", 0n, 3);
 
     const contexto = await contextoDeTramite(tramiteId);
-    expect(contexto.costos).toEqual([
+    expect(contexto.costos.map(({ concepto, valor }) => ({ concepto, valor }))).toEqual([
       { concepto: "Registro VUCE", valor: 230_000n },
       { concepto: "Transferencia transporte", valor: 1_200_000n },
       { concepto: "Ajuste", valor: 0n },

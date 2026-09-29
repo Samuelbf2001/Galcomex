@@ -20,6 +20,9 @@ export type TarifaItemPdfDto = {
   porcentajeBps: number | null;
   minimos: { SUELTA?: string; CONTENEDOR_20?: string; CONTENEDOR_40?: string } | null;
   conceptoCosto: string | null;
+  /** B6 — ESPEJO_DE_COSTO "por proveedor": cada pago del proveedor, con mínimo (`valor`). */
+  nitProveedorCosto?: string | null;
+  productoCosto?: string | null;
   tramos: { hasta: number | null; valor: string }[] | null;
   aplicaIva: boolean;
   notas: string | null;
@@ -133,6 +136,14 @@ export function filasDeItem(item: TarifaItemPdfDto): { concepto: string; valor: 
         { concepto: `${item.nombrePublico} por ${UNIDAD_TXT[item.unidad]} adicional`, valor: `${formatCOPTarifa(item.valorAdicional ?? item.valor)}${item.aplicaIva ? " + IVA" : ""}` },
       ];
     case "ESPEJO_DE_COSTO":
+      if ((item.nitProveedorCosto || item.productoCosto) && item.valor > 0n) {
+        return [
+          {
+            concepto: item.nombrePublico,
+            valor: `Lo pagado por cada uno, con mínimo de ${formatCOPTarifa(item.valor)}${item.aplicaIva ? " + IVA" : ""}`,
+          },
+        ];
+      }
       return [{ concepto: item.nombrePublico, valor: "Al costo, con soporte" }];
     case "POR_TRAMO": {
       const tramos = [...(item.tramos ?? [])].sort((a, b) => (a.hasta ?? Infinity) - (b.hasta ?? Infinity));

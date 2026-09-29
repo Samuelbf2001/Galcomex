@@ -81,6 +81,15 @@ const tarifaItemCampos = {
   porcentajeBps: z.number().int().min(1).max(100_000).optional().nullable(),
   minimos: minimosTarifaSchema.optional().nullable(),
   conceptoCosto: z.string().trim().min(1).max(120).optional().nullable(),
+  /** B6 — ESPEJO_DE_COSTO "por proveedor": NIT base (solo dígitos, sin DV ni puntos). */
+  nitProveedorCosto: z
+    .string()
+    .trim()
+    .regex(/^[0-9]{6,12}$/,"Escribe el NIT sin dígito de verificación ni puntos (ej. 830115297)")
+    .optional()
+    .nullable(),
+  /** B6 — ESPEJO_DE_COSTO "por proveedor": código del producto Siigo de esas facturas (opcional). */
+  productoCosto: z.string().trim().min(1).max(20).optional().nullable(),
   tramos: tramosTarifaSchema.optional().nullable(),
   aplicaIva: z.boolean(),
   notas: z.string().trim().max(500).optional().nullable(),
@@ -120,11 +129,36 @@ export function validarCoherenciaItem(item: TarifaItemInput, ctx: z.RefinementCt
       message: "Indica el porcentaje sobre el CIF (en puntos básicos: 37 = 0,37 %)",
     });
   }
-  if (item.tipoCalculo === TipoCalculoTarifa.ESPEJO_DE_COSTO && !item.conceptoCosto) {
+  if (
+    item.tipoCalculo === TipoCalculoTarifa.ESPEJO_DE_COSTO &&
+    !item.conceptoCosto &&
+    !item.nitProveedorCosto &&
+    !item.productoCosto
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["conceptoCosto"],
-      message: "Indica qué pago o factura de proveedor se espeja",
+      message: "Indica qué pago o factura de proveedor se espeja (un texto, o el NIT del proveedor)",
+    });
+  }
+  // B6 — el modo "por proveedor" solo existe en «Lo mismo que costó».
+  if (item.tipoCalculo !== TipoCalculoTarifa.ESPEJO_DE_COSTO && (item.nitProveedorCosto || item.productoCosto)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [item.nitProveedorCosto ? "nitProveedorCosto" : "productoCosto"],
+      message: "El proveedor y el producto del costo solo aplican a «Lo mismo que costó»",
+    });
+  }
+  // B6 — cobra por cada pago del proveedor: necesita saber cuántos registros hubo (evento) o cobrar siempre.
+  if (
+    item.tipoCalculo === TipoCalculoTarifa.ESPEJO_DE_COSTO &&
+    (item.nitProveedorCosto || item.productoCosto) &&
+    item.disparador === DisparadorTarifa.MANUAL
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["disparador"],
+      message: "Un ítem que espeja lo pagado a un proveedor no puede ser manual: usa un evento o «siempre»",
     });
   }
   if (item.tipoCalculo === TipoCalculoTarifa.POR_TRAMO && (!item.tramos || item.tramos.length === 0)) {

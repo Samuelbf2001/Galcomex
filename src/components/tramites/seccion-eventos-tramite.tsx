@@ -457,8 +457,8 @@ export function SeccionEventosTramite({
                           </tr>
                         </thead>
                         <tbody>
-                          {resultado.lineas.map((l) => (
-                            <tr key={l.concepto} className="border-t border-slate-100">
+                          {resultado.lineas.map((l, i) => (
+                            <tr key={`${l.concepto}-${i}`} className="border-t border-slate-100">
                               <td className="px-3 py-2">
                                 <span className="font-medium text-slate-900">{l.nombrePublico}</span>
                                 {l.origen === "EVENTO" ? <span className="ml-2 border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-semibold uppercase text-cyan-700">evento</span> : null}

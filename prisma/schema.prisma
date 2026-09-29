@@ -1663,6 +1663,12 @@ model TarifaItem {
   minimos        Json?
   /// ESPEJO_DE_COSTO: texto que identifica el pago/factura de proveedor que se espeja.
   conceptoCosto  String?
+  /// ESPEJO_DE_COSTO "por proveedor" (B6, Diseño B): NIT base (solo dígitos, sin DV)
+  /// del proveedor cuyas facturas se espejan, una línea por cada factura, cobrando
+  /// máx(`valor` = mínimo, lo pagado). Ej. 830115297 = Ministerio de Comercio (registro VUCE).
+  nitProveedorCosto String?
+  /// ESPEJO_DE_COSTO "por proveedor": código del producto Siigo de esas facturas (filtro opcional).
+  productoCosto     String?
   /// POR_TRAMO: `[{ hasta: 1, valor: "300000" }, { hasta: null, valor: "250000" }]`,
   /// ordenados; `hasta = null` es "en adelante". El precio del tramo aplica a TODAS las unidades.
   tramos         Json?
