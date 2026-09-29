@@ -70,7 +70,7 @@ export default async function ConfiguracionPage() {
       <BeneficiariosConfig />
       <SiigoProductos />
       <SiigoParametros />
-      {esAdmin ? <UsuariosConfig usuarios={usuarios} /> : null}
+      {esAdmin ? <UsuariosConfig usuarios={usuarios} usuarioActualId={session.user.id} /> : null}
     </section>
   );
 }
