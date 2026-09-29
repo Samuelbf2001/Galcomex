@@ -44,6 +44,7 @@ function datos(carteraHistorica: CarteraHistoricaResumen): DashboardApiData {
     alertasCartera: [],
     cantidadPagosSinComprobante: 0,
     carteraHistorica,
+    cantidadEnviosSiigoSinConfirmar: 0,
   };
 }
 

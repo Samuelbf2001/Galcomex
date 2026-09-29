@@ -21,7 +21,7 @@
  * bloquear la respuesta (`src/lib/notificaciones/whatsapp.ts`).
  */
 
-import { EstadoBorrador, type Prisma } from "@prisma/client";
+import { EstadoBorrador, SiigoEnvioEstado, type Prisma } from "@prisma/client";
 
 import type { Rol } from "@/lib/auth/auth";
 import { prisma } from "@/lib/db/prisma";
@@ -99,6 +99,24 @@ export class BorradorNoDevolvibleError extends Error {
         : `El borrador del ${consecutivo} ya está en BORRADOR: no hay nada que devolver.`,
     );
     this.name = "BorradorNoDevolvibleError";
+    this.consecutivo = consecutivo;
+  }
+}
+
+/**
+ * El borrador ya salió (o pudo salir) hacia Siigo. Devolverlo dejaría en Siigo
+ * una factura que Galcomex ya no reconoce como aprobada y, como el envío no se
+ * repite, "Sincronizar" terminaría enlazando esa versión vieja. Solo se puede
+ * devolver si nunca se envió o si Siigo lo rechazó (estado ERROR).
+ */
+export class BorradorYaEnSiigoError extends Error {
+  public readonly status = 409;
+  public readonly consecutivo: string;
+  constructor(consecutivo: string) {
+    super(
+      `El borrador del ${consecutivo} ya se envió a SIIGO (o su envío está sin confirmar): no se puede devolver. Anúlalo en SIIGO y pide a un ADMIN que lo libere antes de corregirlo.`,
+    );
+    this.name = "BorradorYaEnSiigoError";
     this.consecutivo = consecutivo;
   }
 }
@@ -244,6 +262,8 @@ export async function devolverBorrador(
         comentariosCabecera: true,
         aprobadoPorId: true,
         fechaAprobacion: true,
+        siigoDraftId: true,
+        siigoEnvioEstado: true,
         tramite: {
           select: {
             id: true,
@@ -264,6 +284,14 @@ export async function devolverBorrador(
     const destino = TRANSICIONES_DEVOLUCION[borrador.estado];
     if (destino === null) {
       throw new BorradorNoDevolvibleError(borrador.estado, borrador.tramite.consecutivo);
+    }
+
+    if (
+      borrador.siigoDraftId !== null ||
+      (borrador.siigoEnvioEstado !== null &&
+        borrador.siigoEnvioEstado !== SiigoEnvioEstado.ERROR)
+    ) {
+      throw new BorradorYaEnSiigoError(borrador.tramite.consecutivo);
     }
 
     const usuario = await tx.user.findUnique({

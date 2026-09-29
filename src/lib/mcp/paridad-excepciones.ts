@@ -161,4 +161,18 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/borradores/[param]",
     "Recargar un borrador tras el 409 ANTICIPO_ACTUALIZADO (B8); el MCP ya lee el borrador vía tramite_ver/borrador_ver por trámite",
   ),
+
+  // Envío a Siigo sin duplicados (fix/siigo-envio-idempotente, 2026-09-25).
+  // Las tools van en galcomex-mcp/server.mjs (y borrador_siigo_enviar debe
+  // dejar de ofrecer `reenviar`, que ahora responde 400).
+  pendiente(
+    "POST",
+    "/api/borradores/[param]/siigo-revisar",
+    "«Revisar en SIIGO» un envío sin confirmar: falta tool borrador_siigo_revisar",
+  ),
+  pendiente(
+    "POST",
+    "/api/borradores/[param]/siigo-liberar",
+    "«Liberar para reenviar» un envío sin confirmar: falta tool borrador_siigo_liberar",
+  ),
 ];

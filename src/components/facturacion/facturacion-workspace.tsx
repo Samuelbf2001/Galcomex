@@ -34,6 +34,7 @@ import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useRol } from "@/lib/auth/rol-context";
+import { puedeEnviarASiigo } from "@/lib/siigo/estado-envio";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +83,8 @@ type PendienteEnvioSiigo = {
 
 /**
  * Borradores APROBADOS que todavía no se enviaron a SIIGO como draft
- * (siigoDraftId null). Separa "Aprobar" de "Enviar" en la UI: aprobar solo
+ * (sin siigoDraftId, y sin envío en curso ni sin confirmar: `puedeEnviarASiigo`).
+ * Separa "Aprobar" de "Enviar" en la UI: aprobar solo
  * cambia el estado; el envío a SIIGO es una acción explícita de ADMIN. Esta
  * lista es la alerta para que Camila no olvide enviarlos.
  */
@@ -92,7 +94,7 @@ function calcularPendientesEnvioSiigo(
   const pendientes: PendienteEnvioSiigo[] = [];
   for (const tramite of tramites) {
     const borrador = ultimoBorrador(tramite.borradores);
-    if (borrador && borrador.estado === "APROBADO" && !borrador.siigoDraftId) {
+    if (borrador && borrador.estado === "APROBADO" && puedeEnviarASiigo(borrador)) {
       pendientes.push({ tramite, borrador });
     }
   }

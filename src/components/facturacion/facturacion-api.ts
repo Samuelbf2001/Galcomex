@@ -8,10 +8,22 @@
 // este archivo solo llama al normalizador dentro de funciones.
 import { normalizarPagosPorRevisar, type PagoPorRevisarRow } from "@/components/facturacion/aviso-pagos-por-revisar";
 import { formatFechaCalendario, formatInstanteBogota } from "@/lib/tiempo/bogota";
+import type { SiigoEnvioEstadoValor } from "@/lib/siigo/estado-envio";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 export type EstadoBorrador = "BORRADOR" | "EN_REVISION" | "APROBADO" | "FACTURADO";
+
+const ESTADOS_ENVIO_SIIGO: readonly SiigoEnvioEstadoValor[] = [
+  "ENVIANDO",
+  "ENVIADO",
+  "INCIERTO",
+  "ERROR",
+];
+
+function aEstadoEnvioSiigo(valor: unknown): SiigoEnvioEstadoValor | null {
+  return ESTADOS_ENVIO_SIIGO.find((e) => e === valor) ?? null;
+}
 
 export type SeccionLinea = "TERCEROS" | "OPERACIONAL";
 
@@ -104,6 +116,10 @@ export type BorradorRow = {
   ultimoErrorSiigo: string | null;
   /** Timestamp del último intento (éxito o fallo), ISO. */
   ultimoIntentoSiigo: string | null;
+  /** Estado del envío a SIIGO (candado anti-duplicado); null = nunca enviado. */
+  siigoEnvioEstado: SiigoEnvioEstadoValor | null;
+  /** Cuándo empezó el último envío, ISO (para detectar un ENVIANDO colgado). */
+  siigoEnvioIniciadoAt: string | null;
   /** Forma de pago Siigo seleccionada para este borrador. */
   formaPagoSiigoId: number | null;
   formaPago: SiigoFormaPagoRow | null;
@@ -312,6 +328,9 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
     enviadoASiigoEn: typeof raw.enviadoASiigoEn === "string" ? raw.enviadoASiigoEn : null,
     ultimoErrorSiigo: typeof raw.ultimoErrorSiigo === "string" ? raw.ultimoErrorSiigo : null,
     ultimoIntentoSiigo: typeof raw.ultimoIntentoSiigo === "string" ? raw.ultimoIntentoSiigo : null,
+    siigoEnvioEstado: aEstadoEnvioSiigo(raw.siigoEnvioEstado),
+    siigoEnvioIniciadoAt:
+      typeof raw.siigoEnvioIniciadoAt === "string" ? raw.siigoEnvioIniciadoAt : null,
     formaPagoSiigoId: typeof raw.formaPagoSiigoId === "number" ? raw.formaPagoSiigoId : null,
     formaPago: isRecord(raw.formaPago)
       ? {
@@ -950,21 +969,34 @@ export async function sincronizarFacturaDesdeSiigo(
  * mantiene en estado APROBADO; cuando llegue el consecutivo definitivo, el
  * ADMIN lo marca como FACTURADO con el flujo manual existente.
  *
- * Si SIIGO falla, lanza FacturacionApiError con el detalle para reintentar.
- *
- * `siigoDraftIdAnterior`: pásalo SOLO para "Reenviar" (el borrador de Siigo que
- * se reemplaza). Sin él, el servidor rechaza un borrador ya enviado.
+ * Una factura, un solo envío: si ya se envió, está en curso o quedó sin
+ * confirmar, el servidor responde 409. Si SIIGO falla, lanza
+ * `EnvioSiigoApiError` con el estado en que quedó el envío (ERROR = se puede
+ * reintentar; INCIERTO = hay que «Revisar en SIIGO»).
  */
+export class EnvioSiigoApiError extends FacturacionApiError {
+  siigoEnvioEstado: SiigoEnvioEstadoValor | null;
+  siigoDraftId: string | null;
+  constructor(
+    message: string,
+    status: number,
+    siigoEnvioEstado: SiigoEnvioEstadoValor | null,
+    siigoDraftId: string | null,
+  ) {
+    super(message, status);
+    this.name = "EnvioSiigoApiError";
+    this.siigoEnvioEstado = siigoEnvioEstado;
+    this.siigoDraftId = siigoDraftId;
+  }
+}
+
 export async function enviarBorradorASiigo(
   borradorId: string,
-  siigoDraftIdAnterior: string | null = null,
 ): Promise<{ siigoDraftId: string; enviadoEn: string }> {
   const response = await fetch(`/api/borradores/${borradorId}/siigo-enviar`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify(
-      siigoDraftIdAnterior ? { reenviar: true, siigoDraftIdAnterior } : {},
-    ),
+    body: JSON.stringify({}),
   });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
@@ -972,7 +1004,12 @@ export async function enviarBorradorASiigo(
       isRecord(payload) && typeof payload.error === "string"
         ? payload.error
         : `Error enviando a SIIGO (${response.status}).`;
-    throw new FacturacionApiError(message, response.status);
+    throw new EnvioSiigoApiError(
+      message,
+      response.status,
+      isRecord(payload) ? aEstadoEnvioSiigo(payload.siigoEnvioEstado) : null,
+      isRecord(payload) && typeof payload.siigoDraftId === "string" ? payload.siigoDraftId : null,
+    );
   }
   if (
     !isRecord(payload) ||
@@ -982,6 +1019,56 @@ export async function enviarBorradorASiigo(
     throw new FacturacionApiError("Respuesta de SIIGO no válida.");
   }
   return { siigoDraftId: payload.siigoDraftId, enviadoEn: payload.enviadoEn };
+}
+
+/** Resultado de «Revisar en SIIGO» para un envío sin confirmar. */
+export type RevisionEnvioSiigo = {
+  siigoEnvioEstado: SiigoEnvioEstadoValor | null;
+  encontrada: boolean;
+  siigoDraftId: string | null;
+  consecutivo: string | null;
+  busquedaAutomatica: boolean;
+  puedeLiberar: boolean;
+  mensaje: string;
+};
+
+async function errorDeRespuesta(response: Response, porDefecto: string): Promise<FacturacionApiError> {
+  const payload: unknown = await response.json().catch(() => null);
+  const message =
+    isRecord(payload) && typeof payload.error === "string" ? payload.error : `${porDefecto} (${response.status}).`;
+  return new FacturacionApiError(message, response.status);
+}
+
+/** «Revisar en SIIGO» (ADMIN): confirma en SIIGO un envío que quedó sin confirmar. */
+export async function revisarEnvioEnSiigo(borradorId: string): Promise<RevisionEnvioSiigo> {
+  const response = await fetch(`/api/borradores/${borradorId}/siigo-revisar`, {
+    method: "POST",
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) throw await errorDeRespuesta(response, "Error revisando en SIIGO");
+  const payload: unknown = await response.json().catch(() => null);
+  if (!isRecord(payload) || typeof payload.mensaje !== "string") {
+    throw new FacturacionApiError("Respuesta de SIIGO no válida.");
+  }
+  return {
+    siigoEnvioEstado: aEstadoEnvioSiigo(payload.siigoEnvioEstado),
+    encontrada: payload.encontrada === true,
+    siigoDraftId: typeof payload.siigoDraftId === "string" ? payload.siigoDraftId : null,
+    consecutivo: typeof payload.consecutivo === "string" ? payload.consecutivo : null,
+    busquedaAutomatica: payload.busquedaAutomatica === true,
+    puedeLiberar: payload.puedeLiberar === true,
+    mensaje: payload.mensaje,
+  };
+}
+
+/** «Liberar para reenviar» (ADMIN): el envío sin confirmar pasa a ERROR y se puede volver a enviar. */
+export async function liberarEnvioSiigo(borradorId: string): Promise<void> {
+  const response = await fetch(`/api/borradores/${borradorId}/siigo-liberar`, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ confirmo: true }),
+  });
+  if (!response.ok) throw await errorDeRespuesta(response, "Error liberando el envío a SIIGO");
 }
 
 // ─── Formas de pago Siigo ────────────────────────────────────────────────────

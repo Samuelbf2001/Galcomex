@@ -18,6 +18,95 @@ export class SiigoApiError extends Error {
   }
 }
 
+/**
+ * Siigo respondió 2xx al crear la factura pero el cuerpo no es el esperado
+ * (JSON roto, sin consecutivo, sin fecha…). La factura PUDO haberse creado:
+ * quien llame no debe reintentar. `idRecuperado` trae el id si venía en el
+ * cuerpo, para guardarlo aunque falte lo demás.
+ */
+export class SiigoRespuestaInvalidaError extends Error {
+  public readonly status = 502;
+  public readonly idRecuperado: string | null;
+  constructor(message: string, idRecuperado: string | null) {
+    super(message);
+    this.name = "SiigoRespuestaInvalidaError";
+    this.idRecuperado = idRecuperado;
+  }
+}
+
+// ─── Red: timeout, token en caché y 429 ──────────────────────────────────────
+
+/** Tope de espera de cada llamada a Siigo. */
+export const TIMEOUT_SIIGO_MS = 20_000;
+
+/** Cada fetch lleva su timeout; si quien llama pasa su propia señal, manda la primera que corte. */
+function senalConTimeout(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(TIMEOUT_SIIGO_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+/** Margen antes del vencimiento real del token para pedir uno nuevo. */
+const MARGEN_TOKEN_MS = 5 * 60_000;
+
+type TokenEnCache = { clave: string; token: string; vence: number };
+let tokenEnCache: TokenEnCache | null = null;
+let tokenEnVuelo: { clave: string; promesa: Promise<string> } | null = null;
+
+/** Olvida el token guardado (tras un 401, o en tests). */
+export function invalidarTokenSiigo(): void {
+  tokenEnCache = null;
+  tokenEnVuelo = null;
+}
+
+/** Máximo de intentos de un GET que Siigo frena con 429. */
+const MAX_INTENTOS_429 = 3;
+/** Espera por defecto si el 429 no trae Retry-After, y tope de cualquier espera. */
+const ESPERA_429_DEFECTO_MS = 2_000;
+const ESPERA_429_MAX_MS = 10_000;
+
+/** Lee Retry-After (segundos o fecha HTTP) y lo acota a una pausa corta. */
+export function esperaTrasRetryAfter(valor: string | null, ahora: number = Date.now()): number {
+  if (valor === null || valor.trim() === "") return ESPERA_429_DEFECTO_MS;
+  const segundos = Number(valor);
+  let ms: number;
+  if (Number.isFinite(segundos)) {
+    ms = segundos * 1000;
+  } else {
+    const fecha = Date.parse(valor);
+    ms = Number.isNaN(fecha) ? ESPERA_429_DEFECTO_MS : fecha - ahora;
+  }
+  return Math.min(Math.max(ms, 0), ESPERA_429_MAX_MS);
+}
+
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * GET autenticado a Siigo. Solo GET (idempotente): si Siigo responde 429 se
+ * espera lo que diga Retry-After (acotado) y se reintenta, hasta
+ * MAX_INTENTOS_429. Un 401 invalida el token en caché.
+ */
+async function fetchGetSiigo(
+  url: string,
+  token: string,
+  opciones: OpcionesLlamadaSiigo = {},
+): Promise<Response> {
+  for (let intento = 1; ; intento += 1) {
+    const response = await fetch(url, {
+      signal: senalConTimeout(opciones.signal),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Partner-Id": "galcomex",
+      },
+    });
+    if (response.status === 401) invalidarTokenSiigo();
+    if (response.status !== 429 || intento >= MAX_INTENTOS_429) return response;
+    await esperar(esperaTrasRetryAfter(response.headers.get("retry-after")));
+  }
+}
+
 // ─── Schemas Zod ─────────────────────────────────────────────────────────────
 
 const siigoTokenResponseSchema = z.object({
@@ -84,12 +173,45 @@ export interface OpcionesLlamadaSiigo {
   signal?: AbortSignal;
 }
 
+/**
+ * Token de la API de Siigo. Se guarda en memoria hasta `expires_in` menos un
+ * margen (Siigo limita cuántos tokens se piden); dos llamadas simultáneas
+ * comparten la misma petición.
+ */
 export async function getToken(opciones: OpcionesLlamadaSiigo = {}): Promise<string> {
   const { username, accessKey, baseUrl } = leerConfig();
+  const clave = `${baseUrl}|${username}`;
 
+  if (tokenEnCache && tokenEnCache.clave === clave && Date.now() < tokenEnCache.vence) {
+    return tokenEnCache.token;
+  }
+  if (tokenEnVuelo && tokenEnVuelo.clave === clave) return tokenEnVuelo.promesa;
+
+  const promesa = pedirToken(baseUrl, username, accessKey, opciones).then(
+    ({ token, expiresIn }) => {
+      const vence = Date.now() + expiresIn * 1000 - MARGEN_TOKEN_MS;
+      tokenEnCache = vence > Date.now() ? { clave, token, vence } : null;
+      return token;
+    },
+  );
+  const enVuelo = { clave, promesa };
+  tokenEnVuelo = enVuelo;
+  try {
+    return await promesa;
+  } finally {
+    if (tokenEnVuelo === enVuelo) tokenEnVuelo = null;
+  }
+}
+
+async function pedirToken(
+  baseUrl: string,
+  username: string,
+  accessKey: string,
+  opciones: OpcionesLlamadaSiigo,
+): Promise<{ token: string; expiresIn: number }> {
   const response = await fetch(`${baseUrl}/auth/token`, {
     method: "POST",
-    signal: opciones.signal,
+    signal: senalConTimeout(opciones.signal),
     headers: {
       "Content-Type": "application/json",
       "Partner-Id": "galcomex",
@@ -106,10 +228,13 @@ export async function getToken(opciones: OpcionesLlamadaSiigo = {}): Promise<str
 
   const raw: unknown = await response.json();
   const parsed = siigoTokenResponseSchema.parse(raw);
-  return parsed.access_token;
+  return { token: parsed.access_token, expiresIn: parsed.expires_in };
 }
 
-export async function getProductos(token: string): Promise<SiigoProductoRaw[]> {
+export async function getProductos(
+  token: string,
+  opciones: OpcionesLlamadaSiigo = {},
+): Promise<SiigoProductoRaw[]> {
   const { baseUrl } = leerConfig();
   const todos: SiigoProductoRaw[] = [];
   let page = 1;
@@ -118,13 +243,7 @@ export async function getProductos(token: string): Promise<SiigoProductoRaw[]> {
   while (true) {
     const url = `${baseUrl}/v1/products?page=${page}&page_size=${pageSize}`;
 
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "Partner-Id": "galcomex",
-      },
-    });
+    const response = await fetchGetSiigo(url, token, opciones);
 
     if (!response.ok) {
       throw new SiigoApiError(
@@ -154,13 +273,7 @@ export async function getProductos(token: string): Promise<SiigoProductoRaw[]> {
 async function getJson(token: string, path: string): Promise<unknown> {
   const { baseUrl } = leerConfig();
   const url = `${baseUrl}${path}`;
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "Partner-Id": "galcomex",
-    },
-  });
+  const response = await fetchGetSiigo(url, token);
   if (!response.ok) {
     throw new SiigoApiError(
       `Siigo GET ${path} falló con HTTP ${response.status}`,
@@ -303,6 +416,23 @@ export interface SiigoFacturaPostResponse {
   date: string;
 }
 
+/** Saca el id de un cuerpo 2xx aunque el resto no valide (string o número no vacío). */
+function idDeRespuesta(raw: unknown): string | null {
+  if (typeof raw !== "object" || raw === null || !("id" in raw)) return null;
+  const id = (raw as { id: unknown }).id;
+  if (typeof id === "string" && id.trim()) return id.trim();
+  if (typeof id === "number" && Number.isFinite(id)) return String(id);
+  return null;
+}
+
+/**
+ * Crea la factura en Siigo. NUNCA se reintenta aquí (ni por 429 ni por
+ * timeout): cada POST puede crear un documento. Errores:
+ * - `SiigoApiError` (status HTTP) si Siigo respondió con error.
+ * - `SiigoRespuestaInvalidaError` si respondió 2xx con un cuerpo inesperado:
+ *   la factura pudo haberse creado.
+ * - TimeoutError / TypeError de red si no hubo respuesta.
+ */
 export async function postFactura(
   token: string,
   dto: SiigoFacturaPostDto,
@@ -312,7 +442,7 @@ export async function postFactura(
 
   const response = await fetch(`${baseUrl}/v1/invoices`, {
     method: "POST",
-    signal: opciones.signal,
+    signal: senalConTimeout(opciones.signal),
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
@@ -320,6 +450,8 @@ export async function postFactura(
     },
     body: JSON.stringify(dto),
   });
+
+  if (response.status === 401) invalidarTokenSiigo();
 
   if (!response.ok) {
     // SIIGO devuelve detalles de validación en el body — los propagamos para
@@ -340,18 +472,34 @@ export async function postFactura(
     );
   }
 
-  const raw: unknown = await response.json();
-  const parsed = siigoFacturaResponseSchema.parse(raw);
-  const consecutivo =
-    parsed.name ??
-    (parsed.number !== undefined ? String(parsed.number) : undefined);
-  if (!consecutivo) {
-    throw new SiigoApiError(
-      "Siigo aceptó la factura pero no devolvió consecutivo (name/number)",
-      502,
+  // Desde aquí Siigo dijo 2xx: cualquier sorpresa es "pudo haberse creado".
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await response.text());
+  } catch {
+    throw new SiigoRespuestaInvalidaError(
+      `Siigo respondió HTTP ${response.status} al crear la factura, pero la respuesta no se pudo leer`,
+      null,
     );
   }
-  return { id: parsed.id, name: consecutivo, date: parsed.date };
+  const idRecuperado = idDeRespuesta(raw);
+  const parsed = siigoFacturaResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new SiigoRespuestaInvalidaError(
+      `Siigo respondió HTTP ${response.status} al crear la factura, pero la respuesta no trae los campos esperados (id, consecutivo, fecha)`,
+      idRecuperado,
+    );
+  }
+  const consecutivo =
+    parsed.data.name ??
+    (parsed.data.number !== undefined ? String(parsed.data.number) : undefined);
+  if (!consecutivo) {
+    throw new SiigoRespuestaInvalidaError(
+      "Siigo aceptó la factura pero no devolvió consecutivo (name/number)",
+      idRecuperado,
+    );
+  }
+  return { id: parsed.data.id, name: consecutivo, date: parsed.data.date };
 }
 
 // ─── GET factura por id ──────────────────────────────────────────────────────
@@ -399,16 +547,15 @@ export interface SiigoInvoiceGetResponse {
 export async function getInvoiceById(
   token: string,
   id: string,
+  opciones: OpcionesLlamadaSiigo = {},
 ): Promise<SiigoInvoiceGetResponse> {
   const { baseUrl } = leerConfig();
 
-  const response = await fetch(`${baseUrl}/v1/invoices/${id}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "Partner-Id": "galcomex",
-    },
-  });
+  const response = await fetchGetSiigo(
+    `${baseUrl}/v1/invoices/${encodeURIComponent(id)}`,
+    token,
+    opciones,
+  );
 
   if (!response.ok) {
     let detalle = "";

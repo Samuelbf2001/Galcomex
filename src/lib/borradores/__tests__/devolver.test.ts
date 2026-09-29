@@ -15,6 +15,7 @@ import {
   EstadoBorrador,
   EstadoTramite,
   Rol,
+  SiigoEnvioEstado,
   TipoCliente,
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -25,6 +26,7 @@ import { ENTIDAD_AUDIT_NOTIFICACION } from "@/lib/notificaciones/whatsapp";
 import { generarBorrador, transicionarBorrador, TRANSICIONES_DEVOLUCION } from "../service";
 import {
   BorradorNoDevolvibleError,
+  BorradorYaEnSiigoError,
   ObservacionInvalidaError,
   PREFIJO_DEVOLUCION,
   RolNoPuedeDevolverError,
@@ -409,6 +411,51 @@ describe("devolverBorrador con Postgres local", () => {
     // El mensaje habla del consecutivo del DO, nunca del id interno.
     expect(error.message).toContain(consecutivo);
     expect(error.message).not.toContain(borradorId);
+  });
+
+  it("un borrador APROBADO que ya salió a Siigo (o está sin confirmar) no se puede devolver: 409", async (ctx) => {
+    const db = ensureDb(ctx);
+    for (const datosSiigo of [
+      { siigoDraftId: "siigo-draft-1", siigoEnvioEstado: SiigoEnvioEstado.ENVIADO },
+      { siigoDraftId: null, siigoEnvioEstado: SiigoEnvioEstado.INCIERTO },
+      { siigoDraftId: null, siigoEnvioEstado: SiigoEnvioEstado.ENVIANDO },
+    ]) {
+      const { borradorId, consecutivo } = await crearBorradorEn(db, EstadoBorrador.APROBADO);
+      await prisma.borradorFactura.update({ where: { id: borradorId }, data: datosSiigo });
+
+      const intento = devolverBorrador({
+        borradorId,
+        usuarioId: db.adminId,
+        rol: "ADMIN",
+        observacion: "Corregir el valor de la comisión",
+      });
+      await expect(intento).rejects.toBeInstanceOf(BorradorYaEnSiigoError);
+      await expect(intento).rejects.toMatchObject({ status: 409 });
+
+      const sinCambios = await prisma.borradorFactura.findUniqueOrThrow({
+        where: { id: borradorId },
+        select: { estado: true },
+      });
+      expect(sinCambios.estado).toBe(EstadoBorrador.APROBADO);
+      expect(consecutivo).toBeTruthy();
+    }
+  });
+
+  it("un borrador APROBADO que Siigo rechazó (ERROR) sí se puede devolver para corregirlo", async (ctx) => {
+    const db = ensureDb(ctx);
+    const { borradorId } = await crearBorradorEn(db, EstadoBorrador.APROBADO);
+    await prisma.borradorFactura.update({
+      where: { id: borradorId },
+      data: { siigoEnvioEstado: SiigoEnvioEstado.ERROR },
+    });
+
+    const resultado = await devolverBorrador({
+      borradorId,
+      usuarioId: db.adminId,
+      rol: "ADMIN",
+      observacion: "Siigo rechazó el NIT, corregir",
+    });
+    expect(resultado.borrador?.estado).toBe(EstadoBorrador.BORRADOR);
   });
 
   it("un borrador que ya está en BORRADOR no se puede devolver", async (ctx) => {

@@ -5,40 +5,41 @@
  * La factura NO se factura desde Galcomex: se crea en Siigo con stamp.send=false
  * para que quede como borrador, y un usuario superior la valida y la estampa
  * manualmente desde el portal Siigo. El consecutivo definitivo llega después
- * por el flujo manual de "Marcar facturado" (PATCH /api/borradores/[id]).
+ * por "Sincronizar desde SIIGO" o por el flujo manual de "Marcar facturado".
  *
  * Configuración leída desde BD (tabla Parametro):
  *   SIIGO_TIPO_COMPROBANTE_ID  → ID numérico del tipo de documento Siigo
  *   SIIGO_VENDEDOR_ID          → ID numérico del vendedor (usuario Siigo)
  *   SIIGO_PRODUCTO_COMISION_ID → UUID del SiigoProducto para línea de comisión
  *
- * El IVA de la comisión se resuelve desde SiigoProductoImpuesto del producto
- * de comisión. La forma de pago viene de BorradorFactura.formaPagoSiigoId.
- * Los productos de 4x1000 y costos bancarios vienen de su LineaRevision.siigoProductoId.
+ * ── Una factura, un solo POST (auditoría 25-sep-2026) ────────────────────────
+ * Cada POST /v1/invoices crea un documento que, estampado, es una factura legal
+ * ante la DIAN. Por eso:
  *
- * En éxito:
- * - Borrador se mantiene en estado APROBADO.
- * - Se persisten siigoDraftId, enviadoASiigoEn, ultimoIntentoSiigo.
- * - Se limpia ultimoErrorSiigo.
- * - AuditLog accion="SIIGO_ENVIAR_OK".
+ * 1. Antes de llamar a Siigo el borrador se RECLAMA con un UPDATE condicional
+ *    (APROBADO, sin siigoDraftId, envío null|ERROR → ENVIANDO + intentoId). Si
+ *    no se actualiza ninguna fila, otro envío ganó o ya se envió →
+ *    `EnvioSiigoBloqueadoError` (409). Dos clics simultáneos = un solo POST.
+ * 2. El resultado se clasifica (`clasificarFalloEnvioSiigo`):
+ *    - 2xx con id → ENVIADO (siigoDraftId guardado). AuditLog SIIGO_ENVIAR_OK.
+ *    - Rechazo definitivo de Siigo antes de crear (400/401/403/404/422/429) o
+ *      fallo antes del POST (credenciales, token) → ERROR: se puede reintentar.
+ *      AuditLog SIIGO_ENVIAR_ERROR.
+ *    - Timeout, error de red, 5xx, 2xx ilegible o sin consecutivo, o fallo de
+ *      la BD tras un 2xx → INCIERTO: reintento BLOQUEADO hasta que un ADMIN
+ *      revise en Siigo (`resolver-envio-service.ts`). AuditLog
+ *      SIIGO_ENVIAR_INCIERTO. Si el 2xx traía id, se guarda igual.
+ * 3. El POST jamás se reintenta automáticamente, y un borrador con
+ *    siigoDraftId nunca se vuelve a enviar (ya no existe «Reenviar»).
+ * 4. Un ENVIANDO de más de 10 minutos se presenta como INCIERTO
+ *    (`estado-envio.ts`); no se reintenta solo.
  *
- * En fallo:
- * - Borrador se mantiene en estado APROBADO.
- * - Se persisten ultimoErrorSiigo + ultimoIntentoSiigo.
- * - AuditLog accion="SIIGO_ENVIAR_ERROR".
- *
- * Regla anti-duplicado (cada POST crea un documento en Siigo, y estampado es
- * una factura legal):
- * - Un borrador con `siigoDraftId` NO se vuelve a enviar salvo reenvío
- *   explícito (`reenviar: true`) que nombre el `siigoDraftIdAnterior` que el
- *   usuario vio; si ya no coincide con el guardado, alguien reenvió en medio y
- *   se rechaza (así un doble clic en "Reenviar" no crea dos borradores).
- * - Los envíos del mismo borrador se serializan con el advisory lock
- *   `siigo_envio:<id>` (try-lock: el segundo recibe "envío en curso" sin
- *   esperar). La comprobación y el guardado del id ocurren bajo ese lock.
+ * El borrador sigue en APROBADO en todos los casos.
  */
 
-import { EstadoBorrador, Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+
+import { EstadoBorrador, Prisma, SiigoEnvioEstado } from "@prisma/client";
 
 import { esObservacionDevolucion } from "@/lib/borradores/devolver";
 import { ensureLineasFijas } from "@/lib/borradores/lineas-fijas";
@@ -52,70 +53,60 @@ import {
   postFactura,
   SiigoApiError,
   SiigoConfigError,
+  SiigoRespuestaInvalidaError,
+  TIMEOUT_SIIGO_MS,
   type SiigoFacturaItemDto,
   type SiigoFacturaPostDto,
   type SiigoFacturaPostResponse,
 } from "./client";
+import { BorradorSiigoNoEncontradoError, EnvioSiigoBloqueadoError } from "./errores-envio";
+import {
+  detalleEnvioBloqueado,
+  puedeEnviarASiigo,
+  type SiigoEnvioEstadoValor,
+} from "./estado-envio";
 import { ivaDelProducto } from "./impuestos-producto";
 import { construirItemsSiigo, identificacionSiigo, lineasQueVanComoItem } from "./items-factura";
 
 // ─── Resultado tipado ─────────────────────────────────────────────────────────
 
 export type EnvioSiigoResult =
-  | { ok: true; siigoDraftId: string; enviadoEn: string }
+  | { ok: true; siigoDraftId: string; enviadoEn: string; siigoEnvioEstado: "ENVIADO" }
   | {
       ok: false;
-      tipo: "estado" | "validacion" | "config" | "api" | "db";
+      /** `incierto`: no sabemos si Siigo creó la factura; no reintentar. */
+      tipo: "estado" | "validacion" | "config" | "api" | "incierto" | "db";
       error: string;
+      /** Estado del envío tras el intento (ausente si no se llegó a reclamar). */
+      siigoEnvioEstado?: SiigoEnvioEstadoValor | null;
+      siigoDraftId?: string | null;
     };
 
-export interface OpcionesEnvioSiigo {
-  /** Reenvío explícito ("Reenviar a SIIGO"): crea OTRO borrador en Siigo. */
-  reenviar?: boolean;
-  /** `siigoDraftId` que el usuario vio al confirmar el reenvío. */
-  siigoDraftIdAnterior?: string | null;
-}
-
-// ─── Anti-duplicado ───────────────────────────────────────────────────────────
-
-/** Serializa los envíos de un borrador (distinta de `borrador_lineas:`, que es de edición). */
-export function lockKeyEnvioSiigo(borradorId: string): string {
-  return `siigo_envio:${borradorId}`;
-}
-
-export const MENSAJE_ENVIO_EN_CURSO =
-  "Ya hay un envío a SIIGO en curso para esta factura. Espera unos segundos y recarga la página antes de volver a intentarlo.";
-
-/** Tope de espera a Siigo (token + POST); por debajo del timeout de la transacción. */
-const TIMEOUT_SIIGO_MS = 45_000;
-const TIMEOUT_TX_ENVIO_MS = TIMEOUT_SIIGO_MS + 30_000;
+// ─── Clasificación del resultado ─────────────────────────────────────────────
 
 /**
- * Regla anti-duplicado, pura: devuelve el motivo de rechazo o null si se puede
- * enviar. Primer envío: el borrador no debe tener `siigoDraftId`. Reenvío: el
- * `siigoDraftIdAnterior` del cliente debe ser exactamente el guardado.
+ * Códigos con los que Siigo rechaza el POST SIN crear la factura (validación,
+ * credenciales, límite de peticiones). Cualquier otro (408, 409, 5xx…) es
+ * dudoso.
  */
-export function motivoRechazoEnvioSiigo(
-  actual: { siigoDraftId: string | null },
-  opciones: OpcionesEnvioSiigo = {},
-): string | null {
-  if (!opciones.reenviar) {
-    if (actual.siigoDraftId) {
-      return `Esta factura ya se envió a SIIGO (borrador ${actual.siigoDraftId}). Para crear otro borrador usa «Reenviar a SIIGO» y descarta el anterior en el portal de SIIGO si no se ha estampado.`;
-    }
-    return null;
-  }
+export const STATUS_RECHAZO_DEFINITIVO: ReadonlySet<number> = new Set([
+  400, 401, 403, 404, 422, 429,
+]);
 
-  const anterior = opciones.siigoDraftIdAnterior?.trim() || null;
-  if (!anterior) {
-    return "Para reenviar a SIIGO hay que indicar cuál borrador de SIIGO se reemplaza.";
-  }
-  if (actual.siigoDraftId !== anterior) {
-    return actual.siigoDraftId
-      ? `Mientras tanto la factura se volvió a enviar a SIIGO (borrador actual ${actual.siigoDraftId}). Recarga la página y revisa el portal de SIIGO antes de reenviar.`
-      : "Esta factura no tiene un envío previo a SIIGO. Recarga la página y usa «Enviar a SIIGO».";
-  }
-  return null;
+/**
+ * ¿El fallo deja la factura con certeza SIN crear (ERROR, se puede reintentar)
+ * o pudo haberse creado (INCIERTO, bloqueado)? Pura.
+ *
+ * @param postIntentado  true si el POST /v1/invoices llegó a salir.
+ */
+export function clasificarFalloEnvioSiigo(
+  err: unknown,
+  postIntentado: boolean,
+): "ERROR" | "INCIERTO" {
+  if (!postIntentado) return "ERROR";
+  if (err instanceof SiigoConfigError) return "ERROR";
+  if (err instanceof SiigoApiError && STATUS_RECHAZO_DEFINITIVO.has(err.status)) return "ERROR";
+  return "INCIERTO";
 }
 
 function esTimeoutOAbort(err: unknown): boolean {
@@ -126,6 +117,9 @@ function esTimeoutOAbort(err: unknown): boolean {
     (err.name === "TimeoutError" || err.name === "AbortError")
   );
 }
+
+const INSTRUCCION_INCIERTO =
+  "No la reenvíes: puede que SIIGO sí la haya creado. Un ADMIN debe usar «Revisar en SIIGO».";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -293,7 +287,6 @@ export function resolverNit4x1000(
 export async function enviarBorradorASiigo(
   borradorId: string,
   usuarioId: string,
-  opciones: OpcionesEnvioSiigo = {},
 ): Promise<EnvioSiigoResult> {
   // ── 0. Backfill líneas fijas (idempotente, también para borradores APROBADO) ──
   // Borradores generados antes del modelo "4 conceptos = LineaRevision" pueden
@@ -386,10 +379,10 @@ export async function enviarBorradorASiigo(
     };
   }
 
-  // Aviso temprano; la comprobación que cuenta se repite bajo el lock (paso 6).
-  const rechazoTemprano = motivoRechazoEnvioSiigo(borrador, opciones);
-  if (rechazoTemprano) {
-    return { ok: false, tipo: "estado", error: rechazoTemprano };
+  // Aviso temprano (con el motivo concreto); la comprobación que cuenta es el
+  // reclamo atómico del paso 6.
+  if (!puedeEnviarASiigo(borrador)) {
+    throw new EnvioSiigoBloqueadoError(detalleEnvioBloqueado(borrador));
   }
 
   const nitCliente = borrador.tramite.cliente?.nit?.trim();
@@ -613,180 +606,292 @@ export async function enviarBorradorASiigo(
     stamp: { send: false },
   };
 
-  // ── 6. Bajo lock: re-validar, llamar a SIIGO y guardar el id ────────────────
-  // El lock se mantiene durante el POST: un envío simultáneo recibe "envío en
-  // curso" y uno posterior ya ve el siigoDraftId guardado (regla anti-duplicado
-  // en la cabecera del archivo).
-  const lockKey = lockKeyEnvioSiigo(borrador.id);
-  const tramiteId = borrador.tramite.id;
-  // Holders: se asignan dentro del callback y se leen en el catch externo.
-  const enviado: { respuesta: SiigoFacturaPostResponse | null } = { respuesta: null };
-  const fallido: { resultado: EnvioSiigoResult | null } = { resultado: null };
+  // ── 6. Reclamar el envío ANTES de tocar Siigo ───────────────────────────────
+  // UPDATE condicional atómico: de dos envíos simultáneos solo uno actualiza la
+  // fila; el otro recibe 409 sin llamar a Siigo.
+  const intentoId = randomUUID();
+  const iniciadoEn = new Date();
+  const reclamo = await prisma.borradorFactura.updateMany({
+    where: {
+      id: borrador.id,
+      estado: EstadoBorrador.APROBADO,
+      siigoDraftId: null,
+      OR: [{ siigoEnvioEstado: null }, { siigoEnvioEstado: SiigoEnvioEstado.ERROR }],
+    },
+    data: {
+      siigoEnvioEstado: SiigoEnvioEstado.ENVIANDO,
+      siigoEnvioIniciadoAt: iniciadoEn,
+      siigoEnvioIntentoId: intentoId,
+      ultimoIntentoSiigo: iniciadoEn,
+    },
+  });
 
-  try {
-    return await prisma.$transaction(
-      async (tx): Promise<EnvioSiigoResult> => {
-        const [fila] = await tx.$queryRaw<Array<{ tomado: boolean }>>`
-          SELECT pg_try_advisory_xact_lock(hashtext(${lockKey})) AS tomado`;
-        if (!fila?.tomado) {
-          return { ok: false, tipo: "estado", error: MENSAJE_ENVIO_EN_CURSO };
-        }
-
-        const actual = await tx.borradorFactura.findUnique({
-          where: { id: borrador.id },
-          select: { estado: true, siigoDraftId: true },
-        });
-        if (!actual) {
-          return { ok: false, tipo: "estado", error: "Borrador no encontrado" };
-        }
-        if (actual.estado !== EstadoBorrador.APROBADO) {
-          return {
-            ok: false,
-            tipo: "estado",
-            error: `El borrador debe estar APROBADO para enviarse a SIIGO (estado actual: ${actual.estado})`,
-          };
-        }
-        const rechazo = motivoRechazoEnvioSiigo(actual, opciones);
-        if (rechazo) {
-          return { ok: false, tipo: "estado", error: rechazo };
-        }
-
-        let respuesta: SiigoFacturaPostResponse;
-        try {
-          const signal = AbortSignal.timeout(TIMEOUT_SIIGO_MS);
-          const token = await getToken({ signal });
-          respuesta = await postFactura(token, dto, { signal });
-          enviado.respuesta = respuesta;
-        } catch (err) {
-          fallido.resultado = await persistirErrorSiigo(tx, borrador.id, tramiteId, usuarioId, err);
-          return fallido.resultado;
-        }
-
-        const enviadoEn = new Date();
-        await persistirExitoSiigo(tx, {
-          borradorId: borrador.id,
-          tramiteId,
-          usuarioId,
-          respuesta,
-          enviadoEn,
-          siigoDraftIdAnterior: actual.siigoDraftId,
-          reenvio: Boolean(opciones.reenviar),
-        });
-        return { ok: true, siigoDraftId: respuesta.id, enviadoEn: enviadoEn.toISOString() };
+  if (reclamo.count === 0) {
+    const actual = await prisma.borradorFactura.findUnique({
+      where: { id: borrador.id },
+      select: {
+        estado: true,
+        siigoDraftId: true,
+        siigoEnvioEstado: true,
+        siigoEnvioIniciadoAt: true,
       },
-      { maxWait: 10_000, timeout: TIMEOUT_TX_ENVIO_MS },
-    );
-  } catch (err) {
-    const respuesta = enviado.respuesta;
-    if (respuesta) {
-      // Siigo SÍ creó el borrador pero la transacción falló: guardar el id
-      // aunque sea sin lock, para que nadie lo reenvíe a ciegas.
-      const enviadoEn = new Date();
-      try {
-        await prisma.$transaction((tx) =>
-          persistirExitoSiigo(tx, {
-            borradorId: borrador.id,
-            tramiteId,
-            usuarioId,
-            respuesta,
-            enviadoEn,
-            siigoDraftIdAnterior: borrador.siigoDraftId,
-            reenvio: Boolean(opciones.reenviar),
-          }),
-        );
-        return { ok: true, siigoDraftId: respuesta.id, enviadoEn: enviadoEn.toISOString() };
-      } catch (errGuardado) {
-        const detalle = errGuardado instanceof Error ? errGuardado.message : "Error de persistencia";
-        return {
-          ok: false,
-          tipo: "db",
-          error: `SIIGO creó el borrador ${respuesta.name} (id ${respuesta.id}), pero Galcomex no pudo guardarlo: ${detalle}. No lo reenvíes: anota el id y avisa a soporte.`,
-        };
-      }
+    });
+    if (!actual) throw new BorradorSiigoNoEncontradoError();
+    if (actual.estado !== EstadoBorrador.APROBADO) {
+      return {
+        ok: false,
+        tipo: "estado",
+        error: `El borrador debe estar APROBADO para enviarse a SIIGO (estado actual: ${actual.estado})`,
+      };
     }
-    if (fallido.resultado) return fallido.resultado;
-    throw err;
+    throw new EnvioSiigoBloqueadoError(detalleEnvioBloqueado(actual));
   }
-}
 
-async function persistirExitoSiigo(
-  db: Prisma.TransactionClient,
-  datos: {
-    borradorId: string;
-    tramiteId: string;
-    usuarioId: string;
-    respuesta: SiigoFacturaPostResponse;
-    enviadoEn: Date;
-    siigoDraftIdAnterior: string | null;
-    reenvio: boolean;
-  },
-): Promise<void> {
-  await db.borradorFactura.update({
-    where: { id: datos.borradorId },
-    data: {
-      siigoDraftId: datos.respuesta.id,
-      enviadoASiigoEn: datos.enviadoEn,
-      ultimoErrorSiigo: null,
-      ultimoIntentoSiigo: datos.enviadoEn,
-    },
-  });
-  await db.auditLog.create({
-    data: {
-      entidad: "BorradorFactura",
-      entidadId: datos.borradorId,
-      accion: "SIIGO_ENVIAR_OK",
-      usuarioId: datos.usuarioId,
-      tramiteId: datos.tramiteId,
-      antes: { siigoDraftIdAnterior: datos.siigoDraftIdAnterior },
-      despues: {
-        siigoDraftId: datos.respuesta.id,
-        enviadoASiigoEn: datos.enviadoEn.toISOString(),
-        siigoConsecutivoBorrador: datos.respuesta.name,
-        reenvio: datos.reenvio,
-      } as Prisma.InputJsonValue,
-    },
-  });
-}
+  // ── 7. Llamar a Siigo (una sola vez) y registrar el resultado ──────────────
+  const contexto: ContextoIntento = {
+    borradorId: borrador.id,
+    tramiteId: borrador.tramite.id,
+    usuarioId,
+    intentoId,
+  };
 
-async function persistirErrorSiigo(
-  db: Prisma.TransactionClient,
-  borradorId: string,
-  tramiteId: string,
-  usuarioId: string,
-  err: unknown,
-): Promise<EnvioSiigoResult> {
-  const tipo: "config" | "api" =
-    err instanceof SiigoConfigError ? "config" : "api";
-  const sinRespuesta = esTimeoutOAbort(err);
-  const status =
-    err instanceof SiigoApiError ? err.status : tipo === "config" ? 503 : sinRespuesta ? 504 : 502;
-  const mensaje = sinRespuesta
-    ? `SIIGO no respondió en ${TIMEOUT_SIIGO_MS / 1000} s. Antes de reintentar, revisa en el portal de SIIGO si el borrador alcanzó a crearse.`
-    : err instanceof Error
-      ? err.message
-      : "Error desconocido enviando a SIIGO";
-
+  let respuesta: SiigoFacturaPostResponse;
+  let postIntentado = false;
   try {
-    await db.borradorFactura.update({
-      where: { id: borradorId },
+    const token = await getToken();
+    postIntentado = true;
+    respuesta = await postFactura(token, dto);
+  } catch (err) {
+    return registrarFalloEnvio(contexto, err, postIntentado);
+  }
+  return registrarExitoEnvio(contexto, respuesta);
+}
+
+// ─── Registro del resultado ───────────────────────────────────────────────────
+
+type ContextoIntento = {
+  borradorId: string;
+  tramiteId: string;
+  usuarioId: string;
+  /** Id del reclamo: solo este intento puede escribir su resultado. */
+  intentoId: string;
+};
+
+async function registrarExitoEnvio(
+  ctx: ContextoIntento,
+  respuesta: SiigoFacturaPostResponse,
+): Promise<EnvioSiigoResult> {
+  let ultimoError: unknown = null;
+
+  // La BD pudo fallar justo después de que Siigo creara la factura: se intenta
+  // guardar dos veces antes de rendirse.
+  for (let intento = 1; intento <= 2; intento += 1) {
+    const enviadoEn = new Date();
+    try {
+      const aplicado = await prisma.$transaction(async (tx) => {
+        const r = await tx.borradorFactura.updateMany({
+          where: { id: ctx.borradorId, siigoEnvioIntentoId: ctx.intentoId },
+          data: {
+            siigoDraftId: respuesta.id,
+            siigoEnvioEstado: SiigoEnvioEstado.ENVIADO,
+            enviadoASiigoEn: enviadoEn,
+            ultimoErrorSiigo: null,
+            ultimoIntentoSiigo: enviadoEn,
+          },
+        });
+        if (r.count === 0) return false;
+        await tx.auditLog.create({
+          data: {
+            entidad: "BorradorFactura",
+            entidadId: ctx.borradorId,
+            accion: "SIIGO_ENVIAR_OK",
+            usuarioId: ctx.usuarioId,
+            tramiteId: ctx.tramiteId,
+            antes: { siigoEnvioEstado: SiigoEnvioEstado.ENVIANDO, siigoDraftId: null },
+            despues: {
+              siigoEnvioEstado: SiigoEnvioEstado.ENVIADO,
+              siigoDraftId: respuesta.id,
+              enviadoASiigoEn: enviadoEn.toISOString(),
+              siigoConsecutivoBorrador: respuesta.name,
+              intentoId: ctx.intentoId,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        return true;
+      });
+
+      if (!aplicado) {
+        // El reclamo ya no es de este intento (un ADMIN lo liberó mientras Siigo
+        // tardaba). La factura existe en Siigo: se deja rastro y no se pisa nada.
+        const mensaje = `SIIGO creó el borrador ${respuesta.name} (id ${respuesta.id}) con un envío que ya había sido reemplazado. Revisa en el portal de SIIGO si quedó duplicada y anula la sobrante.`;
+        console.error(`[siigo] ${mensaje} borrador=${ctx.borradorId} intento=${ctx.intentoId}`);
+        await auditarSinFallar(ctx, "SIIGO_ENVIAR_INCIERTO", {
+          error: mensaje,
+          siigoDraftIdHuerfano: respuesta.id,
+          intentoId: ctx.intentoId,
+        });
+        return { ok: false, tipo: "incierto", error: mensaje };
+      }
+
+      return {
+        ok: true,
+        siigoDraftId: respuesta.id,
+        enviadoEn: enviadoEn.toISOString(),
+        siigoEnvioEstado: "ENVIADO",
+      };
+    } catch (err) {
+      ultimoError = err;
+    }
+  }
+
+  // No se pudo guardar como ENVIADO. Último recurso: guardar al menos el id
+  // (sin AuditLog, por si era éste el que fallaba) y dejarlo INCIERTO.
+  const detalle = ultimoError instanceof Error ? ultimoError.message : "Error de persistencia";
+  const mensaje = `SIIGO creó el borrador ${respuesta.name} (id ${respuesta.id}), pero Galcomex no pudo guardarlo: ${detalle}. No lo reenvíes: anota el id y avisa a soporte.`;
+  console.error(`[siigo] ${mensaje} borrador=${ctx.borradorId} intento=${ctx.intentoId}`);
+  let idGuardado = false;
+  try {
+    const r = await prisma.borradorFactura.updateMany({
+      where: { id: ctx.borradorId, siigoEnvioIntentoId: ctx.intentoId },
       data: {
+        siigoDraftId: respuesta.id,
+        siigoEnvioEstado: SiigoEnvioEstado.INCIERTO,
         ultimoErrorSiigo: mensaje,
         ultimoIntentoSiigo: new Date(),
       },
     });
-    await db.auditLog.create({
+    idGuardado = r.count > 0;
+  } catch {
+    // La fila queda en ENVIANDO y a los 10 minutos se presenta como INCIERTO.
+  }
+  await auditarSinFallar(ctx, "SIIGO_ENVIAR_INCIERTO", {
+    error: mensaje,
+    siigoDraftId: respuesta.id,
+    intentoId: ctx.intentoId,
+  });
+  return {
+    ok: false,
+    tipo: "db",
+    error: mensaje,
+    siigoEnvioEstado: "INCIERTO",
+    siigoDraftId: idGuardado ? respuesta.id : null,
+  };
+}
+
+async function registrarFalloEnvio(
+  ctx: ContextoIntento,
+  err: unknown,
+  postIntentado: boolean,
+): Promise<EnvioSiigoResult> {
+  const clase = clasificarFalloEnvioSiigo(err, postIntentado);
+  const idRecuperado = err instanceof SiigoRespuestaInvalidaError ? err.idRecuperado : null;
+  const sinRespuesta = esTimeoutOAbort(err);
+  const status =
+    err instanceof SiigoApiError || err instanceof SiigoRespuestaInvalidaError
+      ? err.status
+      : err instanceof SiigoConfigError
+        ? 503
+        : sinRespuesta
+          ? 504
+          : 502;
+
+  const base = sinRespuesta
+    ? `SIIGO no respondió en ${TIMEOUT_SIIGO_MS / 1000} s`
+    : err instanceof Error
+      ? err.message
+      : "Error desconocido enviando a SIIGO";
+  const mensaje =
+    clase === "ERROR"
+      ? base
+      : idRecuperado
+        ? `${base}. SIIGO devolvió el id ${idRecuperado} y quedó guardado; un ADMIN debe confirmarlo con «Revisar en SIIGO».`
+        : `${base}. ${INSTRUCCION_INCIERTO}`;
+
+  const estado = clase === "ERROR" ? SiigoEnvioEstado.ERROR : SiigoEnvioEstado.INCIERTO;
+  let idGuardado = false;
+  let registrado = false;
+  try {
+    await prisma.$transaction(async (tx) => {
+      const r = await tx.borradorFactura.updateMany({
+        where: { id: ctx.borradorId, siigoEnvioIntentoId: ctx.intentoId },
+        data: {
+          siigoEnvioEstado: estado,
+          ultimoErrorSiigo: mensaje,
+          ultimoIntentoSiigo: new Date(),
+          ...(idRecuperado ? { siigoDraftId: idRecuperado } : {}),
+        },
+      });
+      registrado = r.count > 0;
+      idGuardado = Boolean(idRecuperado) && registrado;
+      await tx.auditLog.create({
+        data: {
+          entidad: "BorradorFactura",
+          entidadId: ctx.borradorId,
+          accion: clase === "ERROR" ? "SIIGO_ENVIAR_ERROR" : "SIIGO_ENVIAR_INCIERTO",
+          usuarioId: ctx.usuarioId,
+          tramiteId: ctx.tramiteId,
+          antes: { siigoEnvioEstado: SiigoEnvioEstado.ENVIANDO },
+          despues: {
+            siigoEnvioEstado: estado,
+            error: mensaje,
+            status,
+            postIntentado,
+            siigoDraftIdRecuperado: idRecuperado,
+            intentoId: ctx.intentoId,
+            aplicado: r.count > 0,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+  } catch (errDb) {
+    // Si no se pudo registrar, la fila queda en ENVIANDO: a los 10 minutos se
+    // presenta como INCIERTO (bloqueado). Nunca queda libre para reenviar.
+    idGuardado = false;
+    registrado = false;
+    console.error(
+      `[siigo] no se pudo registrar el fallo del envío borrador=${ctx.borradorId} intento=${ctx.intentoId}:`,
+      errDb,
+    );
+  }
+
+  if (!registrado) {
+    // Sin el resultado guardado el envío sigue reclamado (ENVIANDO → INCIERTO):
+    // bloqueado aunque el fallo fuera un rechazo definitivo. Lo decide un ADMIN.
+    return {
+      ok: false,
+      tipo: clase === "INCIERTO" ? "incierto" : "db",
+      error: `${mensaje}. Galcomex no pudo guardar el resultado: el envío queda bloqueado hasta que un ADMIN lo revise.`,
+      siigoEnvioEstado: "ENVIANDO",
+      siigoDraftId: null,
+    };
+  }
+
+  return {
+    ok: false,
+    tipo: clase === "INCIERTO" ? "incierto" : err instanceof SiigoConfigError ? "config" : "api",
+    error: mensaje,
+    siigoEnvioEstado: estado,
+    siigoDraftId: idGuardado ? idRecuperado : null,
+  };
+}
+
+async function auditarSinFallar(
+  ctx: ContextoIntento,
+  accion: string,
+  despues: Record<string, string | null>,
+): Promise<void> {
+  try {
+    await prisma.auditLog.create({
       data: {
         entidad: "BorradorFactura",
-        entidadId: borradorId,
-        accion: "SIIGO_ENVIAR_ERROR",
-        usuarioId,
-        tramiteId,
-        despues: { error: mensaje, status, tipo } as Prisma.InputJsonValue,
+        entidadId: ctx.borradorId,
+        accion,
+        usuarioId: ctx.usuarioId,
+        tramiteId: ctx.tramiteId,
+        despues: despues as Prisma.InputJsonValue,
       },
     });
   } catch {
-    // No bloqueamos el error original si la persistencia falla.
+    // El rastro principal ya quedó en el log del servidor.
   }
-
-  return { ok: false, tipo, error: mensaje };
 }

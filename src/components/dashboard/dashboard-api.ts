@@ -93,6 +93,8 @@ export type DashboardApiData = {
   cantidadPagosSinComprobante: number;
   /** Facturas de trámites históricos sin cobros. `activa: false` si el API no la trae. */
   carteraHistorica: CarteraHistoricaResumen;
+  /** Envíos a SIIGO sin confirmar (INCIERTO o ENVIANDO colgado): hay que revisarlos en SIIGO. */
+  cantidadEnviosSiigoSinConfirmar: number;
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -290,6 +292,10 @@ export async function fetchDashboard(
         ? payload.cantidadPagosSinComprobante
         : 0,
     carteraHistorica: mapCarteraHistorica(payload.carteraHistorica),
+    cantidadEnviosSiigoSinConfirmar:
+      typeof payload.cantidadEnviosSiigoSinConfirmar === "number"
+        ? payload.cantidadEnviosSiigoSinConfirmar
+        : 0,
   };
 }
 
