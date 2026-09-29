@@ -193,4 +193,19 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/clientes/[param]/comisiones/liquidar",
     "Facturar comisiones por contenedor (crea un «Otros» a nombre de la empresa que paga): tool comisiones_facturar se agrega al MCP compartido tras desplegar B",
   ),
+
+  // Diseño B — B7, cotización / solicitud de fondos por DO (2026-09-29). Las
+  // tools tramite_cotizacion_ver / tramite_cotizacion_pdf se agregan al MCP
+  // compartido (galcomex-mcp/server.mjs) después de desplegar B; borrar estas
+  // líneas entonces.
+  pendiente(
+    "GET",
+    "/api/tramites/[param]/cotizacion",
+    "Cotización / solicitud de fondos del DO en JSON (misma cuenta que la factura, valor para la OC, nota de la agencia): falta tool tramite_cotizacion_ver",
+  ),
+  pendiente(
+    "GET",
+    "/api/tramites/[param]/cotizacion/pdf",
+    "Cotización / solicitud de fondos del DO en PDF: falta tool tramite_cotizacion_pdf (binario; ver exportar_archivo)",
+  ),
 ];

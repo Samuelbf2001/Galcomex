@@ -360,6 +360,36 @@ sin código por empresa (`src/lib/comisiones/liquidacion.ts`, `liquidarComisione
   El atrasado de LTRANS (61 contenedores) se factura como un «Otros» a mano; esos DOs NO se
   registran después como comisión (se cobrarían dos veces).
 
+## Cotización / solicitud de fondos por DO (B7, Diseño B, 29-sep-2026)
+
+PDF que Galcomex le manda al cliente para que gire los fondos y haga su orden de compra (Camila,
+nota de voz 3): `GET /api/tramites/[id]/cotizacion` (JSON) y `.../cotizacion/pdf` (react-pdf,
+`src/lib/pdf/cotizacion-pdf.tsx`). ADMIN, REVISOR y OPERATIVO (los mismos de `GET /api/tramites/[id]/tarifa`).
+Solo lectura: no persiste nada. Botón "Cotización (PDF)" en el bloque "Lo que propone el tarifario"
+del DO, solo cuando la propuesta no tiene pendientes.
+
+- **La MISMA cuenta que la factura:** `src/lib/cotizacion/calculo.ts` (pura) llama a
+  `calcularFacturaConceptos`: IVA por ítem redondeado al peso, terceros sin IVA, 4x1000 sobre los
+  terceros y ReteIVA del cliente (`factura_conceptos_iva`). "TOTAL A GIRAR" = total de la factura
+  sin restar anticipos. Los conceptos son los de la propuesta del tarifario (o, en un «Otros», lo
+  que facturaría `resolverFacturableFlujoCorto`: valor y concepto a mano, o su tarifa), con el
+  mismo nombre que llevará la línea (`resolverLineaConcepto`); los terceros, las facturas de
+  proveedor que se cobran y aún no van en una factura aprobada/facturada
+  (`lineasTercerosDesdeFacturas`). El servicio está en `src/lib/cotizacion/service.ts`.
+  Dorados: DO.26-0171 → 407.000 + IVA 77.330 − ReteIVA 11.600 = **472.730**; DO.BGT26-0228 → **925.715**;
+  BAQ-18385 → 1.487.623 (con terceros y 4x1000). Un test compara el total con el de `generarBorrador`.
+- **Valor para su orden de compra (sin impuestos):** regla de B4 — por defecto servicio + terceros,
+  sin IVA, sin ReteIVA, sin 4x1000; configurable por empresa en `orden_compra_en_revision`
+  (`{ base: "SERVICIO_Y_TERCEROS" | "SOLO_SERVICIO", incluye4x1000 }`, config rota → la estándar).
+  Solo se imprime si la empresa tiene esa función.
+- **Nota de la agencia (B9, informativa):** si el DO tiene agencia con agenciamiento estándar
+  (`Parametro AGENCIAMIENTO_<AGENCIA>`): "Orden de compra aparte para COLDEX: 145.000 + IVA 27.550 =
+  172.550 (la factura la hace Coldex)". No se controla la factura de la agencia.
+- **Sin con qué cotizar → 422 `COTIZACION_INCOMPLETA`** (con `pendientes`): sin tarifa vigente,
+  tarifa con pendientes (CIF, contenedores, agencia sin agenciamiento…) o empresa con formato de
+  comisión (sin `factura_conceptos_iva`). Nunca cotiza "lo que sí se pudo calcular".
+- **Paridad MCP:** las dos rutas están `pendiente` en `paridad-excepciones.ts`.
+
 ## Cuentas por pagar a proveedores (CxP v2)
 
 Lo que Galcomex le debe a cada proveedor, factura por factura, sin pagar dos
