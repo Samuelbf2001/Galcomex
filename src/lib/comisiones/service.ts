@@ -11,7 +11,7 @@
  *     (Polyrec, Polyrec ZF) — el número de contenedores es la base.
  */
 
-import type { TipoCarga } from "@prisma/client";
+import { Prisma, type ComisionTramite, type TipoCarga } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { normalizeSerializable } from "@/lib/db/serializable";
@@ -38,6 +38,15 @@ export class ComisionInvalidaError extends Error {
   constructor(mensaje: string) {
     super(mensaje);
     this.name = "ComisionInvalidaError";
+  }
+}
+
+/** B3: la comisión se facturó justo mientras se editaba o quitaba (otra persona ganó la carrera). */
+export class ComisionYaFacturadaAlEditarError extends Error {
+  public readonly status = 409;
+  constructor() {
+    super("Esta comisión se acaba de facturar en un servicio «Otros»: ya no se puede cambiar ni quitar. Recarga la ficha.");
+    this.name = "ComisionYaFacturadaAlEditarError";
   }
 }
 
@@ -234,7 +243,12 @@ export async function registrarComisionTramite(input: {
 
     if (input.unidades === 0) {
       if (!anterior) return null;
-      await tx.comisionTramite.delete({ where: { id: anterior.id } });
+      // B3: `liquidacionTramiteId: null` en el WHERE — si entre la lectura de
+      // arriba y este borrado otra persona facturó la comisión, no se borra.
+      const borradas = await tx.comisionTramite.deleteMany({
+        where: { id: anterior.id, liquidacionTramiteId: null },
+      });
+      if (borradas.count !== 1) throw new ComisionYaFacturadaAlEditarError();
       await tx.auditLog.create({
         data: {
           entidad: "ComisionTramite",
@@ -269,16 +283,39 @@ export async function registrarComisionTramite(input: {
     });
     if (error) throw new ComisionInvalidaError(error);
 
-    const guardada = await tx.comisionTramite.upsert({
-      where: { tramiteId_empresaId: { tramiteId: tramite.id, empresaId: input.empresaId } },
-      create: {
-        tramiteId: tramite.id,
-        empresaId: input.empresaId,
-        unidades: input.unidades,
-        registradoPorId: input.usuarioId,
-      },
-      update: { unidades: input.unidades, registradoPorId: input.usuarioId },
-    });
+    // B3: editar solo si la fila sigue sin facturar (`liquidacionTramiteId: null`
+    // en el WHERE, no solo en la lectura de arriba): con dos personas a la vez,
+    // una comisión que otra acaba de facturar no se cambia a mitad de camino.
+    // Sin fila previa se CREA (el índice único evita el duplicado): un upsert
+    // podría caer en su rama de edición sobre una fila que otra persona creó y
+    // facturó justo en el medio.
+    let guardada: ComisionTramite;
+    if (anterior) {
+      const editadas = await tx.comisionTramite.updateMany({
+        where: { id: anterior.id, liquidacionTramiteId: null },
+        data: { unidades: input.unidades, registradoPorId: input.usuarioId },
+      });
+      if (editadas.count !== 1) throw new ComisionYaFacturadaAlEditarError();
+      guardada = await tx.comisionTramite.findUniqueOrThrow({ where: { id: anterior.id } });
+    } else {
+      try {
+        guardada = await tx.comisionTramite.create({
+          data: {
+            tramiteId: tramite.id,
+            empresaId: input.empresaId,
+            unidades: input.unidades,
+            registradoPorId: input.usuarioId,
+          },
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+          throw new ComisionInvalidaError(
+            "Otra persona registró la comisión de esta empresa en este DO mientras tanto. Recarga la ficha.",
+          );
+        }
+        throw error;
+      }
+    }
     await tx.auditLog.create({
       data: {
         entidad: "ComisionTramite",

@@ -46,6 +46,10 @@ type Fixture = {
   ltrans15Id: string;
   /** Solo para la prueba de concurrencia (cuenta sus «Otros» sin ruido). */
   ltransConcurrenteId: string;
+  /** B3: carreras de unidades (una empresa aparte, para contar sus «Otros» sin ruido). */
+  ltransCarreraId: string;
+  /** M3: deshacer una liquidación. */
+  ltransDeshacerId: string;
   /** Con comisión pero SIN `factura_conceptos_iva`. */
   sinFormatoId: string;
   /** Con la función pero valor por contenedor 0. */
@@ -188,6 +192,8 @@ describe("B10 — facturar comisiones de LTRANS (Postgres)", () => {
       const ltrans = await crear("LTRANS VITEST LIQ", "ltrans", capacidadesLtrans({}));
       const ltrans15 = await crear("LTRANS 15 VITEST LIQ", "ltrans15", capacidadesLtrans({ reteIva: 15 }));
       const ltransConcurrente = await crear("LTRANS CONCURRENTE VITEST LIQ", "ltransconc", capacidadesLtrans({}));
+      const ltransCarrera = await crear("LTRANS CARRERA VITEST LIQ", "ltranscarrera", capacidadesLtrans({}));
+      const ltransDeshacer = await crear("LTRANS DESHACER VITEST LIQ", "ltransdeshacer", capacidadesLtrans({}));
       const sinFormato = await crear("SIN FORMATO VITEST LIQ", "sinformato", capacidadesLtrans({ conFormato: false }));
       const sinValor = await crear("SIN VALOR VITEST LIQ", "sinvalor", capacidadesLtrans({ valor: "0" }));
       const conceptoInactivo = await crear(
@@ -201,6 +207,8 @@ describe("B10 — facturar comisiones de LTRANS (Postgres)", () => {
         ltransId: ltrans.id,
         ltrans15Id: ltrans15.id,
         ltransConcurrenteId: ltransConcurrente.id,
+        ltransCarreraId: ltransCarrera.id,
+        ltransDeshacerId: ltransDeshacer.id,
         sinFormatoId: sinFormato.id,
         sinValorId: sinValor.id,
         conceptoInactivoId: conceptoInactivo.id,
@@ -431,4 +439,111 @@ describe("B10 — facturar comisiones de LTRANS (Postgres)", () => {
     const ficha = await comisionesDeEmpresa(f.ltransId);
     expect(ficha.filas.map((x) => x.comisionId)).toContain(propia.comisionId);
   });
+
+  it("B3 · los contenedores de una comisión cambian entre la lectura y la facturación → 409, no se crea el «Otros» y la comisión sigue por facturar", async (ctx) => {
+    const f = ensureDb(ctx);
+    const fila = await comisionEnNuevoDo(f.ltransCarreraId, { numContenedores: 3 });
+    const contarOtros = () =>
+      prisma.tramiteDO.count({ where: { clienteId: f.ltransCarreraId, tipoTramiteCodigo: "OTRO" } });
+    expect(await contarOtros()).toBe(0);
+
+    // Otra persona (T1) cambia 3 → 5 contenedores y todavía no confirma: tiene la fila bloqueada.
+    // La liquidación lee la fila ANTES de que T1 confirme (ve 3), se queda esperando el candado al
+    // ligarla y, cuando T1 confirma, encuentra 5 → lo cobrado (3 × 90.000) ya no coincide con lo ligado.
+    let liquidando!: Promise<unknown>;
+    await prisma.$transaction(async (tx) => {
+      await tx.comisionTramite.update({ where: { id: fila.comisionId }, data: { unidades: 5 } });
+      liquidando = liquidarComisiones({
+        empresaId: f.ltransCarreraId,
+        comisionIds: [fila.comisionId],
+        usuarioId: f.adminId,
+      });
+      liquidando.catch(() => undefined); // se revisa abajo; evita un rechazo sin manejar mientras esperamos
+      await esperarEsperaPorCandadoDeComisiones();
+    });
+    await expect(liquidando).rejects.toMatchObject({
+      name: "ComisionCambioAlLiquidarError",
+      status: 409,
+      codigo: "COMISION_CAMBIO_AL_LIQUIDAR",
+    });
+
+    // Se deshizo todo: ni «Otros» huérfano ni comisión ligada; las unidades nuevas quedan.
+    expect(await contarOtros()).toBe(0);
+    const despues = await prisma.comisionTramite.findUniqueOrThrow({ where: { id: fila.comisionId } });
+    expect(despues.unidades).toBe(5);
+    expect(despues.liquidacionTramiteId).toBeNull();
+
+    // Recargando, se factura lo que es: 5 × 90.000 = 450.000.
+    const r = await liquidarComisiones({
+      empresaId: f.ltransCarreraId,
+      comisionIds: [fila.comisionId],
+      usuarioId: f.adminId,
+    });
+    expect(r.unidades).toBe(5);
+    expect(r.total).toBe($(450_000));
+  });
+
+  it("B3 · editar o quitar una comisión que otra persona factura justo en el medio no la cambia (409)", async (ctx) => {
+    const f = ensureDb(ctx);
+    const editada = await comisionEnNuevoDo(f.ltransCarreraId, { numContenedores: 4 });
+    const quitada = await comisionEnNuevoDo(f.ltransCarreraId, { numContenedores: 2 });
+    const ligadora = await comisionEnNuevoDo(f.ltransCarreraId, { numContenedores: 1 });
+    const otros = await liquidarComisiones({
+      empresaId: f.ltransCarreraId,
+      comisionIds: [ligadora.comisionId],
+      usuarioId: f.adminId,
+    });
+    const origen = async (comisionId: string) =>
+      (await prisma.comisionTramite.findUniqueOrThrow({ where: { id: comisionId }, select: { tramiteId: true } }))
+        .tramiteId;
+
+    for (const [fila, unidadesNuevas] of [
+      [editada, 1],
+      [quitada, 0],
+    ] as const) {
+      const tramiteId = await origen(fila.comisionId);
+      // T1 tiene la fila bloqueada y la factura (la liga al «Otros» de arriba) antes de confirmar;
+      // el registro ya leyó la fila "sin facturar" y se queda esperando el candado.
+      let registrando!: Promise<unknown>;
+      await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM comision_tramite WHERE id = ${fila.comisionId} FOR UPDATE`;
+        registrando = registrarComisionTramite({
+          tramiteId,
+          empresaId: f.ltransCarreraId,
+          unidades: unidadesNuevas,
+          usuarioId: f.adminId,
+        });
+        registrando.catch(() => undefined);
+        await esperarEsperaPorCandadoDeComisiones();
+        await tx.comisionTramite.update({
+          where: { id: fila.comisionId },
+          data: { liquidacionTramiteId: otros.tramiteId, liquidadaEn: new Date() },
+        });
+      });
+      await expect(registrando).rejects.toMatchObject({ name: "ComisionYaFacturadaAlEditarError", status: 409 });
+
+      const despues = await prisma.comisionTramite.findUniqueOrThrow({ where: { id: fila.comisionId } });
+      expect(despues.unidades).toBe(fila.unidades); // ni editada ni borrada
+      expect(despues.liquidacionTramiteId).toBe(otros.tramiteId);
+    }
+  });
 });
+
+/**
+ * Espera (máx. 10 s) a que alguna sentencia sobre `comision_tramite` esté parada
+ * esperando un candado de fila: así el test sabe que la otra operación ya llegó
+ * a su UPDATE/DELETE antes de dejar avanzar a la transacción que la bloquea.
+ */
+async function esperarEsperaPorCandadoDeComisiones(): Promise<void> {
+  for (let intento = 0; intento < 100; intento += 1) {
+    const filas = await prisma.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*)::bigint AS n
+        FROM pg_stat_activity
+       WHERE datname = current_database()
+         AND wait_event_type = 'Lock'
+         AND query ILIKE '%comision_tramite%'`;
+    if (Number(filas[0]?.n ?? 0) > 0) return;
+    await new Promise((resolver) => setTimeout(resolver, 100));
+  }
+  throw new Error("Nadie quedó esperando el candado de comision_tramite (¿cambió el orden de las sentencias?)");
+}

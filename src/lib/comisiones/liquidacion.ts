@@ -42,6 +42,22 @@ export class ComisionYaLiquidadaError extends Error {
   }
 }
 
+/**
+ * B3 (revisión INTEG-B) — los contenedores de alguna comisión cambiaron entre
+ * que se leyó la ficha y que se creó el «Otros»: lo cobrado no coincidiría con
+ * lo que queda ligado. Se deshace todo (sin DO huérfano) y se pide recargar.
+ */
+export class ComisionCambioAlLiquidarError extends Error {
+  public readonly status = 409;
+  public readonly codigo = "COMISION_CAMBIO_AL_LIQUIDAR" as const;
+  constructor() {
+    super(
+      "Los contenedores de alguna comisión cambiaron mientras se facturaba. Recarga la ficha y vuelve a intentar.",
+    );
+    this.name = "ComisionCambioAlLiquidarError";
+  }
+}
+
 export interface LiquidarComisionesInput {
   /** Empresa que paga la comisión (LTRANS); el «Otros» sale a su nombre. */
   empresaId: string;
@@ -146,6 +162,16 @@ export async function liquidarComisiones(
           data: { liquidacionTramiteId: creado.id, liquidadaEn },
         });
         if (ligadas.count !== ids.length) throw new ComisionYaLiquidadaError();
+
+        // B3: las unidades se leyeron ANTES de esta transacción. Con las filas
+        // ya ligadas (y bloqueadas por el UPDATE de arriba) se vuelven a sumar:
+        // si alguien las cambió en el medio, lo cobrado (`total`) no coincide con
+        // lo ligado y no se factura (409, se deshace el DO recién creado).
+        const relegadas = await tx.comisionTramite.aggregate({
+          where: { liquidacionTramiteId: creado.id },
+          _sum: { unidades: true },
+        });
+        if ((relegadas._sum.unidades ?? 0) !== unidades) throw new ComisionCambioAlLiquidarError();
 
         await tx.auditLog.create({
           data: {
