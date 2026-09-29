@@ -184,4 +184,13 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/usuarios/[param]",
     "Cambiar rol / desactivar / reactivar usuario: falta tool usuario_actualizar",
   ),
+
+  // Diseño B — B10, "Facturar comisiones" de LTRANS (2026-09-29). La tool
+  // comisiones_facturar se agrega al MCP compartido (galcomex-mcp/server.mjs)
+  // después de desplegar B; borrar esta línea entonces.
+  pendiente(
+    "POST",
+    "/api/clientes/[param]/comisiones/liquidar",
+    "Facturar comisiones por contenedor (crea un «Otros» a nombre de la empresa que paga): tool comisiones_facturar se agrega al MCP compartido tras desplegar B",
+  ),
 ];

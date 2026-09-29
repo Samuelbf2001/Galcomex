@@ -318,6 +318,48 @@ aplicado, mostrando una devolución que no existe. Ahora (solo formato
   desplegar A). `GET /api/borradores/[id]` es intencional (recarga tras el
   409, no una operación de agente).
 
+## Comisiones por contenedor: facturar (B10, Diseño B, 29-sep-2026)
+
+La comisión de LTRANS (90.000 + IVA por contenedor de Polyrec ZF) se registra por DO
+(`comision_tramite`, función `comision_por_evento`). "Facturar comisiones" la convierte en factura
+sin código por empresa (`src/lib/comisiones/liquidacion.ts`, `liquidarComisiones`):
+
+- **Qué hace:** las comisiones escogidas (ficha de la empresa que paga → "Por facturar", casillas)
+  crean UN «Otros» a nombre de esa empresa con `valorServicio = Σ unidades × valor por contenedor`
+  (sin IVA; la carga suelta cuenta 1) y el `conceptoServicioCodigo` de la config. Las comisiones
+  quedan ligadas (`liquidacionTramiteId`, `liquidadaEn`): no se cobran dos veces. El «Otros» sigue
+  el flujo corto de siempre (mandar a facturar → borrador CONCEPTOS_IVA → Siigo → cartera): esto
+  NO factura ni toca Siigo. Casos dorados (BAQ-18027 / BAQ-18028, ReteIVA 0): 15 contenedores →
+  1.350.000 + IVA 256.500 = **1.606.500**; 17 → **1.820.700**; con ReteIVA 15 % (dato de la empresa) 1.568.025.
+- **Config** de `comision_por_evento`: `{ unidad, valor, conceptoVenta: "COMISION_CONTENEDOR", tipoTramite: "OTRO" }`
+  (el tipo sale de la config, no de un `if`). La config de una empresa reemplaza ENTERA a la de
+  defecto: si le faltan `conceptoVenta`/`tipoTramite`, `configLiquidacionDe` usa esos mismos valores.
+  Requisitos (422 diciendo qué falta): valor por contenedor > 0, concepto de venta activo y la
+  función `factura_conceptos_iva` en la empresa que paga (ReteIVA de LTRANS = dato, por defecto 0).
+- **Una sola transacción:** `createTramite` recibe el gancho `alCrear(tx, tramite)`; ahí se hace
+  `updateMany(... liquidacionTramiteId: null)` y si `count !== ids.length` lanza
+  `ComisionYaLiquidadaError` (409 `COMISION_YA_LIQUIDADA`) → se deshace todo, sin DO huérfano.
+  Dos personas a la vez: una crea el «Otros», la otra 409. AuditLog `LIQUIDAR_COMISIONES`
+  (entidad `Cliente`, id de la empresa, `tramiteId` = el «Otros»).
+- **Candados:** `registrarComisionTramite` rechaza cambiar o quitar una comisión ya facturada
+  (422 "ya se facturó en OTR26-…"; reenviar las mismas unidades no cambia nada);
+  `verificarServicioFlujoCorto` no deja cambiar `valorServicio` ni el concepto de un «Otros» con
+  comisiones ligadas (409 `ServicioDeComisionesLiquidadasError`).
+- **Lectura:** `GET /api/clientes/[id]/comisiones` mantiene `filas` + `totales` = SOLO lo por
+  facturar (cada fila trae `comisionId`) y agrega `facturadas` (con el «Otros»: consecutivo,
+  estado, valor total; sin subtotal por fila, por si el valor por contenedor cambia después).
+  `GET /api/tramites/[id]/comisiones` marca `facturadaEn` en cada comisión.
+- **Deshacer una liquidación NO está** (el diseño lo dejaba "si cabe"): si el «Otros» se descarta, sus comisiones
+  quedan ligadas y no se pueden volver a facturar; hoy se corrige con datos. Fase siguiente:
+  `DELETE /api/clientes/[id]/comisiones/liquidaciones/[tramiteId]` (ADMIN, motivo, solo sin borrador APROBADO/FACTURADO).
+- **API:** `POST /api/clientes/[id]/comisiones/liquidar` (solo ADMIN) `{ comisionIds, ciudad? }` → 201
+  `{ tramiteId, consecutivo, total, unidades, valorUnitario }`. Paridad MCP: `pendiente`
+  (tool `comisiones_facturar` al MCP compartido tras desplegar B).
+- **Datos (no código):** concepto `COMISION_CONTENEDOR` (producto Siigo 007, por confirmar con el
+  contador), LTRANS con `factura_conceptos_iva` `{ reteIvaPorcentaje: 0 }` y la config de arriba.
+  El atrasado de LTRANS (61 contenedores) se factura como un «Otros» a mano; esos DOs NO se
+  registran después como comisión (se cobrarían dos veces).
+
 ## Cuentas por pagar a proveedores (CxP v2)
 
 Lo que Galcomex le debe a cada proveedor, factura por factura, sin pagar dos

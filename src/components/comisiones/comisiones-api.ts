@@ -25,6 +25,8 @@ export type ComisionDoRow = {
   unidades: number;
   valorUnitario: string;
   subtotal: string;
+  /** Consecutivo del «Otros» donde ya se facturó (null = por facturar). */
+  facturadaEn: string | null;
 };
 
 export type ComisionesTramiteRow = {
@@ -39,6 +41,8 @@ export type ComisionesTramiteRow = {
 };
 
 export type FilaComisionEmpresaRow = {
+  /** Id de la fila de comisión: es lo que se manda a "Facturar comisiones". */
+  comisionId: string;
   tramiteId: string;
   consecutivo: string;
   empresaDo: string;
@@ -49,12 +53,33 @@ export type FilaComisionEmpresaRow = {
   subtotal: string;
 };
 
+/** Comisión ya facturada: sin subtotal (el valor por contenedor pudo cambiar después). */
+export type FilaComisionFacturadaRow = {
+  comisionId: string;
+  tramiteId: string;
+  consecutivo: string;
+  empresaDo: string;
+  unidades: number;
+  liquidadaEn: string | null;
+  otros: { id: string; consecutivo: string; estado: string; valorServicio: string | null };
+};
+
 export type ComisionesEmpresaRow = {
   habilitada: boolean;
   valorUnitario: string;
   tasaIva: string;
+  /** Por facturar (sin liquidar); los `totales` cuentan solo estas. */
   filas: FilaComisionEmpresaRow[];
   totales: { unidades: number; subtotal: string; iva: string; total: string };
+  facturadas: FilaComisionFacturadaRow[];
+};
+
+export type LiquidacionComisionesRow = {
+  tramiteId: string;
+  consecutivo: string;
+  /** Σ unidades × valor por contenedor, sin IVA. */
+  total: string;
+  unidades: number;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -108,6 +133,7 @@ function normalizarComision(v: unknown): ComisionDoRow | null {
     unidades: num(v.unidades),
     valorUnitario: str(v.valorUnitario, "0"),
     subtotal: str(v.subtotal, "0"),
+    facturadaEn: typeof v.facturadaEn === "string" ? v.facturadaEn : null,
   };
 }
 
@@ -164,6 +190,7 @@ export async function fetchComisionesEmpresa(
     tasaIva: str(r.tasaIva, "0"),
     filas: Array.isArray(r.filas)
       ? r.filas.filter(isRecord).map((f) => ({
+          comisionId: str(f.comisionId),
           tramiteId: str(f.tramiteId),
           consecutivo: str(f.consecutivo),
           empresaDo: str(f.empresaDo),
@@ -180,5 +207,45 @@ export async function fetchComisionesEmpresa(
       iva: str(t.iva, "0"),
       total: str(t.total, "0"),
     },
+    facturadas: Array.isArray(r.facturadas)
+      ? r.facturadas.filter(isRecord).map((f) => {
+          const o = isRecord(f.otros) ? f.otros : {};
+          return {
+            comisionId: str(f.comisionId),
+            tramiteId: str(f.tramiteId),
+            consecutivo: str(f.consecutivo),
+            empresaDo: str(f.empresaDo),
+            unidades: num(f.unidades),
+            liquidadaEn: typeof f.liquidadaEn === "string" ? f.liquidadaEn : null,
+            otros: {
+              id: str(o.id),
+              consecutivo: str(o.consecutivo),
+              estado: str(o.estado),
+              valorServicio: typeof o.valorServicio === "string" ? o.valorServicio : null,
+            },
+          };
+        })
+      : [],
+  };
+}
+
+/**
+ * B10 — "Facturar comisiones" (solo ADMIN): crea un «Otros» a nombre de la
+ * empresa con las comisiones escogidas y las deja ligadas a él.
+ */
+export async function facturarComisiones(
+  empresaId: string,
+  comisionIds: string[],
+): Promise<LiquidacionComisionesRow> {
+  const b = await request(`/api/clientes/${encodeURIComponent(empresaId)}/comisiones/liquidar`, {
+    method: "POST",
+    body: JSON.stringify({ comisionIds }),
+  });
+  const r = isRecord(b) ? b : {};
+  return {
+    tramiteId: str(r.tramiteId),
+    consecutivo: str(r.consecutivo),
+    total: str(r.total, "0"),
+    unidades: num(r.unidades),
   };
 }

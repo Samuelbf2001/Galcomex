@@ -163,7 +163,16 @@ export const CAPACIDADES = [
     grupo: "Cartera",
     ambito: "EMPRESA",
     porDefecto: false,
-    configPorDefecto: { unidad: "CONTENEDOR", valor: "0" },
+    // B10: `conceptoVenta` y `tipoTramite` dicen con qué se factura ("Facturar
+    // comisiones" crea un «Otros» a nombre de la empresa que paga). La config de
+    // una empresa reemplaza ENTERA a esta: si le faltan, `configLiquidacionDe`
+    // usa estos mismos valores.
+    configPorDefecto: {
+      unidad: "CONTENEDOR",
+      valor: "0",
+      conceptoVenta: "COMISION_CONTENEDOR",
+      tipoTramite: "OTRO",
+    },
     orden: 80,
   },
   {

@@ -259,11 +259,20 @@ model ComisionTramite {
   registradoPorId String
   registradoPor   User   @relation("ComisionesRegistradas", fields: [registradoPorId], references: [id])
 
+  /// B10 — «Otros» a nombre de la empresa que paga donde se facturó esta
+  /// comisión (`liquidarComisiones`). Con valor, la fila ya no se puede
+  /// cambiar, quitar ni volver a cobrar. Sin columna de dinero: el valor
+  /// facturado queda en el `valorServicio` del «Otros» y en el AuditLog.
+  liquidacionTramiteId String?
+  liquidacion          TramiteDO? @relation("ComisionLiquidacion", fields: [liquidacionTramiteId], references: [id], onDelete: Restrict)
+  liquidadaEn          DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([tramiteId, empresaId])
   @@index([empresaId])
+  @@index([empresaId, liquidacionTramiteId])
   @@map("comision_tramite")
 }
 
@@ -553,6 +562,8 @@ model TramiteDO {
   pseSolicitudes       PseSolicitud[]
   movimientosCuenta    MovimientoCuenta[]
   comisiones           ComisionTramite[]
+  /// B10 — comisiones de otras empresas (LTRANS) facturadas en ESTE «Otros».
+  comisionesLiquidadas ComisionTramite[] @relation("ComisionLiquidacion")
 
   // Un número es único por tipo de trámite, ciudad y año. El tipo entra en la
   // clave porque cada uno lleva su propio contador (M4): la clasificación

@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { CAPACIDADES } from "@/lib/capacidades/catalogo";
 import { resolverCapacidades, type OverrideCapacidad } from "@/lib/capacidades/resolver";
 import {
+  configLiquidacionDe,
   errorUnidades,
+  referenciaLiquidacion,
   totalesComision,
   unidadesDisponibles,
   valorUnitarioDe,
@@ -110,5 +112,61 @@ describe("totalesComision — facturas reales de LTRANS (tolerancia 0)", () => {
   it("el IVA se redondea al peso (mitad hacia arriba)", () => {
     // 1 × 12.345 × 19 % = 2.345,55 → 2.346
     expect(totalesComision([{ unidades: 1, valorUnitario: 12_345n }], 19n).iva).toBe(2_346n);
+  });
+});
+
+describe("B10 · configLiquidacionDe (con qué se factura la comisión)", () => {
+  it("la config de defecto ya trae el concepto y el tipo de trámite", () => {
+    const soloEncendida = empresaCon([{ codigo: "comision_por_evento", habilitado: true }]);
+    expect(configLiquidacionDe(soloEncendida)).toEqual({ conceptoVenta: "COMISION_CONTENEDOR", tipoTramite: "OTRO" });
+  });
+
+  it("lee el concepto y el tipo de la config de la empresa", () => {
+    const cfg = empresaCon([
+      {
+        codigo: "comision_por_evento",
+        habilitado: true,
+        config: { unidad: "CONTENEDOR", valor: "90000", conceptoVenta: "OTRO_CONCEPTO", tipoTramite: "OTRO" },
+      },
+    ]);
+    expect(configLiquidacionDe(cfg)).toEqual({ conceptoVenta: "OTRO_CONCEPTO", tipoTramite: "OTRO" });
+  });
+
+  it("la config de empresa reemplaza entera a la de defecto: si no trae el concepto, se usa COMISION_CONTENEDOR / OTRO", () => {
+    expect(configLiquidacionDe(LTRANS("90000"))).toEqual({ conceptoVenta: "COMISION_CONTENEDOR", tipoTramite: "OTRO" });
+  });
+
+  it("un concepto roto (vacío, con espacios o símbolos) cae al de defecto, nunca a un valor inventado", () => {
+    const rota = (conceptoVenta: unknown) =>
+      empresaCon([{ codigo: "comision_por_evento", habilitado: true, config: { valor: "90000", conceptoVenta, tipoTramite: 5 } }]);
+    for (const malo of ["", "  ", "con espacios", "DROP;TABLE", 7, null]) {
+      expect(configLiquidacionDe(rota(malo))).toEqual({ conceptoVenta: "COMISION_CONTENEDOR", tipoTramite: "OTRO" });
+    }
+  });
+});
+
+describe("B10 · referenciaLiquidacion (texto del «Otros»)", () => {
+  it("cuenta contenedores y lista los DOs con sus unidades", () => {
+    expect(
+      referenciaLiquidacion([
+        { consecutivo: "DO.BAQ26-0249", unidades: 2 },
+        { consecutivo: "DO.BAQ26-0250", unidades: 1 },
+      ]),
+    ).toBe("COMISIÓN POR CONTENEDOR — 3 contenedores: DO.BAQ26-0249 (2), DO.BAQ26-0250 (1)");
+    expect(referenciaLiquidacion([{ consecutivo: "DO.BAQ26-0249", unidades: 1 }])).toBe(
+      "COMISIÓN POR CONTENEDOR — 1 contenedor: DO.BAQ26-0249 (1)",
+    );
+  });
+
+  it("con muchos DOs no pasa de 500 caracteres y dice cuántos faltan (\"y N más\")", () => {
+    const muchos = Array.from({ length: 80 }, (_, i) => ({ consecutivo: `DO.BAQ26-${String(i + 1).padStart(4, "0")}`, unidades: 2 }));
+    const texto = referenciaLiquidacion(muchos);
+    expect(texto.length).toBeLessThanOrEqual(500);
+    expect(texto.startsWith("COMISIÓN POR CONTENEDOR — 160 contenedores: DO.BAQ26-0001 (2), ")).toBe(true);
+    const faltanTexto = /y (\d+) más$/.exec(texto);
+    expect(faltanTexto).not.toBeNull();
+    const incluidos = texto.split("DO.BAQ26-").length - 1;
+    const faltan = Number(faltanTexto![1]);
+    expect(incluidos + faltan).toBe(80);
   });
 });

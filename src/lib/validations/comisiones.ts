@@ -1,3 +1,4 @@
+import { Ciudad } from "@prisma/client";
 import { z } from "zod";
 
 /**
@@ -17,3 +18,24 @@ export const comisionTramiteSchema = z.object({
 });
 
 export type ComisionTramitePayload = z.infer<typeof comisionTramiteSchema>;
+
+/**
+ * `POST /api/clientes/[id]/comisiones/liquidar` (B10): las comisiones por
+ * contenedor que se facturan juntas en un «Otros» a nombre de la empresa que
+ * paga. `ciudad` solo decide el consecutivo del «Otros» (por defecto BAQ).
+ */
+export const liquidarComisionesSchema = z.object({
+  comisionIds: z
+    .array(
+      z
+        .string({ error: "Cada comisión debe ser un id." })
+        .trim()
+        .min(1, "Cada comisión debe ser un id."),
+      { error: "Escoge las comisiones que se van a facturar." },
+    )
+    .min(1, "Escoge al menos una comisión para facturar.")
+    .max(500, "Demasiadas comisiones en una sola factura (máximo 500)."),
+  ciudad: z.nativeEnum(Ciudad).optional(),
+});
+
+export type LiquidarComisionesPayload = z.infer<typeof liquidarComisionesSchema>;
