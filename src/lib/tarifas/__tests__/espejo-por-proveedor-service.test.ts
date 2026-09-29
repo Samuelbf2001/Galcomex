@@ -11,6 +11,7 @@ import "dotenv/config";
 import { AgenciaAduanas, Ciudad, DisparadorTarifa, EstadoTarifario, EstadoTramite, Rol, TipoCalculoTarifa, TipoCliente, UnidadTarifa } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { borrarFichasYEmpresasTest, crearFichaConEmpresaTest } from "@/lib/beneficiarios/__tests__/fixtures";
 import { generarBorrador, TarifaIncompletaError } from "@/lib/borradores/service";
 import { setCapacidadesEmpresa } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
@@ -70,8 +71,9 @@ async function limpiar() {
   await prisma.checklistItem.deleteMany({ where: { tramiteId: { in: tramiteIds } } });
   await prisma.tramiteDO.deleteMany({ where: { id: { in: tramiteIds } } });
   await prisma.tarifario.deleteMany({ where: { empresaId: { in: clienteIds } } });
+  // Fase 3: fichas (y sus empresas solo-proveedoras de prueba) antes que los clientes (FK Restrict).
+  await borrarFichasYEmpresasTest({ nombre: { startsWith: TEST_PREFIX } });
   await prisma.cliente.deleteMany({ where: { id: { in: clienteIds } } });
-  await prisma.beneficiario.deleteMany({ where: { nombre: { startsWith: TEST_PREFIX } } });
   await prisma.siigoProducto.deleteMany({ where: { codigo: { startsWith: "VTB6" } } });
   await prisma.user.deleteMany({ where: { email: { startsWith: TEST_PREFIX } } });
 }
@@ -120,8 +122,8 @@ beforeAll(async () => {
   });
   productoId = producto.id;
   // NIT del Ministerio de Comercio y del INVIMA: la clave del proveedor la deriva el trigger.
-  mincitId = (await prisma.beneficiario.create({ data: { nombre: `${TEST_PREFIX} MINCIT`, nit: NIT_MINCIT } })).id;
-  invimaId = (await prisma.beneficiario.create({ data: { nombre: `${TEST_PREFIX} INVIMA`, nit: "860075000" } })).id;
+  mincitId = (await crearFichaConEmpresaTest({ nombre: `${TEST_PREFIX} MINCIT`, nit: NIT_MINCIT })).id;
+  invimaId = (await crearFichaConEmpresaTest({ nombre: `${TEST_PREFIX} INVIMA`, nit: "860075000" })).id;
 });
 
 afterAll(async () => {
