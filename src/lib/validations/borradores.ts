@@ -181,6 +181,17 @@ export const transicionBorradorPayloadSchema = z
     numFacturaSiigo: z.string().trim().min(1).optional(),
     /** Obligatorio al facturar (→FACTURADO) */
     fechaFactura: z.coerce.date().optional(),
+    /**
+     * B4 (Diseño B) — motivo para aprobar una factura que no cuadra con la
+     * orden de compra del cliente. Solo cuenta si quien aprueba es ADMIN
+     * (el servicio responde 403 `EXCEPCION_OC_SOLO_ADMIN` a los demás).
+     */
+    motivoExcepcionOc: z
+      .string()
+      .trim()
+      .min(10, "El motivo debe tener al menos 10 caracteres")
+      .max(500, "El motivo admite hasta 500 caracteres")
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.nuevoEstado === EstadoBorrador.FACTURADO) {

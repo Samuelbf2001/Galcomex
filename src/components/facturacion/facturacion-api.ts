@@ -56,6 +56,40 @@ export type LineaRevisionRow = {
   aplicaIva: boolean;
 };
 
+/**
+ * B4 (Diseño B) — cómo cuadra la factura con la orden de compra del cliente,
+ * evaluada en el servidor (`lib/borradores/orden-compra.ts`). Todo el dinero
+ * viaja como texto (BigInt serializado), en pesos sin IVA.
+ */
+export type ConfigOcDto = {
+  base: "SERVICIO_Y_TERCEROS" | "SOLO_SERVICIO";
+  incluye4x1000: boolean;
+  bloqueaAprobacion: boolean;
+};
+
+export type EvaluacionOcDto =
+  | { estado: "SIN_OC" }
+  | { estado: "SIN_VALOR"; numero: string }
+  | {
+      estado: "CUADRA" | "NO_CUADRA";
+      numero: string;
+      valorOc: string;
+      base: string;
+      /** `base − valorOc`: negativo = faltan; positivo = sobran. */
+      diferencia: string;
+      desglose: { servicio: string; terceros: string; cuatroXMil: string };
+      config: ConfigOcDto;
+    };
+
+export type OrdenCompraBorradorDto = {
+  evaluacion: EvaluacionOcDto;
+  config: ConfigOcDto;
+  /** Otros DOs de la empresa con el mismo N° de OC (una OC compartida por varios DOs). */
+  hermanos: { consecutivo: string; valorOc: string | null }[];
+  /** Suma de las partes de TODOS los DOs con esa OC (este incluido); null si no se comparte. */
+  sumaHermanos: string | null;
+};
+
 export type SiigoFormaPagoRow = {
   id: number;
   nombre: string;
@@ -128,6 +162,11 @@ export type BorradorRow = {
   factura: FacturaRow | null;
   /** Solo ADMIN/REVISOR (GET del trámite, lote y POST de generar). null/ausente = esta respuesta no lo trae (SOCIO, PATCH/POST de acciones). */
   pagosPorRevisar?: PagoPorRevisarRow[] | null;
+  /**
+   * B4 — solo CONCEPTOS_IVA con N° de OC en el DO y la función de OC encendida.
+   * null/ausente = no aplica o esta respuesta no lo trae (se conserva el anterior).
+   */
+  ordenCompra?: OrdenCompraBorradorDto | null;
 };
 
 export type FacturaRow = {
@@ -344,7 +383,71 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
     factura,
     // null = la respuesta no lo trae (distinto de [] = sin pagos por revisar).
     pagosPorRevisar: normalizarPagosPorRevisar(raw.pagosPorRevisar),
+    ordenCompra: normalizarOrdenCompra(raw.ordenCompra),
   };
+}
+
+const ENTERO_OC = /^-?[0-9]+$/;
+
+function textoEntero(v: unknown): string | null {
+  if (typeof v === "string" && ENTERO_OC.test(v)) return v;
+  if (typeof v === "number" && Number.isSafeInteger(v)) return String(v);
+  return null;
+}
+
+function normalizarConfigOc(raw: unknown): ConfigOcDto {
+  const r = isRecord(raw) ? raw : {};
+  return {
+    base: r.base === "SOLO_SERVICIO" ? "SOLO_SERVICIO" : "SERVICIO_Y_TERCEROS",
+    incluye4x1000: r.incluye4x1000 === true,
+    // Lo conservador ante un dato raro: que frene.
+    bloqueaAprobacion: r.bloqueaAprobacion !== false,
+  };
+}
+
+/** `ordenCompra` de la respuesta del API; null si no viene (o no aplica) o está mal formado. */
+export function normalizarOrdenCompra(raw: unknown): OrdenCompraBorradorDto | null {
+  if (!isRecord(raw) || raw.activa === false || !isRecord(raw.evaluacion)) return null;
+  const ev = raw.evaluacion;
+  const config = normalizarConfigOc(raw.config);
+
+  let evaluacion: EvaluacionOcDto;
+  if (ev.estado === "SIN_OC") {
+    return null;
+  } else if (ev.estado === "SIN_VALOR" && typeof ev.numero === "string") {
+    evaluacion = { estado: "SIN_VALOR", numero: ev.numero };
+  } else if ((ev.estado === "CUADRA" || ev.estado === "NO_CUADRA") && typeof ev.numero === "string") {
+    const valorOc = textoEntero(ev.valorOc);
+    const base = textoEntero(ev.base);
+    const diferencia = textoEntero(ev.diferencia);
+    const d = isRecord(ev.desglose) ? ev.desglose : {};
+    if (valorOc === null || base === null || diferencia === null) return null;
+    evaluacion = {
+      estado: ev.estado,
+      numero: ev.numero,
+      valorOc,
+      base,
+      diferencia,
+      desglose: {
+        servicio: textoEntero(d.servicio) ?? "0",
+        terceros: textoEntero(d.terceros) ?? "0",
+        cuatroXMil: textoEntero(d.cuatroXMil) ?? "0",
+      },
+      config: normalizarConfigOc(ev.config ?? raw.config),
+    };
+  } else {
+    return null;
+  }
+
+  const hermanos = Array.isArray(raw.hermanos)
+    ? raw.hermanos.flatMap((h): { consecutivo: string; valorOc: string | null }[] =>
+        isRecord(h) && typeof h.consecutivo === "string"
+          ? [{ consecutivo: h.consecutivo, valorOc: textoEntero(h.valorOc) }]
+          : [],
+      )
+    : [];
+
+  return { evaluacion, config, hermanos, sumaHermanos: textoEntero(raw.sumaHermanos) };
 }
 
 // ─── Tramites con borradores ──────────────────────────────────────────────────
@@ -636,7 +739,8 @@ export async function fetchBorrador(borradorId: string): Promise<BorradorRow> {
 
 export type TransicionInput =
   | { nuevoEstado: "EN_REVISION" }
-  | { nuevoEstado: "APROBADO" }
+  /** `motivoExcepcionOc`: solo ADMIN, para aprobar una factura que no cuadra con la orden de compra (B4). */
+  | { nuevoEstado: "APROBADO"; motivoExcepcionOc?: string }
   | { nuevoEstado: "FACTURADO"; numFacturaSiigo: string; fechaFactura: string };
 
 export async function transicionarBorrador(

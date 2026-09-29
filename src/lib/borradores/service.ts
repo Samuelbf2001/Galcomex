@@ -8,7 +8,7 @@
  * - listarBorradores: lista borradores de un trámite
  */
 
-import { CanalPago, EstadoBorrador, Prisma, TipoCliente, TipoRecaudo } from "@prisma/client";
+import { CanalPago, EstadoBorrador, Prisma, type Rol, TipoCliente, TipoRecaudo } from "@prisma/client";
 
 import { COMISION_INTERNA_LM_MINIMO } from "@/lib/validations/borradores";
 
@@ -46,6 +46,8 @@ import {
   cargarPagosParaCobro,
 } from "./pagos-para-cobro";
 import type { PagoPorRevisar } from "./pagos-por-revisar";
+import { evaluarOcDeBorrador } from "./orden-compra-service";
+import { MOTIVO_EXCEPCION_OC_MIN, mensajeFrenoOc, type EvaluacionOc } from "./orden-compra";
 import { recalcularTotalBorrador } from "./recalculo";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -117,11 +119,23 @@ type TransicionarBorradorInput = {
   usuarioId: string;
   numFacturaSiigo?: string;
   fechaFactura?: Date;
+  /**
+   * B4 (Diseño B) — motivo de la excepción para aprobar una factura que no
+   * cuadra con la orden de compra del cliente (≥ 10 caracteres). Solo lo
+   * acepta un ADMIN; queda en el AuditLog `APROBAR_SIN_CUADRE_OC`.
+   */
+  motivoExcepcionOc?: string;
+  /**
+   * B4 — rol de quien aprueba. Sin él se trata como «no ADMIN» (lo más
+   * conservador: nunca se salta el freno de la OC por omisión).
+   */
+  rolUsuario?: Rol;
 };
 
 type TransicionResult =
   | { ok: true; borrador: Awaited<ReturnType<typeof getBorradorCompleto>> }
-  | { ok: false; status: number; message: string; codigo?: string };
+  | { ok: false; status: number; message: string; codigo?: string; detalle?: unknown };
+
 
 const ESTADOS_FACTURABLES = [
   "ENVIADO_A_FACTURAR",
@@ -885,6 +899,55 @@ export async function transicionarBorrador(
       }
     }
 
+    // B4 (Diseño B) — la factura debe cuadrar con la orden de compra del
+    // cliente: solo EN_REVISION → APROBADO, solo CONCEPTOS_IVA y solo si la
+    // empresa tiene `orden_compra_en_revision` (en cualquier otro caso
+    // `evaluarOcDeBorrador` devuelve SIN_OC y nada cambia). DESPUÉS del bloque
+    // B8: si el anticipo cambió, primero el 409 ANTICIPO_ACTUALIZADO y luego,
+    // ya con el saldo definitivo, la OC. Si no cuadra o el DO tiene N° de OC
+    // sin valor (y la config frena): 422 sin escribir nada. Excepción: solo
+    // ADMIN, con motivo (AuditLog `APROBAR_SIN_CUADRE_OC`).
+    let ocEvaluada: Awaited<ReturnType<typeof evaluarOcDeBorrador>> | null = null;
+    let excepcionOc: { motivo: string; evaluacion: EvaluacionOc } | null = null;
+    if (
+      nuevoEstado === EstadoBorrador.APROBADO &&
+      borrador.estado === EstadoBorrador.EN_REVISION &&
+      borrador.formatoFactura === FORMATO_CONCEPTOS_IVA
+    ) {
+      const oc = await evaluarOcDeBorrador(tx, borradorId);
+      if (oc.activa && oc.evaluacion.estado !== "SIN_OC") {
+        ocEvaluada = oc;
+        const ev = oc.evaluacion;
+        if (oc.config.bloqueaAprobacion && (ev.estado === "SIN_VALOR" || ev.estado === "NO_CUADRA")) {
+          const codigo = ev.estado === "SIN_VALOR" ? "OC_SIN_VALOR" : "OC_NO_CUADRA";
+          const mensaje = mensajeFrenoOc(ev) ?? "La factura no cuadra con la orden de compra.";
+          const motivo = input.motivoExcepcionOc?.trim() ?? "";
+          if (motivo === "") {
+            return { ok: false, status: 422, codigo, message: mensaje, detalle: normalizeSerializable(ev) };
+          }
+          if (input.rolUsuario !== "ADMIN") {
+            return {
+              ok: false,
+              status: 403,
+              codigo: "EXCEPCION_OC_SOLO_ADMIN",
+              message: "Solo la administradora puede aprobar una factura que no cuadra con la orden de compra.",
+              detalle: normalizeSerializable(ev),
+            };
+          }
+          if (motivo.length < MOTIVO_EXCEPCION_OC_MIN) {
+            return {
+              ok: false,
+              status: 422,
+              codigo: "MOTIVO_EXCEPCION_OC_CORTO",
+              message: `El motivo de la excepción debe tener al menos ${MOTIVO_EXCEPCION_OC_MIN} caracteres.`,
+              detalle: normalizeSerializable(ev),
+            };
+          }
+          excepcionOc = { motivo, evaluacion: ev };
+        }
+      }
+    }
+
     // Validar facturación
     if (nuevoEstado === EstadoBorrador.FACTURADO) {
       if (borrador.estado !== EstadoBorrador.APROBADO) {
@@ -922,6 +985,15 @@ export async function transicionarBorrador(
             anticipoManual: borrador.anticipoManual,
             anticipoMotivo: borrador.anticipoMotivo,
             conceptosOperacionales: borrador.conceptosOperacionales,
+            // B4 — con qué se contrastó la factura al aprobarla (y el motivo si fue excepción).
+            ...(ocEvaluada && {
+              ordenCompra: {
+                evaluacion: ocEvaluada.evaluacion,
+                hermanos: ocEvaluada.hermanos,
+                sumaHermanos: ocEvaluada.sumaHermanos,
+                ...(excepcionOc && { motivoExcepcion: excepcionOc.motivo }),
+              },
+            }),
           })
         : undefined;
 
@@ -1019,6 +1091,21 @@ export async function transicionarBorrador(
       });
 
       return { ok: true, borrador: reloaded };
+    }
+
+    // B4 — la aprobación fuera de cuadre queda a nombre de quien la autorizó, con su motivo.
+    if (excepcionOc) {
+      await tx.auditLog.create({
+        data: {
+          entidad: "BorradorFactura",
+          entidadId: borradorId,
+          accion: "APROBAR_SIN_CUADRE_OC",
+          usuarioId,
+          tramiteId: borrador.tramiteId,
+          antes: normalizeSerializable(excepcionOc.evaluacion),
+          despues: normalizeSerializable({ motivo: excepcionOc.motivo }),
+        },
+      });
     }
 
     // Para llegar aquí nuevoEstado solo puede ser EN_REVISION o APROBADO

@@ -184,11 +184,13 @@ export const CAPACIDADES = [
     codigo: "orden_compra_en_revision",
     nombre: "Orden de compra en la revisión",
     descripcion:
-      "La revisión del borrador exige contrastar contra la orden de compra del cliente antes de aprobar.",
+      "La factura (servicio + reembolsos, sin impuestos ni 4x1000) debe dar el valor de la orden de compra del cliente. Si no cuadra, no se aprueba salvo excepción de la administradora con motivo.",
     grupo: "Facturacion",
     ambito: "EMPRESA",
     porDefecto: false,
-    configPorDefecto: null,
+    // B4 (Diseño B): qué entra en la OC y si frena. `src/lib/borradores/orden-compra.ts`
+    // lo lee con Zod y, si la config está rota, usa estos mismos valores.
+    configPorDefecto: { base: "SERVICIO_Y_TERCEROS", incluye4x1000: false, bloqueaAprobacion: true },
     orden: 100,
   },
   {

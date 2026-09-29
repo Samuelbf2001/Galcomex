@@ -23,6 +23,8 @@ import {
   TramiteNoFacturableError,
   generarBorrador,
 } from "@/lib/borradores/service";
+import { evaluarOcSinRomper } from "@/lib/borradores/orden-compra-service";
+import { prisma } from "@/lib/db/prisma";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { generarBorradorPayloadSchema } from "@/lib/validations/borradores";
@@ -82,8 +84,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     // Con sus pagos por revisar (mismo rastro que lee el GET): el revisor se
     // abre con este borrador y debe mostrar el aviso desde el primer momento.
+    // B4 — y con la orden de compra del cliente (si aplica): el aviso también sale desde el principio.
+    const ordenCompra = await evaluarOcSinRomper(prisma, borrador.id);
     return jsonResponse(
-      { borrador: await conPagosPorRevisarDeBorrador(borrador, session.user.rol) },
+      {
+        borrador: {
+          ...(await conPagosPorRevisarDeBorrador(borrador, session.user.rol)),
+          ...(ordenCompra ? { ordenCompra } : {}),
+        },
+      },
       { status: 201 },
     );
   } catch (error) {

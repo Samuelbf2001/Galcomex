@@ -16,6 +16,7 @@ import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
 import { requireRole } from "@/lib/auth/session";
 import { anticipoDelTramite } from "@/lib/borradores/anticipo-disponible";
 import { FORMATO_CONCEPTOS_IVA } from "@/lib/borradores/formato-conceptos";
+import { evaluarOcSinRomper } from "@/lib/borradores/orden-compra-service";
 import { getBorradorCompleto, transicionarBorrador } from "@/lib/borradores/service";
 import { prisma } from "@/lib/db/prisma";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
@@ -58,7 +59,9 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       ? await anticipoDelTramite(prisma, completo.tramiteId, { excluirBorradorId: borradorId })
       : null;
 
-  return jsonResponse({ borrador: { ...completo, anticipoDo } });
+  const ordenCompra = await evaluarOcSinRomper(prisma, borradorId);
+
+  return jsonResponse({ borrador: { ...completo, anticipoDo, ordenCompra } });
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
@@ -108,11 +111,18 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       usuarioId: session.user.id,
       numFacturaSiigo: payload.numFacturaSiigo,
       fechaFactura: payload.fechaFactura,
+      // B4 — el servicio decide si el motivo alcanza: solo un ADMIN salta el freno de la OC.
+      motivoExcepcionOc: payload.motivoExcepcionOc,
+      rolUsuario: session.user.rol,
     });
 
     if (!result.ok) {
-      return NextResponse.json(
-        { error: result.message, ...(result.codigo ? { codigo: result.codigo } : {}) },
+      return jsonResponse(
+        {
+          error: result.message,
+          ...(result.codigo ? { codigo: result.codigo } : {}),
+          ...(result.detalle !== undefined ? { detalle: result.detalle } : {}),
+        },
         { status: result.status },
       );
     }
@@ -125,7 +135,13 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         ? await anticipoDelTramite(prisma, result.borrador.tramiteId, { excluirBorradorId: borradorId })
         : null;
 
-    return jsonResponse({ borrador: result.borrador ? { ...result.borrador, anticipoDo } : result.borrador });
+    // B4 — igual con la orden de compra: si el PATCH no la devuelve, el aviso
+    // desaparece hasta recargar (la lección de M1 con el anticipo).
+    const ordenCompra = result.borrador ? await evaluarOcSinRomper(prisma, borradorId) : null;
+
+    return jsonResponse({
+      borrador: result.borrador ? { ...result.borrador, anticipoDo, ordenCompra } : result.borrador,
+    });
   } catch (error) {
     if (isDomainError(error)) {
       return domainErrorResponse(error);

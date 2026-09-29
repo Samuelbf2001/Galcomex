@@ -21,6 +21,7 @@ import {
   type BorradorRow,
   type CruceFacturaRow,
   type LineaRevisionRow,
+  type OrdenCompraBorradorDto,
   type RevisionEnvioSiigo,
   type SiigoFormaPagoRow,
   type TramiteParaFacturacion,
@@ -50,6 +51,8 @@ import {
   sincronizarFacturaDesdeSiigo,
   transicionarBorrador,
 } from "@/components/facturacion/facturacion-api";
+import { AvisoOrdenCompra } from "@/components/facturacion/aviso-orden-compra";
+import { AprobarSinCuadreOcModal } from "@/components/facturacion/aprobar-sin-cuadre-oc-modal";
 import { AvisoPagosPorRevisar, conservarPagosPorRevisar } from "@/components/facturacion/aviso-pagos-por-revisar";
 import {
   DESCRIPCION_ESTADO_ENVIO,
@@ -678,8 +681,21 @@ export function RevisorBorrador({
   const puedeDevolver = usePermiso(["ADMIN", "REVISOR"]);
   // B8 (Diseño A) — solo ADMIN asigna el anticipo a mano.
   const puedeAsignarAnticipo = usePermiso(["ADMIN"]);
+  // B4 (Diseño B) — solo la ADMIN aprueba una factura que no cuadra con la OC, con motivo.
+  const puedeExcepcionOc = usePermiso(["ADMIN"]);
   const [modalAnticipo, setModalAnticipo] = useState(false);
+  const [modalExcepcionOc, setModalExcepcionOc] = useState<{ mensaje: string } | null>(null);
   const [borradorActual, setBorradorActual] = useState<BorradorRow>(borrador);
+  // B4 — las respuestas de editar líneas, forma de pago, etc. no traen `ordenCompra`
+  // (solo el GET, el generar y el PATCH de estado): se conserva la última que llegó
+  // para este borrador y el aviso se recalcula en vivo con las líneas actuales.
+  const [ocGuardada, setOcGuardada] = useState<{ id: string; oc: OrdenCompraBorradorDto } | null>(
+    borrador.ordenCompra ? { id: borrador.id, oc: borrador.ordenCompra } : null,
+  );
+  if (borradorActual.ordenCompra && ocGuardada?.oc !== borradorActual.ordenCompra) {
+    setOcGuardada({ id: borradorActual.id, oc: borradorActual.ordenCompra });
+  }
+  const ordenCompra = borradorActual.ordenCompra ?? (ocGuardada?.id === borradorActual.id ? ocGuardada.oc : null);
   const [lineas, setLineas] = useState<LineaLocal[]>(
     borrador.lineasRevision.map((l) => ({ ...l, estadoLocal: "pendiente" })),
   );
@@ -891,6 +907,24 @@ export function RevisorBorrador({
     },
   };
 
+  /** Aplica el borrador que devolvió el PATCH de estado (con la OC ya evaluada). */
+  function aplicarTransicion(respuesta: BorradorRow, exito: string) {
+    const updated = conservarPagosPorRevisar(respuesta, borradorActual);
+    setBorradorActual(updated);
+    // Conserva las marcas internas del revisor durante la sesión.
+    setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
+    onBorradorActualizado(updated);
+    toast({ title: exito, description: tramite.consecutivo, variant: "success" });
+  }
+
+  /** B4 — reintento de la aprobación con el motivo de la excepción (solo ADMIN). Si falla, el error vuelve al modal. */
+  async function handleAprobarSinCuadreOc(motivo: string) {
+    const respuesta = await transicionarBorrador(borradorActual.id, { nuevoEstado: "APROBADO", motivoExcepcionOc: motivo });
+    setModalExcepcionOc(null);
+    setErrorTransicion(null);
+    aplicarTransicion(respuesta, CONFIRMACION_TRANSICION.APROBADO.exito);
+  }
+
   async function handleTransicion(nuevoEstado: "EN_REVISION" | "APROBADO") {
     if (transicionando) return;
     const copy = CONFIRMACION_TRANSICION[nuevoEstado];
@@ -904,21 +938,29 @@ export function RevisorBorrador({
     setTransicionando(true);
     setErrorTransicion(null);
     try {
-      const updated = conservarPagosPorRevisar(
-        await transicionarBorrador(borradorActual.id, { nuevoEstado }),
-        borradorActual,
-      );
-      setBorradorActual(updated);
-      // Conserva las marcas internas del revisor durante la sesión.
-      setLineas((prev) => fusionarMarcas(updated.lineasRevision, prev));
-      onBorradorActualizado(updated);
-      toast({ title: copy.exito, description: tramite.consecutivo, variant: "success" });
+      aplicarTransicion(await transicionarBorrador(borradorActual.id, { nuevoEstado }), copy.exito);
     } catch (caught) {
       const mensaje =
         caught instanceof FacturacionApiError
           ? caught.message
           : describirError(caught, "Error al cambiar el estado.");
       setErrorTransicion(mensaje);
+
+      // B4 — la factura no cuadra con la orden de compra (o el DO tiene N° de OC
+      // sin valor): el servidor NO aprobó nada. La ADMIN puede aprobarla igual con
+      // un motivo; a cualquier otro rol se le explica y se le pide devolverla.
+      if (caught instanceof FacturacionApiError && (caught.codigo === "OC_NO_CUADRA" || caught.codigo === "OC_SIN_VALOR")) {
+        if (puedeExcepcionOc) {
+          setModalExcepcionOc({ mensaje });
+        } else {
+          toast({
+            title: "No se puede aprobar: no cuadra con la orden de compra",
+            description: `${mensaje} Devuélvela a Camila o corrígela.`,
+            variant: "error",
+          });
+        }
+        return;
+      }
 
       // B8 — el anticipo cambió mientras se revisaba: el servidor YA actualizó
       // el borrador (no se aprobó). Se recarga para que el revisor vea el
@@ -1474,38 +1516,10 @@ export function RevisorBorrador({
         </div>
       </header>
 
-      {/* Orden de compra del cliente (capacidad orden_compra_en_revision, caso Polyrec):
-          la factura debe dar el valor de la OC sin IVA y llevar su número en la descripción. */}
-      {tramite.ordenCompraNumero ? (() => {
-        const oc = tramite.ordenCompraValor ? BigInt(tramite.ordenCompraValor) : null;
-        const sinIva =
-          BigInt(borradorActual.totalFacturaLineas) - BigInt(borradorActual.ivaComision) + BigInt(borradorActual.retenciones);
-        const diferencia = oc === null ? null : sinIva - oc;
-        const cuadra = diferencia === 0n;
-        return (
-          <div
-            role={cuadra || oc === null ? "status" : "alert"}
-            className={`flex items-start gap-2 border-b px-4 py-2 text-sm ${
-              oc === null ? "border-slate-200 bg-slate-50 text-slate-700" : cuadra ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"
-            }`}
-          >
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            <div>
-              <p className="font-semibold">
-                Orden de compra N° {tramite.ordenCompraNumero}
-                {oc !== null ? ` por ${formatCOP(oc.toString())} (sin IVA)` : " (sin valor registrado en el DO)"}
-              </p>
-              <p className="text-xs">
-                {oc === null
-                  ? "Registra el valor de la OC en el Resumen del DO para contrastarla aquí."
-                  : cuadra
-                    ? `La factura sin IVA suma ${formatCOP(sinIva.toString())}: cuadra con la OC. El número ya va en la cabecera.`
-                    : `La factura sin IVA suma ${formatCOP(sinIva.toString())}: ${diferencia! > 0n ? "supera" : "queda por debajo de"} la OC en ${formatCOP((diferencia! < 0n ? -diferencia! : diferencia!).toString())}. Revisa antes de aprobar.`}
-              </p>
-            </div>
-          </div>
-        );
-      })() : null}
+      {/* Orden de compra del cliente (capacidad orden_compra_en_revision, caso Polyrec, B4 del
+          Diseño B): el servidor evalúa que la factura (servicio + reembolsos, sin impuestos ni
+          4x1000) dé el valor de la OC y frena la aprobación si no; aquí se muestra en vivo. */}
+      <AvisoOrdenCompra oc={ordenCompra} lineas={borradorActual.lineasRevision} />
 
       {/* Pagos de un trámite con asesoría (NO SE COBRA) cuyo reparto no es seguro. Solo ADMIN/REVISOR reciben la lista; nunca va a comentariosCabecera (viaja a SIIGO). */}
       <AvisoPagosPorRevisar pagos={borradorActual.pagosPorRevisar} />
@@ -2091,6 +2105,15 @@ export function RevisorBorrador({
           borradorId={borradorActual.id}
           onClose={() => setModalFacturar(false)}
           onFacturado={handleFacturado}
+        />
+      ) : null}
+
+      {modalExcepcionOc ? (
+        <AprobarSinCuadreOcModal
+          consecutivo={tramite.consecutivo}
+          mensaje={modalExcepcionOc.mensaje}
+          onCancelar={() => setModalExcepcionOc(null)}
+          onAprobar={handleAprobarSinCuadreOc}
         />
       ) : null}
 

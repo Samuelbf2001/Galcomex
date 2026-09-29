@@ -13,6 +13,7 @@
 import type { Rol } from "@/lib/auth/auth";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
 import { anticipoDelTramite, type AnticipoDelTramite } from "@/lib/borradores/anticipo-disponible";
+import { evaluarOcSinRomper, type OrdenCompraDeBorrador } from "@/lib/borradores/orden-compra-service";
 import {
   ROLES_VEN_PAGOS_POR_REVISAR,
   leerPagosPorRevisar,
@@ -68,6 +69,13 @@ export type BorradorConsultado = BorradorListado & {
    * (excluyendo esta misma factura del "reservado"). Ausente en COMISION.
    */
   anticipoDo?: AnticipoDelTramite;
+  /**
+   * B4 (Diseño B) — solo CONCEPTOS_IVA con N° de orden de compra en el DO y la
+   * función `orden_compra_en_revision`: si la factura cuadra con la OC (regla
+   * de la empresa), los DOs hermanos de una OC compartida y la suma de sus
+   * partes. Ausente en el resto (COMISION, sin OC, sin la función).
+   */
+  ordenCompra?: OrdenCompraDeBorrador;
 };
 
 export type BorradoresDeTramite = {
@@ -93,7 +101,7 @@ export async function cargarBorradoresDeTramite(
   usuario: UsuarioConsulta,
 ): Promise<BorradoresDeTramite> {
   const borradores = await listarBorradoresConPermiso(tramiteId, usuario);
-  const conAnticipo = await conAnticipoDo(borradores);
+  const conAnticipo = await conOrdenCompra(await conAnticipoDo(borradores));
 
   if (!ROLES_VEN_PAGOS_POR_REVISAR.includes(usuario.rol)) {
     return { borradores: conAnticipo };
@@ -116,6 +124,31 @@ async function conAnticipoDo(borradores: BorradorListado[]): Promise<BorradorCon
       if (b.formatoFactura !== "CONCEPTOS_IVA") return b;
       const anticipoDo = await anticipoDelTramite(prisma, b.tramiteId, { excluirBorradorId: b.id });
       return { ...b, anticipoDo };
+    }),
+  );
+}
+
+/**
+ * B4 — añade `ordenCompra` a los borradores CONCEPTOS_IVA cuyo DO tiene N° de
+ * OC. Una sola consulta decide qué DOs la tienen (la gran mayoría no), y solo
+ * a esos se les evalúa la OC.
+ */
+async function conOrdenCompra<T extends BorradorListado>(borradores: T[]): Promise<Array<T & { ordenCompra?: OrdenCompraDeBorrador }>> {
+  const candidatos = borradores.filter((b) => b.formatoFactura === "CONCEPTOS_IVA");
+  if (candidatos.length === 0) return borradores;
+
+  const conOc = await prisma.tramiteDO.findMany({
+    where: { id: { in: [...new Set(candidatos.map((b) => b.tramiteId))] }, ordenCompraNumero: { not: null } },
+    select: { id: true },
+  });
+  const idsConOc = new Set(conOc.map((t) => t.id));
+  if (idsConOc.size === 0) return borradores;
+
+  return Promise.all(
+    borradores.map(async (b) => {
+      if (b.formatoFactura !== "CONCEPTOS_IVA" || !idsConOc.has(b.tramiteId)) return b;
+      const ordenCompra = await evaluarOcSinRomper(prisma, b.id);
+      return ordenCompra ? { ...b, ordenCompra } : b;
     }),
   );
 }
@@ -238,10 +271,19 @@ export async function cargarBorradoresEnLote(
         : await leerPagosPorRevisarSinRomper(borradorIds, "del lote");
   }
 
+  // B4 — la orden de compra de todo el lote en una pasada (una consulta decide qué DOs la tienen).
+  const conOc = await conOrdenCompra(listados.flatMap(([, r]) => (Array.isArray(r) ? r : [])));
+  const ocPorBorrador = new Map(conOc.flatMap((b) => (b.ordenCompra ? [[b.id, b.ordenCompra] as const] : [])));
+
   const porTramite: Record<string, ResultadoBorradoresLote> = {};
   for (const [tramiteId, resultado] of listados) {
     porTramite[tramiteId] = Array.isArray(resultado)
-      ? { borradores: conPagosPorRevisar(resultado, porRevisar) }
+      ? {
+          borradores: conPagosPorRevisar(
+            resultado.map((b) => (ocPorBorrador.has(b.id) ? { ...b, ordenCompra: ocPorBorrador.get(b.id) } : b)),
+            porRevisar,
+          ),
+        }
       : resultado;
   }
 

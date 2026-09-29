@@ -175,8 +175,29 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   secciones.
 - **Orden de compra** (`orden_compra_en_revision`, caso Polyrec): el DO guarda
   `ordenCompraNumero` y `ordenCompraValor` (COP sin IVA); `generarBorrador`
-  siembra "ORDEN DE COMPRA N° …" en `comentariosCabecera` y el revisor muestra
-  si la factura sin IVA cuadra con la OC.
+  siembra "ORDEN DE COMPRA N° …" en `comentariosCabecera`.
+  **La factura debe cuadrar con la OC y el servidor frena (B4, Diseño B,
+  29-sep-2026):** `src/lib/borradores/orden-compra.ts` (puro) compara la base de
+  la OC = **servicio + reembolsos (terceros), sin IVA, sin ReteIVA y sin
+  4x1000** (así son las OC reales: OC10944 incluye la VUCE de DO.26-0079 y no
+  su 4x1000) contra `ordenCompraValor`, tolerancia 0. La regla es la config de
+  la capacidad (`{ base: "SERVICIO_Y_TERCEROS" | "SOLO_SERVICIO", incluye4x1000,
+  bloqueaAprobacion }`, se lee con Zod y una config rota vuelve al defecto
+  completo). `transicionarBorrador` (EN_REVISION → APROBADO, solo
+  CONCEPTOS_IVA con la función encendida), DESPUÉS del bloque B8, responde 422
+  `OC_NO_CUADRA` u `OC_SIN_VALOR` (N° de OC sin valor) sin escribir nada. Solo un
+  **ADMIN** la salta mandando `motivoExcepcionOc` (≥ 10 caracteres): queda
+  AuditLog `APROBAR_SIN_CUADRE_OC` (`antes` = evaluación, `despues` = motivo) y
+  el `snapshotCalculo.ordenCompra`; un REVISOR con motivo recibe 403
+  `EXCEPCION_OC_SOLO_ADMIN` (`rolUsuario` ausente = no ADMIN). OC compartida por
+  varios DOs: cada DO lleva SU parte en `ordenCompraValor`; la revisión lista los
+  DOs de la misma empresa con el mismo N° (`orden-compra-service.ts`) y la suma
+  de todas las partes para compararla con el PDF de la OC. `GET`/`PATCH`
+  `/api/borradores/[id]`, el generar y el GET del trámite devuelven
+  `ordenCompra`; la UI (`aviso-orden-compra.tsx`, `aprobar-sin-cuadre-oc-modal.tsx`)
+  lo recalcula en vivo con las líneas. Las cargas históricas que aprueben por la
+  API facturas de empresas con OC que no cuadre deben mandar `motivoExcepcionOc`
+  con sesión ADMIN.
 - **Tipos de trámite:** `IMPORTACION` (DO.BAQ26-0001), `CLASIFICACION`
   (CLAS26-0001, exige `clasificacion_arancelaria`) y `OTRO` (OTR26-0001:
   Plan Vallejo, sellos, coordinación logística; sin agencia, ETA ni checklist,
