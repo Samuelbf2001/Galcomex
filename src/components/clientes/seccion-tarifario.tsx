@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 
 import {
   ALCANCES,
+  CIUDADES,
   DISPARADORES,
   TIPOS_CALCULO,
   UNIDADES,
@@ -28,6 +29,7 @@ import {
   duplicarTarifario,
   eliminarItem,
   eliminarTarifario,
+  etiquetaCiudad,
   etiquetaEstado,
   fetchEventosCatalogo,
   fetchPlantillas,
@@ -35,6 +37,7 @@ import {
   fetchTarifariosLigero,
   formatCOP,
   formatFecha,
+  type Ciudad,
   type DisparadorTarifa,
   type EventoCatalogoRow,
   type PlantillaRow,
@@ -107,6 +110,41 @@ function unAnioDespues(desde: string): string {
 
 // ─── Modal: nuevo tarifario ───────────────────────────────────────────────────
 
+/** B3 — chips de ciudad: vacío = "Todas las demás ciudades" (general). */
+function CiudadesChips({ value, onChange }: { value: Ciudad[]; onChange: (v: Ciudad[]) => void }) {
+  function alternar(c: Ciudad) {
+    onChange(value.includes(c) ? value.filter((x) => x !== c) : [...value, c]);
+  }
+  return (
+    <div className="space-y-1">
+      <span className={LABEL}>Ciudades</span>
+      <div className="flex flex-wrap gap-1.5">
+        {CIUDADES.map((c) => {
+          const activo = value.includes(c.value);
+          return (
+            <button
+              key={c.value}
+              type="button"
+              onClick={() => alternar(c.value)}
+              className={`border px-2.5 py-1 text-xs font-medium ${
+                activo ? "border-cyan-600 bg-cyan-50 text-cyan-800" : "border-slate-300 bg-white text-slate-600"
+              }`}
+              aria-pressed={activo}
+            >
+              {c.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-xs text-slate-500">
+        {value.length === 0
+          ? "Vacío = general: aplica a todas las ciudades que no tengan su propio tarifario."
+          : "Solo aplica a las ciudades marcadas; el resto sigue con el tarifario general."}
+      </p>
+    </div>
+  );
+}
+
 function NuevoTarifarioModal({
   clienteId,
   onClose,
@@ -122,6 +160,7 @@ function NuevoTarifarioModal({
   const [origenId, setOrigenId] = useState("");
   const [nombre, setNombre] = useState("");
   const [alcance, setAlcance] = useState("TRAMITE");
+  const [ciudades, setCiudades] = useState<Ciudad[]>([]);
   const [desde, setDesde] = useState(hoyIso());
   const [hasta, setHasta] = useState(unAnioDespues(hoyIso()));
   const [notas, setNotas] = useState("");
@@ -144,6 +183,7 @@ function NuevoTarifarioModal({
     if (valorCombinado === "") {
       setPlantilla("");
       setOrigenId("");
+      setCiudades([]);
       return;
     }
     const separador = valorCombinado.indexOf(":");
@@ -153,6 +193,7 @@ function NuevoTarifarioModal({
     if (tipo === "plantilla") {
       setPlantilla(valor);
       setOrigenId("");
+      setCiudades([]);
       const p = plantillas.find((x) => x.codigo === valor);
       if (p) {
         setNombre(p.nombre);
@@ -165,6 +206,10 @@ function NuevoTarifarioModal({
       if (t) {
         setNombre(t.nombre);
         setAlcance(t.alcance);
+        // BAJO 4 (revisión de código, 28-sep-2026): prellenar los chips con
+        // las ciudades del origen (antes se copiaban sin que el usuario las
+        // viera ni pudiera cambiarlas).
+        setCiudades(t.ciudades);
       }
     }
   }
@@ -180,6 +225,9 @@ function NuevoTarifarioModal({
         origenTarifarioId: origenId || undefined,
         nombre: nombre.trim() || undefined,
         alcance,
+        // BAJO 4 — siempre lo que el usuario ve y puede editar en los chips
+        // (nacen prellenados con las del origen; el usuario manda).
+        ciudades,
         vigenteDesde: desde,
         vigenteHasta: hasta,
         notas: notas.trim() || undefined,
@@ -253,6 +301,13 @@ function NuevoTarifarioModal({
           </label>
         </div>
 
+        <CiudadesChips value={ciudades} onChange={setCiudades} />
+        {origenSel ? (
+          <p className="-mt-2 text-xs text-slate-500">
+            Prellenadas con las ciudades de &quot;{origenSel.nombre}&quot;; puedes cambiarlas antes de crear.
+          </p>
+        ) : null}
+
         <label className="block space-y-1">
           <span className={LABEL}>Nota interna (no sale en el PDF)</span>
           <textarea value={notas} onChange={(e) => setNotas(e.target.value)} rows={2} className="w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan-600" />
@@ -288,6 +343,7 @@ function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: Tarifario
     return fechaCalendarioAInput(d);
   })();
   const [nombre, setNombre] = useState(tarifario.nombre);
+  const [ciudades, setCiudades] = useState<Ciudad[]>(tarifario.ciudades);
   const [desde, setDesde] = useState(siguienteDesde);
   const [hasta, setHasta] = useState(unAnioDespues(siguienteDesde));
   const [incremento, setIncremento] = useState("");
@@ -305,7 +361,15 @@ function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: Tarifario
     }
     setEnviando(true);
     try {
-      onCreated(await duplicarTarifario(tarifario.id, { nombre: nombre.trim() || undefined, vigenteDesde: desde, vigenteHasta: hasta, incrementoPct: pct }));
+      onCreated(
+        await duplicarTarifario(tarifario.id, {
+          nombre: nombre.trim() || undefined,
+          ciudades,
+          vigenteDesde: desde,
+          vigenteHasta: hasta,
+          incrementoPct: pct,
+        }),
+      );
     } catch (caught) {
       setError(describirError(caught, "No fue posible duplicar el tarifario."));
     } finally {
@@ -330,6 +394,7 @@ function DuplicarModal({ tarifario, onClose, onCreated }: { tarifario: Tarifario
             <input type="date" value={hasta} min={desde} onChange={(e) => setHasta(e.target.value)} required className={INPUT} />
           </label>
         </div>
+        <CiudadesChips value={ciudades} onChange={setCiudades} />
         <label className="block space-y-1">
           <span className={LABEL}>Incremento % (opcional, redondea a miles)</span>
           <input value={incremento} onChange={(e) => setIncremento(e.target.value)} inputMode="decimal" placeholder="5,29" className={INPUT} />
@@ -371,6 +436,10 @@ type ItemFormState = {
   aplicaIva: boolean;
   orden: string;
   notas: string;
+  /** B1 — "restar el agenciamiento de la agencia de aduanas del DO" (una vez por DO). */
+  restaAgenciamiento: boolean;
+  /** B1 — solo con `restaAgenciamiento` y PORCENTAJE_MIN: mínimo NETO (false) o TOTAL (true). */
+  minimoEsDelTotal: boolean;
 };
 
 const TRAMOS_VACIOS = [
@@ -400,6 +469,8 @@ function estadoDesdeItem(item: TarifaItemRow | null, orden: number): ItemFormSta
     aplicaIva: item?.aplicaIva ?? true,
     orden: String(item?.orden ?? orden),
     notas: item?.notas ?? "",
+    restaAgenciamiento: item?.restaAgenciamiento ?? false,
+    minimoEsDelTotal: item?.minimoEsDelTotal ?? false,
   };
 }
 
@@ -434,6 +505,8 @@ function formDesdeEstado(s: ItemFormState): TarifaItemForm {
     aplicaIva: s.aplicaIva,
     notas: s.notas.trim() || null,
     orden: Number(s.orden) || 0,
+    restaAgenciamiento: s.disparador === "MANUAL" || s.tipoCalculo === "ESPEJO_DE_COSTO" ? false : s.restaAgenciamiento,
+    minimoEsDelTotal: s.tipoCalculo === "PORCENTAJE_MIN" && s.restaAgenciamiento ? s.minimoEsDelTotal : false,
   };
 }
 
@@ -894,6 +967,50 @@ function ItemModal({
             <input type="checkbox" checked={s.aplicaIva} onChange={(e) => set("aplicaIva", e.target.checked)} className="h-4 w-4" />
             Lleva IVA
           </label>
+
+          {s.disparador !== "MANUAL" && s.tipoCalculo !== "ESPEJO_DE_COSTO" ? (
+            <div className="space-y-2 border border-slate-200 bg-slate-50 p-2.5 sm:col-span-2">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={s.restaAgenciamiento}
+                  onChange={(e) => set("restaAgenciamiento", e.target.checked)}
+                  className="h-4 w-4"
+                />
+                Restar lo que la agencia de aduanas le factura directo al cliente (una vez por DO)
+              </label>
+              <p className="text-xs text-slate-500">
+                Se resta el valor estándar de la agencia del DO (Configuración → Parámetros →
+                AGENCIAMIENTO_&lt;AGENCIA&gt;). Sin agencia o sin ese valor, el ítem queda pendiente en vez de
+                cobrar de más.
+              </p>
+              {s.restaAgenciamiento && s.tipoCalculo === "PORCENTAJE_MIN" ? (
+                <fieldset className="space-y-1">
+                  <legend className="text-xs font-medium text-slate-600">El mínimo es:</legend>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="radio"
+                      name="minimoEsDelTotal"
+                      checked={!s.minimoEsDelTotal}
+                      onChange={() => set("minimoEsDelTotal", false)}
+                      className="h-4 w-4"
+                    />
+                    Lo que cobra Galcomex
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="radio"
+                      name="minimoEsDelTotal"
+                      checked={s.minimoEsDelTotal}
+                      onChange={() => set("minimoEsDelTotal", true)}
+                      className="h-4 w-4"
+                    />
+                    Lo que paga el cliente en total (Galcomex + agencia)
+                  </label>
+                </fieldset>
+              ) : null}
+            </div>
+          ) : null}
           <label className="block space-y-1 sm:col-span-2">
             <span className={LABEL}>Nota para el cliente (sale en el PDF)</span>
             <input value={s.notas} onChange={(e) => set("notas", e.target.value)} className={INPUT} />
@@ -959,6 +1076,12 @@ function TarjetaTarifario({
             <span className="text-xs text-slate-500">v{tarifario.version}</span>
             <span className={`border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${estadoClase(tarifario.estado)}`}>
               {etiquetaEstado(tarifario.estado)}
+            </span>
+            <span
+              className="border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-600"
+              title={tarifario.ciudades.length === 0 ? "Aplica a todas las ciudades sin tarifario propio" : "Solo aplica a estas ciudades"}
+            >
+              {tarifario.ciudades.length === 0 ? "General" : tarifario.ciudades.map(etiquetaCiudad).join(" + ")}
             </span>
           </div>
           <p className="mt-0.5 text-xs text-slate-500">
@@ -1030,7 +1153,17 @@ function TarjetaTarifario({
                   {tarifario.items.map((it) => (
                     <tr key={it.id} className="border-t border-slate-100 align-top">
                       <td className="px-4 py-2">
-                        <p className="font-medium text-slate-900">{it.nombrePublico}</p>
+                        <p className="flex items-center gap-1.5 font-medium text-slate-900">
+                          {it.nombrePublico}
+                          {it.restaAgenciamiento ? (
+                            <span
+                              className="border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+                              title="Se resta el agenciamiento estándar de la agencia del DO"
+                            >
+                              − agencia
+                            </span>
+                          ) : null}
+                        </p>
                         <p className="text-xs text-slate-500">{it.concepto}</p>
                         {it.notas ? <p className="mt-0.5 text-xs text-slate-500">Nota en PDF: {it.notas}</p> : null}
                       </td>
@@ -1143,9 +1276,10 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
   }
 
   async function publicar(t: TarifarioRow) {
+    const ciudadesTexto = t.ciudades.length === 0 ? "general (todas las ciudades sin tarifario propio)" : t.ciudades.map(etiquetaCiudad).join(" + ");
     const ok = await confirmar({
       title: `Publicar "${t.nombre}" v${t.version}`,
-      description: "Queda vigente y reemplaza al tarifario vigente anterior del mismo alcance. Los borradores de factura nuevos de esta empresa lo usarán.",
+      description: `Queda vigente y reemplaza al tarifario vigente anterior de este alcance y estas ciudades (${ciudadesTexto}). Los borradores de factura nuevos de esta empresa lo usarán.`,
       confirmText: "Publicar",
     });
     if (!ok) return;
@@ -1157,7 +1291,13 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
   }
 
   async function vencer(t: TarifarioRow) {
-    const ok = await confirmar({ title: "Marcar vencido", description: "La empresa quedará sin tarifario vigente para este alcance hasta publicar otro.", confirmText: "Marcar vencido", variant: "danger" });
+    const ciudadesTexto = t.ciudades.length === 0 ? "general" : t.ciudades.map(etiquetaCiudad).join(" + ");
+    const ok = await confirmar({
+      title: "Marcar vencido",
+      description: `La empresa quedará sin tarifario vigente para este alcance y estas ciudades (${ciudadesTexto}) hasta publicar otro. ${t.ciudades.length > 0 ? "Esas ciudades vuelven a usar el tarifario general." : ""}`,
+      confirmText: "Marcar vencido",
+      variant: "danger",
+    });
     if (!ok) return;
     await accion(t.id, async () => {
       reemplazar(await cambiarEstadoTarifario(t.id, "VENCIDO"));

@@ -35,6 +35,7 @@ export async function GET(request: NextRequest) {
     query = requisitosQuerySchema.parse({
       clienteId: request.nextUrl.searchParams.get("clienteId") ?? undefined,
       tipoTramiteCodigo: request.nextUrl.searchParams.get("tipoTramiteCodigo") ?? undefined,
+      ciudad: request.nextUrl.searchParams.get("ciudad") ?? undefined,
     });
   } catch (error) {
     if (error instanceof ZodError) {

@@ -12,12 +12,14 @@
 
 import type { Rol } from "@/lib/auth/auth";
 import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
+import { anticipoDelTramite, type AnticipoDelTramite } from "@/lib/borradores/anticipo-disponible";
 import {
   ROLES_VEN_PAGOS_POR_REVISAR,
   leerPagosPorRevisar,
   type PagoPorRevisar,
 } from "@/lib/borradores/pagos-por-revisar";
 import { ensureBorrador, listarBorradores } from "@/lib/borradores/service";
+import { prisma } from "@/lib/db/prisma";
 import { isDomainError } from "@/lib/http/errors";
 
 /** Roles que pueden consultar borradores (individual y lote). */
@@ -60,6 +62,12 @@ export type BorradorConsultado = BorradorListado & {
    * (ver `lib/borradores/pagos-por-revisar.ts`). Ausente para el SOCIO.
    */
   pagosPorRevisar?: PagoPorRevisar[];
+  /**
+   * B8 (Diseño A) — solo formato CONCEPTOS_IVA: cuánto anticipo del DO está
+   * asignado a esta factura, y qué le queda disponible si se re-generara
+   * (excluyendo esta misma factura del "reservado"). Ausente en COMISION.
+   */
+  anticipoDo?: AnticipoDelTramite;
 };
 
 export type BorradoresDeTramite = {
@@ -85,16 +93,31 @@ export async function cargarBorradoresDeTramite(
   usuario: UsuarioConsulta,
 ): Promise<BorradoresDeTramite> {
   const borradores = await listarBorradoresConPermiso(tramiteId, usuario);
+  const conAnticipo = await conAnticipoDo(borradores);
 
   if (!ROLES_VEN_PAGOS_POR_REVISAR.includes(usuario.rol)) {
-    return { borradores };
+    return { borradores: conAnticipo };
   }
 
   const porRevisar = await leerPagosPorRevisarSinRomper(
     borradores.map((b) => b.id),
     `del trámite ${tramiteId}`,
   );
-  return { borradores: conPagosPorRevisar(borradores, porRevisar) };
+  return { borradores: conPagosPorRevisar(conAnticipo, porRevisar) };
+}
+
+/**
+ * B8 — añade `anticipoDo` a cada borrador CONCEPTOS_IVA del trámite (excluye
+ * el propio borrador de "lo reservado por otras", igual que al aprobar).
+ */
+async function conAnticipoDo(borradores: BorradorListado[]): Promise<BorradorConsultado[]> {
+  return Promise.all(
+    borradores.map(async (b): Promise<BorradorConsultado> => {
+      if (b.formatoFactura !== "CONCEPTOS_IVA") return b;
+      const anticipoDo = await anticipoDelTramite(prisma, b.tramiteId, { excluirBorradorId: b.id });
+      return { ...b, anticipoDo };
+    }),
+  );
 }
 
 /** Pasos 1 a 3 de `cargarBorradoresDeTramite` (permiso, red de seguridad, listado). */
@@ -155,7 +178,7 @@ export async function conPagosPorRevisarDeBorrador<T extends { id: string }>(
 }
 
 function conPagosPorRevisar(
-  borradores: BorradorListado[],
+  borradores: BorradorConsultado[],
   porRevisar: Map<string, PagoPorRevisar[]> | null,
 ): BorradorConsultado[] {
   if (porRevisar === null) return borradores;

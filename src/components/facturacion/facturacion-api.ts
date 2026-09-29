@@ -68,6 +68,16 @@ export type BorradorRow = {
   impuesto4x1000: string; // BigInt
   costosBancarios: string; // BigInt
   totalAnticipo: string; // BigInt
+  /** B8 — true si el anticipo de esta factura se asignó a mano (excepción ADMIN). */
+  anticipoManual: boolean;
+  /** Motivo de la asignación manual; null si es automática. */
+  anticipoMotivo: string | null;
+  /**
+   * B8 — solo CONCEPTOS_IVA: cuánto anticipo del DO hay en total, cuánto ya
+   * usan otras facturas y cuánto le queda disponible (excluyendo esta misma).
+   * null/ausente = COMISION (no aplica) o la respuesta no lo trae.
+   */
+  anticipoDo?: { aplicadoDo: string; reservadoPorOtras: string; asignable: string } | null;
   totalPagos: string; // BigInt
   totalFactura: string; // BigInt
   saldoAFavorCliente: string; // BigInt
@@ -175,10 +185,13 @@ export type TramiteParaFacturacion = {
 
 export class FacturacionApiError extends Error {
   status?: number;
-  constructor(message: string, status?: number) {
+  /** Código de dominio (ej. "ANTICIPO_ACTUALIZADO", "ANTICIPO_FUERA_DE_RANGO"), cuando el backend lo manda. */
+  codigo?: string;
+  constructor(message: string, status?: number, codigo?: string) {
     super(message);
     this.name = "FacturacionApiError";
     this.status = status;
+    this.codigo = codigo;
   }
 }
 
@@ -269,6 +282,15 @@ function normalizeBorrador(raw: Record<string, unknown>): BorradorRow {
     impuesto4x1000: String(raw.impuesto4x1000 ?? "0"),
     costosBancarios: String(raw.costosBancarios ?? "0"),
     totalAnticipo: String(raw.totalAnticipo ?? "0"),
+    anticipoManual: raw.anticipoManual === true,
+    anticipoMotivo: typeof raw.anticipoMotivo === "string" ? raw.anticipoMotivo : null,
+    anticipoDo: isRecord(raw.anticipoDo)
+      ? {
+          aplicadoDo: String(raw.anticipoDo.aplicadoDo ?? "0"),
+          reservadoPorOtras: String(raw.anticipoDo.reservadoPorOtras ?? "0"),
+          asignable: String(raw.anticipoDo.asignable ?? "0"),
+        }
+      : null,
     totalPagos: String(raw.totalPagos ?? "0"),
     totalFactura: String(raw.totalFactura ?? "0"),
     saldoAFavorCliente: String(raw.saldoAFavorCliente ?? "0"),
@@ -568,6 +590,29 @@ export async function generarBorrador(
   return normalizeBorrador(payload.borrador);
 }
 
+/**
+ * GET /api/borradores/[id] — un borrador completo. Se usa para recargarlo tras
+ * el 409 ANTICIPO_ACTUALIZADO (B8), que no trae el borrador en la respuesta.
+ */
+export async function fetchBorrador(borradorId: string): Promise<BorradorRow> {
+  const response = await fetch(`/api/borradores/${borradorId}`, {
+    cache: "no-store",
+    headers: { accept: "application/json" },
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error al recargar el borrador (${response.status}).`;
+    throw new FacturacionApiError(message, response.status);
+  }
+  if (!isRecord(payload) || !isRecord(payload.borrador)) {
+    throw new FacturacionApiError("Respuesta de borrador no válida.");
+  }
+  return normalizeBorrador(payload.borrador);
+}
+
 // ─── Transición de estado ─────────────────────────────────────────────────────
 
 export type TransicionInput =
@@ -592,7 +637,8 @@ export async function transicionarBorrador(
       isRecord(payload) && typeof payload.error === "string"
         ? payload.error
         : `Error en transición (${response.status}).`;
-    throw new FacturacionApiError(message, response.status);
+    const codigo = isRecord(payload) && typeof payload.codigo === "string" ? payload.codigo : undefined;
+    throw new FacturacionApiError(message, response.status, codigo);
   }
 
   if (!isRecord(payload) || !isRecord(payload.borrador)) {
@@ -600,6 +646,47 @@ export async function transicionarBorrador(
   }
 
   return normalizeBorrador(payload.borrador);
+}
+
+// ─── B8 (Diseño A) — asignar anticipo a mano ──────────────────────────────────
+
+export type AsignarAnticipoInput =
+  | { modo: "MANUAL"; anticipo: string; motivo: string }
+  | { modo: "AUTOMATICO" };
+
+/**
+ * PATCH /api/borradores/[id]/anticipo — excepción ADMIN (B8): repartir el
+ * anticipo a mano entre facturas del mismo DO, o volver a la regla estándar.
+ */
+export async function asignarAnticipoBorrador(
+  borradorId: string,
+  input: AsignarAnticipoInput,
+): Promise<{ borrador: BorradorRow; aviso: string | null }> {
+  const response = await fetch(`/api/borradores/${borradorId}/anticipo`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : `Error al asignar el anticipo (${response.status}).`;
+    const codigo = isRecord(payload) && typeof payload.codigo === "string" ? payload.codigo : undefined;
+    throw new FacturacionApiError(message, response.status, codigo);
+  }
+
+  if (!isRecord(payload) || !isRecord(payload.borrador)) {
+    throw new FacturacionApiError("Respuesta de asignación de anticipo no válida.");
+  }
+
+  return {
+    borrador: normalizeBorrador(payload.borrador),
+    aviso: typeof payload.aviso === "string" ? payload.aviso : null,
+  };
 }
 
 // ─── Devolver con observación ─────────────────────────────────────────────────

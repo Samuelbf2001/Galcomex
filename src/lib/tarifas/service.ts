@@ -11,6 +11,7 @@
  */
 
 import {
+  Ciudad,
   DisparadorTarifa,
   EstadoTarifario,
   Prisma,
@@ -26,6 +27,7 @@ import { tiene } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
 import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import { plantillaPorCodigo } from "@/lib/tarifas/plantillas";
+import { agenciamientoEstandarDe } from "@/lib/tarifas/agenciamiento";
 import {
   calcularLineasTarifa,
   vigenteEn,
@@ -106,6 +108,15 @@ export class TarifaItemDuplicadoError extends Error {
   }
 }
 
+/** B1 — la agencia se resta una sola vez por DO: no se puede agregar/editar un segundo ítem que la reste. */
+export class TarifaRestaDuplicadaError extends Error {
+  public readonly status = 422;
+  constructor(nombrePublicoOtro: string) {
+    super(`Este tarifario ya resta el agenciamiento en «${nombrePublicoOtro}»`);
+    this.name = "TarifaRestaDuplicadaError";
+  }
+}
+
 export class PlantillaNoEncontradaError extends Error {
   public readonly status = 422;
   constructor(codigo: string) {
@@ -128,6 +139,30 @@ export class EmpresaTarifarioNoEncontradaError extends Error {
     super(`Empresa ${id} no encontrada`);
     this.name = "EmpresaTarifarioNoEncontradaError";
   }
+}
+
+/** B3 — R2: publicar un tarifario de ciudad no puede dejar dos VIGENTE con una ciudad en común. */
+export class TarifarioCiudadEnUsoError extends Error {
+  public readonly status = 422;
+  constructor(ciudad: Ciudad, nombreOtro: string) {
+    super(
+      `${etiquetaCiudad(ciudad)} ya está en «${nombreOtro}» vigente: véncelo o publícalo con las mismas ciudades`,
+    );
+    this.name = "TarifarioCiudadEnUsoError";
+  }
+}
+
+/** B3 — nombres para mensajes (la UI usa chips con el código; los mensajes de texto usan el nombre). */
+const ETIQUETA_CIUDAD: Record<string, string> = {
+  BAQ: "Barranquilla",
+  CTG: "Cartagena",
+  BUN: "Buenaventura",
+  SMR: "Santa Marta",
+  BGT: "Bogotá",
+};
+
+export function etiquetaCiudad(ciudad: Ciudad): string {
+  return ETIQUETA_CIUDAD[ciudad] ?? ciudad;
 }
 
 /**
@@ -216,6 +251,8 @@ export function itemCalculableDe(item: TarifaItem): ItemTarifaCalculable {
     tramos: tramosDe(item.tramos),
     aplicaIva: item.aplicaIva,
     orden: item.orden,
+    restaAgenciamiento: item.restaAgenciamiento,
+    minimoEsDelTotal: item.minimoEsDelTotal,
   };
 }
 
@@ -272,6 +309,8 @@ function itemCreateData(
     tramos: item.tramos ? normalizeSerializable(item.tramos) : undefined,
     aplicaIva: item.aplicaIva,
     notas: item.notas ?? null,
+    restaAgenciamiento: item.restaAgenciamiento,
+    minimoEsDelTotal: item.minimoEsDelTotal,
     ...(item.eventoCodigo ? { evento: { connect: { codigo: item.eventoCodigo } } } : {}),
   };
 }
@@ -326,6 +365,19 @@ export async function getTarifario(id: string): Promise<TarifarioConItems> {
  * Tarifario VIGENTE de la empresa para un alcance en una fecha. Un tarifario
  * marcado VIGENTE pero ya fuera de fecha NO cuenta: el sistema avisa en vez
  * de facturar con precios viejos.
+ *
+ * B3 (R1) — `ciudad` opcional:
+ *   - Sin `ciudad` (`undefined`): comportamiento de hoy, cualquier VIGENTE en
+ *     fecha (llamadas viejas, requisitos sin ciudad).
+ *   - Con `ciudad`: si hay tarifarios VIGENTE cuyas `ciudades` la incluyen Y
+ *     cuyo `vigenteDesde` ya llegó (M2, revisión de código 28-sep-2026: uno
+ *     con `vigenteDesde` futuro todavía NO especializa la ciudad — publicarlo
+ *     por adelantado no debe dejar la ciudad sin tarifa hoy), la ciudad está
+ *     ESPECIALIZADA — se usa el de mayor versión en fecha, o `null` si
+ *     ninguno lo está (un vencido por fecha SÍ sigue bloqueando). Nunca cae
+ *     al general en silencio (usa `motivoSinTarifarioVigente` para explicar
+ *     por qué). Sin tarifario propio ya iniciado de esa ciudad, usa el
+ *     general (`ciudades` vacío).
  */
 export async function tarifarioVigenteDe(
   empresaId: string,
@@ -334,13 +386,49 @@ export async function tarifarioVigenteDe(
   // tarifa deja de contar 5 horas antes de medianoche en Bogotá (19:00) el
   // último día de vigencia. Ver `lib/tiempo/bogota.ts`.
   fecha: Date = fechaCalendarioBogota(),
+  ciudad?: Ciudad | null,
 ): Promise<TarifarioConItems | null> {
   const vigentes = await prisma.tarifario.findMany({
     where: { empresaId, alcance, estado: EstadoTarifario.VIGENTE },
     include: tarifarioInclude,
     orderBy: { version: "desc" },
   });
-  return vigentes.find((t) => vigenteEn(t, fecha)) ?? null;
+
+  if (!ciudad) {
+    return vigentes.find((t) => vigenteEn(t, fecha)) ?? null;
+  }
+
+  const especializados = vigentes.filter((t) => t.ciudades.includes(ciudad) && yaIniciado(t, fecha));
+  if (especializados.length > 0) {
+    return especializados.find((t) => vigenteEn(t, fecha)) ?? null;
+  }
+  return vigentes.filter((t) => t.ciudades.length === 0).find((t) => vigenteEn(t, fecha)) ?? null;
+}
+
+/** `vigenteDesde` ya llegó (día calendario, comparación inclusiva). */
+function yaIniciado(tarifario: { vigenteDesde: Date }, fecha: Date): boolean {
+  return fecha.getTime() >= tarifario.vigenteDesde.getTime();
+}
+
+/**
+ * Por qué no hay tarifario vigente para esta ciudad (B3, R1): distingue "la
+ * ciudad tiene tarifario propio ya iniciado pero está fuera de fecha" (nunca
+ * cae al general en silencio) de "no hay ninguno" — un tarifario de ciudad
+ * con `vigenteDesde` futuro no cuenta (M2): mientras no empiece, la ciudad
+ * sigue usando el general sin avisos. Solo para armar el mensaje.
+ */
+export async function motivoSinTarifarioVigente(
+  empresaId: string,
+  alcance: string,
+  ciudad?: Ciudad | null,
+  fecha: Date = fechaCalendarioBogota(),
+): Promise<{ ciudadFueraDeFecha: boolean }> {
+  if (!ciudad) return { ciudadFueraDeFecha: false };
+  const especializados = await prisma.tarifario.findMany({
+    where: { empresaId, alcance, estado: EstadoTarifario.VIGENTE, ciudades: { has: ciudad } },
+    select: { vigenteDesde: true },
+  });
+  return { ciudadFueraDeFecha: especializados.some((t) => yaIniciado(t, fecha)) };
 }
 
 // ─── Mutaciones ───────────────────────────────────────────────────────────────
@@ -373,6 +461,7 @@ export async function crearTarifario(input: CrearTarifarioInput): Promise<Tarifa
         empresaId: input.empresaId,
         nombre,
         alcance,
+        ciudades: input.ciudades ?? [],
         vigenteDesde: input.vigenteDesde,
         vigenteHasta: input.vigenteHasta,
         notas,
@@ -403,7 +492,10 @@ export async function actualizarTarifario(
   usuarioId: string,
 ): Promise<TarifarioConItems> {
   const antes = await getTarifario(id);
-  if (antes.estado !== EstadoTarifario.BORRADOR && (payload.alcance || payload.vigenteDesde || payload.vigenteHasta)) {
+  if (
+    antes.estado !== EstadoTarifario.BORRADOR &&
+    (payload.alcance || payload.vigenteDesde || payload.vigenteHasta || payload.ciudades !== undefined)
+  ) {
     throw new TarifarioNoEditableError(antes.estado);
   }
 
@@ -413,6 +505,7 @@ export async function actualizarTarifario(
       data: {
         nombre: payload.nombre,
         alcance: payload.alcance,
+        ciudades: payload.ciudades,
         vigenteDesde: payload.vigenteDesde,
         vigenteHasta: payload.vigenteHasta,
         notas: payload.notas,
@@ -471,16 +564,35 @@ export async function cambiarEstadoTarifario(
   }
 
   return prisma.$transaction(async (tx) => {
+    const idsReemplazados: string[] = [];
+
     if (estado === "VIGENTE") {
-      await tx.tarifario.updateMany({
-        where: {
-          empresaId: antes.empresaId,
-          alcance: antes.alcance,
-          estado: EstadoTarifario.VIGENTE,
-          id: { not: id },
-        },
-        data: { estado: EstadoTarifario.REEMPLAZADO },
+      // R2 (B3): reemplaza solo los VIGENTE del mismo conjunto de ciudades. Si
+      // otro VIGENTE comparte una ciudad con un conjunto DISTINTO, no se puede
+      // publicar en silencio: hay que vencerlo o publicar con las mismas ciudades.
+      const antesSet = new Set(antes.ciudades);
+      const otrosVigentes = await tx.tarifario.findMany({
+        where: { empresaId: antes.empresaId, alcance: antes.alcance, estado: EstadoTarifario.VIGENTE, id: { not: id } },
+        select: { id: true, nombre: true, ciudades: true },
       });
+
+      for (const otro of otrosVigentes) {
+        const otroSet = new Set(otro.ciudades);
+        const mismoConjunto = otroSet.size === antesSet.size && [...otroSet].every((c) => antesSet.has(c));
+        if (mismoConjunto) {
+          idsReemplazados.push(otro.id);
+          continue;
+        }
+        const comun = otro.ciudades.find((c) => antesSet.has(c));
+        if (comun) throw new TarifarioCiudadEnUsoError(comun, otro.nombre);
+      }
+
+      if (idsReemplazados.length > 0) {
+        await tx.tarifario.updateMany({
+          where: { id: { in: idsReemplazados } },
+          data: { estado: EstadoTarifario.REEMPLAZADO },
+        });
+      }
     }
 
     const despues = await tx.tarifario.update({
@@ -496,7 +608,7 @@ export async function cambiarEstadoTarifario(
         accion: estado === "VIGENTE" ? "PUBLICAR_TARIFARIO" : "VENCER_TARIFARIO",
         usuarioId,
         antes: { estado: antes.estado },
-        despues: { estado: despues.estado },
+        despues: { estado: despues.estado, ciudades: despues.ciudades, idsReemplazados },
       },
     });
 
@@ -564,6 +676,8 @@ function copiarItemsDeTarifario(
       tramos: tramosAjustados ? normalizeSerializable(tramosAjustados) : undefined,
       aplicaIva: it.aplicaIva,
       notas: it.notas,
+      restaAgenciamiento: it.restaAgenciamiento,
+      minimoEsDelTotal: it.minimoEsDelTotal,
       ...(it.eventoCodigo ? { evento: { connect: { codigo: it.eventoCodigo } } } : {}),
     };
   });
@@ -592,6 +706,9 @@ export async function duplicarTarifario(
         empresaId,
         nombre: payload.nombre ?? origen.nombre,
         alcance: origen.alcance,
+        // B3 (R4): copia las ciudades del origen salvo que el payload las cambie
+        // (así se hace "Duplicar para Bogotá").
+        ciudades: payload.ciudades ?? origen.ciudades,
         vigenteDesde: payload.vigenteDesde,
         vigenteHasta: payload.vigenteHasta,
         notas:
@@ -628,6 +745,8 @@ export interface CrearTarifarioDesdeInput {
   nombre?: string;
   /** Si falta, se usa el `alcance` del tarifario de ORIGEN (F7) — no "TRAMITE" a ciegas. */
   alcance?: string;
+  /** B3 (R4) — si falta, se copian las ciudades del tarifario de ORIGEN. */
+  ciudades?: Ciudad[];
   vigenteDesde: Date;
   vigenteHasta: Date;
   notas?: string | null;
@@ -660,6 +779,8 @@ export async function crearTarifarioDesde(
         empresaId: input.empresaId,
         nombre,
         alcance,
+        // B3 (R4): sin ciudades en el payload, copia las del origen.
+        ciudades: input.ciudades ?? origen.ciudades,
         vigenteDesde: input.vigenteDesde,
         vigenteHasta: input.vigenteHasta,
         notas,
@@ -687,8 +808,10 @@ export async function crearTarifarioDesde(
 
 /**
  * Catálogo LIGERO de tarifarios de TODAS las empresas (id, empresa, nombre,
- * alcance, versión, estado, cantidad de ítems — sin los ítems completos).
- * Alimenta "Copiar la tarifa de otra empresa" en Nuevo tarifario (B2).
+ * alcance, versión, estado, ciudades, cantidad de ítems — sin los ítems
+ * completos). Alimenta "Copiar la tarifa de otra empresa" en Nuevo tarifario
+ * (B2). `ciudades` (BAJO 5, revisión de código 28-sep-2026) — el diseño B3 lo
+ * pedía; sin esto el modal no puede prellenar los chips al copiar (BAJO 4).
  */
 export interface TarifarioLigero {
   id: string;
@@ -698,6 +821,7 @@ export interface TarifarioLigero {
   alcance: string;
   version: number;
   estado: EstadoTarifario;
+  ciudades: Ciudad[];
   items: number;
 }
 
@@ -713,6 +837,7 @@ export async function listarTarifariosLigero(
       alcance: true,
       version: true,
       estado: true,
+      ciudades: true,
       empresa: { select: { nombre: true } },
       _count: { select: { items: true } },
     },
@@ -727,6 +852,7 @@ export async function listarTarifariosLigero(
     alcance: f.alcance,
     version: f.version,
     estado: f.estado,
+    ciudades: f.ciudades,
     items: f._count.items,
   }));
 }
@@ -747,6 +873,10 @@ export async function agregarItemTarifario(
   const t = await exigirBorrador(tarifarioId);
   if (t.items.some((i) => i.concepto === payload.concepto)) {
     throw new TarifaItemDuplicadoError(payload.concepto);
+  }
+  if (payload.restaAgenciamiento) {
+    const otro = t.items.find((i) => i.restaAgenciamiento);
+    if (otro) throw new TarifaRestaDuplicadaError(otro.nombrePublico);
   }
 
   // Alta MANUAL: el concepto tiene que existir y estar activo en el catálogo;
@@ -796,6 +926,10 @@ export async function actualizarItemTarifario(
 
   if (fusionado.concepto !== antes.concepto && t.items.some((i) => i.concepto === fusionado.concepto)) {
     throw new TarifaItemDuplicadoError(fusionado.concepto);
+  }
+  if (fusionado.restaAgenciamiento) {
+    const otro = t.items.find((i) => i.id !== itemId && i.restaAgenciamiento);
+    if (otro) throw new TarifaRestaDuplicadaError(otro.nombrePublico);
   }
 
   // Edición MANUAL: solo cuando el formulario manda `concepto` se exige que
@@ -918,6 +1052,7 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
       numItems: true,
       ordenCompraNumero: true,
       ordenCompraValor: true,
+      agenciaAduanas: true,
       eventos: { select: { eventoCodigo: true, cantidad: true } },
       facturasProveedor: { where: { repercutible: true }, select: { concepto: true, valor: true } },
     },
@@ -937,6 +1072,8 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
     ...tramite.facturasProveedor.filter((f) => f.concepto).map((f) => ({ concepto: f.concepto ?? "", valor: f.valor })),
   ];
 
+  const agenciamiento = await agenciamientoEstandarDe(tramite.agenciaAduanas);
+
   return {
     valorCif: tramite.valorCif,
     tipoCarga: tramite.tipoCarga,
@@ -946,6 +1083,9 @@ export async function contextoDeTramite(tramiteId: string): Promise<ContextoTram
     numItems: tramite.numItems,
     eventos: tramite.eventos.map((e) => ({ codigo: e.eventoCodigo, cantidad: e.cantidad })),
     costos,
+    // B1 — agencia de aduanas del DO y su agenciamiento estándar. La UI lo
+    // muestra en el panel del DO y en el editor del ítem del tarifario.
+    agenciamiento,
     // No entra al motor: viaja con el contexto para que el panel del DO y la
     // revisión de la factura vean la OC del cliente (Polyrec).
     ordenCompraNumero: tramite.ordenCompraNumero,
@@ -972,6 +1112,7 @@ export async function propuestaParaTramite(
     where: { id: tramiteId },
     select: {
       clienteId: true,
+      ciudad: true,
       cliente: { select: { nombre: true } },
       tipoTramite: { select: { lineaServicio: true } },
     },
@@ -991,11 +1132,14 @@ export async function propuestaParaTramite(
   }
 
   const alcance = tramite.tipoTramite.lineaServicio;
-  const vigente = await tarifarioVigenteDe(tramite.clienteId, alcance, fecha);
+  const vigente = await tarifarioVigenteDe(tramite.clienteId, alcance, fecha, tramite.ciudad);
   if (!vigente) {
+    const { ciudadFueraDeFecha } = await motivoSinTarifarioVigente(tramite.clienteId, alcance, tramite.ciudad, fecha);
     return {
       tarifario: null,
-      motivo: `${tramite.cliente.nombre} no tiene un tarifario vigente para ${alcance.toLowerCase()} en esta fecha`,
+      motivo: ciudadFueraDeFecha
+        ? `El tarifario de ${etiquetaCiudad(tramite.ciudad!)} está fuera de fecha`
+        : `${tramite.cliente.nombre} no tiene un tarifario vigente para ${alcance.toLowerCase()} en esta fecha`,
       tarifarioPropio: true,
       resultado: null,
       contexto,

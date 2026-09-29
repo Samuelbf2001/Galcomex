@@ -220,6 +220,103 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
 - UI: sección "Tarifario" en la ficha (`seccion-tarifario.tsx`), panel "Base de
   cálculo y eventos" en el Resumen del DO (`seccion-eventos-tramite.tsx`),
   PDF en `GET /api/tarifarios/[id]/pdf`. Demo: `npx tsx scripts/demo-tarifario.ts`.
+- **Restar el agenciamiento de la agencia (B1, Diseño A, 27-sep-2026):**
+  `TarifaItem.restaAgenciamiento` — "a este cobro se le resta lo que la
+  agencia de aduanas del DO le factura directo al cliente" (una vez por DO,
+  cualquier forma de cálculo). El valor a restar NO vive en el ítem: es un
+  estándar por agencia (`Parametro AGENCIAMIENTO_MOVIADUANAS` /
+  `_COLDEX` / `_AR_LOGISTY` / `_CORTES`, texto en pesos sin puntos, editable
+  por Configuración → Parámetros); así, cuando la agencia cambia su precio,
+  se edita un solo lugar en vez de duplicar tarifarios. `TarifaItem.minimoEsDelTotal`
+  (solo con `restaAgenciamiento` y `PORCENTAJE_MIN`) decide si el mínimo
+  configurado es lo que cobra Galcomex (NETO, `false`) o lo que paga el
+  cliente en total, Galcomex + agencia (TOTAL, `true`); hoy dan el mismo
+  número, solo difieren el día que la agencia suba o baje su precio. Sin
+  agencia en el DO o sin el valor del parámetro, el ítem queda `pendiente`
+  (nunca resta un cero ni cobra de más); un cobro que no alcanza a cubrir el
+  agenciamiento también queda pendiente (nunca una línea negativa). Motor
+  puro en `src/lib/tarifas/resta-agenciamiento.ts` (llamado desde
+  `calcularLineasTarifa`); único lector del parámetro:
+  `src/lib/tarifas/agenciamiento.ts`. Como máximo un ítem por tarifario puede
+  restar (`TarifaRestaDuplicadaError`); un ítem `MANUAL` o `ESPEJO_DE_COSTO`
+  no puede restar (el revisor lo escribe a mano / ya es un costo real).
+- **Tarifario por ciudad (B3, Diseño A):** `Tarifario.ciudades` (array del
+  enum `Ciudad`; vacío = general, cubre cualquier ciudad sin tarifario
+  propio). Un DO usa el tarifario vigente de SU ciudad
+  (`tarifarioVigenteDe(empresaId, alcance, fecha, ciudad)` en
+  `tarifas/service.ts`): un tarifario de ciudad solo "especializa" la ciudad
+  a partir de su `vigenteDesde` (M2, revisión de código 28-sep-2026: uno
+  publicado por adelantado, con `vigenteDesde` futuro, no debe dejar la
+  ciudad sin tarifa hoy — mientras no empiece, la ciudad sigue con el
+  general). Ya iniciado (haya llegado su `vigenteDesde`), si está fuera de
+  fecha (venció), NUNCA cae al general en silencio (devuelve `null` igual;
+  `motivoSinTarifarioVigente` arma el mensaje "el tarifario de Bogotá está
+  fuera de fecha"). Publicar un tarifario solo reemplaza los VIGENTE con
+  EXACTAMENTE el mismo conjunto de ciudades; si otro VIGENTE comparte una
+  ciudad con un conjunto distinto, 422 `TarifarioCiudadEnUsoError` (véncelo o
+  publica con las mismas ciudades) — el general y los de ciudad conviven.
+  Vencer el tarifario de una ciudad la devuelve al general automáticamente
+  (la próxima consulta ya no lo ve VIGENTE). La ciudad del DO se fija al
+  crearlo y no cambia después, así que un DO no cambia de tarifario a mitad
+  de camino. `duplicarTarifario` copia las ciudades del origen (el payload
+  las puede cambiar: así se hace "Duplicar para Bogotá");
+  `crearTarifarioDesde` también las copia si el payload no las manda.
+
+## Anticipo por factura (B8, Diseño A, 27-sep-2026) — no se descuenta dos veces
+
+Antes, un segundo borrador del mismo DO volvía a restar TODO el anticipo
+aplicado, mostrando una devolución que no existe. Ahora (solo formato
+`CONCEPTOS_IVA`; `COMISION`/Lucho no cambia, fuera de alcance):
+
+- **Regla:** anticipo de una factura nueva = aplicado al DO − lo ya asignado
+  (`totalAnticipo`) a las facturas del DO en `APROBADO`/`FACTURADO` (cualquier
+  formato, para no dejar huecos con borradores viejos) − lo asignado a mano
+  (`anticipoManual = true`) que sigue BORRADOR/EN_REVISION (C1, revisión de
+  código 28-sep-2026: una asignación manual aparta su anticipo apenas se
+  guarda, no solo al aprobarse — si no, una automática generada o
+  re-verificada mientras la manual sigue abierta no la ve y reserva de más).
+  Nunca negativo. Único archivo que hace esta cuenta:
+  `src/lib/borradores/anticipo-disponible.ts` (`anticipoDelTramite`,
+  `anticipoAsignable`).
+- **Generar** (`generarBorrador`): en CONCEPTOS_IVA, `totalAnticipo` nace en
+  lo "asignable", no en todo lo aplicado.
+- **Aprobar** (`transicionarBorrador`, EN_REVISION → APROBADO): toma el
+  candado del DO (`pg_advisory_xact_lock` sobre `borrador_anticipo:<tramiteId>`,
+  después del candado del borrador) en TODA aprobación CONCEPTOS_IVA —
+  también la manual (C1: si solo se tomara para la automática, una manual y
+  una automática del mismo DO podían aprobarse sin serializarse y volver a
+  reservar el mismo anticipo dos veces). Si el borrador NO es manual, se
+  re-verifica: si el anticipo disponible cambió (otra factura lo usó, o
+  llegó un anticipo nuevo), el borrador SÍ se actualiza (AuditLog
+  `RECALCULAR_ANTICIPO`) pero la aprobación se corta con `ok:false,
+  status:409, codigo:"ANTICIPO_ACTUALIZADO"` — nunca se aprueba un saldo que
+  nadie vio; se reintenta después de revisar el nuevo saldo. Si es manual, el
+  candado se toma igual (serializa) pero el valor NO se toca — la ADMIN ya lo
+  fijó a mano, con motivo, y puede exceder lo "asignable" a propósito
+  (reemisión tras nota crédito). La API (`PATCH /api/borradores/[id]`)
+  devuelve ese `codigo` y, desde M1 (misma revisión), también `anticipoDo`
+  actualizado en la respuesta — el cliente (`revisor-borrador.tsx`) ya no
+  necesita recargar para ver el desglose nuevo, aunque sigue llamando `GET
+  /api/borradores/[id]` tras el 409 para refrescar el resto del borrador.
+- **Devolver** (APROBADO → BORRADOR) libera la reserva solo: como
+  `anticipoDelTramite` cuenta APROBADO/FACTURADO (y manual abierta), un
+  borrador devuelto deja de reservar sin código nuevo.
+- **Excepción ADMIN** (repartir a mano entre facturas del DO, o reemitir tras
+  nota crédito): `PATCH /api/borradores/[id]/anticipo` (`asignarAnticipoBorrador`),
+  solo BORRADOR/EN_REVISION, solo CONCEPTOS_IVA. Modo `MANUAL` (`anticipo` +
+  `motivo` ≥ 10 caracteres): `0 ≤ anticipo ≤ aplicadoDo`; puede pasar de lo
+  "asignable" (la respuesta trae un `aviso`), pone `anticipoManual = true` y
+  guarda el motivo — desde ese momento aparta su anticipo aunque siga
+  abierta (ver "Regla" arriba). Modo `AUTOMATICO` vuelve a la regla estándar.
+  Esta ruta también devuelve `anticipoDo` en la respuesta (M1).
+- **Lectura:** `GET /api/tramites/[id]/borrador` (vía `consulta.ts`,
+  `cargarBorradoresDeTramite`) añade `anticipoDo: { aplicadoDo,
+  reservadoPorOtras, asignable }` a cada borrador CONCEPTOS_IVA.
+- **Paridad API↔MCP:** `PATCH /api/borradores/[id]/anticipo` está declarada
+  `pendiente` en `src/lib/mcp/paridad-excepciones.ts` (tool
+  `borrador_asignar_anticipo` se agrega al MCP compartido después de
+  desplegar A). `GET /api/borradores/[id]` es intencional (recarga tras el
+  409, no una operación de agente).
 
 ## Cuentas por pagar a proveedores (CxP v2)
 

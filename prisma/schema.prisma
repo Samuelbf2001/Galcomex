@@ -1152,6 +1152,14 @@ model BorradorFactura {
   tarifarioId String?
   tarifario   Tarifario? @relation(fields: [tarifarioId], references: [id], onDelete: SetNull)
 
+  /// B8: true cuando el anticipo de esta factura (`totalAnticipo`) fue fijado
+  /// a mano por un ADMIN (`asignarAnticipoBorrador`) en vez de la regla
+  /// estándar (aplicado al DO − reservado por otras facturas APROBADO/FACTURADO
+  /// del mismo DO). Solo aplica a formato CONCEPTOS_IVA.
+  anticipoManual Boolean @default(false)
+  /// Motivo de la asignación manual (≥ 10 caracteres). Null si es automático.
+  anticipoMotivo String?
+
   // Envío como borrador a la API de Siigo. La factura se crea como DRAFT en
   // Siigo (stamp.send=false); un usuario superior la valida y la sella desde
   // Siigo. siigoDraftId guarda el id devuelto por Siigo en la creación del
@@ -1560,6 +1568,10 @@ model Tarifario {
   /// Línea de servicio que cubre: TRAMITE | CLASIFICACION | PLAN_VALLEJO | EXPORTACION.
   /// Una empresa puede tener un tarifario vigente por cada alcance.
   alcance      String          @default("TRAMITE")
+  /// Ciudades a las que aplica (B3). Vacío = general: cubre cualquier ciudad
+  /// que no tenga su propio tarifario VIGENTE en fecha. Una ciudad con
+  /// tarifario propio NUNCA cae al general en silencio (ver `tarifarioVigenteDe`).
+  ciudades     Ciudad[]        @default([])
   vigenteDesde DateTime
   vigenteHasta DateTime
   estado       EstadoTarifario @default(BORRADOR)
@@ -1626,6 +1638,15 @@ model TarifaItem {
 
   aplicaIva Boolean @default(true)
   notas     String?
+
+  /// B1: "restar el agenciamiento de la agencia de aduanas del DO" — se resta
+  /// una vez por DO el estándar de la agencia (`Parametro AGENCIAMIENTO_<AGENCIA>`)
+  /// sobre el valor ya calculado del ítem. Ver `src/lib/tarifas/resta-agenciamiento.ts`.
+  restaAgenciamiento Boolean @default(false)
+  /// Solo con `restaAgenciamiento` y `tipoCalculo = PORCENTAJE_MIN`: si el
+  /// mínimo es lo que cobra Galcomex (false, NETO) o lo que paga el cliente en
+  /// total, Galcomex + agencia (true, TOTAL).
+  minimoEsDelTotal   Boolean @default(false)
 
   @@unique([tarifarioId, concepto])
   @@index([conceptoId])

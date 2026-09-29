@@ -132,6 +132,8 @@ export const requisitosQuerySchema = z.object({
     .min(1, "El tipo de trámite no puede ir vacío.")
     .max(40, "El tipo de trámite es demasiado largo.")
     .optional(),
+  /** B3 — la ciudad del DO que se va a crear (Ciudad puede tener tarifario propio, R1). */
+  ciudad: z.nativeEnum(Ciudad).optional(),
 });
 
 export type RequisitosQuery = z.infer<typeof requisitosQuerySchema>;

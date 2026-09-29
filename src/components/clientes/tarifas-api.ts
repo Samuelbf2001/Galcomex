@@ -13,6 +13,19 @@ export type TipoCalculoTarifa =
 export type DisparadorTarifa = "SIEMPRE" | "EVENTO" | "MANUAL";
 export type UnidadTarifa = "TRAMITE" | "CONTENEDOR" | "DECLARACION" | "DOCUMENTO" | "ITEM" | "MES";
 export type EstadoTarifario = "BORRADOR" | "VIGENTE" | "VENCIDO" | "REEMPLAZADO";
+export type Ciudad = "BAQ" | "CTG" | "BUN" | "SMR" | "BGT";
+
+export const CIUDADES: { value: Ciudad; label: string }[] = [
+  { value: "BAQ", label: "Barranquilla" },
+  { value: "CTG", label: "Cartagena" },
+  { value: "BUN", label: "Buenaventura" },
+  { value: "SMR", label: "Santa Marta" },
+  { value: "BGT", label: "Bogotá" },
+];
+
+export function etiquetaCiudad(c: string): string {
+  return CIUDADES.find((x) => x.value === c)?.label ?? c;
+}
 
 export const TIPOS_CALCULO: { value: TipoCalculoTarifa; label: string; ayuda: string }[] = [
   { value: "FIJO", label: "Fijo", ayuda: "Mismo valor en todo trámite (gastos de trámite por embarque)." },
@@ -67,6 +80,10 @@ export type TarifaItemRow = {
   tramos: TramoTarifa[] | null;
   aplicaIva: boolean;
   notas: string | null;
+  /** B1 — "restar el agenciamiento de la agencia de aduanas del DO" (una vez por DO). */
+  restaAgenciamiento: boolean;
+  /** B1 — solo con `restaAgenciamiento` y PORCENTAJE_MIN: mínimo NETO (false) o TOTAL (true). */
+  minimoEsDelTotal: boolean;
 };
 
 export type TarifarioRow = {
@@ -74,6 +91,8 @@ export type TarifarioRow = {
   empresaId: string;
   nombre: string;
   alcance: string;
+  /** B3 — vacío = general (cualquier ciudad sin tarifario propio). */
+  ciudades: Ciudad[];
   vigenteDesde: string;
   vigenteHasta: string;
   estado: EstadoTarifario;
@@ -102,6 +121,8 @@ export type TarifaItemForm = {
   aplicaIva: boolean;
   notas?: string | null;
   orden: number;
+  restaAgenciamiento?: boolean;
+  minimoEsDelTotal?: boolean;
 };
 
 export type PlantillaRow = {
@@ -124,6 +145,8 @@ export type TarifarioLigero = {
   alcance: string;
   version: number;
   estado: EstadoTarifario;
+  /** BAJO 4/5 (revisión de código, 28-sep-2026) — para prellenar los chips al copiar. */
+  ciudades: Ciudad[];
   items: number;
 };
 
@@ -191,7 +214,15 @@ function normalizeItem(row: unknown): TarifaItemRow | null {
     tramos: normalizeTramos(row.tramos),
     aplicaIva: row.aplicaIva !== false,
     notas: strOrNull(row.notas),
+    restaAgenciamiento: row.restaAgenciamiento === true,
+    minimoEsDelTotal: row.minimoEsDelTotal === true,
   };
+}
+
+function normalizeCiudades(v: unknown): Ciudad[] {
+  if (!Array.isArray(v)) return [];
+  const validas: readonly string[] = CIUDADES.map((c) => c.value);
+  return v.filter((c): c is Ciudad => typeof c === "string" && validas.includes(c));
 }
 
 function normalizeTramos(v: unknown): TramoTarifa[] | null {
@@ -218,6 +249,7 @@ function normalizeTarifario(row: unknown): TarifarioRow | null {
     empresaId: str(row.empresaId),
     nombre: str(row.nombre),
     alcance: str(row.alcance, "TRAMITE"),
+    ciudades: normalizeCiudades(row.ciudades),
     vigenteDesde: str(row.vigenteDesde),
     vigenteHasta: str(row.vigenteHasta),
     estado: str(row.estado, "BORRADOR") as EstadoTarifario,
@@ -279,6 +311,8 @@ export type NuevoTarifarioForm = {
   origenTarifarioId?: string;
   nombre?: string;
   alcance?: string;
+  /** B3 — vacío u omitido = general. */
+  ciudades?: Ciudad[];
   vigenteDesde: string;
   vigenteHasta: string;
   notas?: string | null;
@@ -295,7 +329,15 @@ export async function crearTarifario(clienteId: string, form: NuevoTarifarioForm
 
 export async function actualizarTarifario(
   id: string,
-  form: { nombre?: string; alcance?: string; vigenteDesde?: string; vigenteHasta?: string; notas?: string | null },
+  form: {
+    nombre?: string;
+    alcance?: string;
+    /** B3 — solo se puede editar en BORRADOR (el servicio lo exige). */
+    ciudades?: Ciudad[];
+    vigenteDesde?: string;
+    vigenteHasta?: string;
+    notas?: string | null;
+  },
 ): Promise<TarifarioRow> {
   return tarifarioDe(await request(`/api/tarifarios/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(form) }));
 }
@@ -312,6 +354,8 @@ export async function cambiarEstadoTarifario(id: string, estado: "VIGENTE" | "VE
 
 export type DuplicarTarifarioForm = {
   nombre?: string;
+  /** B3 — si no se manda, se copian las ciudades del tarifario de origen (R4). */
+  ciudades?: Ciudad[];
   vigenteDesde: string;
   vigenteHasta: string;
   incrementoPct?: number;
@@ -369,6 +413,7 @@ function normalizeTarifarioLigero(row: unknown): TarifarioLigero | null {
     alcance: str(row.alcance, "TRAMITE"),
     version: typeof row.version === "number" ? row.version : 1,
     estado: str(row.estado, "BORRADOR") as EstadoTarifario,
+    ciudades: normalizeCiudades(row.ciudades),
     items: typeof row.items === "number" ? row.items : 0,
   };
 }

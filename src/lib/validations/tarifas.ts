@@ -1,4 +1,5 @@
 import {
+  Ciudad,
   DisparadorTarifa,
   TipoCalculoTarifa,
   UnidadTarifa,
@@ -84,6 +85,10 @@ const tarifaItemCampos = {
   aplicaIva: z.boolean(),
   notas: z.string().trim().max(500).optional().nullable(),
   orden: z.number().int().min(0).max(9_999),
+  /** B1 — "restar el agenciamiento de la agencia de aduanas del DO" (una vez por DO). */
+  restaAgenciamiento: z.boolean(),
+  /** B1 — solo con `restaAgenciamiento` y PORCENTAJE_MIN: mínimo NETO (false) o TOTAL (true). */
+  minimoEsDelTotal: z.boolean(),
 };
 
 const tarifaItemBase = z.object({
@@ -93,6 +98,8 @@ const tarifaItemBase = z.object({
   valor: tarifaItemCampos.valor.default(0n),
   aplicaIva: tarifaItemCampos.aplicaIva.default(true),
   orden: tarifaItemCampos.orden.default(0),
+  restaAgenciamiento: tarifaItemCampos.restaAgenciamiento.default(false),
+  minimoEsDelTotal: tarifaItemCampos.minimoEsDelTotal.default(false),
 });
 
 export type TarifaItemInput = z.infer<typeof tarifaItemBase>;
@@ -147,6 +154,35 @@ export function validarCoherenciaItem(item: TarifaItemInput, ctx: z.RefinementCt
       message: "El valor debe ser mayor a 0",
     });
   }
+  // B1 — "restar el agenciamiento" (una vez por DO, ver resta-agenciamiento.ts).
+  if (item.restaAgenciamiento && item.disparador === DisparadorTarifa.MANUAL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["restaAgenciamiento"],
+      message: "Un ítem manual no resta la agencia: el revisor lo escribe a mano",
+    });
+  }
+  if (item.restaAgenciamiento && item.tipoCalculo === TipoCalculoTarifa.ESPEJO_DE_COSTO) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["restaAgenciamiento"],
+      message: "Un ítem espejo de costo no resta la agencia",
+    });
+  }
+  if (item.minimoEsDelTotal && !item.restaAgenciamiento) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["minimoEsDelTotal"],
+      message: "El mínimo por el total solo aplica cuando el ítem resta la agencia",
+    });
+  }
+  if (item.minimoEsDelTotal && item.tipoCalculo !== TipoCalculoTarifa.PORCENTAJE_MIN) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["minimoEsDelTotal"],
+      message: "El mínimo por el total solo aplica a «% del CIF con mínimo»",
+    });
+  }
 }
 
 export const tarifaItemSchema = tarifaItemBase.superRefine(validarCoherenciaItem);
@@ -156,6 +192,12 @@ export const tarifaItemUpdateSchema = z.object(tarifaItemCampos).partial();
 
 const fechaSchema = z.coerce.date();
 
+/** B3 — ciudades a las que aplica el tarifario. Vacío = general. Máx. 5 (una por ciudad del enum), sin repetidos. */
+const ciudadesSchema = z
+  .array(z.nativeEnum(Ciudad))
+  .max(5)
+  .refine((c) => new Set(c).size === c.length, { message: "Hay una ciudad repetida" });
+
 export const tarifarioSchema = z
   .object({
     /** Código de plantilla (ver `lib/tarifas/plantillas.ts`): rellena nombre, alcance e ítems si no vienen. */
@@ -164,6 +206,13 @@ export const tarifarioSchema = z
     origenTarifarioId: z.string().trim().min(1).max(60).optional(),
     nombre: z.string().trim().min(1, "El nombre es obligatorio").max(120).optional(),
     alcance: z.enum(ALCANCES_TARIFARIO).optional(),
+    /**
+     * B3 — vacío = general (cualquier ciudad sin tarifario propio). SIN
+     * default: `crearTarifario` lo trata como `[]`, pero `crearTarifarioDesde`
+     * (`origenTarifarioId`) necesita distinguir "no vino" de "vino vacío" para
+     * copiar las ciudades del origen (R4).
+     */
+    ciudades: ciudadesSchema.optional(),
     vigenteDesde: fechaSchema,
     vigenteHasta: fechaSchema,
     notas: z.string().trim().max(1_000).optional().nullable(),
@@ -176,12 +225,25 @@ export const tarifarioSchema = z
   .refine((t) => !(t.plantilla && t.origenTarifarioId), {
     path: ["origenTarifarioId"],
     message: "Elige una plantilla o un tarifario de origen, no los dos a la vez",
+  })
+  .superRefine((t, ctx) => {
+    // B1 — la agencia se resta una sola vez por DO: como máximo un ítem con la casilla.
+    const conResta = t.items.filter((i) => i.restaAgenciamiento);
+    if (conResta.length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["items"],
+        message: "La agencia se resta una sola vez por DO",
+      });
+    }
   });
 
 export const tarifarioUpdateSchema = z
   .object({
     nombre: z.string().trim().min(1).max(120).optional(),
     alcance: z.enum(ALCANCES_TARIFARIO).optional(),
+    /** B3 — solo se edita en BORRADOR (el servicio lo exige). */
+    ciudades: ciudadesSchema.optional(),
     vigenteDesde: fechaSchema.optional(),
     vigenteHasta: fechaSchema.optional(),
     notas: z.string().trim().max(1_000).optional().nullable(),
@@ -198,6 +260,8 @@ export const tarifarioEstadoSchema = z.object({
 export const tarifarioDuplicarSchema = z
   .object({
     nombre: z.string().trim().min(1).max(120).optional(),
+    /** B3 — si no viene, `duplicarTarifario` copia las ciudades del origen. */
+    ciudades: ciudadesSchema.optional(),
     vigenteDesde: fechaSchema,
     vigenteHasta: fechaSchema,
     /** Incremento porcentual (5.29 = IPC 5,29 %). Se redondea a `redondeoA`. */

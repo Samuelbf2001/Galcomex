@@ -24,6 +24,8 @@ export type AtributosTramite = {
   /** Orden de compra del cliente (solo con `orden_compra_en_revision`). COP string. */
   ordenCompraNumero: string | null;
   ordenCompraValor: string | null;
+  /** B1 — agencia de aduanas del DO y su agenciamiento estándar (`AGENCIAMIENTO_<AGENCIA>`). */
+  agenciamiento?: { agencia: string | null; valor: string | null };
 };
 
 export type LineaPropuestaRow = {
@@ -156,6 +158,9 @@ function normalizeContexto(v: unknown): PropuestaTarifaRow["contexto"] {
     numItems: numOrNull(c.numItems),
     ordenCompraNumero: strOrNull(c.ordenCompraNumero),
     ordenCompraValor: strOrNull(c.ordenCompraValor),
+    agenciamiento: isRecord(c.agenciamiento)
+      ? { agencia: strOrNull(c.agenciamiento.agencia), valor: strOrNull(c.agenciamiento.valor) }
+      : undefined,
     eventos: Array.isArray(c.eventos)
       ? c.eventos.filter(isRecord).map((e) => ({ codigo: str(e.codigo), cantidad: typeof e.cantidad === "number" ? e.cantidad : 1 }))
       : [],

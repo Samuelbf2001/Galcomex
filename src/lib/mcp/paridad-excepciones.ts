@@ -147,4 +147,18 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/clientes/[param]/cuenta/movimientos/[param]",
     "Quitar un movimiento manual registrado por error: falta tool cuenta_movimiento_eliminar",
   ),
+
+  // Diseño A — B8, anticipo disponible por DO (2026-09-27/28). La tool
+  // borrador_asignar_anticipo se agrega al MCP compartido (galcomex-mcp/server.mjs)
+  // después de desplegar A (paso 10 del diseño); borrar esta línea entonces.
+  pendiente(
+    "PATCH",
+    "/api/borradores/[param]/anticipo",
+    "Excepción ADMIN para asignar a mano el anticipo de una factura: falta tool borrador_asignar_anticipo",
+  ),
+  intencional(
+    "GET",
+    "/api/borradores/[param]",
+    "Recargar un borrador tras el 409 ANTICIPO_ACTUALIZADO (B8); el MCP ya lee el borrador vía tramite_ver/borrador_ver por trámite",
+  ),
 ];

@@ -12,6 +12,7 @@ import { CanalPago, EstadoBorrador, Prisma, TipoCliente, TipoRecaudo } from "@pr
 
 import { COMISION_INTERNA_LM_MINIMO } from "@/lib/validations/borradores";
 
+import { anticipoDelTramite } from "./anticipo-disponible";
 import { calcularBorrador } from "@/lib/calculations/motor-factura";
 import { calcularSaldoLMInterno } from "@/lib/calculations/cruce-lm";
 import { motivoRevisionPago, parteCobrableDePago } from "@/lib/calculations/pagos-cobrables";
@@ -120,7 +121,7 @@ type TransicionarBorradorInput = {
 
 type TransicionResult =
   | { ok: true; borrador: Awaited<ReturnType<typeof getBorradorCompleto>> }
-  | { ok: false; status: number; message: string };
+  | { ok: false; status: number; message: string; codigo?: string };
 
 const ESTADOS_FACTURABLES = [
   "ENVIADO_A_FACTURAR",
@@ -361,6 +362,14 @@ export async function generarBorrador(input: GenerarBorradorInput) {
     .reduce((sum, a) => sum + a.anticipo.costoRecaudo, 0n);
   void anticiposDistintosIds; // referenciado implícitamente
 
+  // B8 (Diseño A) — solo CONCEPTOS_IVA: el anticipo de ESTA factura es lo que
+  // le queda disponible al DO (aplicado − ya reservado por otras facturas
+  // APROBADO/FACTURADO), no todo lo aplicado. Evita descontarlo dos veces
+  // entre facturas del mismo DO (§3, `anticipo-disponible.ts`). Formato
+  // COMISION (Lucho, Grupo E Papis): sin cambio, usa `totalAnticipoAplicado`.
+  const anticipoDisponible = esConceptosIva ? await anticipoDelTramite(prisma, tramiteId) : null;
+  const totalAnticipoBorrador = anticipoDisponible ? anticipoDisponible.asignable : totalAnticipoAplicado;
+
   // ── Tarifario propio (M2) / servicio suelto (OTRO, 26-sep-2026) ───────────
   //   - un tipo `flujoCorto` SIEMPRE resuelve por `resolverFacturableFlujoCorto`
   //     (formato CONCEPTOS_IVA + valor/concepto a mano, o tarifa vigente sin
@@ -497,7 +506,9 @@ export async function generarBorrador(input: GenerarBorradorInput) {
   const pagosCobrables = desgloses.map((d) => d.cobrable);
 
   const dto = {
-    totalAnticipoAplicado,
+    // B8: en CONCEPTOS_IVA el motor también ve el anticipo YA acotado a lo
+    // disponible de esta factura (ver `totalAnticipoBorrador` arriba).
+    totalAnticipoAplicado: totalAnticipoBorrador,
     costoRecaudoAnticipo,
     pagos: pagosCobrables,
     comision,
@@ -698,7 +709,9 @@ export async function generarBorrador(input: GenerarBorradorInput) {
         ivaComision: resultado.ivaComision,
         impuesto4x1000: resultado.impuesto4x1000,
         costosBancarios: resultado.costosBancarios,
-        totalAnticipo: totalAnticipoAplicado,
+        // B8: en CONCEPTOS_IVA, lo asignado a ESTA factura (nunca todo lo
+        // aplicado al DO dos veces); en COMISION, sin cambio.
+        totalAnticipo: totalAnticipoBorrador,
         totalPagos: resultado.totalPagos,
         totalFactura: resultado.totalFactura,
         saldoAFavorCliente: resultado.saldoAFavorCliente,
@@ -756,6 +769,14 @@ export async function generarBorrador(input: GenerarBorradorInput) {
           resultado,
           pagosNoCobrables,
           pagosPorRevisar,
+          // B8: solo CONCEPTOS_IVA calcula el anticipo por-DO; en COMISION queda null.
+          anticipo: anticipoDisponible
+            ? {
+                aplicadoDo: anticipoDisponible.aplicadoDo,
+                reservadoPorOtras: anticipoDisponible.reservadoPorOtras,
+                asignado: totalAnticipoBorrador,
+              }
+            : null,
         }),
       },
     });
@@ -812,6 +833,58 @@ export async function transicionarBorrador(
       };
     }
 
+    // B8 (Diseño A) — re-verificar el anticipo disponible justo antes de
+    // aprobar: solo EN_REVISION → APROBADO, solo CONCEPTOS_IVA. Candado del
+    // DO (distinto del candado del borrador de arriba), tomado en TODA
+    // aprobación CONCEPTOS_IVA — también la manual (C1, revisión de código
+    // 28-sep-2026): si solo se tomara para la automática, dos aprobaciones
+    // del mismo DO (una manual y una automática) podían intercalarse sin
+    // serializarse y volver a reservar el mismo anticipo dos veces. A la
+    // manual NO se le cambia el valor (la ADMIN ya lo fijó a mano, con
+    // motivo, y puede exceder lo "asignable" a propósito — reemisión tras
+    // nota crédito). Si cambió (solo aplica a la automática): se actualiza
+    // el borrador (la transacción SÍ guarda esto, porque la función
+    // devuelve, no lanza) y se corta con 409 — nunca se aprueba un saldo que
+    // nadie vio.
+    if (
+      nuevoEstado === EstadoBorrador.APROBADO &&
+      borrador.estado === EstadoBorrador.EN_REVISION &&
+      borrador.formatoFactura === FORMATO_CONCEPTOS_IVA
+    ) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`borrador_anticipo:${borrador.tramiteId}`}))`;
+
+      if (!borrador.anticipoManual) {
+        const { aplicadoDo, reservadoPorOtras, asignable } = await anticipoDelTramite(tx, borrador.tramiteId, {
+          excluirBorradorId: borradorId,
+        });
+
+        if (borrador.totalAnticipo !== asignable) {
+          const antesAnticipo = borrador.totalAnticipo;
+          await tx.borradorFactura.update({ where: { id: borradorId }, data: { totalAnticipo: asignable } });
+          await recalcularTotalBorrador(tx, borradorId);
+
+          await tx.auditLog.create({
+            data: {
+              entidad: "BorradorFactura",
+              entidadId: borradorId,
+              accion: "RECALCULAR_ANTICIPO",
+              usuarioId,
+              tramiteId: borrador.tramiteId,
+              antes: normalizeSerializable({ totalAnticipo: antesAnticipo }),
+              despues: normalizeSerializable({ totalAnticipo: asignable, aplicadoDo, reservadoPorOtras }),
+            },
+          });
+
+          return {
+            ok: false,
+            status: 409,
+            codigo: "ANTICIPO_ACTUALIZADO",
+            message: `El anticipo disponible para esta factura cambió de ${formatoPesos(antesAnticipo)} a ${formatoPesos(asignable)} (otra factura del DO ya usó ${formatoPesos(reservadoPorOtras)} / se aplicó un anticipo nuevo). Ya actualicé la factura: revisa el nuevo saldo y vuelve a aprobar.`,
+          };
+        }
+      }
+    }
+
     // Validar facturación
     if (nuevoEstado === EstadoBorrador.FACTURADO) {
       if (borrador.estado !== EstadoBorrador.APROBADO) {
@@ -846,6 +919,8 @@ export async function transicionarBorrador(
             saldoAFavorLM: borrador.saldoAFavorLM,
             saldoACargoLM: borrador.saldoACargoLM,
             retenciones: borrador.retenciones,
+            anticipoManual: borrador.anticipoManual,
+            anticipoMotivo: borrador.anticipoMotivo,
             conceptosOperacionales: borrador.conceptosOperacionales,
           })
         : undefined;
@@ -1121,6 +1196,139 @@ export async function actualizarComisionBorrador(
 
   const borrador = await getBorradorCompleto(borradorId);
   return { ok: true as const, borrador };
+}
+
+/**
+ * B8 (Diseño A) — excepción ADMIN: asignar a mano el anticipo de ESTA
+ * factura (repartir entre facturas del mismo DO, o reemitir tras nota
+ * crédito), o volver a la regla automática (`asignable`). Solo CONCEPTOS_IVA;
+ * mismo patrón que `actualizarComisionBorrador` (candado → estado editable →
+ * recalcular → AuditLog), con el candado del DO ADEMÁS del candado del
+ * borrador (mismo orden que `transicionarBorrador`: borrador → DO).
+ */
+export type AsignarAnticipoInput =
+  | { modo: "MANUAL"; anticipo: bigint; motivo: string }
+  | { modo: "AUTOMATICO" };
+
+export async function asignarAnticipoBorrador(
+  borradorId: string,
+  input: AsignarAnticipoInput,
+  usuarioId: string,
+): Promise<
+  | { ok: true; borrador: Awaited<ReturnType<typeof getBorradorCompleto>>; aviso?: string }
+  | { ok: false; status: number; message: string; codigo?: string }
+> {
+  const lockKey = `borrador_lineas:${borradorId}`;
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+
+    const actual = await tx.borradorFactura.findUnique({
+      where: { id: borradorId },
+      select: {
+        estado: true,
+        tramiteId: true,
+        formatoFactura: true,
+        totalAnticipo: true,
+        anticipoManual: true,
+        anticipoMotivo: true,
+      },
+    });
+    if (!actual) {
+      return { ok: false as const, status: 404, message: `Borrador ${borradorId} no encontrado` };
+    }
+
+    if (actual.formatoFactura !== FORMATO_CONCEPTOS_IVA) {
+      return {
+        ok: false as const,
+        status: 422,
+        message: "El anticipo solo se asigna a mano en facturas con formato de conceptos e IVA.",
+      };
+    }
+
+    await assertTramiteModificable(tx, actual.tramiteId);
+
+    if (actual.estado !== EstadoBorrador.BORRADOR && actual.estado !== EstadoBorrador.EN_REVISION) {
+      return {
+        ok: false as const,
+        status: 422,
+        message: `No se puede asignar el anticipo en estado ${actual.estado}`,
+      };
+    }
+
+    // Candado del DO (mismo texto que `transicionarBorrador`, mismo orden:
+    // borrador → DO) para que esto no compita con una aprobación en curso.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`borrador_anticipo:${actual.tramiteId}`}))`;
+    const { aplicadoDo, reservadoPorOtras, asignable } = await anticipoDelTramite(tx, actual.tramiteId, {
+      excluirBorradorId: borradorId,
+    });
+
+    let nuevoTotalAnticipo: bigint;
+    let nuevoAnticipoManual: boolean;
+    let nuevoAnticipoMotivo: string | null;
+    let aviso: string | undefined;
+
+    if (input.modo === "MANUAL") {
+      if (input.anticipo < 0n || input.anticipo > aplicadoDo) {
+        return {
+          ok: false as const,
+          status: 422,
+          codigo: "ANTICIPO_FUERA_DE_RANGO",
+          message: `El anticipo asignado debe estar entre 0 y lo aplicado al DO (${formatoPesos(aplicadoDo)}).`,
+        };
+      }
+      nuevoTotalAnticipo = input.anticipo;
+      nuevoAnticipoManual = true;
+      nuevoAnticipoMotivo = input.motivo;
+      if (input.anticipo > asignable) {
+        aviso = "Otra factura del DO ya usó parte de este anticipo; queda registrado con tu motivo.";
+      }
+    } else {
+      nuevoTotalAnticipo = asignable;
+      nuevoAnticipoManual = false;
+      nuevoAnticipoMotivo = null;
+    }
+
+    await tx.borradorFactura.update({
+      where: { id: borradorId },
+      data: {
+        totalAnticipo: nuevoTotalAnticipo,
+        anticipoManual: nuevoAnticipoManual,
+        anticipoMotivo: nuevoAnticipoMotivo,
+      },
+    });
+    await recalcularTotalBorrador(tx, borradorId);
+
+    await tx.auditLog.create({
+      data: {
+        entidad: "BorradorFactura",
+        entidadId: borradorId,
+        accion: "ASIGNAR_ANTICIPO",
+        usuarioId,
+        tramiteId: actual.tramiteId,
+        antes: normalizeSerializable({
+          totalAnticipo: actual.totalAnticipo,
+          anticipoManual: actual.anticipoManual,
+          anticipoMotivo: actual.anticipoMotivo,
+        }),
+        despues: normalizeSerializable({
+          totalAnticipo: nuevoTotalAnticipo,
+          anticipoManual: nuevoAnticipoManual,
+          anticipoMotivo: nuevoAnticipoMotivo,
+          motivo: input.modo === "MANUAL" ? input.motivo : null,
+          aplicadoDo,
+          reservadoPorOtras,
+        }),
+      },
+    });
+
+    return { ok: true as const, aviso };
+  });
+
+  if (!result.ok) return result;
+
+  const borrador = await getBorradorCompleto(borradorId);
+  return { ok: true as const, borrador, aviso: result.aviso };
 }
 
 /**

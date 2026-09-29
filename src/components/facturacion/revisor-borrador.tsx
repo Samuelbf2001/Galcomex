@@ -27,12 +27,14 @@ import {
   OBSERVACION_DEVOLUCION_MAX,
   OBSERVACION_DEVOLUCION_MIN,
   actualizarFormaPago,
+  asignarAnticipoBorrador,
   descargarBorradorExport,
   descargarBorradorPdf,
   descargarSiigoImport,
   devolverBorrador,
   enviarBorradorASiigo,
   estadoBorradorColorClass,
+  fetchBorrador,
   fetchCruceFacturas,
   fetchFormasPagoSiigo,
   fetchValidacionesCruce,
@@ -314,6 +316,116 @@ function DevolverModal({
   );
 }
 
+// ─── Modal: Cambiar anticipo (B8, Diseño A) ────────────────────────────────────
+
+type AnticipoModalProps = {
+  borrador: BorradorRow;
+  onClose: () => void;
+  onAsignado: (borrador: BorradorRow, aviso: string | null) => void;
+};
+
+const MOTIVO_ANTICIPO_MIN = 10;
+
+function AnticipoModal({ borrador, onClose, onAsignado }: AnticipoModalProps) {
+  const [valor, setValor] = useState(borrador.totalAnticipo);
+  const [motivo, setMotivo] = useState(borrador.anticipoMotivo ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const aplicadoDo = borrador.anticipoDo?.aplicadoDo ?? borrador.totalAnticipo;
+
+  async function handleManual(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    const digitos = valor.replace(/\D/g, "");
+    if (!digitos) {
+      setError("Escribe el anticipo asignado a esta factura.");
+      return;
+    }
+    if (motivo.trim().length < MOTIVO_ANTICIPO_MIN) {
+      setError(`El motivo debe tener al menos ${MOTIVO_ANTICIPO_MIN} caracteres.`);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const { borrador: actualizado, aviso } = await asignarAnticipoBorrador(borrador.id, {
+        modo: "MANUAL",
+        anticipo: digitos,
+        motivo: motivo.trim(),
+      });
+      onAsignado(actualizado, aviso);
+    } catch (caught) {
+      setError(caught instanceof FacturacionApiError ? caught.message : describirError(caught, "Error al asignar el anticipo."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAutomatico() {
+    setError(null);
+    setSubmitting(true);
+    try {
+      const { borrador: actualizado, aviso } = await asignarAnticipoBorrador(borrador.id, { modo: "AUTOMATICO" });
+      onAsignado(actualizado, aviso);
+    } catch (caught) {
+      setError(caught instanceof FacturacionApiError ? caught.message : describirError(caught, "Error al volver al cálculo automático."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <ModalShell open onClose={onClose} title="Cambiar anticipo de esta factura" size="sm" dismissible={!submitting}>
+      <form onSubmit={handleManual} className="space-y-4">
+        <p className="text-sm text-slate-600">
+          Lo aplicado al DO es {formatCOP(aplicadoDo)}. Puedes asignar más de lo disponible cuando reemplazas una
+          factura anulada por nota crédito; queda registrado con tu motivo.
+        </p>
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-slate-700">Anticipo asignado a esta factura *</span>
+          <input
+            value={valor}
+            onChange={(e) => setValor(e.target.value.replace(/\D/g, ""))}
+            inputMode="numeric"
+            required
+            className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
+          />
+        </label>
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-slate-700">Motivo * (mín. {MOTIVO_ANTICIPO_MIN} caracteres)</span>
+          <textarea
+            value={motivo}
+            onChange={(e) => setMotivo(e.target.value)}
+            rows={3}
+            required
+            className="w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan-600"
+            placeholder="Reemplaza FV-... anulada con NC ..."
+          />
+        </label>
+        {error ? <p className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          <button type="button" onClick={onClose} disabled={submitting} className="inline-flex h-10 items-center px-4 text-sm font-medium text-slate-600 hover:text-slate-900 disabled:opacity-60">
+            Cancelar
+          </button>
+          {borrador.anticipoManual ? (
+            <button
+              type="button"
+              onClick={() => void handleAutomatico()}
+              disabled={submitting}
+              className="inline-flex h-10 items-center gap-2 border border-slate-300 px-4 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            >
+              Volver al cálculo automático
+            </button>
+          ) : null}
+          <button type="submit" disabled={submitting} className="inline-flex h-10 items-center gap-2 bg-cyan-700 px-4 text-sm font-semibold text-white hover:bg-cyan-800 disabled:opacity-60">
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            Guardar
+          </button>
+        </div>
+      </form>
+    </ModalShell>
+  );
+}
+
 // ─── Modal: Confirmar envío a SIIGO ───────────────────────────────────────────
 
 type ConfirmarEnvioSiigoModalProps = {
@@ -541,6 +653,9 @@ export function RevisorBorrador({
   // El endpoint POST /api/borradores/[id]/devolver admite ADMIN y REVISOR:
   // el botón se muestra exactamente con ese mismo gate.
   const puedeDevolver = usePermiso(["ADMIN", "REVISOR"]);
+  // B8 (Diseño A) — solo ADMIN asigna el anticipo a mano.
+  const puedeAsignarAnticipo = usePermiso(["ADMIN"]);
+  const [modalAnticipo, setModalAnticipo] = useState(false);
   const [borradorActual, setBorradorActual] = useState<BorradorRow>(borrador);
   const [lineas, setLineas] = useState<LineaLocal[]>(
     borrador.lineasRevision.map((l) => ({ ...l, estadoLocal: "pendiente" })),
@@ -778,7 +893,23 @@ export function RevisorBorrador({
           ? caught.message
           : describirError(caught, "Error al cambiar el estado.");
       setErrorTransicion(mensaje);
-      toast({ title: "No se pudo cambiar el estado", description: mensaje, variant: "error" });
+
+      // B8 — el anticipo cambió mientras se revisaba: el servidor YA actualizó
+      // el borrador (no se aprobó). Se recarga para que el revisor vea el
+      // saldo nuevo y decida si vuelve a aprobar.
+      if (caught instanceof FacturacionApiError && caught.codigo === "ANTICIPO_ACTUALIZADO") {
+        toast({ title: "El anticipo de esta factura cambió", description: mensaje, variant: "error" });
+        try {
+          const recargado = conservarPagosPorRevisar(await fetchBorrador(borradorActual.id), borradorActual);
+          setBorradorActual(recargado);
+          setLineas((prev) => fusionarMarcas(recargado.lineasRevision, prev));
+          onBorradorActualizado(recargado);
+        } catch {
+          /* si falla la recarga, el mensaje de error ya lo explica */
+        }
+      } else {
+        toast({ title: "No se pudo cambiar el estado", description: mensaje, variant: "error" });
+      }
     } finally {
       setTransicionando(false);
     }
@@ -1424,11 +1555,44 @@ export function RevisorBorrador({
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="text-slate-600">Anticipo aplicado</dt>
+                <dt className="text-slate-600">
+                  {borradorActual.anticipoDo ? "Anticipo asignado a esta factura" : "Anticipo aplicado"}
+                </dt>
                 <dd className="font-semibold text-slate-900">
                   {formatCOP(borradorActual.totalAnticipo)}
                 </dd>
               </div>
+
+              {borradorActual.anticipoDo ? (
+                <div className="space-y-1 border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  <div className="flex justify-between gap-4">
+                    <span>Anticipo del DO</span>
+                    <span>{formatCOP(borradorActual.anticipoDo.aplicadoDo)}</span>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span>Usado por otras facturas</span>
+                    <span>{formatCOP(borradorActual.anticipoDo.reservadoPorOtras)}</span>
+                  </div>
+                  {borradorActual.anticipoManual ? (
+                    <p className="mt-1 flex items-center gap-1.5 text-amber-700">
+                      <span className="border border-amber-300 bg-amber-100 px-1.5 py-0.5 font-semibold uppercase tracking-wide">
+                        Asignado a mano
+                      </span>
+                      {borradorActual.anticipoMotivo}
+                    </p>
+                  ) : null}
+                  {puedeAsignarAnticipo &&
+                  (borradorActual.estado === "BORRADOR" || borradorActual.estado === "EN_REVISION") ? (
+                    <button
+                      type="button"
+                      onClick={() => setModalAnticipo(true)}
+                      className="mt-1 text-cyan-700 underline hover:text-cyan-900"
+                    >
+                      Cambiar anticipo de esta factura
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div className="my-2 border-t border-slate-200" />
 
@@ -1786,6 +1950,25 @@ export function RevisorBorrador({
           tramiteConsecutivo={tramite.consecutivo}
           onClose={() => setModalDevolver(false)}
           onDevuelto={handleDevuelto}
+        />
+      ) : null}
+
+      {modalAnticipo ? (
+        <AnticipoModal
+          borrador={borradorActual}
+          onClose={() => setModalAnticipo(false)}
+          onAsignado={(actualizado, aviso) => {
+            const conservado = conservarPagosPorRevisar(actualizado, borradorActual);
+            setBorradorActual(conservado);
+            setLineas((prev) => fusionarMarcas(conservado.lineasRevision, prev));
+            onBorradorActualizado(conservado);
+            setModalAnticipo(false);
+            toast({
+              title: "Anticipo actualizado",
+              description: aviso ?? undefined,
+              variant: aviso ? "info" : "success",
+            });
+          }}
         />
       ) : null}
 

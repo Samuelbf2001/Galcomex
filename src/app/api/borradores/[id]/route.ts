@@ -1,4 +1,6 @@
 /**
+ * GET   /api/borradores/[id]  — Un borrador completo (B8: recargar tras el 409
+ *   ANTICIPO_ACTUALIZADO, que no trae el borrador en la respuesta de PATCH).
  * PATCH /api/borradores/[id]  — Transición de estado / aprobar / facturar
  *
  * - Mover a EN_REVISION: rol ADMIN u OPERATIVO
@@ -10,13 +12,54 @@ import { EstadoBorrador } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 
+import { resolverTramiteConPermiso } from "@/lib/auth/tramite-acceso";
 import { requireRole } from "@/lib/auth/session";
-import { transicionarBorrador } from "@/lib/borradores/service";
+import { anticipoDelTramite } from "@/lib/borradores/anticipo-disponible";
+import { FORMATO_CONCEPTOS_IVA } from "@/lib/borradores/formato-conceptos";
+import { getBorradorCompleto, transicionarBorrador } from "@/lib/borradores/service";
+import { prisma } from "@/lib/db/prisma";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { transicionBorradorPayloadSchema } from "@/lib/validations/borradores";
 
 type RouteParams = { params: Promise<{ id: string }> };
+
+export async function GET(_request: NextRequest, { params }: RouteParams) {
+  const session = await requireRole(["ADMIN", "REVISOR", "SOCIO"]);
+  if (session instanceof NextResponse) {
+    return session;
+  }
+
+  const { id: borradorId } = await params;
+
+  const cabecera = await prisma.borradorFactura.findUnique({
+    where: { id: borradorId },
+    select: { tramiteId: true },
+  });
+  if (!cabecera) {
+    return NextResponse.json({ error: "Borrador no encontrado" }, { status: 404 });
+  }
+
+  const permiso = await resolverTramiteConPermiso(cabecera.tramiteId, session.user.rol);
+  if (permiso === null) {
+    return NextResponse.json({ error: "Trámite no encontrado" }, { status: 404 });
+  }
+  if (permiso === "forbidden") {
+    return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+  }
+
+  const completo = await getBorradorCompleto(borradorId);
+  if (!completo) {
+    return NextResponse.json({ error: "Borrador no encontrado" }, { status: 404 });
+  }
+
+  const anticipoDo =
+    completo.formatoFactura === FORMATO_CONCEPTOS_IVA
+      ? await anticipoDelTramite(prisma, completo.tramiteId, { excluirBorradorId: borradorId })
+      : null;
+
+  return jsonResponse({ borrador: { ...completo, anticipoDo } });
+}
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
   const { id: borradorId } = await params;
@@ -68,10 +111,21 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     });
 
     if (!result.ok) {
-      return NextResponse.json({ error: result.message }, { status: result.status });
+      return NextResponse.json(
+        { error: result.message, ...(result.codigo ? { codigo: result.codigo } : {}) },
+        { status: result.status },
+      );
     }
 
-    return jsonResponse({ borrador: result.borrador });
+    // M1 (revisión de código, 28-sep-2026): devolver `anticipoDo` como el GET,
+    // así el desglose y "asignado a mano" se ven sin recargar tras aprobar o
+    // cambiar de estado.
+    const anticipoDo =
+      result.borrador && result.borrador.formatoFactura === FORMATO_CONCEPTOS_IVA
+        ? await anticipoDelTramite(prisma, result.borrador.tramiteId, { excluirBorradorId: borradorId })
+        : null;
+
+    return jsonResponse({ borrador: result.borrador ? { ...result.borrador, anticipoDo } : result.borrador });
   } catch (error) {
     if (isDomainError(error)) {
       return domainErrorResponse(error);

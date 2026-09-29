@@ -23,6 +23,15 @@ export type TarifaItemPdfDto = {
   tramos: { hasta: number | null; valor: string }[] | null;
   aplicaIva: boolean;
   notas: string | null;
+  /** B1 (Diseño A) — resta el agenciamiento estándar de la agencia del DO. */
+  restaAgenciamiento: boolean;
+  /**
+   * B1 (Diseño A) — solo con `restaAgenciamiento` y mínimo: si el mínimo
+   * configurado es lo que paga el cliente en TOTAL (Galcomex + agencia,
+   * `true`) o lo que cobra Galcomex en NETO (`false`, default). BAJO 3
+   * (revisión de código, 28-sep-2026): distingue la nota del PDF.
+   */
+  minimoEsDelTotal: boolean;
 };
 
 export type TarifarioPdfDto = {
@@ -39,6 +48,16 @@ export type TarifarioPdfDto = {
   vigenteHasta: Date;
   fechaEmision: Date;
   items: TarifaItemPdfDto[];
+  /** B3 (Diseño A) — ciudades a las que aplica; vacío = general (todas). */
+  ciudades: string[];
+};
+
+const CIUDAD_PDF_TXT: Record<string, string> = {
+  BAQ: "Barranquilla",
+  CTG: "Cartagena",
+  BUN: "Buenaventura",
+  SMR: "Santa Marta",
+  BGT: "Bogotá",
 };
 
 const ALCANCE_REF: Record<string, string> = {
@@ -151,10 +170,31 @@ const styles = StyleSheet.create({
   pie: { position: "absolute", bottom: 28, left: 60, right: 60, borderTopWidth: 0.5, borderTopColor: "#cbd5e1", paddingTop: 4, fontSize: 7, color: "#64748b", flexDirection: "row", justifyContent: "space-between" },
 });
 
+/**
+ * Nota de resta de agenciamiento para UN ítem (B1, Diseño A). Sin número
+ * (Camila cambia el agenciamiento en Parámetros sin tener que reimprimir la
+ * propuesta). BAJO 3 (revisión de código, 28-sep-2026): en modo NETO el
+ * "Tarifa mínima" que imprime la tabla (p. ej. 305.000, `filasDeItem`) YA es
+ * lo que cobra Galcomex, con la agencia restada — decir "menos el
+ * agenciamiento" ahí se lee como una resta pendiente (un cliente podría leer
+ * "mínimo 305.000 menos agenciamiento" = 160.000). En modo TOTAL el mínimo
+ * impreso SÍ es el total (Galcomex + agencia): ahí la resta sigue siendo
+ * correcta tal como estaba. Solo PORCENTAJE_MIN imprime un "Tarifa mínima" en
+ * la tabla; las demás formas de cálculo muestran su valor por unidad/fijo tal
+ * cual, así que ahí la nota genérica sigue aplicando.
+ */
+export function notaAgenciamientoDeItem(item: TarifaItemPdfDto): string {
+  return item.tipoCalculo === "PORCENTAJE_MIN" && !item.minimoEsDelTotal
+    ? `${item.nombrePublico}: el mínimo es después de restar el agenciamiento que la agencia de aduanas le factura directamente.`
+    : `${item.nombrePublico}: menos el agenciamiento que la agencia de aduanas le factura directamente.`;
+}
+
 export function TarifarioPDF({ data }: { data: TarifarioPdfDto }) {
   const siempre = data.items.filter((i) => i.disparador === "SIEMPRE");
   const eventos = data.items.filter((i) => i.disparador !== "SIEMPRE");
   const notasItems = data.items.filter((i) => i.notas).map((i) => `${i.nombrePublico}: ${i.notas}`);
+  const notasAgenciamiento = data.items.filter((i) => i.restaAgenciamiento).map(notaAgenciamientoDeItem);
+  const ciudadesTxt = data.ciudades.map((c) => CIUDAD_PDF_TXT[c] ?? c).join(", ");
 
   return (
     <Document title={`Tarifas ${data.empresaNombre}`} author="Galcomex" creator="Galcomex Sistema Operativo">
@@ -180,6 +220,7 @@ export function TarifarioPDF({ data }: { data: TarifarioPdfDto }) {
 
         <Text style={styles.parrafo}>
           Nos permitimos poner a su disposición las tarifas por servicios de asesoría y logística en Comercio Exterior, vigentes desde el {fechaLarga(data.vigenteDesde)} hasta el {fechaLarga(data.vigenteHasta)}.
+          {ciudadesTxt ? ` Aplica a: ${ciudadesTxt}.` : ""}
         </Text>
 
         {siempre.length > 0 ? (
@@ -214,6 +255,11 @@ export function TarifarioPDF({ data }: { data: TarifarioPdfDto }) {
         </Text>
         {notasItems.map((n, i) => (
           <Text key={i} style={styles.nota}>
+            {n}
+          </Text>
+        ))}
+        {notasAgenciamiento.map((n, i) => (
+          <Text key={`ag${i}`} style={styles.nota}>
             {n}
           </Text>
         ))}

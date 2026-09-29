@@ -150,6 +150,28 @@ export type ActualizarComisionInternaLMPayload = z.infer<
   typeof actualizarComisionInternaLMPayloadSchema
 >;
 
+// ── Asignar anticipo a mano (B8, Diseño A) ────────────────────────────────────
+
+/** Motivo mínimo exigido por la excepción manual de anticipo (B8). */
+export const ANTICIPO_MOTIVO_MIN = 10;
+
+export const asignarAnticipoPayloadSchema = z.discriminatedUnion("modo", [
+  z.object({
+    modo: z.literal("MANUAL"),
+    /** Anticipo asignado a ESTA factura, en pesos. Puede pasar de lo "asignable" (reemisión tras nota crédito). */
+    anticipo: z.coerce.bigint().nonnegative(),
+    motivo: z
+      .string()
+      .trim()
+      .min(ANTICIPO_MOTIVO_MIN, `El motivo debe tener al menos ${ANTICIPO_MOTIVO_MIN} caracteres`),
+  }),
+  z.object({
+    modo: z.literal("AUTOMATICO"),
+  }),
+]);
+
+export type AsignarAnticipoPayload = z.infer<typeof asignarAnticipoPayloadSchema>;
+
 // ── Transición de estado ──────────────────────────────────────────────────────
 
 export const transicionBorradorPayloadSchema = z

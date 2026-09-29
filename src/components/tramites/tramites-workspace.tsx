@@ -409,16 +409,20 @@ export function CreateTramiteDialog({
 
   const tipoTramiteCodigo = tipoTramiteSeleccionado?.codigo ?? "IMPORTACION";
 
+  // B3 — ciudad del DO que se va a crear: una ciudad puede tener tarifario
+  // propio (R1), así que los requisitos (D1) se vuelven a consultar si cambia.
+  const [ciudadForm, setCiudadForm] = useState("CTG");
+
   // Requisitos del DO (D1 tarifa vigente, D2 documentos obligatorios): se
   // consultan en cuanto hay empresa + tipo de trámite elegidos. El estado de
   // carga se DERIVA igual que `tiposCargados` arriba: si el último resultado
-  // no corresponde a la clave actual (empresa + tipo), estamos cargando.
+  // no corresponde a la clave actual (empresa + tipo + ciudad), estamos cargando.
   const [requisitosResultado, setRequisitosResultado] = useState<{
     key: string;
     data: RequisitosDo | null;
     error: string | null;
   } | null>(null);
-  const requisitosKey = clienteId ? `${clienteId}::${tipoTramiteCodigo}` : "";
+  const requisitosKey = clienteId ? `${clienteId}::${tipoTramiteCodigo}::${ciudadForm}` : "";
   const requisitosActual = requisitosResultado?.key === requisitosKey ? requisitosResultado : null;
   const requisitosLoading = Boolean(clienteId) && !requisitosActual;
   const requisitos = requisitosActual?.data ?? null;
@@ -459,7 +463,7 @@ export function CreateTramiteDialog({
     // Pequeño debounce: evita dos peticiones seguidas cuando cambiar de
     // empresa también cambia el tipo de trámite por defecto.
     const timeout = setTimeout(() => {
-      fetchRequisitosDo(clienteId, tipoTramiteCodigo, controller.signal)
+      fetchRequisitosDo(clienteId, tipoTramiteCodigo, ciudadForm, controller.signal)
         .then((data) => {
           setRequisitosResultado({ key: requisitosKey, data, error: null });
         })
@@ -683,7 +687,7 @@ export function CreateTramiteDialog({
       // panel decía lo contrario (se publicó/venció justo ahora). Refresca los
       // requisitos para que el panel ámbar y sus acciones queden al día.
       if (caught instanceof TramitesApiError && caught.codigo === CODIGO_TARIFA_VIGENTE_REQUERIDA) {
-        fetchRequisitosDo(clienteId, tipoTramiteCodigo)
+        fetchRequisitosDo(clienteId, tipoTramiteCodigo, ciudadForm)
           .then((data) => setRequisitosResultado({ key: requisitosKey, data, error: null }))
           .catch(() => {
             // Sin refresco al menos queda el mensaje del 422 en el banner de error.
@@ -714,6 +718,8 @@ export function CreateTramiteDialog({
               <select
                 name="ciudad"
                 required
+                value={ciudadForm}
+                onChange={(e) => setCiudadForm(e.target.value)}
                 className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
               >
                 <option value="CTG">CTG</option>

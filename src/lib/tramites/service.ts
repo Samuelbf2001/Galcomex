@@ -428,8 +428,11 @@ async function tarifaParaDo(
   empresaId: string,
   lineaServicio: string,
   fecha: Date,
+  // B3 (R1, R5): ciudad del DO. Si tiene tarifario propio, el "fuera de
+  // fecha" se calcula sobre ESE (nunca cae al general en silencio).
+  ciudad?: Ciudad | null,
 ): Promise<{ tarifario: TarifarioResumen | null; fueraDeFecha: TarifaFueraDeFecha | null }> {
-  const vigente = await tarifarioVigenteDe(empresaId, lineaServicio, fecha);
+  const vigente = await tarifarioVigenteDe(empresaId, lineaServicio, fecha, ciudad);
 
   if (vigente) {
     return {
@@ -443,11 +446,27 @@ async function tarifaParaDo(
     };
   }
 
-  const publicada = await prisma.tarifario.findFirst({
-    where: { empresaId, alcance: lineaServicio, estado: EstadoTarifario.VIGENTE },
-    orderBy: { version: "desc" },
-    select: { vigenteDesde: true, vigenteHasta: true },
-  });
+  const publicadaCiudad = ciudad
+    ? await prisma.tarifario.findFirst({
+        where: { empresaId, alcance: lineaServicio, estado: EstadoTarifario.VIGENTE, ciudades: { has: ciudad } },
+        orderBy: { version: "desc" },
+        select: { vigenteDesde: true, vigenteHasta: true },
+      })
+    : null;
+
+  // Ciudad sin tarifario propio (o sin ciudad): el publicado general de hoy.
+  const publicada =
+    publicadaCiudad ??
+    (await prisma.tarifario.findFirst({
+      where: {
+        empresaId,
+        alcance: lineaServicio,
+        estado: EstadoTarifario.VIGENTE,
+        ...(ciudad ? { ciudades: { isEmpty: true } } : {}),
+      },
+      orderBy: { version: "desc" },
+      select: { vigenteDesde: true, vigenteHasta: true },
+    }));
 
   return { tarifario: null, fueraDeFecha: tarifaFueraDeFecha(publicada, fecha) };
 }
@@ -463,6 +482,8 @@ async function verificarTarifaVigente(args: {
   capacidades: MapaCapacidades;
   /** Consecutivo al abrir una solicitud; `null` al crear. */
   consecutivo: string | null;
+  /** B3 (R5) — ciudad del DO, fija desde que se crea. */
+  ciudad?: Ciudad | null;
 }): Promise<TarifaVigenteRequeridaError | null> {
   if (!exigeTarifaVigente(args.capacidades, args.tipo.codigo)) {
     return null;
@@ -475,6 +496,7 @@ async function verificarTarifaVigente(args: {
     args.clienteId,
     args.tipo.lineaServicio,
     fechaCalendarioBogota(),
+    args.ciudad,
   );
 
   if (tarifa.tarifario) {
@@ -562,6 +584,8 @@ export async function requisitosDeDo(input: {
   clienteId: string;
   tipoTramiteCodigo?: string;
   fecha?: Date;
+  /** B3 — ciudad del DO que se va a crear (opcional: sin ella, cualquier VIGENTE en fecha). */
+  ciudad?: Ciudad;
 }): Promise<RequisitosDo> {
   // F5: mismo criterio que `verificarTarifaVigente` — "hoy" es el día
   // calendario en Bogotá, no el instante UTC.
@@ -583,7 +607,7 @@ export async function requisitosDeDo(input: {
     throw new TipoTramiteNoEncontradoError(codigo);
   }
 
-  const tarifa = await tarifaParaDo(input.clienteId, tipo.lineaServicio, fecha);
+  const tarifa = await tarifaParaDo(input.clienteId, tipo.lineaServicio, fecha, input.ciudad);
 
   return armarRequisitos({
     capacidades,
@@ -694,6 +718,7 @@ export async function createTramite(
       tipo,
       capacidades,
       consecutivo: null,
+      ciudad: input.ciudad,
     });
 
     if (faltaTarifa) {
@@ -1212,6 +1237,7 @@ export async function transitionTramite(
           tipo: actual.tipoTramite,
           capacidades: await capacidadesDelCliente(),
           consecutivo: actual.consecutivo,
+          ciudad: actual.ciudad,
         });
 
         if (faltaTarifa) {
@@ -1336,6 +1362,7 @@ export async function transitionTramite(
         tipo: actual.tipoTramite,
         capacidades: await capacidadesDelCliente(),
         consecutivo: actual.consecutivo,
+        ciudad: actual.ciudad,
       });
 
       if (faltaTarifa) {

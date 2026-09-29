@@ -87,6 +87,33 @@ async function main() {
       descripcion:
         "SI = las facturas que emitió la carga del histórico 2026 (trámites históricos) y aún no tienen cobros se muestran aparte (tablero: «Cartera histórica 2026») y no cuentan en cartera vencida ni en alertas. Las facturas nuevas de la plataforma cuentan siempre. Poner NO cuando se carguen los cobros históricos.",
     },
+    // B1 (Diseño A, 27-sep-2026): estándar de agenciamiento por agencia de
+    // aduanas. Nacen vacíos; los ítems del tarifario con la casilla "restar
+    // agenciamiento" quedan pendientes hasta que se cargue el valor real.
+    {
+      clave: "AGENCIAMIENTO_MOVIADUANAS",
+      valor: "",
+      descripcion:
+        "Lo que la agencia MOVIADUANAS le factura al importador por DO, antes de IVA, en pesos sin puntos. Se resta en los ítems del tarifario marcados «restar agencia». Cambiarlo afecta solo a los borradores que se generen después.",
+    },
+    {
+      clave: "AGENCIAMIENTO_COLDEX",
+      valor: "",
+      descripcion:
+        "Lo que la agencia COLDEX le factura al importador por DO, antes de IVA, en pesos sin puntos. Se resta en los ítems del tarifario marcados «restar agencia». Cambiarlo afecta solo a los borradores que se generen después.",
+    },
+    {
+      clave: "AGENCIAMIENTO_AR_LOGISTY",
+      valor: "",
+      descripcion:
+        "Lo que la agencia AR LOGISTY le factura al importador por DO, antes de IVA, en pesos sin puntos. Se resta en los ítems del tarifario marcados «restar agencia». Cambiarlo afecta solo a los borradores que se generen después.",
+    },
+    {
+      clave: "AGENCIAMIENTO_CORTES",
+      valor: "",
+      descripcion:
+        "Lo que la agencia CORTES le factura al importador por DO, antes de IVA, en pesos sin puntos. Se resta en los ítems del tarifario marcados «restar agencia». Cambiarlo afecta solo a los borradores que se generen después.",
+    },
   ];
 
   for (const p of params) {

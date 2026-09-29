@@ -777,10 +777,13 @@ function normalizarRequisitos(payload: unknown): RequisitosDo {
 export async function fetchRequisitosDo(
   clienteId: string,
   tipoTramiteCodigo?: string,
+  /** B3 — ciudad del DO que se va a crear (una ciudad puede tener tarifario propio, R1). */
+  ciudad?: string,
   signal?: AbortSignal,
 ): Promise<RequisitosDo> {
   const params = new URLSearchParams({ clienteId });
   if (tipoTramiteCodigo) params.set("tipoTramiteCodigo", tipoTramiteCodigo);
+  if (ciudad) params.set("ciudad", ciudad);
 
   const response = await fetch(`/api/tramites/requisitos?${params.toString()}`, {
     cache: "no-store",

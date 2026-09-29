@@ -10,6 +10,7 @@
 import "dotenv/config";
 
 import {
+  Ciudad,
   DisparadorTarifa,
   EstadoTarifario,
   Rol,
@@ -199,6 +200,8 @@ function itemPayload(
     aplicaIva: true,
     notas: null,
     orden: 10,
+    restaAgenciamiento: false,
+    minimoEsDelTotal: false,
     ...overrides,
   };
 }
@@ -527,9 +530,32 @@ describe("tarifas service — catálogo de conceptos y copiar de otra empresa, c
         alcance: "CLASIFICACION",
         version: 1,
         estado: "BORRADOR",
+        ciudades: [],
         items: 1,
       });
       expect(fila?.empresaNombre.length).toBeGreaterThan(0);
+    });
+
+    // BAJO 5 (revisión de código, 28-sep-2026): el catálogo ligero devuelve
+    // `ciudades` — sin esto el modal "Copiar la tarifa de otra empresa" no
+    // puede prellenar los chips (BAJO 4).
+    it("BAJO 5 — incluye `ciudades` de un tarifario de ciudad", async (ctx) => {
+      const db = ensureDb(ctx);
+      const tarifario = await crearTarifario({
+        empresaId: db.clienteOrigenId,
+        nombre: `Tarifario ciudad vitest ${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        alcance: "TRAMITE",
+        ciudades: [Ciudad.BGT],
+        vigenteDesde: new Date("2026-01-01T00:00:00.000Z"),
+        vigenteHasta: new Date("2026-12-31T00:00:00.000Z"),
+        notas: null,
+        items: [],
+        usuarioId: db.adminId,
+      });
+
+      const lista = await listarTarifariosLigero();
+      const fila = lista.find((t) => t.id === tarifario.id);
+      expect(fila?.ciudades).toEqual([Ciudad.BGT]);
     });
 
     it("excluirEmpresaId quita los tarifarios de esa empresa", async (ctx) => {

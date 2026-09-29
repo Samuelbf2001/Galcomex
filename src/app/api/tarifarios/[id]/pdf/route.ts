@@ -62,6 +62,8 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       vigenteDesde: tarifario.vigenteDesde,
       vigenteHasta: tarifario.vigenteHasta,
       fechaEmision: new Date(),
+      // B3 (Diseño A) — vacío = general, no se imprime "Aplica a:".
+      ciudades: tarifario.ciudades,
       // Tarifario.notas es una nota INTERNA: nunca sale en el PDF (B4, 22-sep).
       items: tarifario.items.map((i) => ({
         nombrePublico: i.nombrePublico,
@@ -76,6 +78,8 @@ export async function GET(_request: NextRequest, context: RouteContext) {
         tramos: tramosDe(i.tramos),
         aplicaIva: i.aplicaIva,
         notas: i.notas,
+        restaAgenciamiento: i.restaAgenciamiento,
+        minimoEsDelTotal: i.minimoEsDelTotal,
       })),
     });
 

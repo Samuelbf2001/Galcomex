@@ -26,6 +26,8 @@
  * la UI lo pida antes de facturar. Tolerancia cero: todo es BigInt en COP.
  */
 
+import { restarAgenciamiento } from "./resta-agenciamiento";
+
 export type TipoCalculoTarifa =
   | "FIJO"
   | "POR_UNIDAD"
@@ -71,6 +73,10 @@ export interface ItemTarifaCalculable {
   tramos: TramoTarifa[] | null;
   aplicaIva: boolean;
   orden: number;
+  /** B1 — "restar el agenciamiento de la agencia de aduanas del DO" (una vez por DO). Opcional: los fixtures viejos no lo traen y equivale a `false`. */
+  restaAgenciamiento?: boolean;
+  /** B1 — solo con `restaAgenciamiento` y `PORCENTAJE_MIN`: mínimo NETO (false, lo que cobra Galcomex) o TOTAL (true, lo que paga el cliente). */
+  minimoEsDelTotal?: boolean;
 }
 
 export interface EventoMarcado {
@@ -88,6 +94,8 @@ export interface ContextoTarifa {
   eventos: EventoMarcado[];
   /** Costos reales del trámite que un ítem ESPEJO_DE_COSTO puede reflejar. */
   costos: CostoEspejable[];
+  /** B1 — agencia de aduanas del DO y su agenciamiento estándar (`agenciamiento.ts`). Opcional: ausente equivale a "sin agencia". */
+  agenciamiento?: { agencia: string | null; valor: bigint | null };
 }
 
 export interface CostoEspejable {
@@ -259,7 +267,16 @@ function buscarCosto(costos: CostoEspejable[], conceptoCosto: string): CostoEspe
 }
 
 type Calculo =
-  | { ok: true; cantidad: number; valorUnitario: bigint; valor: bigint; detalle: string }
+  | {
+      ok: true;
+      cantidad: number;
+      valorUnitario: bigint;
+      valor: bigint;
+      detalle: string;
+      /** B1 — solo la rama PORCENTAJE_MIN: % × CIF sin mínimo, y el mínimo del tipo de carga (o null). */
+      porcentaje?: bigint;
+      minimo?: bigint | null;
+    }
   | { ok: false; motivo: string; causa: CausaPendiente };
 
 function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadEvento: number | null): Calculo {
@@ -304,6 +321,8 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
           valorUnitario: calculado,
           valor: calculado,
           detalle: `${pct} % sobre CIF ${formatoCOP(ctx.valorCif)}`,
+          porcentaje: calculado,
+          minimo: null,
         };
       }
 
@@ -315,6 +334,8 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
           valorUnitario: minimo,
           valor: minimo,
           detalle: `${pct} % sobre CIF = ${formatoCOP(calculado)}; aplica mínimo ${ETIQUETA_CARGA[ctx.tipoCarga]}`,
+          porcentaje: calculado,
+          minimo,
         };
       }
       return {
@@ -323,6 +344,8 @@ function calcularItem(item: ItemTarifaCalculable, ctx: ContextoTarifa, cantidadE
         valorUnitario: calculado,
         valor: calculado,
         detalle: `${pct} % sobre CIF ${formatoCOP(ctx.valorCif)}`,
+        porcentaje: calculado,
+        minimo,
       };
     }
 
@@ -444,6 +467,81 @@ export function calcularLineasTarifa(
       pendientes.push({ concepto: item.concepto, nombrePublico: item.nombrePublico, motivo: calculo.motivo, causa: calculo.causa });
       continue;
     }
+
+    if (item.restaAgenciamiento) {
+      const agencia = ctx.agenciamiento?.agencia ?? null;
+      const agenciamientoValor = ctx.agenciamiento?.valor ?? null;
+      const resultado = restarAgenciamiento({
+        valorCalculado: calculo.valor,
+        porcentaje: calculo.porcentaje,
+        minimo: calculo.minimo,
+        minimoEsDelTotal: item.minimoEsDelTotal ?? false,
+        agencia,
+        agenciamiento: agenciamientoValor,
+      });
+
+      if (!resultado.ok) {
+        if (resultado.motivo === "SIN_AGENCIA") {
+          pendientes.push({
+            concepto: item.concepto,
+            nombrePublico: item.nombrePublico,
+            motivo: "El DO no tiene agencia de aduanas: no se puede restar su agenciamiento. Complétala en el DO.",
+            causa: "BASE_DO",
+          });
+        } else if (resultado.motivo === "AGENCIA_SIN_VALOR") {
+          pendientes.push({
+            concepto: item.concepto,
+            nombrePublico: item.nombrePublico,
+            motivo: `Falta el agenciamiento estándar de ${agencia}: Configuración → Parámetros → AGENCIAMIENTO_${agencia}.`,
+            causa: "TARIFARIO",
+          });
+        } else {
+          const sinUnidades = resultado.bruto === 0n ? ` (sin ${PLURAL_UNIDAD[item.unidad]})` : "";
+          pendientes.push({
+            concepto: item.concepto,
+            nombrePublico: item.nombrePublico,
+            motivo: `El cobro de ${formatoCOP(resultado.bruto)}${sinUnidades} no alcanza para restar el agenciamiento de ${agencia} (${formatoCOP(agenciamientoValor ?? 0n)}). Revisa la tarifa o escribe la comisión a mano.`,
+            causa: "TARIFARIO",
+          });
+        }
+        continue;
+      }
+
+      let detalle: string;
+      if (calculo.porcentaje !== undefined) {
+        const pctTexto = `${formatoCOP(calculo.porcentaje)}`;
+        const base = `${(item.porcentajeBps! / 100).toFixed(2).replace(".", ",")} % sobre CIF ${formatoCOP(ctx.valorCif!)} = ${pctTexto}`;
+        if (resultado.minimoAplicado === "NETO") {
+          const netoSinMinimo = calculo.porcentaje - (agenciamientoValor ?? 0n);
+          // BAJO 1 (revisión de código, 28-sep-2026): omitir el paso
+          // intermedio cuando queda ≤ 0 (el % no alcanza a cubrir la
+          // agencia) — la línea final es correcta (305.000), pero
+          // "= -30.166" se lee como un cobro negativo que nunca existió.
+          const pasoIntermedio = netoSinMinimo > 0n ? ` = ${formatoCOP(netoSinMinimo)}` : "";
+          detalle = `${base}; menos agenciamiento ${agencia} ${formatoCOP(agenciamientoValor!)}${pasoIntermedio}; aplica mínimo ${ETIQUETA_CARGA[ctx.tipoCarga!]} ${formatoCOP(resultado.neto)}`;
+        } else if (resultado.minimoAplicado === "TOTAL") {
+          detalle = `${base}; aplica mínimo total ${ETIQUETA_CARGA[ctx.tipoCarga!]} ${formatoCOP(resultado.bruto)}; menos agenciamiento ${agencia} ${formatoCOP(agenciamientoValor!)}`;
+        } else {
+          detalle = `${base}; menos agenciamiento ${agencia} ${formatoCOP(agenciamientoValor!)}`;
+        }
+      } else {
+        detalle = `${calculo.detalle} = ${formatoCOP(resultado.bruto)}; menos agenciamiento ${agencia} ${formatoCOP(agenciamientoValor!)}`;
+      }
+
+      lineas.push({
+        concepto: item.concepto,
+        nombrePublico: item.nombrePublico,
+        siigoCodigo: item.siigoCodigo,
+        cantidad: 1,
+        valorUnitario: resultado.neto,
+        valor: resultado.neto,
+        aplicaIva: item.aplicaIva,
+        origen: item.disparador === "EVENTO" ? "EVENTO" : "SIEMPRE",
+        detalle,
+      });
+      continue;
+    }
+
     if (calculo.valor <= 0n) continue;
 
     lineas.push({

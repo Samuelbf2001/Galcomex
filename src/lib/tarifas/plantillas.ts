@@ -82,6 +82,8 @@ function item(parcial: Partial<TarifaItemInput> & Pick<TarifaItemInput, "concept
     aplicaIva: true,
     notas: null,
     orden: 0,
+    restaAgenciamiento: false,
+    minimoEsDelTotal: false,
     ...parcial,
   };
 }

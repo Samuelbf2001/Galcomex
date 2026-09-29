@@ -419,6 +419,14 @@ export function SeccionEventosTramite({
                   </span>
                 ) : null}
               </div>
+              {guardado?.agenciamiento?.agencia ? (
+                <p className="mb-2 text-xs text-slate-500">
+                  Agencia del DO: {guardado.agenciamiento.agencia}
+                  {guardado.agenciamiento.valor
+                    ? ` · agenciamiento estándar ${formatCOP(guardado.agenciamiento.valor)}`
+                    : " · sin agenciamiento estándar configurado (Configuración → Parámetros)"}
+                </p>
+              ) : null}
               {!propuesta?.tarifario ? (
                 <p className="border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{propuesta?.motivo ?? "Sin tarifario vigente."}</p>
               ) : resultado ? (

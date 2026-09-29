@@ -44,6 +44,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
             // F7: sin `alcance` en el body, `crearTarifarioDesde` hereda el
             // del tarifario de ORIGEN — no lo forzamos a "TRAMITE" aquí.
             alcance: payload.alcance,
+            // B3 (R4): sin `ciudades` en el body, se copian las del origen.
+            ciudades: payload.ciudades,
             vigenteDesde: payload.vigenteDesde,
             vigenteHasta: payload.vigenteHasta,
             notas: payload.notas,

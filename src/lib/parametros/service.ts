@@ -13,6 +13,9 @@
 import { prisma } from "@/lib/db/prisma";
 import { CLAVE_APROBADORES_PSE, parsearAprobadores } from "@/lib/whatsapp/aprobadores";
 
+/** B1 (Diseño A): parámetros `AGENCIAMIENTO_<AGENCIA>` — ver `tarifas/agenciamiento.ts`. */
+const PREFIJO_AGENCIAMIENTO = "AGENCIAMIENTO_";
+
 export type ParametrosSistema = {
   tasaIva: bigint;        // 19n para 19%
   tasa4x1000: bigint;     // 400n = 0.4% (escalado /100_000)
@@ -92,6 +95,15 @@ function validarValorParametro(clave: string, valor: string): void {
   if (clave === CLAVE_APROBADORES_PSE) {
     const resultado = parsearAprobadores(valor);
     if (!resultado.ok) throw new ParametroValorInvalidoError(resultado.error);
+  }
+  if (clave.startsWith(PREFIJO_AGENCIAMIENTO)) {
+    // Vacío = "sin valor" (el motor lo trata como pendiente). Con valor,
+    // solo dígitos: pesos sin puntos ni decimales (ej. 145000).
+    if (valor !== "" && !/^[0-9]{1,12}$/.test(valor)) {
+      throw new ParametroValorInvalidoError(
+        "Escribe el agenciamiento en pesos, sin puntos (ej. 145000)",
+      );
+    }
   }
 }
 
