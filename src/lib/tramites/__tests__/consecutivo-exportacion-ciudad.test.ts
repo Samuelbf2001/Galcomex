@@ -16,12 +16,14 @@ import {
   alcanceContador,
   choquesDeNumeracion,
   claveSecuencia,
+  contadorSinAnio,
   etiquetaContador,
   filtroSecuencia,
   formatConsecutivo,
   patronesDeNumeracion,
   prefijoDeCiudad,
   prefijosPorCiudad,
+  problemasDelContador,
   problemasDeNumeracion,
   raizConsecutivo,
   validarConfigContador,
@@ -278,8 +280,18 @@ describe("problemasDeNumeracion: choques entre tipos", () => {
     const problemas = problemasDeNumeracion(malo, CIUDADES);
     expect(problemas).toHaveLength(1);
     expect(problemas[0].tipos.sort()).toEqual(["EXPORTACION", "IMPORTACION"]);
+    expect(problemas[0].contadores.sort()).toEqual(["EXPORTACION:CTG", "IMPORTACION:CTG"]);
     expect(problemas[0].mensaje).toMatch(/IMPORTACION CTG.*EXPORTACION CTG|EXPORTACION CTG.*IMPORTACION CTG/);
     expect(problemas[0].mensaje).toMatch(/«DO\.CTG» \+ año/);
+
+    // Solo se frenan los dos contadores que chocan: Barranquilla sigue.
+    const de = (tipo: string, ciudad: string) =>
+      problemasDelContador(problemas, tipo, contadorSinAnio(tipo === "IMPORTACION" ? IMPORTACION : EXPORTACION, tipo, ciudad));
+    expect(de("IMPORTACION", "CTG")).toHaveLength(1);
+    expect(de("EXPORTACION", "CTG")).toHaveLength(1);
+    expect(de("IMPORTACION", "BAQ")).toEqual([]);
+    expect(de("EXPORTACION", "BGT")).toEqual([]);
+    expect(de("EXPORTACION", "SMR")).toEqual([]);
   });
 
   it("dos tipos por año con el mismo prefijo chocan", () => {
@@ -305,7 +317,17 @@ describe("problemasDeNumeracion: choques entre tipos", () => {
     const problemas = problemasDeNumeracion(malo, CIUDADES);
     expect(problemas).toHaveLength(1);
     expect(problemas[0].tipos).toEqual(["EXPORTACION"]);
+    // Vacío = todo el tipo: su propia configuración está mal.
+    expect(problemas[0].contadores).toEqual([]);
     expect(problemas[0].mensaje).toMatch(/^EXPORTACION: /);
+    expect(problemasDelContador(problemas, "EXPORTACION", "EXPORTACION:BAQ+BGT+BUN")).toHaveLength(1);
+    expect(problemasDelContador(problemas, "IMPORTACION", "IMPORTACION:BAQ+BGT+BUN")).toEqual([]);
+  });
+
+  it("contadorSinAnio: la clave del contador sin el año", () => {
+    expect(contadorSinAnio(EXPORTACION, "EXPORTACION", "BUN")).toBe("EXPORTACION:BAQ+BGT+BUN");
+    expect(contadorSinAnio(EXPORTACION, "EXPORTACION", "SMR")).toBe("EXPORTACION:SMR");
+    expect(contadorSinAnio(OTRO, "OTRO", "CTG")).toBe("OTRO");
   });
 
   it("patrones y choques: la base de la validación", () => {

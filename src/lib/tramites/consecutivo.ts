@@ -207,6 +207,15 @@ export interface PatronNumeracion {
   conAnio: boolean;
 }
 
+/**
+ * Nombre del contador SIN año: `EXPORTACION:BAQ+BGT+BUN`, `EXPORTACION:CTG`,
+ * `OTRO`. Es la clave del contador (`alcanceContador`) sin el `:AAAA` del final.
+ */
+export function contadorSinAnio(config: ConfigConsecutivo, tipoTramiteCodigo: string, ciudad: string): string {
+  const alcance = alcanceContador(config, tipoTramiteCodigo, ciudad, 0);
+  return alcance.ciudades ? `${tipoTramiteCodigo}:${alcance.ciudades.join("+")}` : tipoTramiteCodigo;
+}
+
 /** Ciudades a revisar: las que se pasan más las que nombra la configuración (sin repetir). */
 function ciudadesDeConfig(config: ConfigConsecutivo, ciudades: readonly string[]): string[] {
   const valor = config.prefijoConsecutivoPorCiudad;
@@ -234,16 +243,13 @@ export function patronesDeNumeracion(
       },
     ];
   }
-  return lista.map((ciudad) => {
-    const alcance = alcanceContador(config, tipoTramiteCodigo, ciudad, 0);
-    return {
-      tipoTramiteCodigo,
-      contador: alcance.ciudades ? `${tipoTramiteCodigo}:${alcance.ciudades.join("+")}` : tipoTramiteCodigo,
-      ciudad,
-      raiz: raizConsecutivo(config, ciudad),
-      conAnio: config.secuenciaPor !== "GLOBAL",
-    };
-  });
+  return lista.map((ciudad) => ({
+    tipoTramiteCodigo,
+    contador: contadorSinAnio(config, tipoTramiteCodigo, ciudad),
+    ciudad,
+    raiz: raizConsecutivo(config, ciudad),
+    conAnio: config.secuenciaPor !== "GLOBAL",
+  }));
 }
 
 function raicesChocan(a: PatronNumeracion, b: PatronNumeracion): boolean {
@@ -350,17 +356,24 @@ export function validarConfigContador(config: ConfigConsecutivo, ciudades: reado
   return choque ? mensajeChoque(choque, false) : null;
 }
 
-/** Un problema de numeración del catálogo y a qué tipos toca. */
+/** Un problema de numeración del catálogo y a qué contadores toca. */
 export interface ProblemaNumeracion {
   tipos: string[];
+  /**
+   * Contadores afectados, sin año (`EXPORTACION:CTG`). Vacío = TODO el tipo:
+   * su propia configuración está mal.
+   */
+  contadores: string[];
   mensaje: string;
 }
 
 /**
  * Problemas de numeración de TODO el catálogo: los de cada tipo
- * (`validarConfigContador`) y los choques entre tipos (p. ej. una Exportación
- * de Cartagena con prefijo `DO.CTG` imprimiría los números de la importación
- * de Cartagena). `createTramite` no numera un tipo con problemas.
+ * (`validarConfigContador`, frenan el tipo entero) y los choques entre tipos,
+ * que frenan solo los dos contadores que chocan (p. ej. una Exportación de
+ * Cartagena con prefijo `DO.CTG` imprimiría los números de la importación de
+ * Cartagena; la importación de Barranquilla sigue). `createTramite` no numera
+ * un contador con problemas.
  */
 export function problemasDeNumeracion(
   tipos: ReadonlyArray<ConfigConsecutivo & { codigo: string }>,
@@ -371,7 +384,7 @@ export function problemasDeNumeracion(
   for (const tipo of tipos) {
     const error = validarConfigContador(tipo, ciudades);
     if (error) {
-      problemas.push({ tipos: [tipo.codigo], mensaje: `${tipo.codigo}: ${error}` });
+      problemas.push({ tipos: [tipo.codigo], contadores: [], mensaje: `${tipo.codigo}: ${error}` });
       continue;
     }
     patrones.push(...patronesDeNumeracion(tipo, tipo.codigo, ciudades));
@@ -381,10 +394,22 @@ export function problemasDeNumeracion(
     if (choque.a.tipoTramiteCodigo === choque.b.tipoTramiteCodigo) continue;
     problemas.push({
       tipos: [choque.a.tipoTramiteCodigo, choque.b.tipoTramiteCodigo],
+      contadores: [choque.a.contador, choque.b.contador],
       mensaje: mensajeChoque(choque, true),
     });
   }
   return problemas;
+}
+
+/** Problemas que tocan a un contador (tipo + contador sin año). */
+export function problemasDelContador(
+  problemas: readonly ProblemaNumeracion[],
+  tipoTramiteCodigo: string,
+  contador: string,
+): ProblemaNumeracion[] {
+  return problemas.filter(
+    (p) => p.tipos.includes(tipoTramiteCodigo) && (p.contadores.length === 0 || p.contadores.includes(contador)),
+  );
 }
 
 /**
