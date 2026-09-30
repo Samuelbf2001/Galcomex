@@ -561,7 +561,16 @@ describe("requisitos con servicio y vista previa del número (caso 28)", () => {
       )
     ).json()) as { numeracion: { siguiente: string; contador: string }; servicio: { codigo: string } };
     expect(exp.numeracion.siguiente).toMatch(new RegExp(`^DO\\.EXP${YY}-\\d{4}$`));
+    expect(exp.numeracion.contador).toBe("contador de exportación Barranquilla, Bogotá y Buenaventura");
     expect(exp.servicio.codigo).toBe("EXPORTACION");
+    // Exportación por ciudad (30-sep-2026): Cartagena lleva su propio contador y prefijo.
+    const expCtg = (await (
+      await requisitosGET(
+        new NextRequest(`http://localhost/api/tramites/requisitos?clienteId=${empresa.id}&tipoTramiteCodigo=EXPORTACION&ciudad=CTG`),
+      )
+    ).json()) as { numeracion: { siguiente: string; contador: string } };
+    expect(expCtg.numeracion.siguiente).toMatch(new RegExp(`^DO\\.EXP\\.CTG${YY}-\\d{4}$`));
+    expect(expCtg.numeracion.contador).toBe("contador de exportación de Cartagena");
 
     // Un servicio que el tipo no admite: 422 con código.
     const malo = await requisitosGET(
@@ -571,7 +580,7 @@ describe("requisitos con servicio y vista previa del número (caso 28)", () => {
     expect(await malo.json()).toMatchObject({ codigo: "SERVICIO_NO_PERMITIDO" });
   });
 
-  it("GET /api/tramites/consecutivos (ADMIN, REVISOR): un contador compartido para BAQ-BGT-BUN, CTG y SMR aparte, Exportación por año", async (ctx) => {
+  it("GET /api/tramites/consecutivos (ADMIN, REVISOR): un contador compartido para BAQ-BGT-BUN, CTG y SMR aparte, en Importación y en Exportación", async (ctx) => {
     ensureDb(ctx);
     comoRol(Rol.OPERATIVO);
     expect((await consecutivosGET(new NextRequest("http://localhost/api/tramites/consecutivos"))).status).toBe(403);
@@ -580,17 +589,36 @@ describe("requisitos con servicio y vista previa del número (caso 28)", () => {
     const res = await consecutivosGET(new NextRequest(`http://localhost/api/tramites/consecutivos?anio=${ANIO_ACTUAL}`));
     expect(res.status).toBe(200);
     const { contadores } = (await res.json()) as {
-      contadores: { clave: string; contador: string; ciudades: string[] | null; siguiente: string; piso: number | null }[];
+      contadores: {
+        clave: string;
+        contador: string;
+        ciudades: string[] | null;
+        siguiente: string;
+        piso: number | null;
+        problema: string | null;
+      }[];
     };
     const claves = contadores.map((c) => c.clave);
     expect(claves).toContain(`IMPORTACION:BAQ+BGT+BUN:${ANIO_ACTUAL}`);
     expect(claves).toContain(`IMPORTACION:CTG:${ANIO_ACTUAL}`);
     expect(claves).toContain(`IMPORTACION:SMR:${ANIO_ACTUAL}`);
-    expect(claves).toContain(`EXPORTACION:${ANIO_ACTUAL}`);
     expect(claves).not.toContain(`IMPORTACION:BGT:${ANIO_ACTUAL}`);
     const grupo = contadores.find((c) => c.clave === `IMPORTACION:BAQ+BGT+BUN:${ANIO_ACTUAL}`);
     expect(grupo?.ciudades).toEqual(["BAQ", "BGT", "BUN"]);
     expect(grupo?.contador).toBe("contador compartido Barranquilla, Bogotá y Buenaventura");
+
+    // Exportación por ciudad (30-sep-2026): tres contadores, ya no uno por año.
+    expect(claves).not.toContain(`EXPORTACION:${ANIO_ACTUAL}`);
+    const exportacion = contadores.filter((c) => c.clave.startsWith("EXPORTACION:"));
+    expect(exportacion.map((c) => [c.clave, c.contador])).toEqual([
+      [`EXPORTACION:BAQ+BGT+BUN:${ANIO_ACTUAL}`, "contador de exportación Barranquilla, Bogotá y Buenaventura"],
+      [`EXPORTACION:CTG:${ANIO_ACTUAL}`, "contador de exportación de Cartagena"],
+      [`EXPORTACION:SMR:${ANIO_ACTUAL}`, "contador de exportación de Santa Marta"],
+    ]);
+    expect(exportacion[0].siguiente).toMatch(new RegExp(`^DO\\.EXP${String(ANIO_ACTUAL).slice(-2)}-\\d{4}$`));
+    expect(exportacion[1].siguiente).toMatch(new RegExp(`^DO\\.EXP\\.CTG${String(ANIO_ACTUAL).slice(-2)}-\\d{4}$`));
+    expect(exportacion[2].siguiente).toMatch(new RegExp(`^DO\\.EXP\\.SMR${String(ANIO_ACTUAL).slice(-2)}-\\d{4}$`));
+    expect(contadores.every((c) => c.problema === null)).toBe(true);
   });
 
   it("GET /api/tipos-tramite trae el catálogo de servicios de cada tipo", async (ctx) => {

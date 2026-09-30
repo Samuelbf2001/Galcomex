@@ -434,7 +434,8 @@ describe("DUTA y exportación (17, 18, 19)", () => {
     ]);
     await prisma.consecutivoPiso.create({
       data: {
-        clave: `EXPORTACION:${ANIO}`,
+        // Exportación por ciudad (30-sep-2026): Barranquilla va en el contador de BAQ+BGT+BUN.
+        clave: `EXPORTACION:BAQ+BGT+BUN:${ANIO}`,
         tipoTramiteCodigo: "EXPORTACION",
         anio: ANIO,
         ultimoNumero: 12,

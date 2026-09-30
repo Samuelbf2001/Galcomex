@@ -2,7 +2,9 @@
  * Numeración como Camila, con Postgres (DISENO-NUMERACION.md §2.1 y §8,
  * casos 4–9; decisión de Ernesto 30-sep-2026):
  *   - Barranquilla, Bogotá y Buenaventura comparten UN contador; Cartagena el suyo.
- *   - Exportación: serie DO.EXP sin ciudad, con piso.
+ *   - Exportación: serie DO.EXP sin ciudad, con piso; desde la confirmación de
+ *     Camila (30-sep-2026) va por ciudad como la importación (detalle en
+ *     `exportacion-por-ciudad.integration.test.ts`).
  *   - Un piso sube el punto de partida de un contador.
  *   - El servicio nunca entra en el contador.
  *
@@ -159,11 +161,11 @@ describe("contador compartido Barranquilla-Bogotá-Buenaventura (casos 4, 5)", (
 });
 
 describe("Exportación y pisos (casos 6, 7)", () => {
-  it("caso 6 — Exportación sin filas y piso 12 → DO.EXP82-0013, luego 0014; un piso menor no cambia nada", async (ctx) => {
+  it("caso 6 — Exportación sin filas y piso 12 del grupo → DO.EXP82-0013, Bogotá 0014; Cartagena aparte; un piso menor no cambia nada", async (ctx) => {
     const f = db(ctx);
     await prisma.consecutivoPiso.create({
       data: {
-        clave: `EXPORTACION:${ANIO_EXPORTACION}`,
+        clave: `EXPORTACION:BAQ+BGT+BUN:${ANIO_EXPORTACION}`,
         tipoTramiteCodigo: "EXPORTACION",
         anio: ANIO_EXPORTACION,
         ultimoNumero: 12,
@@ -175,12 +177,18 @@ describe("Exportación y pisos (casos 6, 7)", () => {
       tipoTramiteCodigo: "EXPORTACION",
       agenciaAduanas: undefined,
     });
-    const segunda = await crear(f, Ciudad.CTG, ANIO_EXPORTACION, {
+    const segunda = await crear(f, Ciudad.BGT, ANIO_EXPORTACION, {
+      tipoTramiteCodigo: "EXPORTACION",
+      agenciaAduanas: undefined,
+    });
+    const cartagena = await crear(f, Ciudad.CTG, ANIO_EXPORTACION, {
       tipoTramiteCodigo: "EXPORTACION",
       agenciaAduanas: undefined,
     });
     expect(primera.consecutivo).toBe("DO.EXP82-0013");
     expect(segunda.consecutivo).toBe("DO.EXP82-0014");
+    // Cartagena lleva su propio contador: el piso del grupo no la toca.
+    expect(cartagena.consecutivo).toBe("DO.EXP.CTG82-0001");
     // El servicio de la exportación se escoge solo.
     expect(primera.conceptoServicioCodigo).toBe("EXPORTACION");
     // Sin agencia ni checklist (flujo corto, como «Otros»).
@@ -189,14 +197,14 @@ describe("Exportación y pisos (casos 6, 7)", () => {
 
     await prisma.consecutivoPiso.create({
       data: {
-        clave: `EXPORTACION:${ANIO_EXPORTACION}`,
+        clave: `EXPORTACION:BAQ+BGT+BUN:${ANIO_EXPORTACION}`,
         tipoTramiteCodigo: "EXPORTACION",
         anio: ANIO_EXPORTACION,
         ultimoNumero: 5,
         motivo: "Prueba: piso menor que el máximo",
       },
     });
-    const tercera = await crear(f, Ciudad.BAQ, ANIO_EXPORTACION, {
+    const tercera = await crear(f, Ciudad.BUN, ANIO_EXPORTACION, {
       tipoTramiteCodigo: "EXPORTACION",
       agenciaAduanas: undefined,
     });

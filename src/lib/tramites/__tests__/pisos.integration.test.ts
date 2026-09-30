@@ -139,15 +139,42 @@ describe("fijarPisoConsecutivo", () => {
     await expect(
       fijarPisoConsecutivo({ ...base, ciudad: Ciudad.BAQ, ultimoNumero: 400, usuarioId: operativoId, aplicar: false }),
     ).rejects.toThrow(/Solo un usuario ADMIN/);
-    // Exportación va por año: no pide ciudad.
-    const exp = await fijarPisoConsecutivo({
-      ...base,
-      tipoTramiteCodigo: "EXPORTACION",
-      ultimoNumero: 12,
-      usuarioId: adminId,
-      aplicar: false,
+    // Exportación va por ciudad desde el 30-sep-2026: sin ciudad no hay piso.
+    await expect(
+      fijarPisoConsecutivo({ ...base, tipoTramiteCodigo: "EXPORTACION", ultimoNumero: 12, usuarioId: adminId, aplicar: false }),
+    ).rejects.toThrow(/indica la ciudad/);
+  });
+
+  it("Exportación: el piso de Bogotá es el del contador de Barranquilla-Bogotá-Buenaventura; Cartagena y Santa Marta, el suyo", async (ctx) => {
+    ensureDb(ctx);
+    const exp = { ...base, tipoTramiteCodigo: "EXPORTACION", usuarioId: adminId };
+
+    const grupo = await fijarPisoConsecutivo({ ...exp, ciudad: Ciudad.BGT, ultimoNumero: 12, aplicar: false });
+    expect(grupo).toMatchObject({
+      clave: `EXPORTACION:BAQ+BGT+BUN:${ANIO}`,
+      contador: "contador de exportación Barranquilla, Bogotá y Buenaventura",
+      siguienteAntes: "DO.EXP87-0001",
+      siguienteDespues: "DO.EXP87-0013",
     });
-    expect(exp).toMatchObject({ clave: `EXPORTACION:${ANIO}`, siguienteDespues: "DO.EXP87-0013" });
+
+    const ctg = await fijarPisoConsecutivo({ ...exp, ciudad: Ciudad.CTG, ultimoNumero: 7, aplicar: true });
+    expect(ctg).toMatchObject({
+      clave: `EXPORTACION:CTG:${ANIO}`,
+      contador: "contador de exportación de Cartagena",
+      siguienteDespues: "DO.EXP.CTG87-0008",
+      aplicado: true,
+    });
+
+    const smr = await fijarPisoConsecutivo({ ...exp, ciudad: Ciudad.SMR, ultimoNumero: 3, aplicar: false });
+    expect(smr).toMatchObject({ clave: `EXPORTACION:SMR:${ANIO}`, siguienteDespues: "DO.EXP.SMR87-0004" });
+
+    // El piso de Cartagena no mueve al grupo ni a la importación de Cartagena.
+    const contadores = await estadoContadores(ANIO);
+    const por = (clave: string) => contadores.find((c) => c.clave === clave);
+    expect(por(`EXPORTACION:CTG:${ANIO}`)).toMatchObject({ piso: 7, siguiente: "DO.EXP.CTG87-0008", problema: null });
+    expect(por(`EXPORTACION:BAQ+BGT+BUN:${ANIO}`)).toMatchObject({ piso: null, siguiente: "DO.EXP87-0001" });
+    expect(por(`EXPORTACION:SMR:${ANIO}`)).toMatchObject({ siguiente: "DO.EXP.SMR87-0001" });
+    expect(por(`IMPORTACION:CTG:${ANIO}`)).toMatchObject({ piso: null, siguiente: "DO.CTG87-0001" });
   });
 
   it("rechaza un año fuera de rango (el script sin --anio mandaba 0 y fijaba el piso de un contador que nadie usa)", async () => {
