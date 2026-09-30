@@ -203,6 +203,22 @@ export class TarifarioNoAplicableError extends Error {
   }
 }
 
+/**
+ * §2.2.7 (30-sep-2026): el DO es de un servicio con tarifa propia (traslado,
+ * nacionalización, DUTA) y la empresa no tiene tarifa de ese servicio. Nunca
+ * se factura la comisión por defecto (150.000) en silencio: o se escribe la
+ * comisión a mano o se carga la tarifa.
+ */
+export class ServicioSinTarifaError extends Error {
+  public readonly status = 422;
+  public readonly codigo = "SERVICIO_SIN_TARIFA" as const;
+  constructor(nombreServicio: string) {
+    super(
+      `El DO es de servicio ${nombreServicio} y la empresa no tiene tarifa para ese servicio: escribe la comisión a mano o carga la tarifa.`,
+    );
+    this.name = "ServicioSinTarifaError";
+  }
+}
 
 export class TramiteNoFacturableError extends Error {
   public readonly status = 422;
@@ -465,6 +481,12 @@ export async function generarBorrador(input: GenerarBorradorInput) {
             `No se generó el borrador: el tarifario cambió mientras revisabas; ahora rige ${propuesta.tarifario.nombre} v${propuesta.tarifario.version}. Vuelve a consultar el tarifario y revisa los valores antes de generar.`,
           );
         }
+      }
+      // §2.2.7 (30-sep-2026): un servicio con tarifa propia (traslado,
+      // nacionalización, DUTA) sin tarifa ni comisión escrita a mano nunca cae
+      // en `params.comisionDefault`. La importación general no cambia.
+      if (!propuesta.tarifario && propuesta.servicio?.claveTarifa) {
+        throw new ServicioSinTarifaError(propuesta.servicio.nombre ?? propuesta.servicio.claveTarifa);
       }
       if (propuesta.tarifario && propuesta.resultado) {
         if (propuesta.resultado.pendientes.length > 0) {
