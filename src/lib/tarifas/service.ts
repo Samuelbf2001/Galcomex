@@ -26,6 +26,13 @@ import { capacidadesDeEmpresa } from "@/lib/capacidades/service";
 import { tiene } from "@/lib/capacidades/resolver";
 import { prisma } from "@/lib/db/prisma";
 import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
+import { cargarCatalogoServicios } from "@/lib/tramites/catalogo-servicios";
+import {
+  nombreCorto,
+  reglaServicioDeAlcance,
+  resolverServicioGuardado,
+  type ServicioCatalogo,
+} from "@/lib/tramites/servicios";
 import { plantillaPorCodigo } from "@/lib/tarifas/plantillas";
 import { agenciamientoEstandarDe } from "@/lib/tarifas/agenciamiento";
 import { camposQuePideTarifa, type CamposTarifa } from "@/lib/tarifas/campos-tarifa";
@@ -175,12 +182,40 @@ export class TarifarioServicioRequeridoError extends Error {
   }
 }
 
-/** B2 — el servicio solo existe en las tarifas de «Otros servicios» (alcances de flujo corto). */
+function mensajeServicioNoAplica(alcance: string, permitidos: readonly ServicioCatalogo[]): string {
+  if (permitidos.length === 0) return `Una tarifa de ${alcance} no lleva servicio. Déjalo vacío.`;
+  const nombres = permitidos.map((s) => nombreCorto(s));
+  const lista =
+    nombres.length === 1 ? nombres[0] : `${nombres.slice(0, -1).join(", ")} o ${nombres[nombres.length - 1]}`;
+  return `Una tarifa de ${alcance} solo lleva uno de estos servicios: ${lista}. Déjalo vacío para la tarifa general.`;
+}
+
+/**
+ * B2 — el servicio no aplica a este alcance. 30-sep-2026: en la línea de
+ * trámites solo valen los servicios de su catálogo con tarifa propia
+ * (traslado, nacionalización, DUTA); vacío = la tarifa general.
+ */
 export class TarifarioServicioNoAplicaError extends Error {
   public readonly status = 422;
-  constructor(alcance: string) {
-    super(`El servicio solo aplica a las tarifas de «Otros servicios»; una tarifa de ${alcance} no lo lleva. Déjalo vacío.`);
+  constructor(alcance: string, permitidos: readonly ServicioCatalogo[] = []) {
+    super(mensajeServicioNoAplica(alcance, permitidos));
     this.name = "TarifarioServicioNoAplicaError";
+  }
+}
+
+/**
+ * 30-sep-2026 — el servicio es de un trámite normal (nacionalización, DUTA,
+ * traslado, exportación): su tarifa se carga en la línea de ese trámite, no
+ * en «Otros servicios».
+ */
+export class TarifarioServicioReservadoError extends Error {
+  public readonly status = 422;
+  public readonly codigo = "SERVICIO_RESERVADO" as const;
+  constructor(codigo: string) {
+    super(
+      `El servicio ${codigo} es de un trámite normal: su tarifa se carga en la línea de ese trámite (p. ej. «Trámites»), no en «Otros servicios».`,
+    );
+    this.name = "TarifarioServicioReservadoError";
   }
 }
 
@@ -475,22 +510,37 @@ export async function motivoSinTarifarioVigente(
 // ─── Mutaciones ───────────────────────────────────────────────────────────────
 
 /**
- * B2 — el servicio de una tarifa de «Otros»: obligatorio (y un concepto de
- * venta ACTIVO) cuando el `alcance` es la línea de servicio de algún tipo de
- * trámite de flujo corto; prohibido en cualquier otro alcance. Sin ramas por
- * el código «OTRO» (invariante 7): la llave es la bandera `flujoCorto`.
- * Devuelve el código a guardar (`null` si no aplica).
+ * El servicio que puede declarar una tarifa de este `alcance`
+ * (`reglaServicioDeAlcance`, 30-sep-2026, generaliza B2):
+ *   - «Otros» (flujo corto sin catálogo): obligatorio, un concepto ACTIVO que
+ *     no sea de un trámite normal (`TarifarioServicioReservadoError`).
+ *   - «Trámites» (tipo con catálogo): opcional — vacío = la tarifa general de
+ *     importación; o traslado, nacionalización o DUTA.
+ *   - Exportación, clasificación, Plan Vallejo…: ninguno.
+ * Sin ramas por código de tipo (invariante 7): todo sale del catálogo y de la
+ * bandera `flujoCorto`. Devuelve el código a guardar (`null` si no aplica).
  */
 async function servicioValidoDeTarifa(alcance: string, servicio: string | null | undefined): Promise<string | null> {
   const codigo = servicio?.trim() || null;
-  const esFlujoCorto = (await prisma.tipoTramite.count({ where: { lineaServicio: alcance, flujoCorto: true } })) > 0;
-  if (!esFlujoCorto) {
-    if (codigo) throw new TarifarioServicioNoAplicaError(alcance);
-    return null;
+  const { tipos, catalogo } = await cargarCatalogoServicios();
+  const regla = reglaServicioDeAlcance(alcance, tipos, catalogo);
+  switch (regla.modo) {
+    case "NINGUNO":
+      if (codigo) throw new TarifarioServicioNoAplicaError(alcance);
+      return null;
+    case "OPCIONAL":
+      if (!codigo) return null;
+      if (!regla.permitidos.some((s) => s.conceptoCodigo === codigo)) {
+        throw new TarifarioServicioNoAplicaError(alcance, regla.permitidos);
+      }
+      await conceptoVentaActivoDe(codigo);
+      return codigo;
+    case "OBLIGATORIO":
+      if (!codigo) throw new TarifarioServicioRequeridoError();
+      if (regla.reservados.includes(codigo)) throw new TarifarioServicioReservadoError(codigo);
+      await conceptoVentaActivoDe(codigo);
+      return codigo;
   }
-  if (!codigo) throw new TarifarioServicioRequeridoError();
-  await conceptoVentaActivoDe(codigo);
-  return codigo;
 }
 
 export interface CrearTarifarioInput extends TarifarioPayload {
@@ -1137,6 +1187,13 @@ export interface PropuestaTarifa {
    * únicamente esto.
    */
   camposTarifa?: CamposTarifa;
+  /**
+   * 30-sep-2026 — servicio del DO con el que se buscó la tarifa. `claveTarifa`
+   * `null` = la tarifa general de la línea. `null` en un tipo sin servicio.
+   * `generarBorrador` lo usa para no facturar nunca la comisión por defecto en
+   * un servicio con tarifa propia (§2.2.7).
+   */
+  servicio?: { codigo: string | null; nombre: string | null; claveTarifa: string | null } | null;
 }
 
 /** Contexto del motor más la orden de compra del cliente (no entra al cálculo). */
@@ -1252,10 +1309,23 @@ export async function propuestaParaTramite(
       ciudad: true,
       conceptoServicioCodigo: true,
       cliente: { select: { nombre: true } },
-      tipoTramite: { select: { lineaServicio: true, flujoCorto: true } },
+      tipoTramite: { select: { codigo: true, nombre: true, lineaServicio: true, flujoCorto: true } },
     },
   });
   if (!tramite) throw new TarifarioNoEncontradoError(tramiteId);
+
+  // 30-sep-2026 (generaliza B2) — la tarifa se busca por el SERVICIO del DO en
+  // todos los tipos: en «Otros» por su concepto de venta (DUTA y nacionalización
+  // conviven, una licencia sin tarifa no toma el precio de otra); en un tipo con
+  // catálogo, por la clave del servicio escogido (Importación general y
+  // Exportación: la tarifa sin servicio; traslado, nacionalización y DUTA: la
+  // de ese servicio). Nunca cae a la tarifa de otro servicio en silencio.
+  const { tipos, catalogo } = await cargarCatalogoServicios();
+  const resuelto = resolverServicioGuardado(tramite.tipoTramite, catalogo, tramite.conceptoServicioCodigo, tipos);
+  const servicioDo =
+    resuelto.servicio || resuelto.conceptoGuardado
+      ? { codigo: resuelto.conceptoGuardado, nombre: resuelto.nombre, claveTarifa: resuelto.claveTarifa }
+      : null;
 
   const contexto = await contextoDeTramite(tramiteId);
   const capacidades = await capacidadesDeEmpresa(tramite.clienteId);
@@ -1266,25 +1336,23 @@ export async function propuestaParaTramite(
       tarifarioPropio: false,
       resultado: null,
       contexto,
+      servicio: servicioDo,
     };
   }
 
   const alcance = tramite.tipoTramite.lineaServicio;
 
-  // B2 — en un tipo de flujo corto («Otros») la tarifa se busca por el SERVICIO del DO
-  // (su concepto de venta): DUTA y nacionalización conviven y una licencia sin tarifa
-  // ya no toma el precio de la DUTA en silencio. Los demás tipos: solo tarifas sin servicio.
-  const flujoCorto = tramite.tipoTramite.flujoCorto;
-  const servicio = flujoCorto ? tramite.conceptoServicioCodigo : null;
-  if (flujoCorto && !servicio) {
+  if (resuelto.faltaServicio) {
     return {
       tarifario: null,
       motivo: "Escoge el servicio (concepto de venta) del DO: con él se busca su tarifa",
       tarifarioPropio: true,
       resultado: null,
       contexto,
+      servicio: servicioDo,
     };
   }
+  const servicio = resuelto.claveTarifa;
 
   const vigente = await tarifarioVigenteDe(tramite.clienteId, alcance, fecha, tramite.ciudad, servicio);
   if (!vigente) {
@@ -1295,14 +1363,16 @@ export async function propuestaParaTramite(
       fecha,
       servicio,
     );
+    const nombreServicio = servicio ? (resuelto.servicio ? resuelto.nombre : servicio) : null;
     return {
       tarifario: null,
       motivo: ciudadFueraDeFecha
         ? `El tarifario de ${etiquetaCiudad(tramite.ciudad!)} está fuera de fecha`
-        : `${tramite.cliente.nombre} no tiene un tarifario vigente para ${alcance.toLowerCase()}${servicio ? ` (servicio ${servicio})` : ""} en esta fecha`,
+        : `${tramite.cliente.nombre} no tiene un tarifario vigente para ${alcance.toLowerCase()}${nombreServicio ? ` (servicio ${nombreServicio})` : ""} en esta fecha`,
       tarifarioPropio: true,
       resultado: null,
       contexto,
+      servicio: servicioDo,
     };
   }
 
@@ -1323,6 +1393,7 @@ export async function propuestaParaTramite(
     resultado,
     contexto,
     camposTarifa: camposQuePideTarifa(itemsCalculables),
+    servicio: servicioDo,
   };
 }
 

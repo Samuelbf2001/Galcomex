@@ -258,10 +258,11 @@ export const tarifarioSchema = z
      */
     ciudades: ciudadesSchema.optional(),
     /**
-     * B2 (Diseño B) — servicio (código del concepto de venta) que cobra una
-     * tarifa de «Otros servicios»: DUTA, NACIONALIZACION_ZF… Obligatorio en
-     * los alcances de flujo corto y prohibido en los demás (lo valida el
-     * servicio, que sabe qué alcances son de flujo corto).
+     * Servicio (código del concepto de venta) que cobra la tarifa. B2: en
+     * «Otros servicios» es obligatorio (sin los servicios de un trámite
+     * normal). 30-sep-2026: en «Trámites» es opcional (vacío = tarifa general;
+     * TRASLADO_ZF, NACIONALIZACION_ZF o DUTA); en los demás, vacío. Lo valida
+     * el servicio (`reglaServicioDeAlcance`), que conoce el catálogo.
      */
     conceptoServicioCodigo: conceptoServicioSchema,
     vigenteDesde: fechaSchema,
