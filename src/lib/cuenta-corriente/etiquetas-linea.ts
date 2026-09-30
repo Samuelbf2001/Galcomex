@@ -9,6 +9,8 @@
 const ETIQUETAS_LINEA_SERVICIO: Record<string, string> = {
   TRAMITE: "Trámites",
   CLASIFICACION: "Clasificación arancelaria",
+  // Tipo Exportación (30-sep-2026): su propia línea, igual que en el filtro «Línea» de cartera.
+  EXPORTACION: "Exportación",
   PLAN_VALLEJO: "Plan Vallejo",
   OTROS: "Otros servicios",
   OTRO: "Otros servicios",
