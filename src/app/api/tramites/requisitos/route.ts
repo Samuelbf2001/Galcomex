@@ -6,6 +6,7 @@ import { EmpresaNoEncontradaError } from "@/lib/capacidades/service";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
 import { requisitosDeDo } from "@/lib/tramites/service";
+import { ServicioNoPermitidoError, ServicioReservadoError } from "@/lib/tramites/servicios";
 import { requisitosQuerySchema } from "@/lib/validations/tramites";
 
 /**
@@ -20,6 +21,11 @@ import { requisitosQuerySchema } from "@/lib/validations/tramites";
  *   `docs_bl_factura_obligatorios` para ese tipo (BL y FACTURA_COMERCIAL). El
  *   servidor los exige al pasar de APERTURA a EN_TRAMITE; la UI los pide al
  *   crear, porque se suben justo después del POST.
+ * - 30-sep-2026: `&servicio=` (TRASLADO_ZF, NACIONALIZACION_ZF, DUTA…) busca
+ *   la tarifa de ese servicio y quita los documentos que no le aplican (la
+ *   nacionalización no pide BL); `servicio` dice cuál se usó y `numeracion`
+ *   (con `&ciudad=`) el número que tomaría el DO y de qué contador — vista
+ *   previa, no reserva.
  *
  * Mismos roles que `POST /api/tramites`.
  */
@@ -36,6 +42,7 @@ export async function GET(request: NextRequest) {
       clienteId: request.nextUrl.searchParams.get("clienteId") ?? undefined,
       tipoTramiteCodigo: request.nextUrl.searchParams.get("tipoTramiteCodigo") ?? undefined,
       ciudad: request.nextUrl.searchParams.get("ciudad") ?? undefined,
+      servicio: request.nextUrl.searchParams.get("servicio") ?? undefined,
     });
   } catch (error) {
     if (error instanceof ZodError) {
@@ -50,6 +57,11 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     if (error instanceof EmpresaNoEncontradaError) {
       return NextResponse.json({ error: "Empresa no encontrada" }, { status: 404 });
+    }
+
+    // Servicio que el tipo no admite o que es de otro tipo (30-sep-2026).
+    if (error instanceof ServicioNoPermitidoError || error instanceof ServicioReservadoError) {
+      return NextResponse.json({ error: error.message, codigo: error.codigo }, { status: error.status });
     }
 
     // Tipo de trámite inexistente o inactivo (422).

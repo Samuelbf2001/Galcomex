@@ -134,6 +134,16 @@ export const requisitosQuerySchema = z.object({
     .optional(),
   /** B3 — la ciudad del DO que se va a crear (Ciudad puede tener tarifario propio, R1). */
   ciudad: z.nativeEnum(Ciudad).optional(),
+  /**
+   * 30-sep-2026 — servicio que se va a escoger (concepto de venta: TRASLADO_ZF,
+   * NACIONALIZACION_ZF, DUTA…). Ausente = el servicio por defecto del tipo.
+   */
+  servicio: z
+    .string({ error: "El servicio debe ser un texto." })
+    .trim()
+    .min(1, "El servicio no puede ir vacío.")
+    .max(60, "El servicio es demasiado largo.")
+    .optional(),
 });
 
 export type RequisitosQuery = z.infer<typeof requisitosQuerySchema>;

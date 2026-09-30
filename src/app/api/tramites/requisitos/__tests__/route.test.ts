@@ -355,7 +355,8 @@ describe("GET /api/tramites/requisitos — contrato", () => {
 describe("POST /api/tramites y /estado con los requisitos", () => {
   it("crear sin tarifa vigente: 422 con código y detalles para ir a la tarifa", async (ctx) => {
     ensureDb(ctx);
-    comoRol(Rol.OPERATIVO);
+    // 30-sep-2026: un DO de otro año (2095) solo lo crea la administradora.
+    comoRol(Rol.ADMIN);
     const empresa = await crearEmpresa();
 
     const response = await tramitesPOST(
@@ -378,7 +379,9 @@ describe("POST /api/tramites y /estado con los requisitos", () => {
     ensureDb(ctx);
     const empresa = await crearEmpresa([{ codigo: "do_exige_tarifa_vigente", habilitado: false }]);
 
-    comoRol(Rol.OPERATIVO);
+    // 30-sep-2026: un DO de otro año (2095) solo lo crea la administradora; la
+    // transición sí va como OPERATIVO.
+    comoRol(Rol.ADMIN);
     const creado = await tramitesPOST(
       jsonRequest("http://localhost/api/tramites", {
         ciudad: "SMR",
@@ -391,6 +394,7 @@ describe("POST /api/tramites y /estado con los requisitos", () => {
     const { tramite } = (await creado.json()) as { tramite: { id: string; consecutivo: string } };
     await prisma.checklistItem.updateMany({ where: { tramiteId: tramite.id }, data: { recibido: true } });
     await prisma.tramiteDO.update({ where: { id: tramite.id }, data: { estado: EstadoTramite.APERTURA } });
+    comoRol(Rol.OPERATIVO);
 
     const contexto = { params: Promise.resolve({ id: tramite.id }) };
     const url = `http://localhost/api/tramites/${tramite.id}/estado`;

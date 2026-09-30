@@ -1,8 +1,12 @@
 /**
  * Servicio del DO por HTTP (DISENO-NUMERACION.md §2.2.4–§2.2.5, §2.5; casos
- * 20, 21, 23, 25 y 26 del §8; decisión de Ernesto 30-sep-2026):
+ * 20, 21, 23, 25, 26, 27 y 28 del §8; decisión de Ernesto 30-sep-2026):
  *
- *   POST  /api/tramites              — D1 por servicio, SERVICIO_RESERVADO, SERVICIO_NO_PERMITIDO
+ *   POST  /api/tramites              — D1 por servicio, SERVICIO_RESERVADO, SERVICIO_NO_PERMITIDO,
+ *                                      año distinto del actual solo ADMIN
+ *   GET   /api/tramites/requisitos   — servicio, documentos y número que tomará
+ *   GET   /api/tramites/consecutivos — estado de los contadores (ADMIN, REVISOR)
+ *   GET   /api/tipos-tramite         — cada tipo con su catálogo de servicios
  *   PATCH /api/tramites/[id]         — cambiar el servicio (409 con borrador o desde
  *                                      «Enviado a facturar», 422 fuera del catálogo)
  *   POST  /api/tramites/[id]/estado  — D2 y checklist sin lo que no aplica al servicio
@@ -29,12 +33,18 @@ vi.mock("@/lib/auth/auth", () => {
 
 import { POST as estadoPOST } from "@/app/api/tramites/[id]/estado/route";
 import { PATCH as tramitePATCH } from "@/app/api/tramites/[id]/route";
+import { GET as consecutivosGET } from "@/app/api/tramites/consecutivos/route";
+import { GET as requisitosGET } from "@/app/api/tramites/requisitos/route";
 import { POST as tramitesPOST } from "@/app/api/tramites/route";
+import { GET as tiposGET } from "@/app/api/tipos-tramite/route";
 import { auth } from "@/lib/auth/auth";
 import { definicionDe } from "@/lib/capacidades/catalogo";
 import { prisma } from "@/lib/db/prisma";
+import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 
 const TEST_PREFIX = "vitest-servicio-do-api";
+const ANIO_ACTUAL = fechaCalendarioBogota().getUTCFullYear();
+const YY = String(ANIO_ACTUAL).slice(-2);
 const RUN_ID = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const DIA = 86_400_000;
 
@@ -415,6 +425,141 @@ describe("requisitos por servicio: nacionalización sin BL (caso 25)", () => {
     );
     const pasa = await estadoPOST(request(url, "POST", { estado: "EN_TRAMITE" }), contexto);
     expect(pasa.status).toBe(200);
+  });
+});
+
+describe("el año lo pone el servidor (caso 27)", () => {
+  it("caso 27 — POST /api/tramites con otro año: OPERATIVO → 422; ADMIN → ok; el año actual lo puede mandar cualquiera", async (ctx) => {
+    ensureDb(ctx);
+    const empresa = await crearEmpresa("EMPRESA VITEST AÑO", [{ codigo: "do_exige_tarifa_vigente", habilitado: false }]);
+
+    comoRol(Rol.OPERATIVO);
+    const operativo = await crearDo({ clienteId: empresa.id, ciudad: "SMR", anio: 2079 });
+    expect(operativo.status).toBe(422);
+    expect(operativo.json).toMatchObject({
+      codigo: "ANIO_SOLO_ADMIN",
+      error: "Solo la administradora puede crear un DO de otro año.",
+    });
+
+    comoRol(Rol.REVISOR);
+    expect((await crearDo({ clienteId: empresa.id, ciudad: "SMR", anio: 2079 })).status).toBe(422);
+    expect((await crearDo({ clienteId: empresa.id, ciudad: "SMR", anio: ANIO_ACTUAL })).status).toBe(201);
+
+    comoRol(Rol.ADMIN);
+    const admin = await crearDo({ clienteId: empresa.id, ciudad: "SMR", anio: 2079 });
+    expect(admin.status).toBe(201);
+    expect((admin.json.tramite as { consecutivo: string }).consecutivo).toMatch(/^DO\.SMR79-\d{4}$/);
+  });
+});
+
+describe("requisitos con servicio y vista previa del número (caso 28)", () => {
+  it("caso 28 — ciudad=BGT&servicio=NACIONALIZACION_ZF → número del contador compartido, solo factura comercial", async (ctx) => {
+    ensureDb(ctx);
+    comoRol(Rol.OPERATIVO);
+    const empresa = await crearEmpresa("POLYREC ZF VITEST REQUISITOS", [
+      { codigo: "do_exige_tarifa_vigente", habilitado: false },
+    ]);
+    // Como en producción tras el borrado del 30-sep: Barranquilla va en 0281.
+    const grupo = { tipoTramiteCodigo: "IMPORTACION", anio: ANIO_ACTUAL, ciudad: { in: ["BAQ", "BGT", "BUN"] as ("BAQ" | "BGT" | "BUN")[] } };
+    const maxAntes = (await prisma.tramiteDO.aggregate({ where: grupo, _max: { numero: true } }))._max.numero ?? 0;
+    if (maxAntes < 281) {
+      await prisma.tramiteDO.create({
+        data: {
+          consecutivo: `DO.BAQ${YY}-0281`,
+          tipoTramiteCodigo: "IMPORTACION",
+          ciudad: "BAQ",
+          anio: ANIO_ACTUAL,
+          numero: 281,
+          clienteId: empresa.id,
+          creadoPorId: usuarioId,
+          comentarios: `${TEST_PREFIX}:${RUN_ID}`,
+        },
+      });
+    }
+    const maximo = (await prisma.tramiteDO.aggregate({ where: grupo, _max: { numero: true } }))._max.numero ?? 0;
+    const piso =
+      (await prisma.consecutivoPiso.aggregate({ where: { clave: `IMPORTACION:BAQ+BGT+BUN:${ANIO_ACTUAL}` }, _max: { ultimoNumero: true } }))
+        ._max.ultimoNumero ?? 0;
+    const esperado = `DO.BGT${YY}-${String(Math.max(maximo, piso) + 1).padStart(4, "0")}`;
+    if (maximo === 281 && piso <= 281) expect(esperado).toBe(`DO.BGT${YY}-0282`);
+
+    const res = await requisitosGET(
+      new NextRequest(
+        `http://localhost/api/tramites/requisitos?clienteId=${empresa.id}&tipoTramiteCodigo=IMPORTACION&ciudad=BGT&servicio=NACIONALIZACION_ZF`,
+      ),
+    );
+    expect(res.status).toBe(200);
+    const requisitos = (await res.json()) as {
+      numeracion: { siguiente: string; contador: string };
+      documentosObligatorios: { requeridos: string[] };
+      servicio: { codigo: string; nombre: string; claveTarifa: string };
+    };
+    expect(requisitos.numeracion).toEqual({
+      siguiente: esperado,
+      contador: "contador compartido Barranquilla, Bogotá y Buenaventura",
+    });
+    expect(requisitos.documentosObligatorios.requeridos).toEqual(["FACTURA_COMERCIAL"]);
+    expect(requisitos.servicio).toEqual({
+      codigo: "NACIONALIZACION_ZF",
+      nombre: "Nacionalización desde zona franca",
+      claveTarifa: "NACIONALIZACION_ZF",
+    });
+
+    // Cartagena: su propio contador. Exportación: su serie, sin ciudad.
+    const ctg = (await (
+      await requisitosGET(
+        new NextRequest(`http://localhost/api/tramites/requisitos?clienteId=${empresa.id}&ciudad=CTG&servicio=DUTA`),
+      )
+    ).json()) as { numeracion: { siguiente: string; contador: string } };
+    expect(ctg.numeracion.contador).toBe("contador de Cartagena");
+    expect(ctg.numeracion.siguiente).toMatch(new RegExp(`^DO\\.CTG${YY}-\\d{4}$`));
+    const exp = (await (
+      await requisitosGET(
+        new NextRequest(`http://localhost/api/tramites/requisitos?clienteId=${empresa.id}&tipoTramiteCodigo=EXPORTACION&ciudad=BAQ`),
+      )
+    ).json()) as { numeracion: { siguiente: string; contador: string }; servicio: { codigo: string } };
+    expect(exp.numeracion.siguiente).toMatch(new RegExp(`^DO\\.EXP${YY}-\\d{4}$`));
+    expect(exp.servicio.codigo).toBe("EXPORTACION");
+
+    // Un servicio que el tipo no admite: 422 con código.
+    const malo = await requisitosGET(
+      new NextRequest(`http://localhost/api/tramites/requisitos?clienteId=${empresa.id}&servicio=PLAN_VALLEJO`),
+    );
+    expect(malo.status).toBe(422);
+    expect(await malo.json()).toMatchObject({ codigo: "SERVICIO_NO_PERMITIDO" });
+  });
+
+  it("GET /api/tramites/consecutivos (ADMIN, REVISOR): un contador compartido para BAQ-BGT-BUN, CTG y SMR aparte, Exportación por año", async (ctx) => {
+    ensureDb(ctx);
+    comoRol(Rol.OPERATIVO);
+    expect((await consecutivosGET(new NextRequest("http://localhost/api/tramites/consecutivos"))).status).toBe(403);
+
+    comoRol(Rol.REVISOR);
+    const res = await consecutivosGET(new NextRequest(`http://localhost/api/tramites/consecutivos?anio=${ANIO_ACTUAL}`));
+    expect(res.status).toBe(200);
+    const { contadores } = (await res.json()) as {
+      contadores: { clave: string; contador: string; ciudades: string[] | null; siguiente: string; piso: number | null }[];
+    };
+    const claves = contadores.map((c) => c.clave);
+    expect(claves).toContain(`IMPORTACION:BAQ+BGT+BUN:${ANIO_ACTUAL}`);
+    expect(claves).toContain(`IMPORTACION:CTG:${ANIO_ACTUAL}`);
+    expect(claves).toContain(`IMPORTACION:SMR:${ANIO_ACTUAL}`);
+    expect(claves).toContain(`EXPORTACION:${ANIO_ACTUAL}`);
+    expect(claves).not.toContain(`IMPORTACION:BGT:${ANIO_ACTUAL}`);
+    const grupo = contadores.find((c) => c.clave === `IMPORTACION:BAQ+BGT+BUN:${ANIO_ACTUAL}`);
+    expect(grupo?.ciudades).toEqual(["BAQ", "BGT", "BUN"]);
+    expect(grupo?.contador).toBe("contador compartido Barranquilla, Bogotá y Buenaventura");
+  });
+
+  it("GET /api/tipos-tramite trae el catálogo de servicios de cada tipo", async (ctx) => {
+    ensureDb(ctx);
+    comoRol(Rol.OPERATIVO);
+    const res = await tiposGET(new NextRequest("http://localhost/api/tipos-tramite"));
+    const { tipos } = (await res.json()) as { tipos: { codigo: string; servicios: { conceptoCodigo: string | null }[] }[] };
+    const importacion = tipos.find((t) => t.codigo === "IMPORTACION");
+    expect(importacion?.servicios.map((s) => s.conceptoCodigo)).toEqual([null, "TRASLADO_ZF", "NACIONALIZACION_ZF", "DUTA"]);
+    expect(tipos.find((t) => t.codigo === "EXPORTACION")?.servicios.map((s) => s.conceptoCodigo)).toEqual(["EXPORTACION"]);
+    expect(tipos.find((t) => t.codigo === "OTRO")?.servicios).toEqual([]);
   });
 });
 

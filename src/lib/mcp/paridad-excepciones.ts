@@ -217,4 +217,13 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
     "/api/tramites/[param]/cotizacion/pdf",
     "Cotización / solicitud de fondos del DO en PDF: falta tool tramite_cotizacion_pdf (binario; ver exportar_archivo)",
   ),
+
+  // Numeración como Camila (30-sep-2026, DISENO-NUMERACION.md). La tool
+  // consecutivos_ver se agrega al MCP compartido (galcomex-mcp/server.mjs)
+  // después de desplegar; borrar esta línea entonces.
+  pendiente(
+    "GET",
+    "/api/tramites/consecutivos",
+    "Estado de los contadores de DO del año (compartido BAQ-BGT-BUN, CTG, SMR, Exportación…: último, piso, siguiente): falta tool consecutivos_ver",
+  ),
 ];

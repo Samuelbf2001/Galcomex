@@ -7,7 +7,7 @@
  *   22  DUTA sin tarifa ni comisión escrita → 422; con comisión a mano → sale.
  *
  * Requiere PostgreSQL local con DATABASE_URL y las migraciones del 30-sep; si
- * no, skip. TEST_PREFIX único: "vitest-servicio-plata". Año de datos: 3031.
+ * no, skip. TEST_PREFIX único: "vitest-servicio-plata". Año de datos: 3041.
  */
 import "dotenv/config";
 
@@ -22,7 +22,7 @@ import { generarBorrador, ServicioSinTarifaError } from "../service";
 
 const TEST_PREFIX = "vitest-servicio-plata";
 const RUN_ID = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const ANIO = 3031;
+const ANIO = 3041;
 const $ = (n: number) => BigInt(n);
 
 let listo = false;

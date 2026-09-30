@@ -14,6 +14,11 @@ import { jsonResponse } from "@/lib/http/json";
  * `capacidadRequerida` (la clasificación arancelaria, por ejemplo) solo aparece
  * si la empresa tiene esa capacidad encendida. Así el formulario de creación no
  * ofrece algo que el backend va a rechazar.
+ *
+ * 30-sep-2026: cada tipo trae `servicios` — su catálogo activo, en orden
+ * (Importación general, Traslado, Nacionalización, DUTA; Exportación). Vacío =
+ * el tipo no tiene catálogo (OTRO: cualquier concepto no reservado;
+ * CLASIFICACION: sin servicio).
  */
 export async function GET(request: NextRequest) {
   const session = await requireRole(["ADMIN", "REVISOR", "OPERATIVO", "SOCIO"]);
@@ -25,6 +30,20 @@ export async function GET(request: NextRequest) {
   const tipos = await prisma.tipoTramite.findMany({
     where: { activo: true },
     orderBy: { orden: "asc" },
+    include: {
+      servicios: {
+        where: { activo: true },
+        orderBy: { orden: "asc" },
+        select: {
+          id: true,
+          conceptoCodigo: true,
+          nombre: true,
+          tarifaGeneral: true,
+          documentosNoAplican: true,
+          orden: true,
+        },
+      },
+    },
   });
 
   const clienteId = request.nextUrl.searchParams.get("clienteId");

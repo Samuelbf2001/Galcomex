@@ -6,7 +6,7 @@
  *   - Un piso sube el punto de partida de un contador.
  *   - El servicio nunca entra en el contador.
  *
- * Años 2090–2094: ningún otro archivo de tests usa esos años. Sin
+ * Años 2081–2085: ningún otro archivo de tests usa esos años. Sin
  * DATABASE_URL (o sin la BD) los tests salen «skipped».
  */
 import "dotenv/config";
@@ -19,7 +19,7 @@ import { createTramite, verificarServicioDelDo } from "@/lib/tramites/service";
 
 const TEST_PREFIX = "vitest-numeracion";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const ANIOS = [2090, 2091, 2092, 2093, 2094];
+const ANIOS = [2081, 2082, 2083, 2084, 2085];
 const [ANIO_GRUPO, ANIO_EXPORTACION, ANIO_PISO, ANIO_SERVICIO, ANIO_CONCURRENCIA] = ANIOS;
 
 const SIN_REQUISITOS_DO = [
@@ -134,9 +134,9 @@ describe("contador compartido Barranquilla-Bogotá-Buenaventura (casos 4, 5)", (
     const bun = await crear(f, Ciudad.BUN, ANIO_GRUPO);
     const nac = await crear(f, Ciudad.BAQ, ANIO_GRUPO, { conceptoServicioCodigo: "NACIONALIZACION_ZF" });
 
-    expect(bgt.consecutivo).toBe("DO.BGT90-0282");
-    expect(bun.consecutivo).toBe("DO.BUN90-0283");
-    expect(nac.consecutivo).toBe("DO.BAQ90-0284");
+    expect(bgt.consecutivo).toBe("DO.BGT81-0282");
+    expect(bun.consecutivo).toBe("DO.BUN81-0283");
+    expect(nac.consecutivo).toBe("DO.BAQ81-0284");
     expect(nac.conceptoServicioCodigo).toBe("NACIONALIZACION_ZF");
     // Importación general: sin concepto, como todos los DOs de siempre.
     expect(bgt.conceptoServicioCodigo).toBeNull();
@@ -150,16 +150,16 @@ describe("contador compartido Barranquilla-Bogotá-Buenaventura (casos 4, 5)", (
     const imp = await crear(f, Ciudad.CTG, ANIO_GRUPO);
     const smr = await crear(f, Ciudad.SMR, ANIO_GRUPO);
 
-    expect(duta.consecutivo).toBe("DO.CTG90-0251");
+    expect(duta.consecutivo).toBe("DO.CTG81-0251");
     expect(duta.conceptoServicioCodigo).toBe("DUTA");
-    expect(imp.consecutivo).toBe("DO.CTG90-0252");
+    expect(imp.consecutivo).toBe("DO.CTG81-0252");
     // Santa Marta lleva el suyo (duda 2 para Camila).
-    expect(smr.consecutivo).toBe("DO.SMR90-0001");
+    expect(smr.consecutivo).toBe("DO.SMR81-0001");
   });
 });
 
 describe("Exportación y pisos (casos 6, 7)", () => {
-  it("caso 6 — Exportación sin filas y piso 12 → DO.EXP91-0013, luego 0014; un piso menor no cambia nada", async (ctx) => {
+  it("caso 6 — Exportación sin filas y piso 12 → DO.EXP82-0013, luego 0014; un piso menor no cambia nada", async (ctx) => {
     const f = db(ctx);
     await prisma.consecutivoPiso.create({
       data: {
@@ -179,8 +179,8 @@ describe("Exportación y pisos (casos 6, 7)", () => {
       tipoTramiteCodigo: "EXPORTACION",
       agenciaAduanas: undefined,
     });
-    expect(primera.consecutivo).toBe("DO.EXP91-0013");
-    expect(segunda.consecutivo).toBe("DO.EXP91-0014");
+    expect(primera.consecutivo).toBe("DO.EXP82-0013");
+    expect(segunda.consecutivo).toBe("DO.EXP82-0014");
     // El servicio de la exportación se escoge solo.
     expect(primera.conceptoServicioCodigo).toBe("EXPORTACION");
     // Sin agencia ni checklist (flujo corto, como «Otros»).
@@ -200,7 +200,7 @@ describe("Exportación y pisos (casos 6, 7)", () => {
       tipoTramiteCodigo: "EXPORTACION",
       agenciaAduanas: undefined,
     });
-    expect(tercera.consecutivo).toBe("DO.EXP91-0015");
+    expect(tercera.consecutivo).toBe("DO.EXP82-0015");
   });
 
   it("caso 7 — piso del grupo = 300 → la siguiente de cualquiera de las tres es 0301", async (ctx) => {
@@ -219,10 +219,10 @@ describe("Exportación y pisos (casos 6, 7)", () => {
     const bun = await crear(f, Ciudad.BUN, ANIO_PISO);
     const baq = await crear(f, Ciudad.BAQ, ANIO_PISO);
     const ctg = await crear(f, Ciudad.CTG, ANIO_PISO);
-    expect(bun.consecutivo).toBe("DO.BUN92-0301");
-    expect(baq.consecutivo).toBe("DO.BAQ92-0302");
+    expect(bun.consecutivo).toBe("DO.BUN83-0301");
+    expect(baq.consecutivo).toBe("DO.BAQ83-0302");
     // El piso del grupo no toca a Cartagena.
-    expect(ctg.consecutivo).toBe("DO.CTG92-0001");
+    expect(ctg.consecutivo).toBe("DO.CTG83-0001");
   });
 });
 
@@ -230,7 +230,7 @@ describe("el servicio no entra en el contador (caso 8)", () => {
   it("caso 8 — cambiar el servicio de un DO no cambia su número ni su ciudad", async (ctx) => {
     const f = db(ctx);
     const doBaq = await crear(f, Ciudad.BAQ, ANIO_SERVICIO);
-    expect(doBaq.consecutivo).toBe("DO.BAQ93-0001");
+    expect(doBaq.consecutivo).toBe("DO.BAQ84-0001");
 
     const verificado = await verificarServicioDelDo({
       tipoTramiteCodigo: "IMPORTACION",
@@ -249,7 +249,7 @@ describe("el servicio no entra en el contador (caso 8)", () => {
 
     const despues = await prisma.tramiteDO.findUniqueOrThrow({ where: { id: doBaq.id } });
     expect(despues).toMatchObject({
-      consecutivo: "DO.BAQ93-0001",
+      consecutivo: "DO.BAQ84-0001",
       numero: 1,
       ciudad: Ciudad.BAQ,
       conceptoServicioCodigo: "TRASLADO_ZF",
@@ -257,7 +257,7 @@ describe("el servicio no entra en el contador (caso 8)", () => {
 
     // El siguiente del grupo no se entera del servicio: 0002.
     const siguiente = await crear(f, Ciudad.BGT, ANIO_SERVICIO, { conceptoServicioCodigo: "DUTA" });
-    expect(siguiente.consecutivo).toBe("DO.BGT93-0002");
+    expect(siguiente.consecutivo).toBe("DO.BGT84-0002");
   });
 });
 
@@ -280,7 +280,7 @@ describe("concurrencia (caso 9)", () => {
     expect(new Set(numeros).size).toBe(20);
     expect(numeros).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
     for (const t of creados) {
-      expect(t.consecutivo).toBe(`DO.${t.ciudad}94-${String(t.numero).padStart(4, "0")}`);
+      expect(t.consecutivo).toBe(`DO.${t.ciudad}85-${String(t.numero).padStart(4, "0")}`);
     }
   });
 });

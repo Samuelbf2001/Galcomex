@@ -5,6 +5,7 @@ import { ZodError } from "zod";
 import { requireRole } from "@/lib/auth/session";
 import { domainErrorResponse, isDomainError, validationError } from "@/lib/http/errors";
 import { jsonResponse } from "@/lib/http/json";
+import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import {
   createTramite,
   listTramites,
@@ -63,6 +64,21 @@ export async function POST(request: NextRequest) {
 
   try {
     const payload = tramiteCreateSchema.parse(await request.json());
+
+    // 30-sep-2026: el año del DO lo pone el servidor (el de Bogotá). Solo la
+    // administradora (rol efectivo de la sesión) crea un DO de otro año — las
+    // cargas históricas y el MCP van como ADMIN.
+    if (
+      payload.anio !== undefined &&
+      payload.anio !== fechaCalendarioBogota().getUTCFullYear() &&
+      session.user.rol !== "ADMIN"
+    ) {
+      return NextResponse.json(
+        { error: "Solo la administradora puede crear un DO de otro año.", codigo: "ANIO_SOLO_ADMIN" },
+        { status: 422 },
+      );
+    }
+
     const tramite = await createTramite({
       ...payload,
       eta: payload.eta ?? undefined,
