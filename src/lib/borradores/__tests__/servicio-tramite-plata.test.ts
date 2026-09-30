@@ -14,7 +14,7 @@ import "dotenv/config";
 import { AgenciaAduanas, Ciudad, EstadoTramite, Rol, TipoCliente } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { setCapacidadesEmpresa } from "@/lib/capacidades/service";
+import { setCapacidadesEmpresa, type CambioCapacidad } from "@/lib/capacidades/service";
 import { prisma } from "@/lib/db/prisma";
 import { propuestaParaTramite } from "@/lib/tarifas/service";
 
@@ -93,7 +93,7 @@ afterAll(async () => {
 
 let empresas = 0;
 /** Empresa con tarifario propio y factura CONCEPTOS_IVA (ReteIVA 15 % de fábrica), como Polyrec ZF. */
-async function empresaConceptos(nombre: string, extra: { codigo: string; habilitado: boolean }[] = []) {
+async function empresaConceptos(nombre: string, extra: CambioCapacidad[] = []) {
   empresas += 1;
   const empresa = await prisma.cliente.create({
     data: { nombre: `${nombre} ${empresas}`, nit: `${RUN_ID}-${empresas}`, tipo: TipoCliente.PROPIO },

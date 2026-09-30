@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { CanalPago, Prisma, SecuenciaTramite, TipoRecaudo, Rol } from "@prisma/client";
+import { CanalPago, CategoriaDocumento, Ciudad, Prisma, SecuenciaTramite, TipoRecaudo, Rol } from "@prisma/client";
 import { hashPassword } from "better-auth/crypto";
 import { CAPACIDADES } from "../src/lib/capacidades/catalogo";
 import { sembrarConceptosVenta } from "../src/lib/catalogos/seed-conceptos";
@@ -156,14 +156,23 @@ async function main() {
   // Tipos de trámite (M4). IMPORTACION reproduce el comportamiento histórico;
   // CLASIFICACION lleva consecutivo y facturación aparte y exige que la empresa
   // tenga encendida la capacidad `clasificacion_arancelaria`.
+  //
+  // Numeración como Camila (decisión de Ernesto, 30-sep-2026): Barranquilla,
+  // Bogotá y Buenaventura comparten UN contador de DO (`ciudadesContadorComun`);
+  // Cartagena y Santa Marta, cada una el suyo. Si Camila dijera que no es un
+  // solo contador, se vuelve atrás con `ciudadesContadorComun: []` (ningún DO
+  // cambia de número). La migración 20260930100000 ya deja este valor: el seed
+  // lo repite para que un arranque no lo pise.
   const tiposTramite = [
     {
       codigo: "IMPORTACION",
       nombre: "Trámite de importación",
-      descripcion: "Trámite completo de importación. Consecutivo por ciudad y año.",
+      descripcion:
+        "Trámite completo de importación (también traslado, nacionalización y DUTA, como servicio). Consecutivo compartido Barranquilla-Bogotá-Buenaventura; Cartagena y Santa Marta, cada una el suyo.",
       prefijoConsecutivo: "DO",
       secuenciaPor: SecuenciaTramite.CIUDAD_ANIO,
       incluyeCiudadEnConsecutivo: true,
+      ciudadesContadorComun: [Ciudad.BAQ, Ciudad.BGT, Ciudad.BUN],
       lineaServicio: "TRAMITE",
       facturacionSeparada: false,
       capacidadRequerida: null,
@@ -189,6 +198,33 @@ async function main() {
         "fechaSalidaCarga",
       ],
       orden: 10,
+    },
+    {
+      // Exportaciones (decisión de Ernesto, 30-sep-2026): serie propia sin
+      // ciudad (DO.EXP26-0013 en adelante, ver el piso más abajo). Flujo corto:
+      // Litoplas tiene anticipos y su exportación real no tuvo pagos; Coldex
+      // puede no tener tarifa y el flujo corto nunca factura un valor por defecto.
+      codigo: "EXPORTACION",
+      nombre: "Exportación",
+      descripcion:
+        "Exportaciones de todos los clientes. Serie propia sin ciudad (DO.EXP26-0001). Se abre sin pagos a proveedores y se manda a facturar directo, con la tarifa de exportación de la empresa o con el valor escrito a mano.",
+      prefijoConsecutivo: "DO.EXP",
+      secuenciaPor: SecuenciaTramite.ANIO,
+      incluyeCiudadEnConsecutivo: false,
+      ciudadesContadorComun: [],
+      lineaServicio: "EXPORTACION",
+      facturacionSeparada: true,
+      capacidadRequerida: null,
+      requiereAgenciaAduanas: false,
+      requiereEta: false,
+      usaChecklist: false,
+      usaCamposDo: false,
+      etiquetaReferenciaExterna: "Referencia de la exportación (N° del cliente / SAE)",
+      camposBaseCalculo: [],
+      usaEventos: false,
+      fechasClave: ["fechaEnviadoAFacturar"],
+      flujoCorto: true,
+      orden: 15,
     },
     {
       codigo: "CLASIFICACION",
@@ -303,7 +339,115 @@ async function main() {
     },
   });
 
-  // Plantilla de checklist estándar de apertura
+  // Conceptos de venta de los servicios de trámite (30-sep-2026): solo si
+  // faltan. En producción ya existen (los creó Camila); nunca se pisan. Mismos
+  // datos que las migraciones 20260930100100 y 20260930100200.
+  const conceptosServicio = [
+    { id: "concepto-traslado-zf", codigo: "TRASLADO_ZF", nombre: "Traslado de contenedor en zona franca" },
+    { id: "concepto-nacionalizacion-zf", codigo: "NACIONALIZACION_ZF", nombre: "Nacionalización desde zona franca" },
+    { id: "concepto-duta", codigo: "DUTA", nombre: "DUTA (tránsito aduanero)" },
+    { id: "concepto-exportacion", codigo: "EXPORTACION", nombre: "Servicio logístico de exportación" },
+  ];
+  for (const c of conceptosServicio) {
+    await prisma.conceptoVenta.upsert({
+      where: { codigo: c.codigo },
+      update: {},
+      create: {
+        ...c,
+        aplicaIva: true,
+        orden: 0,
+        activo: true,
+        notas: "Creado por el seed porque faltaba (servicio de trámite, 30-sep-2026). Producto Siigo: dato de Camila.",
+      },
+    });
+  }
+
+  // Catálogo de servicios del trámite normal (decisión de Ernesto, 30-sep-2026):
+  // nacionalización, traslado y DUTA son trámites de importación con servicio.
+  // Upsert completo por id: el catálogo solo cambia por migración o seed.
+  const serviciosTramite: {
+    id: string;
+    tipoTramiteCodigo: string;
+    conceptoCodigo: string | null;
+    nombre: string;
+    tarifaGeneral: boolean;
+    documentosNoAplican: CategoriaDocumento[];
+    orden: number;
+  }[] = [
+    {
+      id: "servicio-importacion-general",
+      tipoTramiteCodigo: "IMPORTACION",
+      conceptoCodigo: null,
+      nombre: "Importación (tarifa general de la empresa)",
+      tarifaGeneral: true,
+      documentosNoAplican: [],
+      orden: 10,
+    },
+    {
+      id: "servicio-importacion-traslado-zf",
+      tipoTramiteCodigo: "IMPORTACION",
+      conceptoCodigo: "TRASLADO_ZF",
+      nombre: "Traslado de zona franca",
+      tarifaGeneral: false,
+      documentosNoAplican: [],
+      orden: 20,
+    },
+    {
+      id: "servicio-importacion-nacionalizacion-zf",
+      tipoTramiteCodigo: "IMPORTACION",
+      conceptoCodigo: "NACIONALIZACION_ZF",
+      nombre: "Nacionalización desde zona franca",
+      tarifaGeneral: false,
+      documentosNoAplican: [CategoriaDocumento.BL],
+      orden: 30,
+    },
+    {
+      id: "servicio-importacion-duta",
+      tipoTramiteCodigo: "IMPORTACION",
+      conceptoCodigo: "DUTA",
+      nombre: "DUTA (tránsito aduanero)",
+      tarifaGeneral: false,
+      documentosNoAplican: [],
+      orden: 40,
+    },
+    {
+      id: "servicio-exportacion-general",
+      tipoTramiteCodigo: "EXPORTACION",
+      conceptoCodigo: "EXPORTACION",
+      nombre: "Exportación",
+      tarifaGeneral: true,
+      documentosNoAplican: [],
+      orden: 10,
+    },
+  ];
+  for (const s of serviciosTramite) {
+    await prisma.servicioTramite.upsert({
+      where: { id: s.id },
+      update: { ...s, activo: true },
+      create: { ...s, activo: true },
+    });
+  }
+
+  // Piso de respaldo de la serie DO.EXP26 (la migración 20260930100200 ya lo
+  // inserta): la siguiente exportación es la 0013 sin mover las 10 históricas.
+  await prisma.consecutivoPiso.upsert({
+    where: { id: "piso-exportacion-2026" },
+    update: {},
+    create: {
+      id: "piso-exportacion-2026",
+      clave: "EXPORTACION:2026",
+      tipoTramiteCodigo: "EXPORTACION",
+      anio: 2026,
+      ultimoNumero: 12,
+      motivo:
+        "DO.EXP26-0001 a 0012 existen fuera del tipo Exportación (10 cargadas como OTR26 el 27-sep; 0010 y 0011 sin cargar). La siguiente es la 0013. Decisión de Ernesto 30-sep-2026: no se renumera el histórico.",
+    },
+  });
+
+  // Plantilla de checklist estándar de apertura. `categoriaDocumento`: al
+  // crear un DO no se copian los ítems que no aplican a su servicio (la
+  // nacionalización no pide el BL). La migración 20260930100100 la completa
+  // en la plantilla que ya existía.
   await prisma.plantillaChecklist.upsert({
     where: { id: "checklist-estandar" },
     update: {},
@@ -312,9 +456,9 @@ async function main() {
       nombre: "Checklist Estándar de Apertura DO",
       items: {
         create: [
-          { descripcion: "Factura comercial",             requerido: true,  orden: 1 },
-          { descripcion: "BL (Bill of Lading)",            requerido: true,  orden: 2 },
-          { descripcion: "Packing list",                   requerido: true,  orden: 3 },
+          { descripcion: "Factura comercial",             requerido: true,  orden: 1, categoriaDocumento: CategoriaDocumento.FACTURA_COMERCIAL },
+          { descripcion: "BL (Bill of Lading)",            requerido: true,  orden: 2, categoriaDocumento: CategoriaDocumento.BL },
+          { descripcion: "Packing list",                   requerido: true,  orden: 3, categoriaDocumento: CategoriaDocumento.PACKING_LIST },
           { descripcion: "Lista de precios / declaración de valor", requerido: false, orden: 4 },
           { descripcion: "Certificado de origen (si aplica)", requerido: false, orden: 5 },
         ],
