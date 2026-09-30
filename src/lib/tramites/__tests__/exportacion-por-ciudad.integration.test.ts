@@ -291,6 +291,14 @@ describe("configuración que repetiría números (se cambia con datos, sin progr
       const contadores = await estadoContadores(ANIO_CONFIG);
       expect(contadores.find((c) => c.clave === `EXPORTACION:CTG:${ANIO_CONFIG}`)?.problema).toMatch(/SMR/);
       expect(contadores.find((c) => c.clave === `IMPORTACION:BAQ+BGT+BUN:${ANIO_CONFIG}`)?.problema).toBeNull();
+
+      // La vista previa del formulario tampoco promete un número.
+      const previa = await requisitosDeDo({ clienteId: f.clienteId, tipoTramiteCodigo: "EXPORTACION", ciudad: Ciudad.BAQ });
+      expect(previa.numeracion).toEqual({
+        siguiente: "sin número",
+        contador:
+          "contador de exportación Barranquilla, Bogotá y Buenaventura: numeración mal configurada, no se puede crear el DO (avísale a soporte)",
+      });
     });
     // Ningún número se gastó mientras estuvo mal.
     expect(await prisma.tramiteDO.count({ where: { tipoTramiteCodigo: "EXPORTACION", anio: ANIO_CONFIG } })).toBe(0);

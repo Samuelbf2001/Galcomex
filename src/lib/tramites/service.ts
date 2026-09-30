@@ -934,6 +934,13 @@ async function vistaPreviaNumero(
   const ciudadDo = ciudad ?? CIUDAD_SIN_USO;
   const anio = anioConsecutivo();
   const alcance = alcanceContador(tipo, tipo.codigo, ciudadDo, anio);
+  // Mismo freno que `createTramite`: no mostrar un número que no se va a dar.
+  if (await problemaDeNumeracion(tipo, ciudadDo)) {
+    return {
+      siguiente: "sin número",
+      contador: `${etiquetaDelContador(tipo, alcance)}: numeración mal configurada, no se puede crear el DO (avísale a soporte)`,
+    };
+  }
   const { ultimo, piso } = await ultimoYPiso(prisma, tipo.codigo, alcance);
   return {
     siguiente: formatConsecutivo(tipo, ciudadDo, anio, siguienteNumero(ultimo, piso)),
@@ -954,8 +961,9 @@ export type EstadoContador = {
   /** Consecutivo que tomaría el próximo DO (con la primera ciudad del contador). */
   siguiente: string;
   /**
-   * Problema de configuración del tipo (dos contadores que imprimirían el mismo
-   * número): con él, `createTramite` no numera DOs de este tipo. `null` = bien.
+   * Problema de numeración de este contador (su tipo está mal configurado o
+   * choca con el de otro tipo: imprimirían el mismo número). Con él,
+   * `createTramite` no numera DOs de este contador. `null` = bien.
    */
   problema: string | null;
 };
