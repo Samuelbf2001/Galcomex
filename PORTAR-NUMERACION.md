@@ -66,6 +66,26 @@ Formatos: `DO.EXP26-0013` (Barranquilla, Bogotá, Buenaventura: exacto a las car
   exportan con Barranquilla y el último número real de exportación de Cartagena 2026 (si ya abrió
   alguna fuera de la plataforma: fijar piso con `--tipo EXPORTACION --ciudad CTG`). Cómo cambiarlos
   con SQL: `docs/NUMERACION.md` § «Exportación por ciudad».
+- **Revisión (30-sep-2026), qué conservar:**
+  - `ultimoYPisoDelContador` (`service.ts`, exportada) es el ÚNICO cálculo de «último + piso»: lo usan
+    `createTramite`, la vista previa, `estadoContadores` y el tope de `fijarPisoConsecutivo` (`pisos.ts`
+    ya no tiene el suyo). En un tipo cuyo número no lleva la ciudad mira la serie impresa
+    (`filtroDelContador`: `DO.EXP26-` de cualquier ciudad) y los pisos de claves anteriores
+    (`pisoCuentaParaContador`); así, cambiar las ciudades del grupo con SQL no repite números ni pierde
+    el piso 12. Importación, Clasificación y Otros: mismo resultado que antes.
+  - `createTramite` revisa dentro del candado que el consecutivo no exista (`consecutivoOcupado`) y
+    lanza `NumeracionMalConfiguradaError` en vez de reintentar cinco veces el mismo número;
+    `estadoContadores` lo pone en `problema`.
+  - `prisma/seed.ts` usa `numeracionParaSeed` (puro, `consecutivo.ts`): respeta ciudades comunes y
+    prefijos de la base salvo que repitan números (vuelta de ea1e3c0 o reversa SQL), y entonces repone
+    los del seed. Una rama que toque el bucle de `tiposTramite` debe conservarlo.
+  - La migración `20260930120000` solo cambió comentarios y la descripción (sin cambio de esquema); la
+    descripción de Exportación ya no nombra ciudades ni números. Reversa completa: `docs/NUMERACION.md`
+    § «Volver atrás».
+  - `ver-contadores.ts --json` también sale con código 2 si hay `problema`.
+  - Tests nuevos: bloque «cambiar las ciudades del grupo…» y `numeracionParaSeed` en
+    `consecutivo-exportacion-ciudad.test.ts`; bloque «cambiar las ciudades del grupo de exportación…»
+    en `exportacion-por-ciudad.integration.test.ts` (años 2072–2077).
 
 ## Centavos (#4)
 

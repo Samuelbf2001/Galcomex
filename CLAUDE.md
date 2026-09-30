@@ -575,9 +575,17 @@ Marta); Clasificación `CLAS{AA}-…`; Otros `OTR{AA}-…`. Detalle: `docs/NUMER
   `incluyeCiudadEnConsecutivo = false`: la ciudad escoge contador y prefijo
   (`TipoTramite.prefijoConsecutivoPorCiudad`, Json `{"CTG": "DO.EXP.CTG", "SMR": "DO.EXP.SMR"}`).
   El prefijo por ciudad y las ciudades comunes de Exportación son **datos** (se cambian con SQL; el
-  seed solo los escribe al crear el tipo). `createTramite` no numera un contador cuya configuración
+  seed solo los escribe al crear el tipo, o los repone si la base repetiría números tras una reversa:
+  `numeracionParaSeed`). `createTramite` no numera un contador cuya configuración
   permita que dos contadores impriman el mismo número (`validarConfigContador` /
-  `problemasDeNumeracion`, 500 `NUMERACION_MAL_CONFIGURADA`).
+  `problemasDeNumeracion`, 500 `NUMERACION_MAL_CONFIGURADA`), ni un número que ya tiene otro DO
+  (mismo 500, dice cuál: subir el piso).
+- **Cambiar las ciudades del grupo de exportación no repite números** (revisión 30-sep-2026): como el
+  número no lleva la ciudad, el contador cuenta también los DOs del tipo y año que empiezan con su serie
+  (`DO.EXP26-`, de cualquier ciudad) y los pisos de claves anteriores del mismo tipo y año que cubren
+  sus ciudades con el prefijo general (`filtroDelContador`, `pisoCuentaParaContador`; todo pasa por
+  `ultimoYPisoDelContador`: creación, vista previa, `estadoContadores` y `fijar-piso`). Una ciudad que
+  sale con prefijo propio empieza serie nueva. Reversa: `docs/NUMERACION.md` § «Volver atrás».
 - **Contadores:** el número depende solo de **tipo + ciudad + año**, nunca del servicio.
   **Barranquilla, Bogotá y Buenaventura comparten UN contador** (`TipoTramite.ciudadesContadorComun`
   = `[BAQ, BGT, BUN]` en IMPORTACION; las carpetas de Camila cubren del 1 al 281 sin repetir entre
@@ -586,7 +594,8 @@ Marta); Clasificación `CLAS{AA}-…`; Otros `OTR{AA}-…`. Detalle: `docs/NUMER
   en el seed (ningún DO cambia de número).
 - **Piso** (`consecutivo_piso`): «el último número de este contador es por lo menos N»; siguiente =
   `max(MAX(numero), piso) + 1`. Solo se inserta: migración (`EXPORTACION:BAQ+BGT+BUN:2026` = 12 → la
-  siguiente exportación de Barranquilla es la 0013; la fila vieja `EXPORTACION:2026` es historia) o
+  siguiente exportación de Barranquilla es la 0013; la fila vieja `EXPORTACION:2026` es historia, que
+  el grupo sigue contando) o
   `scripts/consecutivos/fijar-piso.ts` (ADMIN, AuditLog `FIJAR_PISO_CONSECUTIVO`; Exportación pide
   `--ciudad`). Estado de los contadores: `GET /api/tramites/consecutivos` (ADMIN, REVISOR; trae
   `problema` por fila) o `scripts/consecutivos/ver-contadores.ts`.

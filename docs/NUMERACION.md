@@ -39,12 +39,14 @@ prefijo (`prefijoConsecutivoPorCiudad[ciudad] ?? prefijoConsecutivo`).
   `CIUDAD_ANIO` con BAQ+BGT+BUN comunes y prefijos para CTG y SMR, e insertó el piso
   `piso-exportacion-baq-bgt-bun-2026` = el mayor entre el piso viejo `EXPORTACION:2026` (12) y las
   exportaciones ya creadas de cualquier ciudad (en producción 0 → 12 → la siguiente de Barranquilla es
-  `DO.EXP26-0013`). La fila vieja `EXPORTACION:2026` queda como historia: ya no la usa ningún contador.
+  `DO.EXP26-0013`). La fila vieja `EXPORTACION:2026` queda como historia (el grupo la sigue contando:
+  es la misma serie `DO.EXP26`, ver «Cambiar las ciudades del grupo»).
 - **Caso borde:** si antes de desplegar se creara una exportación de Cartagena, sale `DO.EXP26-00NN`
   (serie vieja). Se queda así; su número entra en el piso del grupo (Barranquilla no lo repite) y el
   contador de Cartagena sigue desde ese número, no desde 0001 (sin choques: `DO.EXP.CTG26-…`).
 - **Son datos, no código:** el prefijo de Cartagena y Santa Marta y qué ciudades comparten el contador
-  de exportación se cambian con un `UPDATE` (el seed solo los escribe al crear el tipo, nunca los pisa).
+  de exportación se cambian con un `UPDATE` (el seed solo los escribe al crear el tipo; en una base
+  existente no los pisa, salvo que repitan números: ver «Volver atrás»).
   Ejemplos (ventana fuera de horario, con OK de Ernesto; después, `ver-contadores.ts`):
 
   ```sql
@@ -57,14 +59,35 @@ prefijo (`prefijoConsecutivoPorCiudad[ciudad] ?? prefijoConsecutivo`).
    WHERE codigo = 'EXPORTACION';
   ```
 
-  Ojo: si cambian las ciudades del grupo cambia la clave del contador (`EXPORTACION:BAQ+BUN:2026`) y el
-  piso viejo deja de contar: volver a fijarlo con `fijar-piso.ts`. Un DO ya creado nunca cambia.
+  Hacerlo con la creación de DOs congelada y revisar `ver-contadores.ts` antes de descongelar. Un DO ya
+  creado nunca cambia.
+- **Cambiar las ciudades del grupo no repite números (revisión del 30-sep-2026):** al cambiar
+  `ciudadesContadorComun` cambia la clave del contador (`EXPORTACION:BAQ+BUN:2026`), pero el texto
+  `DO.EXP26-…` es el mismo. Por eso, en un tipo cuyo número no lleva la ciudad, el contador cuenta
+  también (`filtroDelContador`, `pisoCuentaParaContador` en `consecutivo.ts`):
+  - **todos los DOs del tipo y año cuyo número empieza con la serie que imprime** (`DO.EXP26-`), de
+    cualquier ciudad: un `DO.EXP26-0014` de Bogotá sigue contando para Barranquilla aunque Bogotá salga
+    del grupo;
+  - **los pisos del mismo tipo y año de otras claves que cubren alguna de sus ciudades con el prefijo
+    general** (`EXPORTACION:BAQ+BGT+BUN:2026`, el viejo `EXPORTACION:2026`): el 12 de las carpetas de
+    Camila no se pierde, y tampoco el de un grupo anterior.
+
+  No hace falta volver a fijar el piso después del `UPDATE` (y `fijar-piso.ts` lo rechaza: ya lo
+  tiene). Una ciudad que sale con **prefijo propio** (`DO.EXP.BGT`) empieza una serie nueva: sigue
+  desde su propio número de exportación más alto (sus `DO.EXP26-…` viejos cuentan) o desde 0001; no
+  hereda el piso del grupo. Si Santa Marta entrara al grupo, la clave nueva
+  (`EXPORTACION:BAQ+BGT+BUN+SMR:2026`) conserva el piso. Importación no cambia: su número lleva la
+  ciudad y cada contador solo mira su clave.
 - **Defensa:** `validarConfigContador` / `problemasDeNumeracion` rechazan cualquier configuración en la
   que dos contadores distintos (del mismo tipo o de dos tipos) imprimirían el mismo número, p. ej. sin
   prefijo propio de Santa Marta (`DO.EXP26-…` como Barranquilla) o Cartagena con `DO.CTG` (el de la
   importación). Con eso `createTramite` no numera ese contador (500 `NUMERACION_MAL_CONFIGURADA`, sin
   gastar número); los demás siguen. `ver-contadores.ts` y `GET /api/tramites/consecutivos` lo muestran
-  en `problema`.
+  en `problema` (`ver-contadores.ts` sale con código 2, también con `--json`).
+- **Número ya ocupado:** si el número que tocaría ya lo tiene otro DO (p. ej. uno de otro tipo cargado
+  a mano con ese texto), `createTramite` no reintenta cinco veces el mismo número: responde 500
+  `NUMERACION_MAL_CONFIGURADA` diciendo cuál, sin gastar número; `ver-contadores.ts` y la vista previa
+  lo muestran. Se arregla fijando un piso del contador por encima de ese número.
 - **Formulario «Crear trámite»:** en Exportación la ciudad ya no viene puesta (decide el contador) y la
   vista previa muestra «contador de exportación de Cartagena» y el número que tomará.
 - **Ojo con las cargas históricas** (revisión adversarial, 30-sep-2026): el importador de Grupo E
@@ -129,3 +152,37 @@ npx tsx scripts/consecutivos/fijar-piso.ts … --aplicar --admin camila@galcomex
 5. Verificar con `ver-contadores.ts` / `GET /api/tramites/consecutivos` y las consultas S1–S6 del diseño
    (exportación: `DO.EXP26-0013`, `DO.EXP.CTG26-0001`, `DO.EXP.SMR26-0001`, ningún `problema`).
 6. Descongelar.
+
+## Volver atrás (reversa de la exportación por ciudad)
+
+Ningún DO se mueve. La imagen anterior (ea1e3c0) numera Exportación con UN contador por año
+(`EXPORTACION:AAAA`) y solo mira el piso de esa clave; su seed deja EXPORTACION en `ANIO` con ciudades
+comunes `[]` y no lee `prefijoConsecutivoPorCiudad` (la columna y el mapa pueden quedarse).
+
+1. Congelar la creación de DOs.
+2. **Antes de arrancar la imagen anterior**, pasar al contador por año el piso de toda la serie (si
+   después del despliegue se fijó un piso en `EXPORTACION:BAQ+BGT+BUN:2026`, sin esto el contador por
+   año solo ve el 12 y repite números de las carpetas de Camila):
+
+   ```sql
+   INSERT INTO consecutivo_piso (id, clave, "tipoTramiteCodigo", anio, "ultimoNumero", motivo)
+   SELECT 'piso-exportacion-reversa-' || s.anio || '-' || to_char(now(), 'YYYYMMDDHH24MISS'),
+          'EXPORTACION:' || s.anio, 'EXPORTACION', s.anio, s.ultimo,
+          'Reversa de 20260930120000: el contador por año sigue desde el mayor de los pisos y los DOs de exportación del año'
+     FROM (SELECT u.anio, MAX(u.n) AS ultimo
+             FROM (SELECT anio, "ultimoNumero" AS n FROM consecutivo_piso
+                    WHERE "tipoTramiteCodigo" = 'EXPORTACION' AND anio IS NOT NULL
+                   UNION ALL
+                   SELECT anio, numero FROM tramite_do WHERE "tipoTramiteCodigo" = 'EXPORTACION') u
+            GROUP BY u.anio) s;
+   ```
+
+3. Desplegar la imagen anterior y verificar con `ver-contadores.ts` (la de esa imagen).
+4. Mientras corra, una exportación de Cartagena o Santa Marta sale `DO.EXP26-00NN` (serie vieja).
+
+**Volver adelante** (desplegar otra vez esta versión): no hace falta SQL a mano. El seed repone las
+ciudades comunes de Exportación (y los prefijos, si hace falta) cuando lo que hay en la base repetiría
+números (`numeracionParaSeed`; en el log: «EXPORTACION: numeración de la base repuesta…»), y el
+contador del grupo cuenta el piso `EXPORTACION:AAAA` y los `DO.EXP26-…` creados en el intermedio, de
+cualquier ciudad. Un cambio de Camila en las ciudades comunes hecho antes de la reversa se pierde (el
+seed viejo las dejó en `[]`): volver a aplicarlo con su `UPDATE`. Verificar con `ver-contadores.ts`.
