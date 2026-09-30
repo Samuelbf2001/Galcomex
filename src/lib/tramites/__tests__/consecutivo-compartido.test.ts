@@ -2,7 +2,9 @@
  * Numeración como Camila (DISENO-NUMERACION.md §2.1, decisión de Ernesto
  * 30-sep-2026): Barranquilla, Bogotá y Buenaventura comparten UN contador;
  * Cartagena y Santa Marta llevan cada una el suyo; Exportación tiene su serie
- * DO.EXP26 sin ciudad. Casos 1–3 del §8. Puro, sin BD.
+ * DO.EXP26 sin ciudad y, desde la confirmación de Camila del mismo día, va
+ * por ciudad igual que la importación (detalle en
+ * `consecutivo-exportacion-ciudad.test.ts`). Casos 1–3 del §8. Puro, sin BD.
  */
 import { describe, expect, it } from "vitest";
 
@@ -31,12 +33,16 @@ const OTRO: ConfigConsecutivo = {
   incluyeCiudadEnConsecutivo: false,
 };
 
+/** Exportación por ciudad (migración 20260930120000). */
 const EXPORTACION: ConfigConsecutivo = {
   prefijoConsecutivo: "DO.EXP",
-  secuenciaPor: "ANIO",
+  secuenciaPor: "CIUDAD_ANIO",
   incluyeCiudadEnConsecutivo: false,
-  ciudadesContadorComun: [],
+  ciudadesContadorComun: ["BAQ", "BGT", "BUN"],
+  prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR" },
 };
+
+const CIUDADES = ["BAQ", "CTG", "BUN", "SMR", "BGT"];
 
 const PLAN_VALLEJO: ConfigConsecutivo = {
   prefijoConsecutivo: "PV",
@@ -67,12 +73,20 @@ describe("caso 1 — clave del contador", () => {
     expect(alcanceContador(IMPORTACION, "IMPORTACION", "SMR", 2026).clave).toBe("IMPORTACION:SMR:2026");
   });
 
-  it("OTRO, EXPORTACION y GLOBAL: clave y candado de siempre", () => {
+  it("OTRO y GLOBAL: clave y candado de siempre", () => {
     expect(alcanceContador(OTRO, "OTRO", "BAQ", 2026).clave).toBe("OTRO:2026");
     expect(claveSecuencia(OTRO, "OTRO", "BAQ", 2026)).toBe("tramite-do:OTRO:2026");
-    expect(alcanceContador(EXPORTACION, "EXPORTACION", "BAQ", 2026).clave).toBe("EXPORTACION:2026");
     expect(alcanceContador(PLAN_VALLEJO, "PLAN_VALLEJO", "BAQ", 2026).clave).toBe("PLAN_VALLEJO");
     expect(claveSecuencia(PLAN_VALLEJO, "PLAN_VALLEJO", "BAQ", 2026)).toBe("tramite-do:PLAN_VALLEJO");
+  });
+
+  it("EXPORTACION va por ciudad como IMPORTACION, con claves de su propio tipo", () => {
+    expect(alcanceContador(EXPORTACION, "EXPORTACION", "BAQ", 2026).clave).toBe("EXPORTACION:BAQ+BGT+BUN:2026");
+    expect(alcanceContador(EXPORTACION, "EXPORTACION", "CTG", 2026).clave).toBe("EXPORTACION:CTG:2026");
+    // Nunca el candado de la importación de la misma ciudad.
+    expect(claveSecuencia(EXPORTACION, "EXPORTACION", "CTG", 2026)).not.toBe(
+      claveSecuencia(IMPORTACION, "IMPORTACION", "CTG", 2026),
+    );
   });
 
   it("el filtro del grupo busca en las tres ciudades; el de CTG solo en CTG", () => {
@@ -88,6 +102,11 @@ describe("caso 1 — clave del contador", () => {
     });
     expect(filtroDeAlcance("EXPORTACION", alcanceContador(EXPORTACION, "EXPORTACION", "BAQ", 2026))).toEqual({
       tipoTramiteCodigo: "EXPORTACION",
+      ciudad: { in: ["BAQ", "BGT", "BUN"] },
+      anio: 2026,
+    });
+    expect(filtroDeAlcance("OTRO", alcanceContador(OTRO, "OTRO", "CTG", 2026))).toEqual({
+      tipoTramiteCodigo: "OTRO",
       anio: 2026,
     });
   });
@@ -106,8 +125,10 @@ describe("caso 2 — siguienteNumero = max(último, piso) + 1", () => {
 });
 
 describe("caso 3 — formato", () => {
-  it("EXPORTACION con 13 → DO.EXP26-0013", () => {
+  it("EXPORTACION con 13 → DO.EXP26-0013 en Barranquilla, Bogotá y Buenaventura", () => {
     expect(formatConsecutivo(EXPORTACION, "BAQ", 2026, 13)).toBe("DO.EXP26-0013");
+    expect(formatConsecutivo(EXPORTACION, "BGT", 2026, 13)).toBe("DO.EXP26-0013");
+    expect(formatConsecutivo(EXPORTACION, "BUN", 2026, 13)).toBe("DO.EXP26-0013");
   });
 
   it("el número del grupo se sigue imprimiendo con la ciudad del DO", () => {
@@ -120,7 +141,9 @@ describe("caso 3 — formato", () => {
 describe("validarConfigContador y etiqueta", () => {
   it("ciudades comunes solo con CIUDAD_ANIO y sin repetidas", () => {
     expect(validarConfigContador(IMPORTACION)).toBeNull();
+    expect(validarConfigContador(IMPORTACION, CIUDADES)).toBeNull();
     expect(validarConfigContador(OTRO)).toBeNull();
+    expect(validarConfigContador(EXPORTACION, CIUDADES)).toBeNull();
     expect(validarConfigContador({ ...OTRO, ciudadesContadorComun: ["BAQ"] })).toMatch(/ciudad y año/);
     expect(validarConfigContador({ ...IMPORTACION, ciudadesContadorComun: ["BAQ", "BAQ"] })).toMatch(/repetidas/);
   });
@@ -133,8 +156,8 @@ describe("validarConfigContador y etiqueta", () => {
     expect(etiquetaContador(alcanceContador(IMPORTACION, "IMPORTACION", "CTG", 2026), nombre, "Importación")).toBe(
       "contador de Cartagena",
     );
-    expect(etiquetaContador(alcanceContador(EXPORTACION, "EXPORTACION", "BAQ", 2026), nombre, "Exportaciones")).toBe(
-      "contador de exportaciones",
+    expect(etiquetaContador(alcanceContador(OTRO, "OTRO", "BAQ", 2026), nombre, "Otros servicios")).toBe(
+      "contador de otros servicios",
     );
   });
 });
