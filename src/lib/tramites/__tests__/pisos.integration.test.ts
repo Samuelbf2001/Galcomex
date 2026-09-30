@@ -149,4 +149,13 @@ describe("fijarPisoConsecutivo", () => {
     });
     expect(exp).toMatchObject({ clave: `EXPORTACION:${ANIO}`, siguienteDespues: "DO.EXP87-0013" });
   });
+
+  it("rechaza un año fuera de rango (el script sin --anio mandaba 0 y fijaba el piso de un contador que nadie usa)", async () => {
+    // Sin BD: la validación va antes de cualquier consulta.
+    for (const anio of [0, 1999, 2101, 2026.5]) {
+      await expect(
+        fijarPisoConsecutivo({ ...base, anio, ciudad: Ciudad.BAQ, ultimoNumero: 300, usuarioId: "x", aplicar: false }),
+      ).rejects.toThrow(/año del contador/);
+    }
+  });
 });

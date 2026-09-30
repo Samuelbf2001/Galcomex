@@ -74,6 +74,12 @@ export async function fijarPisoConsecutivo(input: FijarPisoInput): Promise<Resul
       `Escribe el motivo del piso (al menos ${MOTIVO_PISO_MIN} caracteres): de dónde sale el número.`,
     );
   }
+  // Mismo rango que `POST /api/tramites` (2020–2100). Sin esto, el script sin
+  // `--anio` mandaba 0 (`Number(null)`) y fijaba el piso de un contador que
+  // ningún DO usa, dejando creer que el piso real quedó puesto.
+  if (!Number.isInteger(input.anio) || input.anio < 2020 || input.anio > 2100) {
+    throw new PisoConsecutivoInvalidoError("Indica el año del contador (entre 2020 y 2100).");
+  }
   if (!Number.isInteger(input.ultimoNumero) || input.ultimoNumero < 1) {
     throw new PisoConsecutivoInvalidoError("El último número debe ser un entero mayor que cero.");
   }
