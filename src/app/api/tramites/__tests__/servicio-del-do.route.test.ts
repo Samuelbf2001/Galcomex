@@ -341,6 +341,48 @@ describe("servicios reservados y fuera del catálogo (caso 23, 26)", () => {
   });
 });
 
+describe("«Otros» de antes del 30-sep con un servicio que hoy es reservado (revisión adversarial)", () => {
+  it("reenviar el MISMO servicio (p. ej. para escribir el valor a mano) no se frena; cambiarlo a otro reservado, sí", async (ctx) => {
+    ensureDb(ctx);
+    comoRol(Rol.OPERATIVO);
+    const empresa = await crearEmpresa("POLYREC ZF VITEST OTROS LEGADO");
+    // Un «Otros» creado con B2 (29-sep) como nacionalización: hoy ese concepto
+    // es de un trámite normal, pero el DO ya existe y hay que poder cobrarlo.
+    const numero = 9000 + Math.floor(Math.random() * 900);
+    const legado = await prisma.tramiteDO.create({
+      data: {
+        consecutivo: `OTR79-${numero}`,
+        tipoTramiteCodigo: "OTRO",
+        ciudad: "BAQ",
+        anio: 2079,
+        numero,
+        clienteId: empresa.id,
+        creadoPorId: usuarioId,
+        estado: EstadoTramite.APERTURA,
+        conceptoServicioCodigo: "NACIONALIZACION_ZF",
+        comentarios: `${TEST_PREFIX}:${RUN_ID}:otros-legado`,
+      },
+    });
+    const url = `http://localhost/api/tramites/${legado.id}`;
+    const contexto = { params: Promise.resolve({ id: legado.id }) };
+
+    // El editor del flujo corto manda valor + concepto juntos.
+    const conValor = await tramitePATCH(
+      request(url, "PATCH", { valorServicio: "350000", conceptoServicioCodigo: "NACIONALIZACION_ZF" }),
+      contexto,
+    );
+    expect(conValor.status).toBe(200);
+    const guardado = await prisma.tramiteDO.findUniqueOrThrow({ where: { id: legado.id } });
+    expect(guardado.valorServicio).toBe(350_000n);
+    expect(guardado.conceptoServicioCodigo).toBe("NACIONALIZACION_ZF");
+
+    // Pasarlo a OTRO servicio reservado sigue prohibido.
+    const aDuta = await tramitePATCH(request(url, "PATCH", { conceptoServicioCodigo: "DUTA" }), contexto);
+    expect(aDuta.status).toBe(422);
+    expect(await aDuta.json()).toMatchObject({ codigo: "SERVICIO_RESERVADO" });
+  });
+});
+
 describe("requisitos por servicio: nacionalización sin BL (caso 25)", () => {
   async function documento(tramiteId: string, categoria: "FACTURA_COMERCIAL" | "BL") {
     await prisma.documento.create({

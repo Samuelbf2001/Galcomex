@@ -356,9 +356,16 @@ export async function verificarServicioDelDo(args: VerificarServicioArgs): Promi
     throw new ServicioFlujoCortoNoPermitidoError(nombreTipo);
   }
 
-  const resuelto =
-    tocaConcepto && tipo ? resolverServicio(tipo, catalogo, args.conceptoServicioCodigo, tipos) : null;
   const conceptoAntes = args.antes?.conceptoServicioCodigo ?? null;
+  // Revisión adversarial (30-sep-2026): un DO que YA existe y reenvía el MISMO
+  // servicio (el editor del flujo corto manda valor + concepto juntos) se
+  // resuelve como un DO guardado: un «Otros» creado con B2 como nacionalización
+  // o DUTA —servicios hoy reservados— tiene que poder recibir su valor a mano
+  // y cobrarse. Cambiar a un servicio no permitido sigue siendo 422.
+  const reenviaElMismo =
+    args.antes !== undefined && (args.conceptoServicioCodigo?.trim() || null) === conceptoAntes;
+  const resolver = reenviaElMismo ? resolverServicioGuardado : resolverServicio;
+  const resuelto = tocaConcepto && tipo ? resolver(tipo, catalogo, args.conceptoServicioCodigo, tipos) : null;
   const cambiaConcepto =
     resuelto !== null && (args.antes === undefined || resuelto.conceptoGuardado !== conceptoAntes);
 
