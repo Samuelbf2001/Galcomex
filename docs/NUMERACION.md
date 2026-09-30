@@ -21,6 +21,12 @@ El número depende solo de **tipo + ciudad + año**. El servicio nunca cambia el
 - Configuración: `tipo_tramite.ciudadesContadorComun` (IMPORTACION = `{BAQ,BGT,BUN}`). Volver a un
   contador por ciudad: `ciudadesContadorComun: []` en `prisma/seed.ts` y desplegar. Ningún DO cambia.
 - Código: `src/lib/tramites/consecutivo.ts` (puro), `createTramite` en `src/lib/tramites/service.ts`.
+- **Ojo con las cargas históricas** (revisión adversarial, 30-sep-2026): el importador de Grupo E
+  Papis (`POST /api/importar/grupo-e-papis`) y los scripts que escriben `tramite_do` directo
+  (`scripts/historico-*`, `importar-status-lucho.ts`, `importar-borrador-lucho.ts`) ponen el número
+  que traen, sin el candado y sin mirar el grupo: la base deja pasar `DO.BUN26-0282` aunque ya exista
+  `DO.BAQ26-0282`. Después de cualquier carga, correr la consulta S2 del diseño (números repetidos
+  del grupo; hoy solo deben salir el 0098 y el 0277).
 
 ## Pisos
 
