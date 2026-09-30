@@ -41,6 +41,7 @@ async function main() {
   if (anioTexto && !Number.isInteger(anio)) throw new Error(`Año inválido: ${anioTexto}`);
 
   const contadores = await estadoContadores(anio);
+  if (contadores.some((c) => c.problema)) process.exitCode = 2; // también con --json
   if (process.argv.includes("--json")) {
     console.log(JSON.stringify(contadores, null, 2));
     return;
@@ -59,7 +60,6 @@ async function main() {
   for (const problema of problemas) {
     console.log(`PROBLEMA: ${problema}`);
   }
-  if (problemas.length > 0) process.exitCode = 2;
 }
 
 main()

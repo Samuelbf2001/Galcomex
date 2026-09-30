@@ -4,6 +4,7 @@ import { hashPassword } from "better-auth/crypto";
 import { CAPACIDADES } from "../src/lib/capacidades/catalogo";
 import { sembrarConceptosVenta } from "../src/lib/catalogos/seed-conceptos";
 import { prisma } from "../src/lib/db/prisma";
+import { numeracionParaSeed } from "../src/lib/tramites/consecutivo";
 
 async function main() {
   // Matriz de recaudo (tipos de recaudo del cliente → Galcomex)
@@ -172,7 +173,8 @@ async function main() {
   // Barranquilla están pendientes de Camila y se cambian con SQL, sin
   // programar. El seed solo los escribe al CREAR el tipo (ver el bucle); en una
   // base existente los deja la migración 20260930120000 y después mandan los
-  // datos. `createTramite` no numera si la combinación hace que dos contadores
+  // datos, salvo que repitan números (entonces los repone, ver el bucle).
+  // `createTramite` no numera si la combinación hace que dos contadores
   // impriman el mismo número.
   const tiposTramite = [
     {
@@ -224,7 +226,7 @@ async function main() {
       codigo: "EXPORTACION",
       nombre: "Exportación",
       descripcion:
-        "Exportaciones de todos los clientes. Contador por ciudad: Barranquilla, Bogotá y Buenaventura siguen la serie DO.EXP26 (desde la 0013); Cartagena y Santa Marta llevan cada una el suyo, con su propio prefijo. Se abre sin pagos a proveedores y se manda a facturar directo, con la tarifa de exportación de la empresa o con el valor escrito a mano.",
+        "Exportaciones de todos los clientes. La ciudad decide el contador; el número que tomará se ve al escogerla. Se abre sin pagos a proveedores y se manda a facturar directo, con la tarifa de exportación de la empresa o con el valor escrito a mano.",
       prefijoConsecutivo: "DO.EXP",
       secuenciaPor: SecuenciaTramite.CIUDAD_ANIO,
       incluyeCiudadEnConsecutivo: false,
@@ -304,15 +306,26 @@ async function main() {
 
   // Datos de numeración que el seed NO pisa en una base existente (ver arriba):
   // el prefijo por ciudad de todos los tipos y, en estos tipos, qué ciudades
-  // comparten contador. `undefined` en un update de Prisma = no tocar la columna.
+  // comparten contador. Salvo que lo que haya repita números (vuelta de la
+  // imagen ea1e3c0 o reversa SQL): entonces se reponen los del seed
+  // (`numeracionParaSeed`). Una configuración válida de Camila no se toca.
   const comunesSonDato = new Set(["EXPORTACION"]);
+  const ciudades = Object.values(Ciudad);
   for (const tipo of tiposTramite) {
+    const actual = await prisma.tipoTramite.findUnique({
+      where: { codigo: tipo.codigo },
+      select: { ciudadesContadorComun: true, prefijoConsecutivoPorCiudad: true },
+    });
+    const numeracion = numeracionParaSeed(tipo, actual, comunesSonDato.has(tipo.codigo), ciudades);
+    if (numeracion.repuesta) {
+      console.log(`• ${tipo.codigo}: numeración de la base repuesta a la del seed (${numeracion.repuesta})`);
+    }
     await prisma.tipoTramite.upsert({
       where: { codigo: tipo.codigo },
       update: {
         ...tipo,
-        prefijoConsecutivoPorCiudad: undefined,
-        ...(comunesSonDato.has(tipo.codigo) ? { ciudadesContadorComun: undefined } : {}),
+        ciudadesContadorComun: numeracion.ciudadesContadorComun,
+        prefijoConsecutivoPorCiudad: numeracion.prefijoConsecutivoPorCiudad as Prisma.InputJsonValue,
       },
       create: tipo,
     });

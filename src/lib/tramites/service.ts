@@ -62,8 +62,9 @@ import {
   alcanceContador,
   contadorSinAnio,
   etiquetaContador,
-  filtroDeAlcance,
+  filtroDelContador,
   formatConsecutivo,
+  pisoDelContador,
   problemasDelContador,
   problemasDeNumeracion,
   siguienteNumero,
@@ -853,22 +854,51 @@ export async function requisitosDeDo(input: {
 
 type TipoConContador = ConfigConsecutivo & { codigo: string; nombre: string };
 
-/** Último número de un contador y su piso (sin candado: solo lectura, o dentro del candado al crear). */
-async function ultimoYPiso(
+/**
+ * Último número de un contador y su piso (sin candado: solo lectura, o dentro
+ * del candado al crear). Lo usan `createTramite`, la vista previa,
+ * `estadoContadores` y el tope de `fijarPisoConsecutivo`, para que los cuatro
+ * vean lo mismo. En un tipo cuyo número no lleva la ciudad (Exportación) mira
+ * también la serie impresa (`DO.EXP26-…` de cualquier ciudad) y los pisos de
+ * los contadores anteriores de esa serie (`filtroDelContador`,
+ * `pisoCuentaParaContador`): cambiar las ciudades del grupo no repite números.
+ */
+export async function ultimoYPisoDelContador(
   db: Prisma.TransactionClient | typeof prisma,
-  tipoCodigo: string,
+  tipo: ConfigConsecutivo & { codigo: string },
   alcance: AlcanceContador<Ciudad>,
 ): Promise<{ ultimo: number | null; piso: number | null }> {
   const ultimo = await db.tramiteDO.findFirst({
-    where: filtroDeAlcance(tipoCodigo, alcance),
+    where: filtroDelContador(tipo, tipo.codigo, alcance),
     orderBy: { numero: "desc" },
     select: { numero: true },
   });
-  const piso = await db.consecutivoPiso.aggregate({
-    where: { clave: alcance.clave },
-    _max: { ultimoNumero: true },
+  const pisos = await db.consecutivoPiso.findMany({
+    where:
+      alcance.anio === null
+        ? { clave: alcance.clave }
+        : { OR: [{ clave: alcance.clave }, { tipoTramiteCodigo: tipo.codigo, anio: alcance.anio }] },
+    select: { clave: true, ultimoNumero: true },
   });
-  return { ultimo: ultimo?.numero ?? null, piso: piso._max.ultimoNumero ?? null };
+  return { ultimo: ultimo?.numero ?? null, piso: pisoDelContador(tipo, tipo.codigo, alcance, pisos) };
+}
+
+/** ¿Algún DO (de cualquier tipo) ya tiene este consecutivo? El texto es único en toda la tabla. */
+async function consecutivoOcupado(db: Prisma.TransactionClient | typeof prisma, consecutivo: string): Promise<boolean> {
+  const otro = await db.tramiteDO.findUnique({ where: { consecutivo }, select: { id: true } });
+  return otro !== null;
+}
+
+/**
+ * Mensaje cuando el número que tocaría ya lo tiene otro DO (p. ej. uno de otro
+ * tipo cargado a mano con ese texto). No se reintenta: el mismo cálculo daría
+ * el mismo número; hay que subir el piso del contador por encima de ese número.
+ */
+function mensajeNumeroOcupado(consecutivo: string, contador: string): string {
+  return (
+    `El número ${consecutivo} ya lo tiene otro DO. Fija un piso del ${contador} por encima de ese número ` +
+    `(scripts/consecutivos/fijar-piso.ts).`
+  );
 }
 
 /** Año del consecutivo: el de Bogotá (la noche del 31-dic el DO sigue siendo del año que termina). */
@@ -941,11 +971,15 @@ async function vistaPreviaNumero(
       contador: `${etiquetaDelContador(tipo, alcance)}: numeración mal configurada, no se puede crear el DO (avísale a soporte)`,
     };
   }
-  const { ultimo, piso } = await ultimoYPiso(prisma, tipo.codigo, alcance);
-  return {
-    siguiente: formatConsecutivo(tipo, ciudadDo, anio, siguienteNumero(ultimo, piso)),
-    contador: etiquetaDelContador(tipo, alcance),
-  };
+  const { ultimo, piso } = await ultimoYPisoDelContador(prisma, tipo, alcance);
+  const siguiente = formatConsecutivo(tipo, ciudadDo, anio, siguienteNumero(ultimo, piso));
+  if (await consecutivoOcupado(prisma, siguiente)) {
+    return {
+      siguiente: "sin número",
+      contador: `${etiquetaDelContador(tipo, alcance)}: el número ${siguiente} ya lo tiene otro DO, no se puede crear el DO (avísale a soporte)`,
+    };
+  }
+  return { siguiente, contador: etiquetaDelContador(tipo, alcance) };
 }
 
 export type EstadoContador = {
@@ -993,18 +1027,24 @@ export async function estadoContadores(anio: number = anioConsecutivo()): Promis
       const alcance = alcanceContador(tipo, tipo.codigo, ciudad, anio);
       if (vistos.has(alcance.clave)) continue;
       vistos.add(alcance.clave);
-      const { ultimo, piso } = await ultimoYPiso(prisma, tipo.codigo, alcance);
+      const { ultimo, piso } = await ultimoYPisoDelContador(prisma, tipo, alcance);
+      const siguiente = formatConsecutivo(tipo, alcance.ciudades?.[0] ?? ciudad, anio, siguienteNumero(ultimo, piso));
+      const contador = etiquetaDelContador(tipo, alcance);
+      const problemasFila = [
+        problemaDe(tipo.codigo, contadorSinAnio(tipo, tipo.codigo, ciudad)),
+        (await consecutivoOcupado(prisma, siguiente)) ? mensajeNumeroOcupado(siguiente, contador) : null,
+      ].filter((p): p is string => Boolean(p));
       salida.push({
         clave: alcance.clave,
         tipoTramiteCodigo: tipo.codigo,
         tipoNombre: tipo.nombre,
         ciudades: alcance.ciudades,
-        contador: etiquetaDelContador(tipo, alcance),
+        contador,
         anio: alcance.anio,
         ultimo,
         piso,
-        siguiente: formatConsecutivo(tipo, alcance.ciudades?.[0] ?? ciudad, anio, siguienteNumero(ultimo, piso)),
-        problema: problemaDe(tipo.codigo, contadorSinAnio(tipo, tipo.codigo, ciudad)),
+        siguiente,
+        problema: problemasFila.length > 0 ? problemasFila.join(" ") : null,
       });
     }
   }
@@ -1204,9 +1244,17 @@ export async function createTramite(
         async (tx) => {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${alcance.claveLock}))`;
 
-          const { ultimo, piso } = await ultimoYPiso(tx, tipo.codigo, alcance);
+          const { ultimo, piso } = await ultimoYPisoDelContador(tx, tipo, alcance);
           const numero = siguienteNumero(ultimo, piso);
           const consecutivo = formatConsecutivo(tipo, input.ciudad, anio, numero);
+          // Sin esto, un texto que ya existe daba P2002 y los reintentos
+          // repetían el mismo número cinco veces (contador trabado, 500 mudo).
+          if (await consecutivoOcupado(tx, consecutivo)) {
+            throw new NumeracionMalConfiguradaError(
+              tipo.nombre,
+              mensajeNumeroOcupado(consecutivo, etiquetaDelContador(tipo, alcance)),
+            );
+          }
           const plantilla = tipo.usaChecklist ? await plantillaChecklistEstandar(tx) : null;
           // Los ítems cuyo documento no aplica al servicio no se copian (la
           // nacionalización no pide el BL).

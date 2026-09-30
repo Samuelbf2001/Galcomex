@@ -531,7 +531,10 @@ model ConsecutivoPiso {
   id                String      @id @default(cuid())
   /// Clave del contador: 'IMPORTACION:BAQ+BGT+BUN:2026', 'EXPORTACION:BAQ+BGT+BUN:2026',
   /// 'EXPORTACION:CTG:2026'. Las filas 'EXPORTACION:2026' son historial del
-  /// contador por año (hasta la migración 20260930120000): ya no las usa ningún contador.
+  /// contador por año (hasta la migración 20260930120000). En un tipo cuyo número
+  /// no lleva la ciudad, el contador que imprime el prefijo general (DO.EXP) cuenta
+  /// también los pisos de otras claves del mismo tipo y año que cubren sus
+  /// ciudades (`pisoCuentaParaContador`): cambiar el grupo no pierde el piso.
   clave             String
   tipoTramiteCodigo String
   tipoTramite       TipoTramite @relation(fields: [tipoTramiteCodigo], references: [codigo], onDelete: Restrict)

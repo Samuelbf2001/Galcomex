@@ -28,7 +28,10 @@
  * `prefijoConsecutivo`. Así un tipo cuyo número NO lleva la ciudad puede tener
  * varios contadores sin que dos de ellos impriman el mismo texto.
  * `validarConfigContador` (un tipo) y `problemasDeNumeracion` (todo el
- * catálogo) rechazan la configuración que lo permitiría.
+ * catálogo) rechazan la configuración que lo permitiría. Como esas ciudades
+ * son un dato, un contador cuyo número no lleva la ciudad cuenta también su
+ * serie impresa y los pisos de claves anteriores (`filtroDelContador`,
+ * `pisoCuentaParaContador`): cambiar el grupo no repite números.
  */
 
 export type SecuenciaTramite = "CIUDAD_ANIO" | "ANIO" | "GLOBAL";
@@ -183,6 +186,115 @@ export function filtroDeAlcance<C extends string>(
 /** Siguiente número: `max(último ?? 0, piso ?? 0) + 1`. */
 export function siguienteNumero(ultimo: number | null | undefined, piso: number | null | undefined): number {
   return Math.max(ultimo ?? 0, piso ?? 0) + 1;
+}
+
+// ─── Serie impresa y pisos de contadores anteriores (revisión, 30-sep-2026) ──
+//
+// En un tipo cuyo número NO lleva la ciudad (Exportación: `DO.EXP26-0013`) el
+// texto no dice qué contador lo dio. Las ciudades del grupo son un dato que se
+// cambia con SQL («Bogotá exporta aparte»): al cambiarlas cambian la clave y
+// las ciudades del contador. Si el contador nuevo solo mirara SUS ciudades y SU
+// clave, no vería los `DO.EXP26-…` de la ciudad que salió ni el piso del grupo
+// viejo: volvería a dar un número ya impreso (el consecutivo es único → el
+// contador queda trabado) o uno de las carpetas de Camila (sin choque en la
+// base, pero repetido en la vida real). Por eso el último número de esos
+// contadores también mira la serie impresa y los pisos de los contadores
+// anteriores que imprimían el prefijo general.
+
+/** Filtro Prisma de los DOs de un contador (ver `filtroDelContador`). */
+export type FiltroDosContador<C extends string> = {
+  tipoTramiteCodigo: string;
+  ciudad?: C | { in: C[] };
+  anio?: number;
+  consecutivo?: { startsWith: string };
+};
+
+/**
+ * Comienzos de texto que imprime un contador por ciudad y año cuyo número no
+ * lleva la ciudad: `["DO.EXP26-"]`, `["DO.EXP.CTG26-"]`. Vacío en los demás
+ * contadores: su filtro de siempre ya cubre toda la serie que imprimen (con la
+ * ciudad en el número, o un solo contador por año o global).
+ */
+export function seriesImpresasDelContador(
+  config: ConfigConsecutivo,
+  alcance: Pick<AlcanceContador, "ciudades" | "anio">,
+): string[] {
+  if (config.secuenciaPor !== "CIUDAD_ANIO" || config.incluyeCiudadEnConsecutivo) return [];
+  if (!alcance.ciudades || alcance.anio === null) return [];
+  const aa = String(alcance.anio).slice(-2);
+  return [...new Set(alcance.ciudades.map((ciudad) => `${raizConsecutivo(config, ciudad)}${aa}-`))];
+}
+
+/**
+ * DOs que cuentan para el último número de un contador: los de sus ciudades
+ * (`filtroDeAlcance`) y, si el número no lleva la ciudad, además los del mismo
+ * tipo y año cuyo consecutivo empieza con la serie que imprime (`DO.EXP26-`),
+ * sea cual sea su ciudad. Así un DO de una ciudad que salió del grupo sigue
+ * contando y el grupo nunca vuelve a calcular un texto que ya existe.
+ */
+export function filtroDelContador<C extends string>(
+  config: ConfigConsecutivo,
+  tipoTramiteCodigo: string,
+  alcance: AlcanceContador<C>,
+): FiltroDosContador<C> | { OR: FiltroDosContador<C>[] } {
+  const base = filtroDeAlcance(tipoTramiteCodigo, alcance);
+  const series = seriesImpresasDelContador(config, alcance);
+  if (series.length === 0 || alcance.anio === null) return base;
+  const anio = alcance.anio;
+  return {
+    OR: [base, ...series.map((serie) => ({ tipoTramiteCodigo, anio, consecutivo: { startsWith: serie } }))],
+  };
+}
+
+/**
+ * ¿El piso guardado con `clavePiso` cuenta para este contador? El de su propia
+ * clave, siempre. En un tipo cuyo número no lleva la ciudad, también los pisos
+ * del MISMO tipo y año de otros contadores —uno anterior del grupo
+ * (`EXPORTACION:BAQ+BGT+BUN:2026` cuando Bogotá sale) o el viejo por año
+ * (`EXPORTACION:2026`)— que cubren alguna ciudad de este contador que imprime
+ * con el prefijo general (`DO.EXP`): esa serie es la misma aunque cambie el
+ * grupo. Una ciudad con prefijo propio (`DO.EXP.CTG`, `DO.EXP.BGT`) imprime una
+ * serie nueva y no hereda pisos de otros contadores (sí los de su clave).
+ */
+export function pisoCuentaParaContador(
+  config: ConfigConsecutivo,
+  tipoTramiteCodigo: string,
+  alcance: Pick<AlcanceContador, "clave" | "ciudades" | "anio">,
+  clavePiso: string,
+): boolean {
+  if (clavePiso === alcance.clave) return true;
+  if (config.incluyeCiudadEnConsecutivo || config.secuenciaPor === "GLOBAL" || alcance.anio === null) return false;
+
+  const partes = clavePiso.split(":");
+  if (partes[0] !== tipoTramiteCodigo || partes[partes.length - 1] !== String(alcance.anio)) return false;
+  // `T:AAAA` = contador por año (todas las ciudades); `T:C1+C2:AAAA` = esas ciudades.
+  let cubre: string[] | null;
+  if (partes.length === 2) cubre = null;
+  else if (partes.length === 3 && partes[1] !== "") cubre = partes[1].split("+");
+  else return false;
+
+  // Contador por año: todas sus ciudades imprimen el prefijo general.
+  if (alcance.ciudades === null) return true;
+  const conPrefijoGeneral = alcance.ciudades.filter(
+    (ciudad) => prefijoDeCiudad(config, ciudad) === config.prefijoConsecutivo,
+  );
+  if (conPrefijoGeneral.length === 0) return false;
+  return cubre === null || cubre.some((ciudad) => conPrefijoGeneral.includes(ciudad));
+}
+
+/** Piso efectivo de un contador: el mayor de los pisos que cuentan para él (`null` si ninguno). */
+export function pisoDelContador(
+  config: ConfigConsecutivo,
+  tipoTramiteCodigo: string,
+  alcance: Pick<AlcanceContador, "clave" | "ciudades" | "anio">,
+  pisos: ReadonlyArray<{ clave: string; ultimoNumero: number }>,
+): number | null {
+  let maximo: number | null = null;
+  for (const piso of pisos) {
+    if (!pisoCuentaParaContador(config, tipoTramiteCodigo, alcance, piso.clave)) continue;
+    if (maximo === null || piso.ultimoNumero > maximo) maximo = piso.ultimoNumero;
+  }
+  return maximo;
 }
 
 // ─── Choques entre contadores (30-sep-2026) ─────────────────────────────────
@@ -354,6 +466,39 @@ export function validarConfigContador(config: ConfigConsecutivo, ciudades: reado
 
   const [choque] = choquesDeNumeracion(patronesDeNumeracion(config, "", ciudades));
   return choque ? mensajeChoque(choque, false) : null;
+}
+
+/**
+ * Qué ciudades comunes y qué prefijos por ciudad escribe el seed en un tipo
+ * (corre en cada arranque). Son DATOS: en una base existente se deja lo que
+ * haya (las ciudades comunes solo si `comunesSonDato`; los prefijos siempre),
+ * salvo que eso, con la forma que fija el seed, repita números. Pasa al volver
+ * de la imagen ea1e3c0 (su seed deja las ciudades comunes de Exportación en
+ * `[]`) o después de la reversa SQL: sin esto Exportación quedaría frenada
+ * entera (NUMERACION_MAL_CONFIGURADA) hasta un UPDATE a mano. Entonces se
+ * reponen las ciudades comunes del seed y, si aun así no alcanza, también sus
+ * prefijos. `repuesta` = el error que había (null = se respetó la base).
+ */
+export function numeracionParaSeed<C extends string>(
+  seed: ConfigConsecutivo & { ciudadesContadorComun?: readonly C[] },
+  actual: { ciudadesContadorComun: readonly C[]; prefijoConsecutivoPorCiudad: unknown } | null,
+  comunesSonDato: boolean,
+  ciudades: readonly string[],
+): { ciudadesContadorComun: C[]; prefijoConsecutivoPorCiudad: unknown; repuesta: string | null } {
+  const comunesSeed = [...(seed.ciudadesContadorComun ?? actual?.ciudadesContadorComun ?? [])];
+  const mapaSeed = seed.prefijoConsecutivoPorCiudad ?? {};
+  if (!actual) return { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapaSeed, repuesta: null };
+
+  const errorCon = (comunes: readonly C[], mapa: unknown) =>
+    validarConfigContador({ ...seed, ciudadesContadorComun: comunes, prefijoConsecutivoPorCiudad: mapa }, ciudades);
+  const comunes = comunesSonDato ? [...actual.ciudadesContadorComun] : comunesSeed;
+  const mapa = actual.prefijoConsecutivoPorCiudad ?? {};
+  const error = errorCon(comunes, mapa);
+  if (!error) return { ciudadesContadorComun: comunes, prefijoConsecutivoPorCiudad: mapa, repuesta: null };
+  if (!errorCon(comunesSeed, mapa)) {
+    return { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapa, repuesta: error };
+  }
+  return { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapaSeed, repuesta: error };
 }
 
 /** Un problema de numeración del catálogo y a qué contadores toca. */

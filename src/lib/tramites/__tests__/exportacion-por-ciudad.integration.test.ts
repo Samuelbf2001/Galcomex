@@ -8,11 +8,12 @@
  *   5. Importación Santa Marta aparte
  *   (+ Exportación Santa Marta aparte: supuesto nuestro, DO.EXP.SMR)
  * Más: el caso borde de una exportación de Cartagena numerada con la serie
- * vieja, concurrencia y la configuración que repetiría números.
+ * vieja, concurrencia, la configuración que repetiría números y (revisión del
+ * 30-sep-2026) cambiar las ciudades del grupo sin repetir números.
  *
  * Necesita la migración 20260930120000 (Exportación por ciudad). Años
- * 2088–2091: ningún otro archivo de tests los usa. Sin DATABASE_URL (o sin la
- * BD) los tests salen «skipped».
+ * 2088–2091 y 2072–2077: ningún otro archivo de tests los usa. Sin
+ * DATABASE_URL (o sin la BD) los tests salen «skipped».
  */
 import "dotenv/config";
 
@@ -20,6 +21,7 @@ import { Ciudad, Prisma, Rol, TipoCliente } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/db/prisma";
+import { fijarPisoConsecutivo, PisoConsecutivoInvalidoError } from "@/lib/tramites/pisos";
 import {
   createTramite,
   estadoContadores,
@@ -29,8 +31,16 @@ import {
 
 const TEST_PREFIX = "vitest-expo-ciudad";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const ANIOS = [2088, 2089, 2090, 2091];
+const ANIOS = [2088, 2089, 2090, 2091, 2072, 2073, 2074, 2075, 2076, 2077];
 const [ANIO_CINCO, ANIO_BORDE, ANIO_CONCURRENCIA, ANIO_CONFIG] = ANIOS;
+// Revisión del 30-sep-2026: cambiar las ciudades del grupo con datos.
+const [ANIO_SALE, ANIO_SOLO_PISO, ANIO_COMO_2026, ANIO_ENTRA, ANIO_ROLLBACK, ANIO_OCUPADO] = ANIOS.slice(4);
+
+/** «Bogotá exporta aparte» (el ejemplo de docs/NUMERACION.md). */
+const BOGOTA_APARTE = {
+  ciudadesContadorComun: [Ciudad.BAQ, Ciudad.BUN],
+  prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR", BGT: "DO.EXP.BGT" },
+};
 
 const SIN_REQUISITOS_DO = [
   { codigo: "do_exige_tarifa_vigente", habilitado: false },
@@ -342,5 +352,146 @@ describe("configuración que repetiría números (se cambia con datos, sin progr
     const sinCiudad = await requisitosDeDo({ clienteId: f.clienteId, tipoTramiteCodigo: "EXPORTACION" });
     // Sin ciudad no hay número que mostrar (el contrato lo trae opcional).
     expect(sinCiudad.numeracion ?? null).toBeNull();
+  });
+});
+
+// Revisión del 30-sep-2026: las ciudades del grupo de exportación son un dato.
+// Al cambiarlas cambia la clave del contador, pero el texto DO.EXPAA-… es el
+// mismo: antes el grupo nuevo no veía los números de la ciudad que salió ni el
+// piso del grupo viejo, volvía a calcular un número que ya existía (P2002 en
+// los 5 reintentos, contador trabado) o uno de las carpetas de Camila.
+describe("cambiar las ciudades del grupo de exportación no repite números", () => {
+  function piso(clave: string, anio: number, ultimoNumero: number) {
+    return prisma.consecutivoPiso.create({
+      data: { clave, tipoTramiteCodigo: "EXPORTACION", anio, ultimoNumero, motivo: `Prueba ${runId}` },
+    });
+  }
+
+  it("Bogotá sale del grupo después de numerar: Barranquilla no vuelve a dar el número de Bogotá", async (ctx) => {
+    const f = db(ctx);
+    const aa = String(ANIO_SALE).slice(-2);
+    expect((await exportacion(f, Ciudad.BAQ, ANIO_SALE)).consecutivo).toBe(`DO.EXP${aa}-0001`);
+    expect((await exportacion(f, Ciudad.BGT, ANIO_SALE)).consecutivo).toBe(`DO.EXP${aa}-0002`);
+    expect((await exportacion(f, Ciudad.BGT, ANIO_SALE)).consecutivo).toBe(`DO.EXP${aa}-0003`);
+
+    await conConfigExportacion(BOGOTA_APARTE, async () => {
+      const fila = (await estadoContadores(ANIO_SALE)).find((c) => c.clave === `EXPORTACION:BAQ+BUN:${ANIO_SALE}`);
+      expect(fila).toMatchObject({ ultimo: 3, siguiente: `DO.EXP${aa}-0004`, problema: null });
+
+      expect((await exportacion(f, Ciudad.BAQ, ANIO_SALE)).consecutivo).toBe(`DO.EXP${aa}-0004`);
+      // Bogotá sigue desde su número más alto, con su propio prefijo.
+      expect((await exportacion(f, Ciudad.BGT, ANIO_SALE)).consecutivo).toBe(`DO.EXP.BGT${aa}-0004`);
+    });
+  });
+
+  it("Bogotá sale antes de la primera exportación: el grupo conserva el piso 12 (carpetas de Camila)", async (ctx) => {
+    const f = db(ctx);
+    const aa = String(ANIO_SOLO_PISO).slice(-2);
+    // Como producción el día del despliegue: la fila vieja por año y la del grupo, sin DOs.
+    await piso(`EXPORTACION:${ANIO_SOLO_PISO}`, ANIO_SOLO_PISO, 12);
+    await pisoGrupoExportacion(ANIO_SOLO_PISO, 12);
+
+    await conConfigExportacion(BOGOTA_APARTE, async () => {
+      const contadores = await estadoContadores(ANIO_SOLO_PISO);
+      expect(contadores.find((c) => c.clave === `EXPORTACION:BAQ+BUN:${ANIO_SOLO_PISO}`)).toMatchObject({
+        ultimo: null,
+        piso: 12,
+        siguiente: `DO.EXP${aa}-0013`,
+        problema: null,
+      });
+      // La serie nueva de Bogotá no hereda el 12: empieza en 0001.
+      expect(contadores.find((c) => c.clave === `EXPORTACION:BGT:${ANIO_SOLO_PISO}`)).toMatchObject({
+        piso: null,
+        siguiente: `DO.EXP.BGT${aa}-0001`,
+      });
+      // Volver a fijar el 12 no hace falta (y se rechaza: el contador ya lo tiene).
+      await expect(
+        fijarPisoConsecutivo({
+          tipoTramiteCodigo: "EXPORTACION",
+          anio: ANIO_SOLO_PISO,
+          ciudad: Ciudad.BAQ,
+          ultimoNumero: 12,
+          motivo: "Prueba: re-fijar el piso del grupo",
+          usuarioId: f.userId,
+          aplicar: false,
+        }),
+      ).rejects.toBeInstanceOf(PisoConsecutivoInvalidoError);
+
+      expect((await exportacion(f, Ciudad.BUN, ANIO_SOLO_PISO)).consecutivo).toBe(`DO.EXP${aa}-0013`);
+      expect((await exportacion(f, Ciudad.BGT, ANIO_SOLO_PISO)).consecutivo).toBe(`DO.EXP.BGT${aa}-0001`);
+    });
+  });
+
+  it("con Barranquilla en 13 y Bogotá en 14: el grupo sin Bogotá sigue en 15 y fijar-piso ve el 14", async (ctx) => {
+    const f = db(ctx);
+    const aa = String(ANIO_COMO_2026).slice(-2);
+    await pisoGrupoExportacion(ANIO_COMO_2026, 12);
+    expect((await exportacion(f, Ciudad.BAQ, ANIO_COMO_2026)).consecutivo).toBe(`DO.EXP${aa}-0013`);
+    expect((await exportacion(f, Ciudad.BGT, ANIO_COMO_2026)).consecutivo).toBe(`DO.EXP${aa}-0014`);
+
+    await conConfigExportacion(BOGOTA_APARTE, async () => {
+      const simulacro = fijarPisoConsecutivo({
+        tipoTramiteCodigo: "EXPORTACION",
+        anio: ANIO_COMO_2026,
+        ciudad: Ciudad.BAQ,
+        ultimoNumero: 13,
+        motivo: "Prueba: piso con el máximo de Barranquilla",
+        usuarioId: f.userId,
+        aplicar: false,
+      });
+      await expect(simulacro).rejects.toThrow(/ya va en 14/);
+      expect((await exportacion(f, Ciudad.BAQ, ANIO_COMO_2026)).consecutivo).toBe(`DO.EXP${aa}-0015`);
+    });
+  });
+
+  it("Santa Marta entra al grupo: la clave nueva conserva el piso del grupo", async (ctx) => {
+    const f = db(ctx);
+    const aa = String(ANIO_ENTRA).slice(-2);
+    await pisoGrupoExportacion(ANIO_ENTRA, 12);
+    await conConfigExportacion(
+      { ciudadesContadorComun: [Ciudad.BAQ, Ciudad.BGT, Ciudad.BUN, Ciudad.SMR], prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG" } },
+      async () => {
+        expect((await exportacion(f, Ciudad.SMR, ANIO_ENTRA)).consecutivo).toBe(`DO.EXP${aa}-0013`);
+        expect((await exportacion(f, Ciudad.CTG, ANIO_ENTRA)).consecutivo).toBe(`DO.EXP.CTG${aa}-0001`);
+      },
+    );
+  });
+
+  it("vuelta de un rollback: el grupo cuenta el piso por año y la exportación de Cartagena numerada DO.EXP", async (ctx) => {
+    const f = db(ctx);
+    const aa = String(ANIO_ROLLBACK).slice(-2);
+    // Durante el rollback (código ea1e3c0, contador por año) se fijó el piso por
+    // año en 20 y se creó una exportación de Cartagena con la serie vieja.
+    await pisoGrupoExportacion(ANIO_ROLLBACK, 12);
+    await piso(`EXPORTACION:${ANIO_ROLLBACK}`, ANIO_ROLLBACK, 20);
+    await existente(f, "EXPORTACION", Ciudad.CTG, ANIO_ROLLBACK, 21, `DO.EXP${aa}-0021`);
+
+    expect((await exportacion(f, Ciudad.BAQ, ANIO_ROLLBACK)).consecutivo).toBe(`DO.EXP${aa}-0022`);
+  });
+
+  it("si el número ya lo tiene otro DO (p. ej. cargado a mano en otro tipo): error claro, sin reintentos ni número gastado", async (ctx) => {
+    const f = db(ctx);
+    const aa = String(ANIO_OCUPADO).slice(-2);
+    await existente(f, "OTRO", Ciudad.BAQ, ANIO_OCUPADO, 1, `DO.EXP${aa}-0001`);
+
+    const error = await exportacion(f, Ciudad.BAQ, ANIO_OCUPADO).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NumeracionMalConfiguradaError);
+    expect((error as Error).message).toMatch(new RegExp(`DO\\.EXP${aa}-0001 ya lo tiene otro DO`));
+
+    const fila = (await estadoContadores(ANIO_OCUPADO)).find((c) => c.clave === `EXPORTACION:BAQ+BGT+BUN:${ANIO_OCUPADO}`);
+    expect(fila?.problema).toMatch(/ya lo tiene otro DO/);
+
+    // Con un piso por encima, el contador sigue.
+    await fijarPisoConsecutivo({
+      tipoTramiteCodigo: "EXPORTACION",
+      anio: ANIO_OCUPADO,
+      ciudad: Ciudad.BAQ,
+      ultimoNumero: 1,
+      motivo: "Prueba: el 0001 lo tiene un DO de otro tipo",
+      usuarioId: f.userId,
+      aplicar: true,
+    });
+    expect((await exportacion(f, Ciudad.BAQ, ANIO_OCUPADO)).consecutivo).toBe(`DO.EXP${aa}-0002`);
+    expect(await prisma.tramiteDO.count({ where: { tipoTramiteCodigo: "EXPORTACION", anio: ANIO_OCUPADO } })).toBe(1);
   });
 });

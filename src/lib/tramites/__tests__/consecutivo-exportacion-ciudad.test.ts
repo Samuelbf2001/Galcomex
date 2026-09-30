@@ -18,14 +18,20 @@ import {
   claveSecuencia,
   contadorSinAnio,
   etiquetaContador,
+  filtroDeAlcance,
+  filtroDelContador,
   filtroSecuencia,
   formatConsecutivo,
+  numeracionParaSeed,
   patronesDeNumeracion,
+  pisoCuentaParaContador,
+  pisoDelContador,
   prefijoDeCiudad,
   prefijosPorCiudad,
   problemasDelContador,
   problemasDeNumeracion,
   raizConsecutivo,
+  seriesImpresasDelContador,
   validarConfigContador,
   type ConfigConsecutivo,
 } from "@/lib/tramites/consecutivo";
@@ -340,5 +346,152 @@ describe("problemasDeNumeracion: choques entre tipos", () => {
       ["BGT", "EXPORTACION:BAQ+BGT+BUN", "DO.EXP"],
     ]);
     expect(choquesDeNumeracion(patrones)).toEqual([]);
+  });
+});
+
+// Revisión del 30-sep-2026: las ciudades del grupo de exportación son un dato
+// («Bogotá exporta aparte»). Al cambiarlas cambian la clave y las ciudades del
+// contador, pero el texto DO.EXP26-… es el mismo: el contador nuevo tiene que
+// seguir viendo esa serie y su piso, o repite números (y queda trabado).
+describe("cambiar las ciudades del grupo no repite números (serie impresa y pisos)", () => {
+  const BGT_APARTE: ConfigConsecutivo = {
+    ...EXPORTACION,
+    ciudadesContadorComun: ["BAQ", "BUN"],
+    prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR", BGT: "DO.EXP.BGT" },
+  };
+  const SMR_CON_EL_GRUPO: ConfigConsecutivo = {
+    ...EXPORTACION,
+    ciudadesContadorComun: ["BAQ", "BGT", "BUN", "SMR"],
+    prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG" },
+  };
+  const alcance = (config: ConfigConsecutivo, ciudad: string, codigo = "EXPORTACION") =>
+    alcanceContador(config, codigo, ciudad, 2026);
+
+  it("serie impresa: solo en contadores por ciudad cuyo número no lleva la ciudad", () => {
+    expect(seriesImpresasDelContador(EXPORTACION, alcance(EXPORTACION, "BGT"))).toEqual(["DO.EXP26-"]);
+    expect(seriesImpresasDelContador(EXPORTACION, alcance(EXPORTACION, "CTG"))).toEqual(["DO.EXP.CTG26-"]);
+    expect(seriesImpresasDelContador(BGT_APARTE, alcance(BGT_APARTE, "BGT"))).toEqual(["DO.EXP.BGT26-"]);
+    // Con la ciudad en el número, o un contador por año, el filtro de siempre ya cubre la serie.
+    expect(seriesImpresasDelContador(IMPORTACION, alcance(IMPORTACION, "BAQ", "IMPORTACION"))).toEqual([]);
+    expect(seriesImpresasDelContador(CLASIFICACION, alcance(CLASIFICACION, "BAQ", "CLASIFICACION"))).toEqual([]);
+  });
+
+  it("filtro de DOs: las ciudades del contador O el texto que imprime (de cualquier ciudad, mismo tipo y año)", () => {
+    expect(filtroDelContador(BGT_APARTE, "EXPORTACION", alcance(BGT_APARTE, "BAQ"))).toEqual({
+      OR: [
+        { tipoTramiteCodigo: "EXPORTACION", ciudad: { in: ["BAQ", "BUN"] }, anio: 2026 },
+        { tipoTramiteCodigo: "EXPORTACION", anio: 2026, consecutivo: { startsWith: "DO.EXP26-" } },
+      ],
+    });
+    // Importación, Clasificación y Otros: exactamente el filtro de antes.
+    const imp = alcance(IMPORTACION, "BGT", "IMPORTACION");
+    expect(filtroDelContador(IMPORTACION, "IMPORTACION", imp)).toEqual(filtroDeAlcance("IMPORTACION", imp));
+    const otr = alcance(OTRO, "CTG", "OTRO");
+    expect(filtroDelContador(OTRO, "OTRO", otr)).toEqual(filtroDeAlcance("OTRO", otr));
+  });
+
+  it("piso: el de su clave siempre cuenta, en cualquier tipo", () => {
+    const imp = alcance(IMPORTACION, "BAQ", "IMPORTACION");
+    expect(pisoCuentaParaContador(IMPORTACION, "IMPORTACION", imp, "IMPORTACION:BAQ+BGT+BUN:2026")).toBe(true);
+    // Importación lleva la ciudad en el número: no hereda pisos de otras claves.
+    expect(pisoCuentaParaContador(IMPORTACION, "IMPORTACION", imp, "IMPORTACION:BAQ:2026")).toBe(false);
+    expect(pisoCuentaParaContador(IMPORTACION, "IMPORTACION", imp, "IMPORTACION:2026")).toBe(false);
+  });
+
+  it("Bogotá sale del grupo: Barranquilla y Buenaventura siguen con el piso del grupo viejo; Bogotá empieza su serie", () => {
+    const grupo = alcance(BGT_APARTE, "BAQ");
+    expect(grupo.clave).toBe("EXPORTACION:BAQ+BUN:2026");
+    expect(pisoCuentaParaContador(BGT_APARTE, "EXPORTACION", grupo, "EXPORTACION:BAQ+BGT+BUN:2026")).toBe(true);
+    // El viejo contador por año también imprimía DO.EXP26.
+    expect(pisoCuentaParaContador(BGT_APARTE, "EXPORTACION", grupo, "EXPORTACION:2026")).toBe(true);
+
+    const bogota = alcance(BGT_APARTE, "BGT");
+    expect(pisoCuentaParaContador(BGT_APARTE, "EXPORTACION", bogota, "EXPORTACION:BAQ+BGT+BUN:2026")).toBe(false);
+    expect(pisoCuentaParaContador(BGT_APARTE, "EXPORTACION", bogota, "EXPORTACION:2026")).toBe(false);
+    expect(pisoCuentaParaContador(BGT_APARTE, "EXPORTACION", bogota, "EXPORTACION:BGT:2026")).toBe(true);
+  });
+
+  it("Cartagena y Santa Marta (prefijo propio) no heredan el piso 12 de la serie DO.EXP", () => {
+    for (const ciudad of ["CTG", "SMR"]) {
+      const propio = alcance(EXPORTACION, ciudad);
+      expect(pisoCuentaParaContador(EXPORTACION, "EXPORTACION", propio, "EXPORTACION:2026")).toBe(false);
+      expect(pisoCuentaParaContador(EXPORTACION, "EXPORTACION", propio, "EXPORTACION:BAQ+BGT+BUN:2026")).toBe(false);
+    }
+    // Ni el grupo hereda el de Cartagena (otra serie).
+    expect(pisoCuentaParaContador(EXPORTACION, "EXPORTACION", alcance(EXPORTACION, "BAQ"), "EXPORTACION:CTG:2026")).toBe(false);
+  });
+
+  it("Santa Marta entra al grupo: la clave nueva (BAQ+BGT+BUN+SMR) conserva el piso", () => {
+    const grupo = alcance(SMR_CON_EL_GRUPO, "SMR");
+    expect(grupo.clave).toBe("EXPORTACION:BAQ+BGT+BUN+SMR:2026");
+    expect(pisoCuentaParaContador(SMR_CON_EL_GRUPO, "EXPORTACION", grupo, "EXPORTACION:BAQ+BGT+BUN:2026")).toBe(true);
+  });
+
+  it("otro tipo, otro año o una clave rara no cuentan", () => {
+    const grupo = alcance(EXPORTACION, "BAQ");
+    expect(pisoCuentaParaContador(EXPORTACION, "EXPORTACION", grupo, "IMPORTACION:BAQ+BGT+BUN:2026")).toBe(false);
+    expect(pisoCuentaParaContador(EXPORTACION, "EXPORTACION", grupo, "EXPORTACION:BAQ+BGT+BUN:2025")).toBe(false);
+    expect(pisoCuentaParaContador(EXPORTACION, "EXPORTACION", grupo, "EXPORTACION::2026")).toBe(false);
+    expect(pisoCuentaParaContador(EXPORTACION, "EXPORTACION", grupo, "EXPORTACION")).toBe(false);
+  });
+
+  it("piso efectivo = el mayor de los que cuentan", () => {
+    const pisos = [
+      { clave: "EXPORTACION:2026", ultimoNumero: 12 },
+      { clave: "EXPORTACION:BAQ+BGT+BUN:2026", ultimoNumero: 20 },
+      { clave: "EXPORTACION:CTG:2026", ultimoNumero: 40 },
+    ];
+    expect(pisoDelContador(BGT_APARTE, "EXPORTACION", alcance(BGT_APARTE, "BUN"), pisos)).toBe(20);
+    expect(pisoDelContador(BGT_APARTE, "EXPORTACION", alcance(BGT_APARTE, "BGT"), pisos)).toBeNull();
+    expect(pisoDelContador(BGT_APARTE, "EXPORTACION", alcance(BGT_APARTE, "CTG"), pisos)).toBe(40);
+  });
+});
+
+describe("numeracionParaSeed: el seed respeta los datos salvo que repitan números", () => {
+  const actualDe = (config: ConfigConsecutivo) => ({
+    ciudadesContadorComun: [...(config.ciudadesContadorComun ?? [])],
+    prefijoConsecutivoPorCiudad: config.prefijoConsecutivoPorCiudad,
+  });
+
+  it("tipo nuevo: lo del seed", () => {
+    expect(numeracionParaSeed(EXPORTACION, null, true, CIUDADES)).toEqual({
+      ciudadesContadorComun: ["BAQ", "BGT", "BUN"],
+      prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR" },
+      repuesta: null,
+    });
+  });
+
+  it("un cambio válido de Camila (Bogotá aparte con su prefijo) no se toca", () => {
+    const bgtAparte = {
+      ciudadesContadorComun: ["BAQ", "BUN"],
+      prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR", BGT: "DO.EXP.BGT" },
+    };
+    expect(numeracionParaSeed(EXPORTACION, bgtAparte, true, CIUDADES)).toEqual({ ...bgtAparte, repuesta: null });
+  });
+
+  it("vuelta de la imagen ea1e3c0 (ciudades comunes []): repone las ciudades y deja los prefijos", () => {
+    const trasRollback = { ciudadesContadorComun: [] as string[], prefijoConsecutivoPorCiudad: { CTG: "DO.CTGEXP", SMR: "DO.EXP.SMR" } };
+    const r = numeracionParaSeed(EXPORTACION, trasRollback, true, CIUDADES);
+    expect(r.ciudadesContadorComun).toEqual(["BAQ", "BGT", "BUN"]);
+    expect(r.prefijoConsecutivoPorCiudad).toEqual({ CTG: "DO.CTGEXP", SMR: "DO.EXP.SMR" });
+    expect(r.repuesta).toMatch(/imprimirían el mismo número/);
+    expect(
+      validarConfigContador({ ...EXPORTACION, ciudadesContadorComun: r.ciudadesContadorComun, prefijoConsecutivoPorCiudad: r.prefijoConsecutivoPorCiudad }, CIUDADES),
+    ).toBeNull();
+  });
+
+  it("después de la reversa SQL (comunes [] y mapa {}): repone las dos cosas", () => {
+    const r = numeracionParaSeed(EXPORTACION, { ciudadesContadorComun: [], prefijoConsecutivoPorCiudad: {} }, true, CIUDADES);
+    expect(r).toMatchObject({
+      ciudadesContadorComun: ["BAQ", "BGT", "BUN"],
+      prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR" },
+    });
+    expect(r.repuesta).not.toBeNull();
+  });
+
+  it("Importación: las ciudades comunes las pone el seed (no son dato) y el mapa se respeta", () => {
+    const r = numeracionParaSeed(IMPORTACION, { ciudadesContadorComun: [], prefijoConsecutivoPorCiudad: {} }, false, CIUDADES);
+    expect(r).toEqual({ ciudadesContadorComun: ["BAQ", "BGT", "BUN"], prefijoConsecutivoPorCiudad: {}, repuesta: null });
+    expect(numeracionParaSeed(CLASIFICACION, actualDe(CLASIFICACION), false, CIUDADES).repuesta).toBeNull();
   });
 });

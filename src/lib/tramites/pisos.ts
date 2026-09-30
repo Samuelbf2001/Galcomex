@@ -19,13 +19,11 @@ import { prisma } from "@/lib/db/prisma";
 import { normalizeSerializable } from "@/lib/db/serializable";
 import {
   alcanceContador,
-  filtroDeAlcance,
   formatConsecutivo,
   siguienteNumero,
   validarConfigContador,
-  type AlcanceContador,
 } from "@/lib/tramites/consecutivo";
-import { etiquetaDelContador } from "@/lib/tramites/service";
+import { etiquetaDelContador, ultimoYPisoDelContador } from "@/lib/tramites/service";
 
 export const MOTIVO_PISO_MIN = 10;
 
@@ -64,16 +62,6 @@ export type ResultadoPiso = {
 };
 
 type Db = Prisma.TransactionClient | typeof prisma;
-
-async function estadoDelContador(db: Db, tipoCodigo: string, alcance: AlcanceContador<Ciudad>) {
-  const ultimo = await db.tramiteDO.findFirst({
-    where: filtroDeAlcance(tipoCodigo, alcance),
-    orderBy: { numero: "desc" },
-    select: { numero: true },
-  });
-  const piso = await db.consecutivoPiso.aggregate({ where: { clave: alcance.clave }, _max: { ultimoNumero: true } });
-  return { ultimo: ultimo?.numero ?? null, piso: piso._max.ultimoNumero ?? null };
-}
 
 export async function fijarPisoConsecutivo(input: FijarPisoInput): Promise<ResultadoPiso> {
   const motivo = input.motivo.trim();
@@ -115,7 +103,10 @@ export async function fijarPisoConsecutivo(input: FijarPisoInput): Promise<Resul
   const contador = etiquetaDelContador(tipo, alcance);
 
   const calcular = async (db: Db): Promise<ResultadoPiso> => {
-    const { ultimo, piso } = await estadoDelContador(db, tipo.codigo, alcance);
+    // El mismo cálculo que `createTramite`: en Exportación el tope incluye la
+    // serie impresa (DO.EXP26-… de cualquier ciudad) y los pisos del grupo
+    // anterior, no solo las ciudades de hoy.
+    const { ultimo, piso } = await ultimoYPisoDelContador(db, tipo, alcance);
     const tope = Math.max(ultimo ?? 0, piso ?? 0);
     if (input.ultimoNumero <= tope) {
       throw new PisoConsecutivoInvalidoError(
