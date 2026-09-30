@@ -208,8 +208,9 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   Si Galcomex pagó algo por el cliente (VUCE, puerto, transporte), regístralo antes de aprobar.»
 - **Tipos de trámite:** `IMPORTACION` (DO.BAQ26-0001; también traslado,
   nacionalización y DUTA, como servicio — ver «Servicio del trámite»),
-  `EXPORTACION` (DO.EXP26-0013, serie propia sin ciudad, flujo corto, línea de
-  cartera `EXPORTACION`, 30-sep-2026), `CLASIFICACION` (CLAS26-0001, exige
+  `EXPORTACION` (DO.EXP26-0013 Barranquilla-Bogotá-Buenaventura, DO.EXP.CTG26-0001
+  Cartagena, DO.EXP.SMR26-0001 Santa Marta: contador por ciudad, sin ciudad en el
+  número; flujo corto, línea de cartera `EXPORTACION`, 30-sep-2026), `CLASIFICACION` (CLAS26-0001, exige
   `clasificacion_arancelaria`) y `OTRO` (OTR26-0001: Plan Vallejo, sellos,
   coordinación logística; sin agencia, ETA ni checklist, factura aparte, línea
   de cartera `OTROS`). Agencias: Moviaduanas, Coldex, AR Logisty, Cortes.
@@ -566,7 +567,17 @@ Sin registro público, sin doble factor, sin correos: el ADMIN administra las cu
 ## Consecutivo automático de DO (numeración como Camila, 30-sep-2026)
 
 Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`; Exportación `DO.EXP{AA}-{NNNN}`
-(sin ciudad); Clasificación `CLAS{AA}-…`; Otros `OTR{AA}-…`. Detalle: `docs/NUMERACION.md`.
+(Barranquilla, Bogotá, Buenaventura), `DO.EXP.CTG{AA}-…` (Cartagena) y `DO.EXP.SMR{AA}-…` (Santa
+Marta); Clasificación `CLAS{AA}-…`; Otros `OTR{AA}-…`. Detalle: `docs/NUMERACION.md`.
+- **Los cinco contadores de Camila (30-sep-2026):** importación BAQ+BGT+BUN, exportación Barranquilla
+  (con Bogotá y Buenaventura: supuesto), importación Cartagena, exportación Cartagena, importación Santa
+  Marta (+ exportación Santa Marta aparte: supuesto). Exportación va por ciudad (`CIUDAD_ANIO`) con
+  `incluyeCiudadEnConsecutivo = false`: la ciudad escoge contador y prefijo
+  (`TipoTramite.prefijoConsecutivoPorCiudad`, Json `{"CTG": "DO.EXP.CTG", "SMR": "DO.EXP.SMR"}`).
+  El prefijo por ciudad y las ciudades comunes de Exportación son **datos** (se cambian con SQL; el
+  seed solo los escribe al crear el tipo). `createTramite` no numera un contador cuya configuración
+  permita que dos contadores impriman el mismo número (`validarConfigContador` /
+  `problemasDeNumeracion`, 500 `NUMERACION_MAL_CONFIGURADA`).
 - **Contadores:** el número depende solo de **tipo + ciudad + año**, nunca del servicio.
   **Barranquilla, Bogotá y Buenaventura comparten UN contador** (`TipoTramite.ciudadesContadorComun`
   = `[BAQ, BGT, BUN]` en IMPORTACION; las carpetas de Camila cubren del 1 al 281 sin repetir entre
@@ -574,21 +585,23 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`; Exportación `DO.EXP{
   Cartagena y Santa Marta, cada una el suyo. Volver a uno por ciudad = `ciudadesContadorComun: []`
   en el seed (ningún DO cambia de número).
 - **Piso** (`consecutivo_piso`): «el último número de este contador es por lo menos N»; siguiente =
-  `max(MAX(numero), piso) + 1`. Solo se inserta: migración (EXPORTACION:2026 = 12 → la siguiente
-  exportación es la 0013) o `scripts/consecutivos/fijar-piso.ts` (ADMIN, AuditLog
-  `FIJAR_PISO_CONSECUTIVO`). Estado de los contadores: `GET /api/tramites/consecutivos`
-  (ADMIN, REVISOR) o `scripts/consecutivos/ver-contadores.ts`.
+  `max(MAX(numero), piso) + 1`. Solo se inserta: migración (`EXPORTACION:BAQ+BGT+BUN:2026` = 12 → la
+  siguiente exportación de Barranquilla es la 0013; la fila vieja `EXPORTACION:2026` es historia) o
+  `scripts/consecutivos/fijar-piso.ts` (ADMIN, AuditLog `FIJAR_PISO_CONSECUTIVO`; Exportación pide
+  `--ciudad`). Estado de los contadores: `GET /api/tramites/consecutivos` (ADMIN, REVISOR; trae
+  `problema` por fila) o `scripts/consecutivos/ver-contadores.ts`.
 - Generado atómicamente: `pg_advisory_xact_lock(hashtext('tramite-do:{clave}'))` con la clave del
-  contador (`IMPORTACION:BAQ+BGT+BUN:2026`, `IMPORTACION:CTG:2026`, `EXPORTACION:2026`); todos los
-  DOs del grupo toman el mismo candado. Lógica pura en `src/lib/tramites/consecutivo.ts`
-  (`alcanceContador`, `siguienteNumero`).
+  contador (`IMPORTACION:BAQ+BGT+BUN:2026`, `IMPORTACION:CTG:2026`, `EXPORTACION:BAQ+BGT+BUN:2026`,
+  `EXPORTACION:CTG:2026`); todos los DOs del grupo toman el mismo candado. Lógica pura en
+  `src/lib/tramites/consecutivo.ts` (`alcanceContador`, `siguienteNumero`, `formatConsecutivo`).
 - La base NO impide `DO.BAQ26-0282` y `DO.BGT26-0282` a la vez (el índice único es
   `(tipo, ciudad, año, número)`; el 0098 y el 0277 ya están repetidos, duda de Camila): la defensa
   es el candado único del grupo.
 - **El año lo pone el servidor** (el de Bogotá). `POST /api/tramites` acepta otro `anio` solo con
   rol efectivo ADMIN (422 `ANIO_SOLO_ADMIN`); las cargas históricas y el MCP van como ADMIN.
-- El formulario «Crear trámite» no trae ciudad por defecto (hay que escogerla; un tipo sin ciudad en el
-  número propone Barranquilla) y muestra el número que tomará (`requisitos.numeracion`, vista previa).
+- El formulario «Crear trámite» no trae ciudad por defecto (hay que escogerla, también en Exportación:
+  decide el contador; solo Clasificación y Otros, cuyo número no depende de la ciudad, proponen
+  Barranquilla) y muestra el número que tomará (`requisitos.numeracion`, vista previa).
 - Litoplas SIEMPRE requiere `agenciaAduanas = MOVIADUANAS` y `doAgencia` con formato `I########`
   (capacidad `regla_agencia_fija`).
 

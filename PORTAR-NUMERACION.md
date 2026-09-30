@@ -4,6 +4,7 @@ Rama `feat/numeracion-camila` (sobre `origin/master` 242da51). Decisiones de Ern
 un solo contador para Barranquilla, Bogotá y Buenaventura; nacionalización, traslado y DUTA como
 trámites de importación con servicio; tipo Exportación con serie `DO.EXP26` desde la 0013; nada
 histórico se renumera; nunca se envía nada a Siigo. Diseño: `simulacion-camila-27sep/DISENO-NUMERACION.md`.
+Después, rama `feat/expo-por-ciudad`: Exportación por ciudad (ver la sección de abajo).
 
 **Regla general:** esta rama no toca ninguna columna de dinero ni ningún cálculo del motor. Lo que
 cambia es **qué tarifa se escoge** (por servicio), **con qué número nace un DO** y **qué documentos
@@ -20,6 +21,51 @@ se piden**. Una rama que toque los mismos archivos debe conservar esas tres cosa
 Van después de `20260930090000_beneficiario_empresa_obligatoria`. Si otra rama agrega migraciones con
 fecha posterior, no hay choque: estas son aditivas. `consecutivo_piso.ultimoNumero` es un número de
 DO (INTEGER), no dinero.
+
+## Exportación por ciudad (rama `feat/expo-por-ciudad`, sobre ea1e3c0)
+
+Decisión de Ernesto confirmada por María Camila el 30-sep-2026: **cinco contadores** — importación
+BAQ+BGT+BUN juntos, exportación Barranquilla, importación Cartagena, exportación Cartagena e importación
+Santa Marta. Supuestos nuestros (datos, cambiables sin programar): Bogotá y Buenaventura exportan con
+Barranquilla; Santa Marta exporta con contador propio. Nada de dinero, ningún DO se renumera.
+
+| Orden | Migración | Qué hace |
+|---|---|---|
+| 4 | `20260930120000_exportacion_por_ciudad` | Columna `tipo_tramite.prefijoConsecutivoPorCiudad` (Json `{}`); EXPORTACION pasa a `CIUDAD_ANIO` sin ciudad en el número, BAQ+BGT+BUN comunes, CTG → `DO.EXP.CTG`, SMR → `DO.EXP.SMR`; fila nueva de piso `EXPORTACION:BAQ+BGT+BUN:AAAA` = max(piso viejo `EXPORTACION:AAAA`, exportaciones ya creadas de cualquier ciudad). No lanza error con datos; no toca `tramite_do` |
+
+Formatos: `DO.EXP26-0013` (Barranquilla, Bogotá, Buenaventura: exacto a las carpetas de Camila),
+`DO.EXP.CTG26-0001` y `DO.EXP.SMR26-0001` (provisionales). Qué conservar al rebasar o fusionar:
+
+- **`src/lib/tramites/consecutivo.ts`:** `formatConsecutivo` usa `raizConsecutivo` →
+  `prefijoDeCiudad` (el mapa solo cuenta con `CIUDAD_ANIO`). `validarConfigContador(config, ciudades)`
+  y `problemasDeNumeracion` rechazan configuraciones donde dos contadores (del mismo tipo o de dos
+  tipos) imprimirían el mismo texto; un choque entre tipos frena solo esos dos contadores.
+  `etiquetaContador` tiene un 4.º parámetro `nombrarTipo`.
+- **`src/lib/tramites/service.ts`:** `createTramite` llama `problemaDeNumeracion(tipo, ciudad)` antes
+  del candado y lanza `NumeracionMalConfiguradaError` (500, `NUMERACION_MAL_CONFIGURADA`);
+  `etiquetaDelContador` (exportada, la usa `pisos.ts`); `EstadoContador.problema`. Una rama que toque
+  `createTramite` debe conservar esa verificación ANTES de `alcanceContador`.
+- **`prisma/seed.ts`:** `prefijoConsecutivoPorCiudad` (todos los tipos) y las `ciudadesContadorComun`
+  de EXPORTACION se escriben SOLO al crear (`undefined` en el update): son datos de Camila. No volver a
+  `update: tipo` a secas o el seed revertiría un cambio hecho con SQL. El piso del seed ahora es
+  `piso-exportacion-baq-bgt-bun-2026` (solo si falta).
+- **UI:** `TipoTramiteOption.numeroPorCiudad` (de `secuenciaPor`) decide si el formulario propone
+  Barranquilla; en Exportación ya no la propone.
+- **Tests que asumían Exportación por año** (ya ajustados aquí; otra rama que agregue uno debe usar
+  la clave `EXPORTACION:BAQ+BGT+BUN:AAAA` y pasar la ciudad): caso 6 de
+  `numeracion-compartida.integration.test.ts`, `pisos.integration.test.ts`, dorado 18 de
+  `servicio-tramite-dorados.test.ts`, `GET /api/tramites/consecutivos` en
+  `servicio-del-do.route.test.ts`. Nuevos: `consecutivo-exportacion-ciudad.test.ts` (puro) y
+  `exportacion-por-ciudad.integration.test.ts` (años 2088–2091).
+- **Centavos (#4):** no toca dinero; los conflictos esperables son de texto en `service.ts`
+  (`createTramite`, sección «Numeración») y `seed.ts` (bucle de `tiposTramite`).
+- **MCP (`galcomex-mcp`):** `tramite_crear` con `EXPORTACION` debe mandar la ciudad real de la
+  exportación (antes daba igual cuál: ahora decide el contador); la tool pendiente `consecutivos_ver`
+  verá tres filas de exportación y el campo `problema`.
+- **Datos pendientes de Camila:** formato real de la exportación de Cartagena, si Bogotá y Buenaventura
+  exportan con Barranquilla y el último número real de exportación de Cartagena 2026 (si ya abrió
+  alguna fuera de la plataforma: fijar piso con `--tipo EXPORTACION --ciudad CTG`). Cómo cambiarlos
+  con SQL: `docs/NUMERACION.md` § «Exportación por ciudad».
 
 ## Centavos (#4)
 
