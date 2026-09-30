@@ -92,13 +92,19 @@ export function exigeTarifaVigente(capacidades: MapaCapacidades, tipoTramiteCodi
   return reglaAplica(capacidades, CAPACIDAD_TARIFA_VIGENTE, tipoTramiteCodigo);
 }
 
-/** D2: documentos que este tipo de trámite debe tener antes de pasar a EN_TRAMITE. */
+/**
+ * D2: documentos que este tipo de trámite debe tener antes de pasar a
+ * EN_TRAMITE. 30-sep-2026: menos los que no aplican al servicio del DO (la
+ * nacionalización no tiene BL). El servicio nunca agrega documentos que la
+ * empresa tenga apagados.
+ */
 export function documentosRequeridos(
   capacidades: MapaCapacidades,
   tipoTramiteCodigo: string,
+  noAplican: readonly string[] = [],
 ): DocumentoObligatorio[] {
   return reglaAplica(capacidades, CAPACIDAD_DOCUMENTOS_OBLIGATORIOS, tipoTramiteCodigo)
-    ? [...DOCUMENTOS_OBLIGATORIOS]
+    ? DOCUMENTOS_OBLIGATORIOS.filter((categoria) => !noAplican.includes(categoria))
     : [];
 }
 
@@ -260,6 +266,11 @@ export interface MensajeTarifaInput {
   fueraDeFecha?: TarifaFueraDeFecha | null;
   /** Consecutivo del DO al intentar abrir una solicitud; `null` al crear. */
   consecutivo?: string | null;
+  /**
+   * 30-sep-2026: servicio con tarifa propia que no la tiene («DUTA (tránsito
+   * aduanero)»). `null`/ausente = la tarifa general de la línea (mensaje de siempre).
+   */
+  servicioNombre?: string | null;
 }
 
 /**
@@ -279,6 +290,13 @@ export function mensajeTarifaRequerida(input: MensajeTarifaInput): string {
   const momento = input.consecutivo
     ? `abrir el ${referenciaTramite(input.consecutivo)}`
     : "crear el DO";
+
+  if (input.servicioNombre) {
+    const instruccionServicio = input.tarifarioPropioActivo
+      ? "Publica la tarifa de ese servicio o escoge otro servicio."
+      : `Activa «Tarifario propio versionado» en la pestaña Funciones de la empresa y publica la tarifa de ese servicio antes de ${momento}, o escoge otro servicio.`;
+    return `${input.empresa} no tiene una tarifa vigente de ${linea} para el servicio «${input.servicioNombre}»${detalle}. ${instruccionServicio}`;
+  }
 
   const instruccion = input.tarifarioPropioActivo
     ? `Publica la tarifa de la empresa antes de ${momento}.`
@@ -319,6 +337,17 @@ export interface RequisitosDo {
     /** D3: el DO se crea con el número de contenedores o marcado como carga suelta. */
     requerido: boolean;
   };
+  /**
+   * 30-sep-2026: servicio con el que se van a revisar la tarifa y los
+   * documentos (ausente en un tipo sin catálogo y sin servicio escogido).
+   * `claveTarifa` `null` = la tarifa general de la línea.
+   */
+  servicio?: { codigo: string | null; nombre: string; claveTarifa: string | null };
+  /**
+   * 30-sep-2026: número que tomaría el DO si se creara ya, y de qué contador.
+   * Vista previa, no reserva. Ausente si falta la ciudad.
+   */
+  numeracion?: { siguiente: string; contador: string };
 }
 
 export function armarRequisitos(input: {
@@ -327,6 +356,14 @@ export function armarRequisitos(input: {
   tipoTramite: { codigo: string; lineaServicio: string; camposBaseCalculo?: readonly string[] | null };
   tarifario: TarifarioResumen | null;
   fueraDeFecha: TarifaFueraDeFecha | null;
+  /** 30-sep-2026: servicio del DO y los documentos que no le aplican. */
+  servicio?: {
+    codigo: string | null;
+    nombre: string;
+    claveTarifa: string | null;
+    documentosNoAplican: readonly string[];
+  } | null;
+  numeracion?: { siguiente: string; contador: string } | null;
 }): RequisitosDo {
   const requerida = exigeTarifaVigente(input.capacidades, input.tipoTramite.codigo);
   const tarifarioPropioHabilitado = tiene(input.capacidades, "tarifario_propio");
@@ -347,13 +384,28 @@ export function armarRequisitos(input: {
             tarifarioPropioActivo: tarifarioPropioHabilitado,
             fueraDeFecha: input.fueraDeFecha,
             consecutivo: null,
+            servicioNombre: input.servicio?.claveTarifa ? input.servicio.nombre : null,
           }),
     },
     documentosObligatorios: {
-      requeridos: documentosRequeridos(input.capacidades, input.tipoTramite.codigo),
+      requeridos: documentosRequeridos(
+        input.capacidades,
+        input.tipoTramite.codigo,
+        input.servicio?.documentosNoAplican ?? [],
+      ),
     },
     contenedores: {
       requerido: exigeContenedores(input.capacidades, input.tipoTramite.camposBaseCalculo),
     },
+    ...(input.servicio
+      ? {
+          servicio: {
+            codigo: input.servicio.codigo,
+            nombre: input.servicio.nombre,
+            claveTarifa: input.servicio.claveTarifa,
+          },
+        }
+      : {}),
+    ...(input.numeracion ? { numeracion: input.numeracion } : {}),
   };
 }

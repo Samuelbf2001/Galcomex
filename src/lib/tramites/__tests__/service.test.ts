@@ -301,10 +301,17 @@ describe("tramites service con Postgres local", () => {
     if (result.ok) {
       expect.fail("La transicion debio ser rechazada");
     }
-    expect(result.faltantes?.slice().sort()).toEqual([
-      "BL",
-      "Factura comercial",
-    ]);
+    // 30-sep-2026: el DO copia la plantilla estándar por id
+    // (`checklist-estandar`, la del seed: BL, factura comercial y packing list
+    // requeridos); solo si no existe, la primera por nombre (la de este archivo).
+    const estandar = await prisma.plantillaChecklist.findUnique({
+      where: { id: "checklist-estandar" },
+      include: { items: true },
+    });
+    const esperados = estandar
+      ? estandar.items.filter((item) => item.requerido).map((item) => item.descripcion)
+      : ["BL", "Factura comercial"];
+    expect(result.faltantes?.slice().sort()).toEqual(esperados.sort());
 
     const persisted = await prisma.tramiteDO.findUnique({
       where: { id: tramite.id },

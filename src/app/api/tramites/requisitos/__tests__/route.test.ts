@@ -261,6 +261,9 @@ describe("GET /api/tramites/requisitos — contrato", () => {
       },
       documentosObligatorios: { requeridos: ["BL", "FACTURA_COMERCIAL"] },
       contenedores: { requerido: false },
+      // 30-sep-2026: el servicio por defecto de la importación (tarifa general).
+      // Sin ciudad no hay vista previa del número (`numeracion` ausente).
+      servicio: { codigo: null, nombre: "Importación (tarifa general de la empresa)", claveTarifa: null },
     });
   });
 
