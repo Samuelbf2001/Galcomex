@@ -15,7 +15,11 @@ const querySchema = z.object({
  * lectura: por cada contador → tipo, ciudades, último número, piso y el
  * consecutivo que tomaría el próximo DO. Barranquilla, Bogotá y Buenaventura
  * salen como UN contador (compartido); Cartagena y Santa Marta, cada una el
- * suyo; Exportación, Otros y Clasificación, por año.
+ * suyo; Otros y Clasificación, por año. Exportación va por ciudad desde el
+ * 30-sep-2026: «contador de exportación Barranquilla, Bogotá y Buenaventura»
+ * (DO.EXP26-…), «… de Cartagena» (DO.EXP.CTG26-…) y «… de Santa Marta»
+ * (DO.EXP.SMR26-…). Cada fila trae `problema` (texto o null): si la numeración
+ * de su tipo está mal configurada, la plataforma no crea DOs de ese tipo.
  *
  *   GET /api/tramites/consecutivos[?anio=2026]
  *

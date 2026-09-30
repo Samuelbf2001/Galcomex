@@ -60,9 +60,12 @@ import {
 } from "@/lib/tramites/requisitos";
 import {
   alcanceContador,
+  contadorSinAnio,
   etiquetaContador,
   filtroDeAlcance,
   formatConsecutivo,
+  problemasDelContador,
+  problemasDeNumeracion,
   siguienteNumero,
   type AlcanceContador,
   type ConfigConsecutivo,
@@ -189,6 +192,23 @@ export class AgenciaAduanasRequeridaError extends Error {
   constructor(nombreTipo: string) {
     super(`Los trámites de tipo "${nombreTipo}" requieren agencia de aduanas`);
     this.name = "AgenciaAduanasRequeridaError";
+  }
+}
+
+/**
+ * Exportación por ciudad (30-sep-2026): la configuración de numeración del
+ * tipo (en la base, se cambia con SQL) haría que dos contadores imprimieran el
+ * mismo número. No se numera: un número repetido es un documento legal
+ * repetido, y el contador quedaría trabado en el número que ya tomó el otro.
+ */
+export class NumeracionMalConfiguradaError extends Error {
+  public readonly status = 500;
+  public readonly codigo = "NUMERACION_MAL_CONFIGURADA" as const;
+  constructor(nombreTipo: string, detalle: string) {
+    super(
+      `No se creó el DO: la numeración de «${nombreTipo}» está mal configurada y podría repetir números. ${detalle} Avísale a soporte.`,
+    );
+    this.name = "NumeracionMalConfiguradaError";
   }
 }
 
@@ -860,6 +880,48 @@ function anioConsecutivo(): number {
 const CIUDAD_SIN_USO: Ciudad = Ciudad.BAQ;
 
 /**
+ * Etiqueta de un contador para la pantalla y los scripts. Si el número no lleva
+ * la ciudad (Exportación) la etiqueta nombra el tipo: «contador de exportación
+ * de Cartagena»; si la lleva, como siempre: «contador de Cartagena».
+ */
+export function etiquetaDelContador(
+  tipo: Pick<TipoConContador, "nombre" | "incluyeCiudadEnConsecutivo">,
+  alcance: Pick<AlcanceContador, "ciudades">,
+): string {
+  return etiquetaContador(
+    alcance,
+    (c) => etiquetaCiudad(c as Ciudad),
+    tipo.nombre,
+    !tipo.incluyeCiudadEnConsecutivo,
+  );
+}
+
+/**
+ * Problema de numeración del contador de un DO de este tipo y ciudad (`null`
+ * si no hay): la configuración del tipo o un choque de ESE contador con otro
+ * tipo. Mira TODO el catálogo (activos o no): el texto del consecutivo es
+ * único en toda la tabla de DOs.
+ */
+async function problemaDeNumeracion(tipo: TipoConContador, ciudad: Ciudad): Promise<string | null> {
+  const tipos = await prisma.tipoTramite.findMany({
+    select: {
+      codigo: true,
+      prefijoConsecutivo: true,
+      secuenciaPor: true,
+      incluyeCiudadEnConsecutivo: true,
+      ciudadesContadorComun: true,
+      prefijoConsecutivoPorCiudad: true,
+    },
+  });
+  const problemas = problemasDelContador(
+    problemasDeNumeracion(tipos, Object.values(Ciudad)),
+    tipo.codigo,
+    contadorSinAnio(tipo, tipo.codigo, ciudad),
+  );
+  return problemas.length > 0 ? problemas.map((p) => p.mensaje).join(" ") : null;
+}
+
+/**
  * Número que tomaría un DO de este tipo y ciudad si se creara ahora, y de qué
  * contador. Es una vista previa, no una reserva: si otra persona crea un DO
  * del mismo contador en ese momento, el número final es el siguiente.
@@ -875,7 +937,7 @@ async function vistaPreviaNumero(
   const { ultimo, piso } = await ultimoYPiso(prisma, tipo.codigo, alcance);
   return {
     siguiente: formatConsecutivo(tipo, ciudadDo, anio, siguienteNumero(ultimo, piso)),
-    contador: etiquetaContador(alcance, (c) => etiquetaCiudad(c as Ciudad), tipo.nombre),
+    contador: etiquetaDelContador(tipo, alcance),
   };
 }
 
@@ -891,18 +953,31 @@ export type EstadoContador = {
   piso: number | null;
   /** Consecutivo que tomaría el próximo DO (con la primera ciudad del contador). */
   siguiente: string;
+  /**
+   * Problema de configuración del tipo (dos contadores que imprimirían el mismo
+   * número): con él, `createTramite` no numera DOs de este tipo. `null` = bien.
+   */
+  problema: string | null;
 };
 
 /**
  * Estado de todos los contadores del año (`GET /api/tramites/consecutivos` y
  * `scripts/consecutivos/ver-contadores.ts`). Solo lectura. Un contador por
- * tipo activo y, en los que van por ciudad, uno por grupo de ciudades.
+ * tipo activo y, en los que van por ciudad, uno por grupo de ciudades
+ * (Importación y Exportación: Barranquilla-Bogotá-Buenaventura, Cartagena y
+ * Santa Marta, cada tipo con su serie).
  */
 export async function estadoContadores(anio: number = anioConsecutivo()): Promise<EstadoContador[]> {
-  const tipos = await prisma.tipoTramite.findMany({ where: { activo: true }, orderBy: { orden: "asc" } });
+  const todos = await prisma.tipoTramite.findMany({ orderBy: { orden: "asc" } });
+  const tipos = todos.filter((t) => t.activo);
   const salida: EstadoContador[] = [];
   const vistos = new Set<string>();
   const ciudades = Object.values(Ciudad);
+  const problemas = problemasDeNumeracion(todos, ciudades);
+  const problemaDe = (codigo: string, contador: string): string | null =>
+    problemasDelContador(problemas, codigo, contador)
+      .map((p) => p.mensaje)
+      .join(" ") || null;
 
   for (const tipo of tipos) {
     const candidatas = tipo.secuenciaPor === "CIUDAD_ANIO" ? ciudades : [CIUDAD_SIN_USO];
@@ -916,11 +991,12 @@ export async function estadoContadores(anio: number = anioConsecutivo()): Promis
         tipoTramiteCodigo: tipo.codigo,
         tipoNombre: tipo.nombre,
         ciudades: alcance.ciudades,
-        contador: etiquetaContador(alcance, (c) => etiquetaCiudad(c as Ciudad), tipo.nombre),
+        contador: etiquetaDelContador(tipo, alcance),
         anio: alcance.anio,
         ultimo,
         piso,
         siguiente: formatConsecutivo(tipo, alcance.ciudades?.[0] ?? ciudad, anio, siguienteNumero(ultimo, piso)),
+        problema: problemaDe(tipo.codigo, contadorSinAnio(tipo, tipo.codigo, ciudad)),
       });
     }
   }
@@ -1100,9 +1176,18 @@ export async function createTramite(
     throw new AgenciaAduanasRequeridaError(tipo.nombre);
   }
 
+  // Exportación por ciudad (30-sep-2026): la configuración de numeración es un
+  // dato (se cambia con SQL). Si dos contadores pudieran imprimir el mismo
+  // número, no se numera: mejor un DO sin crear que un documento repetido.
+  const problemaNumeracion = await problemaDeNumeracion(tipo, input.ciudad);
+  if (problemaNumeracion) {
+    throw new NumeracionMalConfiguradaError(tipo.nombre, problemaNumeracion);
+  }
+
   // Numeración como Camila (30-sep-2026): el contador depende solo de tipo +
   // ciudad + año, nunca del servicio. BAQ, BGT y BUN comparten UN contador
-  // (mismo candado, mismo máximo); el siguiente es max(último, piso) + 1.
+  // (mismo candado, mismo máximo) en Importación y en Exportación; Cartagena y
+  // Santa Marta llevan cada una el suyo. El siguiente es max(último, piso) + 1.
   const alcance = alcanceContador(tipo, tipo.codigo, input.ciudad, anio);
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {

@@ -14,7 +14,12 @@
  *   piso dentro del candado del contador (el mismo de `createTramite`) y deja
  *   AuditLog `FIJAR_PISO_CONSECUTIVO`.
  * - Barranquilla, Bogotá y Buenaventura comparten contador: un piso con
- *   cualquiera de las tres ciudades es el piso del grupo.
+ *   cualquiera de las tres ciudades es el piso del grupo. Vale para Importación
+ *   y para Exportación (30-sep-2026: Exportación también va por ciudad).
+ * - Exportación de Cartagena o Santa Marta: su propio contador, p. ej.
+ *     --tipo EXPORTACION --anio 2026 --ciudad CTG --ultimo 7 \
+ *     --motivo "Camila abrió hasta la exportación 0007 de Cartagena fuera de la plataforma"
+ *   (la de Barranquilla, Bogotá y Buenaventura: --ciudad BAQ, BGT o BUN).
  * - Rechaza un piso menor o igual a lo que el contador ya tiene y un motivo de
  *   menos de 10 caracteres.
  *
@@ -82,7 +87,7 @@ async function main() {
     aplicar,
   });
 
-  console.log(`Contador: ${r.clave}`);
+  console.log(`Contador: ${r.contador} (${r.clave})`);
   console.log(`Último número en DOs: ${r.ultimoActual ?? "ninguno"} · piso actual: ${r.pisoActual ?? "ninguno"}`);
   console.log(`Siguiente hoy: ${r.siguienteAntes}`);
   console.log(`Siguiente con el piso: ${r.siguienteDespues}`);

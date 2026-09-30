@@ -9,6 +9,7 @@ import { fechaCalendarioBogota } from "@/lib/tiempo/bogota";
 import {
   createTramite,
   listTramites,
+  NumeracionMalConfiguradaError,
   TarifaVigenteRequeridaError,
 } from "@/lib/tramites/service";
 import { ServicioNoPermitidoError, ServicioReservadoError } from "@/lib/tramites/servicios";
@@ -101,8 +102,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Servicio que el tipo no admite o que es de otro tipo (30-sep-2026).
-    if (error instanceof ServicioNoPermitidoError || error instanceof ServicioReservadoError) {
+    // Servicio que el tipo no admite o que es de otro tipo (30-sep-2026), o
+    // numeración mal configurada (dos contadores que repetirían números).
+    if (
+      error instanceof ServicioNoPermitidoError ||
+      error instanceof ServicioReservadoError ||
+      error instanceof NumeracionMalConfiguradaError
+    ) {
       return NextResponse.json({ error: error.message, codigo: error.codigo }, { status: error.status });
     }
 

@@ -8,8 +8,13 @@
  * consecutivo que tomaría el próximo DO. Barranquilla, Bogotá y Buenaventura
  * salen como UN contador compartido. Para verificar la ventana de puesta en
  * marcha (DISENO-NUMERACION.md §7): grupo 0282 (o el siguiente al último de
- * Camila), Cartagena 0251, Santa Marta 0002, Exportación 0013, Otros 0019,
- * Clasificación 0011.
+ * Camila), Cartagena 0251, Santa Marta 0002, Otros 0019, Clasificación 0011.
+ * Exportación por ciudad (30-sep-2026): «contador de exportación Barranquilla,
+ * Bogotá y Buenaventura» DO.EXP26-0013, «contador de exportación de
+ * Cartagena» DO.EXP.CTG26-0001, «contador de exportación de Santa Marta»
+ * DO.EXP.SMR26-0001. Si la numeración de un tipo está mal configurada (dos
+ * contadores que imprimirían el mismo número) lo dice al final: con eso la
+ * plataforma no crea DOs de ese tipo.
  */
 import "dotenv/config";
 
@@ -50,6 +55,11 @@ async function main() {
       siguiente: c.siguiente,
     })),
   );
+  const problemas = [...new Set(contadores.map((c) => c.problema).filter((p): p is string => Boolean(p)))];
+  for (const problema of problemas) {
+    console.log(`PROBLEMA: ${problema}`);
+  }
+  if (problemas.length > 0) process.exitCode = 2;
 }
 
 main()

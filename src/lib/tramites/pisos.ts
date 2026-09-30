@@ -8,6 +8,10 @@
  * candado del contador que usa `createTramite`, con AuditLog
  * `FIJAR_PISO_CONSECUTIVO`. Un piso menor o igual a lo que el contador ya
  * tiene no sirve para nada y se rechaza.
+ *
+ * Exportación por ciudad (30-sep-2026): Exportación también va por ciudad
+ * (Barranquilla-Bogotá-Buenaventura, Cartagena, Santa Marta), así que su piso
+ * pide la ciudad, igual que Importación.
  */
 import { Ciudad, Prisma, Rol } from "@prisma/client";
 
@@ -18,8 +22,10 @@ import {
   filtroDeAlcance,
   formatConsecutivo,
   siguienteNumero,
+  validarConfigContador,
   type AlcanceContador,
 } from "@/lib/tramites/consecutivo";
+import { etiquetaDelContador } from "@/lib/tramites/service";
 
 export const MOTIVO_PISO_MIN = 10;
 
@@ -34,7 +40,7 @@ export class PisoConsecutivoInvalidoError extends Error {
 export type FijarPisoInput = {
   tipoTramiteCodigo: string;
   anio: number;
-  /** Obligatoria en un contador por ciudad (IMPORTACION); se ignora en los demás. */
+  /** Obligatoria en un contador por ciudad (IMPORTACION, EXPORTACION); se ignora en los demás. */
   ciudad?: Ciudad | null;
   /** Último número que ya usó el contador (el siguiente será este + 1). */
   ultimoNumero: number;
@@ -47,6 +53,8 @@ export type FijarPisoInput = {
 
 export type ResultadoPiso = {
   clave: string;
+  /** Etiqueta del contador: «contador de exportación de Cartagena». */
+  contador: string;
   ultimoActual: number | null;
   pisoActual: number | null;
   siguienteAntes: string;
@@ -95,9 +103,16 @@ export async function fijarPisoConsecutivo(input: FijarPisoInput): Promise<Resul
   if (tipo.secuenciaPor === "CIUDAD_ANIO" && !input.ciudad) {
     throw new PisoConsecutivoInvalidoError(`El contador de ${tipo.nombre} va por ciudad: indica la ciudad.`);
   }
+  // Con la numeración mal configurada la clave y el número de abajo podrían no
+  // ser los que usará `createTramite` (que tampoco numera en ese caso).
+  const errorConfig = validarConfigContador(tipo, Object.values(Ciudad));
+  if (errorConfig) {
+    throw new PisoConsecutivoInvalidoError(`La numeración de ${tipo.nombre} está mal configurada: ${errorConfig}`);
+  }
 
   const ciudad = input.ciudad ?? Ciudad.BAQ;
   const alcance = alcanceContador(tipo, tipo.codigo, ciudad, input.anio);
+  const contador = etiquetaDelContador(tipo, alcance);
 
   const calcular = async (db: Db): Promise<ResultadoPiso> => {
     const { ultimo, piso } = await estadoDelContador(db, tipo.codigo, alcance);
@@ -109,6 +124,7 @@ export async function fijarPisoConsecutivo(input: FijarPisoInput): Promise<Resul
     }
     return {
       clave: alcance.clave,
+      contador,
       ultimoActual: ultimo,
       pisoActual: piso,
       siguienteAntes: formatConsecutivo(tipo, ciudad, input.anio, siguienteNumero(ultimo, piso)),
