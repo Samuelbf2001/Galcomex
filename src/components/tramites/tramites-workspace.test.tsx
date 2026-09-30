@@ -69,6 +69,33 @@ const TIPO_IMPORTACION: TipoTramiteOption = {
   etiquetaReferenciaExterna: null,
   usaCamposDo: true,
   flujoCorto: false,
+  incluyeCiudadEnConsecutivo: true,
+  servicios: [],
+};
+
+/** Importación con su catálogo de servicios (30-sep-2026). */
+const TIPO_IMPORTACION_SERVICIOS: TipoTramiteOption = {
+  ...TIPO_IMPORTACION,
+  servicios: [
+    { conceptoCodigo: null, nombre: "Importación (tarifa general de la empresa)", tarifaGeneral: true, documentosNoAplican: [] },
+    { conceptoCodigo: "TRASLADO_ZF", nombre: "Traslado de zona franca", tarifaGeneral: false, documentosNoAplican: [] },
+    { conceptoCodigo: "NACIONALIZACION_ZF", nombre: "Nacionalización desde zona franca", tarifaGeneral: false, documentosNoAplican: ["BL"] },
+    { conceptoCodigo: "DUTA", nombre: "DUTA (tránsito aduanero)", tarifaGeneral: false, documentosNoAplican: [] },
+  ],
+};
+
+const TIPO_EXPORTACION: TipoTramiteOption = {
+  codigo: "EXPORTACION",
+  nombre: "Exportación",
+  descripcion: null,
+  prefijoConsecutivo: "DO.EXP",
+  requiereAgenciaAduanas: false,
+  requiereEta: false,
+  etiquetaReferenciaExterna: "Referencia de la exportación (N° del cliente / SAE)",
+  usaCamposDo: false,
+  flujoCorto: true,
+  incluyeCiudadEnConsecutivo: false,
+  servicios: [{ conceptoCodigo: "EXPORTACION", nombre: "Exportación", tarifaGeneral: true, documentosNoAplican: [] }],
 };
 
 function requisitosFixture(
@@ -88,6 +115,8 @@ function requisitosFixture(
     },
     documentosObligatorios: { requeridos: documentosRequeridos },
     contenedores: { requerido: contenedoresRequerido },
+    servicio: null,
+    numeracion: null,
   };
 }
 
@@ -148,6 +177,15 @@ async function elegirClienteLitoplas() {
   const select = container.querySelector<HTMLSelectElement>('select[name="clienteId"]')!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "cliente-1");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+/** Escoge la ciudad del DO (30-sep-2026: ya no viene puesta). */
+async function elegirCiudad(ciudad: string) {
+  const select = container.querySelector<HTMLSelectElement>('select[name="ciudad"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, ciudad);
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
 }
@@ -319,6 +357,7 @@ describe("Crear DO — D3 número de contenedores", () => {
     vi.mocked(createTramite).mockResolvedValue(filaTramite("9"));
     await montarDialogo();
     await elegirClienteLitoplas();
+    await elegirCiudad("BAQ");
     await esperarRequisitos();
   }
 
@@ -359,6 +398,122 @@ describe("Crear DO — D3 número de contenedores", () => {
       numContenedores: 0,
       tipoCarga: "SUELTA",
     });
+  });
+});
+
+describe("Crear DO — numeración y servicio (30-sep-2026)", () => {
+  async function enviar() {
+    const form = container.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+  }
+
+  it("la ciudad no viene puesta: sin escogerla no crea el DO; ya no hay campo Año", async () => {
+    vi.mocked(fetchRequisitosDo).mockResolvedValue(requisitosFixture({ requerida: false, cumple: true }));
+    vi.mocked(createTramite).mockResolvedValue(filaTramite("9"));
+    await montarDialogo();
+    await elegirClienteLitoplas();
+    await esperarRequisitos();
+
+    expect(container.querySelector<HTMLSelectElement>('select[name="ciudad"]')!.value).toBe("");
+    expect(container.querySelector('input[name="anio"]')).toBeNull();
+    expect(container.textContent).not.toContain("no consume numeración de importación");
+
+    await enviar();
+    expect(createTramite).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Escoge la ciudad del DO");
+
+    await elegirCiudad("BGT");
+    await esperarRequisitos();
+    await enviar();
+    expect(createTramite).toHaveBeenCalledTimes(1);
+    const input = vi.mocked(createTramite).mock.calls[0][0];
+    expect(input.ciudad).toBe("BGT");
+    expect(input.anio).toBeUndefined();
+  });
+
+  it("muestra el número que tomará y de qué contador", async () => {
+    vi.mocked(fetchRequisitosDo).mockResolvedValue({
+      ...requisitosFixture({ requerida: false, cumple: true }),
+      numeracion: { siguiente: "DO.BGT26-0282", contador: "contador compartido Barranquilla, Bogotá y Buenaventura" },
+    });
+    await montarDialogo();
+    await elegirClienteLitoplas();
+    await elegirCiudad("BGT");
+    await esperarRequisitos();
+
+    expect(container.textContent).toContain("DO.BGT26-0282");
+    expect(container.textContent).toContain("contador compartido Barranquilla, Bogotá y Buenaventura");
+  });
+
+  it("el servicio se escoge en Importación y viaja a los requisitos y a la creación", async () => {
+    vi.mocked(fetchTiposTramiteEmpresa).mockResolvedValue({ tipos: [TIPO_IMPORTACION_SERVICIOS], reglaAgencia: null });
+    vi.mocked(fetchRequisitosDo).mockResolvedValue(requisitosFixture({ requerida: false, cumple: true }));
+    vi.mocked(createTramite).mockResolvedValue(filaTramite("9"));
+    await montarDialogo();
+    await elegirClienteLitoplas();
+    await elegirCiudad("BAQ");
+    await esperarRequisitos();
+
+    const selector = container.querySelector<HTMLSelectElement>('select[name="servicio"]')!;
+    expect([...selector.options].map((o) => o.textContent)).toEqual([
+      "Importación (tarifa general de la empresa)",
+      "Traslado de zona franca",
+      "Nacionalización desde zona franca",
+      "DUTA (tránsito aduanero)",
+    ]);
+    expect(selector.value).toBe("");
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(selector, "NACIONALIZACION_ZF");
+      selector.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await esperarRequisitos();
+
+    const llamadas = vi.mocked(fetchRequisitosDo).mock.calls;
+    expect(llamadas[llamadas.length - 1]?.[4]).toBe("NACIONALIZACION_ZF");
+
+    await enviar();
+    expect(vi.mocked(createTramite).mock.calls[0][0]).toMatchObject({
+      tipoTramiteCodigo: "IMPORTACION",
+      conceptoServicioCodigo: "NACIONALIZACION_ZF",
+    });
+  });
+
+  it("sin catálogo de servicios no aparece el selector", async () => {
+    vi.mocked(fetchRequisitosDo).mockResolvedValue(requisitosFixture({ requerida: false, cumple: true }));
+    await montarDialogo();
+    await elegirClienteLitoplas();
+    await esperarRequisitos();
+    expect(container.querySelector('select[name="servicio"]')).toBeNull();
+  });
+
+  it("Exportación: propone Barranquilla, no muestra selector de servicio ni concepto", async () => {
+    vi.mocked(fetchTiposTramiteEmpresa).mockResolvedValue({
+      tipos: [TIPO_IMPORTACION_SERVICIOS, TIPO_EXPORTACION],
+      reglaAgencia: null,
+    });
+    vi.mocked(fetchRequisitosDo).mockResolvedValue(requisitosFixture({ requerida: false, cumple: true }));
+    vi.mocked(createTramite).mockResolvedValue(filaTramite("9"));
+    await montarDialogo();
+    await elegirClienteLitoplas();
+    await esperarRequisitos();
+
+    const boton = [...container.querySelectorAll("button")].find((b) => b.textContent === "Exportación")!;
+    await act(async () => boton.click());
+    await esperarRequisitos();
+
+    expect(container.querySelector<HTMLSelectElement>('select[name="ciudad"]')!.value).toBe("BAQ");
+    expect(container.querySelector('select[name="servicio"]')).toBeNull();
+    expect(container.querySelector('select[name="conceptoServicioCodigo"]')).toBeNull();
+
+    await enviar();
+    expect(vi.mocked(createTramite).mock.calls[0][0]).toMatchObject({
+      ciudad: "BAQ",
+      tipoTramiteCodigo: "EXPORTACION",
+    });
+    expect(vi.mocked(createTramite).mock.calls[0][0].conceptoServicioCodigo).toBeUndefined();
   });
 });
 

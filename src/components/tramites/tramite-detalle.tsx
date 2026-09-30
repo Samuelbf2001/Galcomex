@@ -68,6 +68,7 @@ import {
   TramitesApiError,
   cambiarEstadoTramite,
   mensajeAdvertenciasEstado,
+  type ServicioTramiteOption,
 } from "@/components/tramites/tramites-api";
 import {
   FacturasProveedorApiError,
@@ -181,6 +182,11 @@ type TramiteDetalleData = {
     /** Flujo corto (decisión de Ernesto, 26-sep-2026, caso OTRO): se abre sin
      * tarifa ni pagos y se factura por servicio + valor a mano. */
     flujoCorto: boolean;
+    /**
+     * Catálogo de servicios del tipo (30-sep-2026): Importación, Traslado,
+     * Nacionalización, DUTA. Ausente o vacío = el tipo no tiene catálogo.
+     */
+    servicios?: ServicioTramiteOption[];
   } | null;
   checklistItems: ChecklistItem[];
   estadoLogs?: EstadoLogEntry[];
@@ -816,6 +822,7 @@ export function ChecklistItemRow({
   tramiteId,
   editable,
   esCuadre = false,
+  noAplica = null,
   onChanged,
   onSubido,
 }: {
@@ -824,6 +831,11 @@ export function ChecklistItemRow({
   editable: boolean;
   /** Ítem "CUADRE DE PLATA HISTÓRICA" de un DO histórico (lo cierran ADMIN/REVISOR). */
   esCuadre?: boolean;
+  /**
+   * 30-sep-2026: nombre del servicio al que este documento NO aplica (p. ej.
+   * «Nacionalización desde zona franca» para el BL): no frena el DO.
+   */
+  noAplica?: string | null;
   onChanged: (updated: ChecklistItem) => void;
   /** Se subieron archivos desde el requisito: recargar el DO. */
   onSubido: () => void;
@@ -895,7 +907,9 @@ export function ChecklistItemRow({
         <span className={item.recibido ? "text-slate-600 line-through" : "text-slate-800"}>
           {item.descripcion}
         </span>
-        {item.requerido && !item.recibido ? (
+        {noAplica && !item.recibido ? (
+          <span className="text-xs text-slate-500">(no aplica a {noAplica})</span>
+        ) : item.requerido && !item.recibido ? (
           <span className="text-xs text-rose-500">(requerido)</span>
         ) : null}
         {saving ? (
@@ -924,6 +938,106 @@ export function ChecklistItemRow({
   );
 }
 
+// ─── Servicio de un trámite normal (30-sep-2026) ─────────────────────────────
+//
+// Nacionalización, traslado y DUTA son trámites de importación con servicio.
+// El servicio decide con qué tarifa se cobra el DO y qué documentos se le
+// piden; nunca cambia su número. Se puede cambiar mientras el DO no tenga
+// borrador ni esté en «Enviado a facturar» o después (el servidor aplica la
+// misma regla y, si la empresa exige tarifa, no deja pasar a un servicio sin
+// tarifa vigente).
+
+function EditorServicioDo({
+  tramite,
+  servicios,
+  puedeEditar,
+  soloLecturaPorFactura,
+  onSaved,
+}: {
+  tramite: TramiteDetalleData;
+  servicios: ServicioTramiteOption[];
+  puedeEditar: boolean;
+  soloLecturaPorFactura: boolean;
+  onSaved: (updated: TramiteDetalleData) => void;
+}) {
+  const { toast } = useToast();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const actual = tramite.conceptoServicioCodigo ?? "";
+  const servicioActual = servicios.find((s) => (s.conceptoCodigo ?? "") === actual) ?? null;
+
+  async function cambiar(nuevo: string) {
+    if (saving || nuevo === actual) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/tramites/${tramite.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ conceptoServicioCodigo: nuevo === "" ? null : nuevo }),
+      });
+      const payload: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `No se pudo cambiar el servicio (${res.status}).`,
+        );
+      }
+      if (!isRecord(payload) || !isRecord(payload.tramite)) {
+        throw new Error("No se pudo confirmar el cambio. Reintenta.");
+      }
+      onSaved(payload.tramite as TramiteDetalleData);
+      toast({ title: "Servicio del DO cambiado", description: "El número del DO no cambia.", variant: "success" });
+    } catch (caught) {
+      setError(describirError(caught, "No se pudo cambiar el servicio."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="min-w-0">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Servicio</p>
+      {puedeEditar ? (
+        <label className="mt-0.5 block">
+          <span className="sr-only">Servicio del DO</span>
+          <select
+            value={actual}
+            onChange={(event) => void cambiar(event.target.value)}
+            disabled={saving}
+            aria-busy={saving}
+            className="h-9 w-full min-w-0 border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none focus:border-cyan-600 disabled:opacity-60"
+          >
+            {servicios.map((s) => (
+              <option key={s.conceptoCodigo ?? ""} value={s.conceptoCodigo ?? ""}>
+                {s.nombre}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="mt-0.5 font-semibold text-slate-800">{servicioActual?.nombre ?? tramite.conceptoServicio?.nombre ?? "—"}</p>
+      )}
+      {soloLecturaPorFactura ? (
+        <p className="mt-1 text-xs text-slate-500">
+          Ya tiene factura en borrador o ya se mandó a facturar: el servicio no se cambia desde el DO.
+        </p>
+      ) : null}
+      {error ? (
+        <p role="alert" className="mt-1 text-sm text-rose-700">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** «Nacionalización desde zona franca (…)» → «Nacionalización desde zona franca». */
+function nombreServicioCorto(nombre: string): string {
+  return nombre.replace(/\s*\(.*\)\s*$/, "").trim() || nombre;
+}
+
 // ─── Pestaña Resumen ──────────────────────────────────────────────────────────
 
 function TabResumen({
@@ -944,9 +1058,19 @@ function TabResumen({
   puedeCerrarCuadre: boolean;
   onRefresh: () => void;
 }) {
+  // Servicio del DO (30-sep-2026): el del catálogo del tipo que coincide con
+  // su concepto (vacío = el de tarifa general).
+  const serviciosTipo = tramite.tipoTramite?.servicios ?? [];
+  const servicioActual =
+    serviciosTipo.find((s) => (s.conceptoCodigo ?? "") === (tramite.conceptoServicioCodigo ?? "")) ?? null;
+  const noAplicanServicio = servicioActual?.documentosNoAplican ?? [];
+  const noAplicaAlServicio = (item: ChecklistItem) =>
+    Boolean(item.categoriaDocumento && noAplicanServicio.includes(item.categoriaDocumento));
   const checklistTotal = tramite.checklistItems.length;
   const checklistRecibidos = tramite.checklistItems.filter((i) => i.recibido).length;
-  const checklistPendientes = tramite.checklistItems.filter((i) => i.requerido && !i.recibido);
+  const checklistPendientes = tramite.checklistItems.filter(
+    (i) => i.requerido && !i.recibido && !noAplicaAlServicio(i),
+  );
 
   // El checklist solo es marcable por roles con permiso (puedeEditar = ADMIN/REVISOR/OPERATIVO)
   // y mientras el DO no haya avanzado más allá de APERTURA (bloquea APERTURA→EN_TRAMITE).
@@ -997,6 +1121,12 @@ function TabResumen({
             <span className="mt-1 inline-flex h-5 items-center border border-cyan-200 bg-cyan-50 px-1.5 text-[11px] font-semibold text-cyan-700">
               {tramite.tipoTramite.nombre}
               {tramite.tipoTramite.facturacionSeparada ? " · factura aparte" : ""}
+            </span>
+          ) : null}
+          {/* Servicio con tarifa propia (traslado, nacionalización, DUTA). */}
+          {servicioActual && !servicioActual.tarifaGeneral ? (
+            <span className="mt-1 ml-1 inline-flex h-5 items-center border border-violet-200 bg-violet-50 px-1.5 text-[11px] font-semibold text-violet-800">
+              {nombreServicioCorto(servicioActual.nombre)}
             </span>
           ) : null}
         </div>
@@ -1058,6 +1188,16 @@ function TabResumen({
               <p className="mt-0.5 font-semibold text-slate-800">{tramite.doCliente}</p>
             </div>
           ) : null
+        ) : null}
+        {/* Servicio de un trámite normal (30-sep-2026): solo su catálogo. */}
+        {!tramite.tipoTramite?.flujoCorto && serviciosTipo.length > 1 ? (
+          <EditorServicioDo
+            tramite={tramite}
+            servicios={serviciosTipo}
+            puedeEditar={puedeEditarServicio}
+            soloLecturaPorFactura={puedeEditar && bloqueadoPorFacturaServicio}
+            onSaved={onFieldSaved}
+          />
         ) : null}
         {/* Flujo corto (OTRO): servicio + valor a mano en vez de tarifario. */}
         {tramite.tipoTramite?.flujoCorto ? (
@@ -1205,6 +1345,7 @@ function TabResumen({
                 tramiteId={tramite.id}
                 editable={itemEditable(item)}
                 esCuadre={esCuadreHistorico(tramite, item)}
+                noAplica={noAplicaAlServicio(item) && servicioActual ? nombreServicioCorto(servicioActual.nombre) : null}
                 onChanged={onChecklistItemChanged}
                 onSubido={onRefresh}
               />
@@ -1658,7 +1799,13 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   }, []);
 
   const handleFieldSaved = useCallback((updated: TramiteDetalleData) => {
-    setTramite(updated);
+    // El PATCH devuelve un tipo de trámite resumido (sin nombre ni catálogo de
+    // servicios): se conserva el que trajo la ficha completa.
+    setTramite((prev) =>
+      prev?.tipoTramite
+        ? { ...updated, tipoTramite: { ...prev.tipoTramite, ...(updated.tipoTramite ?? {}) } }
+        : updated,
+    );
   }, []);
 
   const handleChecklistItemChanged = useCallback((updatedItem: ChecklistItem) => {

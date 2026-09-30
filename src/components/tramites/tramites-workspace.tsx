@@ -115,6 +115,13 @@ const allFilter = "todos";
 // No se derivan de las filas cargadas porque el filtrado ahora es server-side:
 // las filas ya vienen filtradas, asi que las opciones se verian recortadas.
 const CIUDADES_TRAMITE = ["BAQ", "CTG", "BUN", "SMR", "BGT"] as const;
+const NOMBRE_CIUDAD: Record<(typeof CIUDADES_TRAMITE)[number], string> = {
+  BAQ: "Barranquilla",
+  CTG: "Cartagena",
+  BUN: "Buenaventura",
+  SMR: "Santa Marta",
+  BGT: "Bogotá",
+};
 const ESTADOS_TRAMITE = [
   "SOLICITUD",
   "APERTURA",
@@ -411,7 +418,23 @@ export function CreateTramiteDialog({
 
   // B3 — ciudad del DO que se va a crear: una ciudad puede tener tarifario
   // propio (R1), así que los requisitos (D1) se vuelven a consultar si cambia.
-  const [ciudadForm, setCiudadForm] = useState("CTG");
+  // 30-sep-2026: sin valor por defecto (antes Cartagena). En 2026 hay tantos
+  // DOs de Cartagena como del grupo Barranquilla-Bogotá-Buenaventura, y una
+  // ciudad equivocada toma el número de otro contador: hay que escogerla. Un
+  // tipo cuyo número no lleva ciudad (Exportación) propone Barranquilla.
+  const [ciudadForm, setCiudadForm] = useState("");
+  const ciudadEfectiva =
+    ciudadForm || (tipoTramiteSeleccionado && !tipoTramiteSeleccionado.incluyeCiudadEnConsecutivo ? "BAQ" : "");
+
+  // Servicio del trámite normal (30-sep-2026): Importación / Traslado /
+  // Nacionalización / DUTA. "" = el servicio por defecto del tipo (Importación
+  // general; en Exportación se escoge solo y no se muestra).
+  const [servicioElegido, setServicioElegido] = useState("");
+  const serviciosTipo = tipoTramiteSeleccionado?.servicios ?? [];
+  const muestraSelectorServicio = serviciosTipo.length > 1;
+  const servicioValido = serviciosTipo.some((s) => (s.conceptoCodigo ?? "") === servicioElegido)
+    ? servicioElegido
+    : "";
 
   // Requisitos del DO (D1 tarifa vigente, D2 documentos obligatorios): se
   // consultan en cuanto hay empresa + tipo de trámite elegidos. El estado de
@@ -422,7 +445,9 @@ export function CreateTramiteDialog({
     data: RequisitosDo | null;
     error: string | null;
   } | null>(null);
-  const requisitosKey = clienteId ? `${clienteId}::${tipoTramiteCodigo}::${ciudadForm}` : "";
+  const requisitosKey = clienteId
+    ? `${clienteId}::${tipoTramiteCodigo}::${ciudadEfectiva}::${servicioValido}`
+    : "";
   const requisitosActual = requisitosResultado?.key === requisitosKey ? requisitosResultado : null;
   const requisitosLoading = Boolean(clienteId) && !requisitosActual;
   const requisitos = requisitosActual?.data ?? null;
@@ -463,7 +488,13 @@ export function CreateTramiteDialog({
     // Pequeño debounce: evita dos peticiones seguidas cuando cambiar de
     // empresa también cambia el tipo de trámite por defecto.
     const timeout = setTimeout(() => {
-      fetchRequisitosDo(clienteId, tipoTramiteCodigo, ciudadForm, controller.signal)
+      fetchRequisitosDo(
+        clienteId,
+        tipoTramiteCodigo,
+        ciudadEfectiva || undefined,
+        controller.signal,
+        servicioValido || undefined,
+      )
         .then((data) => {
           setRequisitosResultado({ key: requisitosKey, data, error: null });
         })
@@ -498,6 +529,13 @@ export function CreateTramiteDialog({
   // Flujo corto (OTRO): sin tarifa ni pagos, se factura por servicio + valor
   // a mano — el formulario cambia documentos/contenedores por esos dos campos.
   const esFlujoCorto = tipoTramiteSeleccionado?.flujoCorto ?? false;
+  // Un flujo corto SIN catálogo («Otros») escoge el concepto de venta a mano;
+  // uno CON catálogo (Exportación) tiene su servicio fijo.
+  const pideConceptoLibre = esFlujoCorto && serviciosTipo.length === 0;
+  // Los servicios de un trámite normal no se crean como «Otros» (se ocultan).
+  const conceptosReservados = new Set(
+    tiposTramite.flatMap((tipo) => tipo.servicios.map((s) => s.conceptoCodigo)).filter((c): c is string => Boolean(c)),
+  );
   const ejemploReferenciaExterna = EJEMPLOS_REFERENCIA_EXTERNA[tipoTramiteCodigo] ?? "2140";
 
   // B1: al cambiar a un tipo de servicio suelto se oculta la zona de
@@ -506,6 +544,7 @@ export function CreateTramiteDialog({
   // "Tipo de trámite" más abajo), no en un efecto.
   function elegirTipoTramite(tipo: TipoTramiteOption) {
     setTipoElegido(tipo.codigo);
+    setServicioElegido("");
     if (tipo.flujoCorto) setStagedFiles({});
   }
 
@@ -598,6 +637,10 @@ export function CreateTramiteDialog({
     setSuccess(null);
 
     if (isSubmitting || cargandoTipos || errorTiposActual || !clienteId || tiposTramite.length === 0) return;
+    if (!ciudadEfectiva) {
+      setError("Escoge la ciudad del DO: de ella depende el número que toma.");
+      return;
+    }
     if (bloqueadoPorTarifa) return;
     if (missingRequiredDocs) {
       setError(mensajeDocumentosFaltantes(documentosFaltantes));
@@ -607,7 +650,7 @@ export function CreateTramiteDialog({
       setError("Escribe cuántos contenedores trae el DO (sale del BL) o marca «Carga suelta».");
       return;
     }
-    if (esFlujoCorto && valorServicio.trim() !== "" && !conceptoServicio) {
+    if (pideConceptoLibre && valorServicio.trim() !== "" && !conceptoServicio) {
       setError("Escoge el concepto de venta del servicio.");
       return;
     }
@@ -616,10 +659,9 @@ export function CreateTramiteDialog({
 
     const form = event.currentTarget;
     const formData = new FormData(form);
-    const rawAnio = String(formData.get("anio") ?? "");
+    // 30-sep-2026: el año lo pone el servidor (el de Bogotá); el formulario ya no lo manda.
     const input: CreateTramiteInput = {
-      ciudad: String(formData.get("ciudad") ?? ""),
-      anio: rawAnio ? Number(rawAnio) : undefined,
+      ciudad: ciudadEfectiva,
       clienteId: String(formData.get("clienteId") ?? ""),
       tipoTramiteCodigo,
       referenciaExterna: etiquetaReferencia
@@ -640,7 +682,9 @@ export function CreateTramiteDialog({
       numContenedores: pideContenedores ? (cargaSuelta ? 0 : numContenedoresForm) : undefined,
       tipoCarga: pideContenedores && cargaSuelta ? "SUELTA" : undefined,
       valorServicio: esFlujoCorto && valorServicio.trim() !== "" ? valorServicio : undefined,
-      conceptoServicioCodigo: esFlujoCorto ? optionalText(formData.get("conceptoServicioCodigo")) : undefined,
+      conceptoServicioCodigo: pideConceptoLibre
+        ? optionalText(formData.get("conceptoServicioCodigo"))
+        : servicioValido || undefined,
     };
 
     try {
@@ -680,6 +724,8 @@ export function CreateTramiteDialog({
       setCargaSuelta(false);
       setConceptoServicio("");
       setValorServicio("");
+      setCiudadForm("");
+      setServicioElegido("");
     } catch (caught) {
       setError(describirError(caught, "No fue posible crear el trámite."));
 
@@ -687,7 +733,7 @@ export function CreateTramiteDialog({
       // panel decía lo contrario (se publicó/venció justo ahora). Refresca los
       // requisitos para que el panel ámbar y sus acciones queden al día.
       if (caught instanceof TramitesApiError && caught.codigo === CODIGO_TARIFA_VIGENTE_REQUERIDA) {
-        fetchRequisitosDo(clienteId, tipoTramiteCodigo, ciudadForm)
+        fetchRequisitosDo(clienteId, tipoTramiteCodigo, ciudadEfectiva || undefined, undefined, servicioValido || undefined)
           .then((data) => setRequisitosResultado({ key: requisitosKey, data, error: null }))
           .catch(() => {
             // Sin refresco al menos queda el mensaje del 422 en el banner de error.
@@ -703,11 +749,7 @@ export function CreateTramiteDialog({
       open={open}
       onClose={onClose}
       title="Crear trámite"
-      description={
-        tipoTramiteSeleccionado && tipoTramiteSeleccionado.codigo !== "IMPORTACION"
-          ? `Consecutivo propio con prefijo ${tipoTramiteSeleccionado.prefijoConsecutivo}: no consume numeración de importación.`
-          : "El consecutivo se asigna automáticamente por ciudad y año."
-      }
+      description="El número del DO lo pone la plataforma según el tipo de trámite y la ciudad."
       size="xl"
       dismissible={!isSubmitting}
     >
@@ -718,28 +760,32 @@ export function CreateTramiteDialog({
               <select
                 name="ciudad"
                 required
-                value={ciudadForm}
+                value={ciudadEfectiva}
                 onChange={(e) => setCiudadForm(e.target.value)}
                 className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
               >
-                <option value="CTG">CTG</option>
-                <option value="BAQ">BAQ</option>
-                <option value="BUN">BUN</option>
-                <option value="SMR">SMR</option>
-                <option value="BGT">BGT</option>
+                <option value="">Escoge la ciudad</option>
+                {CIUDADES_TRAMITE.map((ciudad) => (
+                  <option key={ciudad} value={ciudad}>
+                    {NOMBRE_CIUDAD[ciudad]} ({ciudad})
+                  </option>
+                ))}
               </select>
             </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Año</span>
-              <input
-                name="anio"
-                type="number"
-                min="2020"
-                max="2100"
-                defaultValue={new Date().getFullYear()}
-                className="h-10 w-full border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
-              />
-            </label>
+            {/* Número que tomará (30-sep-2026): vista previa, no reserva. */}
+            <div className="space-y-1.5" aria-live="polite">
+              <span className="block text-sm font-medium text-slate-700">Número que tomará</span>
+              {requisitos?.numeracion ? (
+                <p className="text-sm">
+                  <span className="block font-mono font-semibold text-slate-950">{requisitos.numeracion.siguiente}</span>
+                  <span className="block text-xs text-slate-500">{requisitos.numeracion.contador}</span>
+                </p>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  {clienteId ? "Escoge la ciudad para ver el número." : "Escoge la empresa y la ciudad."}
+                </p>
+              )}
+            </div>
             <div className="space-y-1.5 md:col-span-2">
               <span className="block text-sm font-medium text-slate-700" id="tipo-cliente-label">
                 Tipo de cliente
@@ -851,6 +897,29 @@ export function CreateTramiteDialog({
                 </p>
               ) : null}
             </div>
+          ) : null}
+
+          {/* Servicio del trámite (30-sep-2026): con él se busca la tarifa y
+              se decide qué documentos se piden. No cambia el número del DO. */}
+          {muestraSelectorServicio ? (
+            <label className="block space-y-1.5">
+              <span className="block text-sm font-medium text-slate-700">Servicio</span>
+              <select
+                name="servicio"
+                value={servicioValido}
+                onChange={(e) => setServicioElegido(e.target.value)}
+                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+              >
+                {serviciosTipo.map((servicio) => (
+                  <option key={servicio.conceptoCodigo ?? ""} value={servicio.conceptoCodigo ?? ""}>
+                    {servicio.nombre}
+                  </option>
+                ))}
+              </select>
+              <span className="block text-xs text-slate-500">
+                Cada servicio se cobra con su propia tarifa. Si la empresa no tiene tarifa de ese servicio, crea el DO como «Importación».
+              </span>
+            </label>
           ) : null}
 
           {/* D1: tarifa vigente — sin ella el servidor no crea el DO. */}
@@ -974,6 +1043,7 @@ export function CreateTramiteDialog({
               después en la ficha del DO, antes de mandarlo a facturar. */}
           {esFlujoCorto ? (
             <div className="grid gap-4 md:grid-cols-2">
+              {pideConceptoLibre ? (
               <label className="space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">Concepto de venta</span>
                 <select
@@ -983,7 +1053,9 @@ export function CreateTramiteDialog({
                   className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
                 >
                   <option value="">Sin escoger todavía</option>
-                  {ordenarConceptosServicio(conceptosServicio).map((concepto) => (
+                  {ordenarConceptosServicio(
+                    conceptosServicio.filter((concepto) => !conceptosReservados.has(concepto.codigo)),
+                  ).map((concepto) => (
                     <option key={concepto.codigo} value={concepto.codigo}>
                       {concepto.nombre}
                     </option>
@@ -993,6 +1065,7 @@ export function CreateTramiteDialog({
                   Si la empresa tiene tarifa para este servicio, deja el valor vacío y se calcula solo.
                 </span>
               </label>
+              ) : null}
               <label className="space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">Valor sin IVA</span>
                 <CampoMoneda

@@ -16,6 +16,14 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import {
+  nombreCorto,
+  reglaServicioDeAlcance,
+  type ReglaServicioAlcance,
+  type ServicioCatalogo,
+  type TipoParaServicio,
+} from "@/lib/tramites/servicios";
+
+import {
   ALCANCES,
   CIUDADES,
   DISPARADORES,
@@ -31,7 +39,7 @@ import {
   eliminarTarifario,
   etiquetaCiudad,
   etiquetaEstado,
-  fetchAlcancesFlujoCorto,
+  fetchCatalogoServiciosTarifa,
   fetchEventosCatalogo,
   fetchPlantillas,
   fetchTarifarios,
@@ -147,49 +155,87 @@ function CiudadesChips({ value, onChange }: { value: Ciudad[]; onChange: (v: Ciu
 }
 
 /**
- * B2 (Diseño B) — «Servicio que cobra» una tarifa de «Otros servicios». Solo
- * aparece (y es obligatorio) cuando el alcance es el de un tipo de flujo corto
- * (`alcancesFlujoCorto`, lo dice `GET /api/tipos-tramite`): así DUTA y
- * nacionalización conviven como tarifas distintas de la misma empresa.
+ * «Servicio que cobra» una tarifa (`reglaServicioDeAlcance`, la misma regla
+ * del servidor, con el catálogo de `GET /api/tipos-tramite`):
+ *   - «Otros servicios»: obligatorio (B2), sin los servicios de un trámite normal.
+ *   - «Trámites» (30-sep-2026): opcional — vacío = tarifa general de
+ *     importación; o traslado, nacionalización o DUTA. Así conviven sin pisarse.
+ *   - Exportación, clasificación y Plan Vallejo: no se muestra.
  */
 function ServicioSelect({
+  regla,
   value,
   onChange,
   conceptos,
 }: {
+  regla: ReglaServicioAlcance;
   value: string;
   onChange: (codigo: string) => void;
   conceptos: ConceptoVentaRow[];
 }) {
+  if (regla.modo === "NINGUNO") return null;
+
+  if (regla.modo === "OPCIONAL") {
+    return (
+      <label className="block space-y-1">
+        <span className={LABEL}>Servicio que cobra</span>
+        <select value={value} onChange={(e) => onChange(e.target.value)} className={INPUT}>
+          <option value="">Ninguno: tarifa general de importación</option>
+          {regla.permitidos.map((s) => (
+            <option key={s.conceptoCodigo ?? s.id} value={s.conceptoCodigo ?? ""}>
+              {nombreCorto(s)}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-slate-500">
+          Un DO de importación busca la tarifa de SU servicio: la general, la de traslado, la de nacionalización o la de DUTA
+          conviven sin pisarse. Un servicio sin tarifa propia nunca se cobra con la general.
+        </p>
+      </label>
+    );
+  }
+
+  const reservados = new Set(regla.reservados);
   return (
     <label className="block space-y-1">
       <span className={LABEL}>Servicio que cobra *</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} required className={INPUT}>
         <option value="">Elige el servicio…</option>
-        {conceptos.map((c) => (
-          <option key={c.codigo} value={c.codigo}>
-            {c.nombre}
-          </option>
-        ))}
+        {conceptos
+          .filter((c) => !reservados.has(c.codigo))
+          .map((c) => (
+            <option key={c.codigo} value={c.codigo}>
+              {c.nombre}
+            </option>
+          ))}
       </select>
       <p className="text-xs text-slate-500">
-        Un DO de «Otros» busca su tarifa por este servicio: DUTA, nacionalización, etc. conviven sin pisarse.
-        Si el servicio no tiene tarifa, el DO se factura con el valor que escribas a mano.
+        Un DO de «Otros» busca su tarifa por este servicio. Si el servicio no tiene tarifa, el DO se factura con el valor
+        que escribas a mano. La nacionalización, el traslado y la DUTA se cargan en «Trámites», no aquí.
       </p>
     </label>
   );
 }
 
+/** Servicio a mandar al servidor según la regla del alcance ("" = sin servicio). */
+function servicioParaEnviar(regla: ReglaServicioAlcance, servicio: string): string | null | undefined {
+  if (regla.modo === "OBLIGATORIO") return servicio || undefined;
+  if (regla.modo === "OPCIONAL") return servicio || null;
+  return null;
+}
+
+type ReglaServicioDe = (alcance: string) => ReglaServicioAlcance;
+
 function NuevoTarifarioModal({
   clienteId,
   conceptos,
-  alcancesFlujoCorto,
+  reglaServicio,
   onClose,
   onCreated,
 }: {
   clienteId: string;
   conceptos: ConceptoVentaRow[];
-  alcancesFlujoCorto: string[];
+  reglaServicio: ReglaServicioDe;
   onClose: () => void;
   onCreated: (t: TarifarioRow) => void;
 }) {
@@ -269,8 +315,8 @@ function NuevoTarifarioModal({
         origenTarifarioId: origenId || undefined,
         nombre: nombre.trim() || undefined,
         alcance,
-        // B2: en «Otros» el servicio es obligatorio; en los demás alcances va vacío.
-        conceptoServicioCodigo: alcancesFlujoCorto.includes(alcance) ? servicio || undefined : null,
+        // B2 + 30-sep-2026: obligatorio en «Otros», opcional en «Trámites», vacío en los demás.
+        conceptoServicioCodigo: servicioParaEnviar(reglaServicio(alcance), servicio),
         // BAJO 4 — siempre lo que el usuario ve y puede editar en los chips
         // (nacen prellenados con las del origen; el usuario manda).
         ciudades,
@@ -329,7 +375,15 @@ function NuevoTarifarioModal({
           </label>
           <label className="block space-y-1">
             <span className={LABEL}>Alcance</span>
-            <select value={alcance} onChange={(e) => setAlcance(e.target.value)} className={INPUT}>
+            <select
+              value={alcance}
+              onChange={(e) => {
+                setAlcance(e.target.value);
+                // El servicio de un alcance no sirve en otro.
+                setServicio("");
+              }}
+              className={INPUT}
+            >
               {ALCANCES.map((a) => (
                 <option key={a.value} value={a.value}>
                   {a.label}
@@ -347,9 +401,7 @@ function NuevoTarifarioModal({
           </label>
         </div>
 
-        {alcancesFlujoCorto.includes(alcance) ? (
-          <ServicioSelect value={servicio} onChange={setServicio} conceptos={conceptos} />
-        ) : null}
+        <ServicioSelect regla={reglaServicio(alcance)} value={servicio} onChange={setServicio} conceptos={conceptos} />
 
         <CiudadesChips value={ciudades} onChange={setCiudades} />
         {origenSel ? (
@@ -384,13 +436,13 @@ function NuevoTarifarioModal({
 function DuplicarModal({
   tarifario,
   conceptos,
-  alcancesFlujoCorto,
+  reglaServicio,
   onClose,
   onCreated,
 }: {
   tarifario: TarifarioRow;
   conceptos: ConceptoVentaRow[];
-  alcancesFlujoCorto: string[];
+  reglaServicio: ReglaServicioDe;
   onClose: () => void;
   onCreated: (t: TarifarioRow) => void;
 }) {
@@ -408,7 +460,8 @@ function DuplicarModal({
   const [ciudades, setCiudades] = useState<Ciudad[]>(tarifario.ciudades);
   // B2: nace con el servicio del origen; una DUTA vieja (sin servicio) obliga a escoger uno (D6).
   const [servicio, setServicio] = useState(tarifario.conceptoServicioCodigo ?? "");
-  const pideServicio = alcancesFlujoCorto.includes(tarifario.alcance);
+  const regla = reglaServicio(tarifario.alcance);
+  const pideServicio = regla.modo !== "NINGUNO";
   const [desde, setDesde] = useState(siguienteDesde);
   const [hasta, setHasta] = useState(unAnioDespues(siguienteDesde));
   const [incremento, setIncremento] = useState("");
@@ -430,7 +483,7 @@ function DuplicarModal({
         await duplicarTarifario(tarifario.id, {
           nombre: nombre.trim() || undefined,
           ciudades,
-          ...(pideServicio ? { conceptoServicioCodigo: servicio || undefined } : {}),
+          ...(pideServicio ? { conceptoServicioCodigo: servicioParaEnviar(regla, servicio) } : {}),
           vigenteDesde: desde,
           vigenteHasta: hasta,
           incrementoPct: pct,
@@ -460,7 +513,7 @@ function DuplicarModal({
             <input type="date" value={hasta} min={desde} onChange={(e) => setHasta(e.target.value)} required className={INPUT} />
           </label>
         </div>
-        {pideServicio ? <ServicioSelect value={servicio} onChange={setServicio} conceptos={conceptos} /> : null}
+        <ServicioSelect regla={regla} value={servicio} onChange={setServicio} conceptos={conceptos} />
         <CiudadesChips value={ciudades} onChange={setCiudades} />
         <label className="block space-y-1">
           <span className={LABEL}>Incremento % (opcional, redondea a miles)</span>
@@ -1201,7 +1254,7 @@ function TarjetaTarifario({
             {tarifario.conceptoServicioCodigo ? (
               <span
                 className="border border-cyan-200 bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-cyan-800"
-                title="Un DO de «Otros» con este servicio usa esta tarifa"
+                title="Un DO con este servicio usa esta tarifa"
               >
                 Servicio: {tarifario.conceptoServicioNombre ?? tarifario.conceptoServicioCodigo}
               </span>
@@ -1348,8 +1401,16 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
   const [tarifarios, setTarifarios] = useState<TarifarioRow[]>([]);
   const [eventos, setEventos] = useState<EventoCatalogoRow[]>([]);
   const [conceptos, setConceptos] = useState<ConceptoVentaRow[]>([]);
-  // B2: alcances de los tipos de flujo corto («Otros»): sus tarifas llevan servicio.
-  const [alcancesFlujoCorto, setAlcancesFlujoCorto] = useState<string[]>([]);
+  // Qué servicio lleva una tarifa de cada alcance (B2 + 30-sep-2026): sale del
+  // catálogo de tipos y servicios, con la misma regla pura del servidor.
+  const [catalogoServicios, setCatalogoServicios] = useState<{
+    tipos: TipoParaServicio[];
+    catalogo: ServicioCatalogo[];
+  }>({ tipos: [], catalogo: [] });
+  const reglaServicio = useCallback<ReglaServicioDe>(
+    (alcance) => reglaServicioDeAlcance(alcance, catalogoServicios.tipos, catalogoServicios.catalogo),
+    [catalogoServicios],
+  );
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -1363,12 +1424,15 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
       fetchTarifarios(clienteId, controller.signal),
       fetchEventosCatalogo(controller.signal).catch(() => []),
       fetchConceptosVenta(controller.signal).catch(() => []),
-      fetchAlcancesFlujoCorto(controller.signal).catch(() => [] as string[]),
+      fetchCatalogoServiciosTarifa(controller.signal).catch(() => ({
+        tipos: [] as TipoParaServicio[],
+        catalogo: [] as ServicioCatalogo[],
+      })),
     ])
-      .then(([lista, cat, conceptosCat, alcancesCorto]) => {
+      .then(([lista, cat, conceptosCat, catServicios]) => {
         setTarifarios(lista);
         setEventos(cat);
-        setAlcancesFlujoCorto(alcancesCorto);
+        setCatalogoServicios(catServicios);
         // Alta/edición MANUAL de ítems solo puede usar conceptos ACTIVOS (B1).
         setConceptos(conceptosCat.filter((c) => c.activo));
         setLoadState("ready");
@@ -1515,7 +1579,7 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
         <NuevoTarifarioModal
           clienteId={clienteId}
           conceptos={conceptos}
-          alcancesFlujoCorto={alcancesFlujoCorto}
+          reglaServicio={reglaServicio}
           onClose={() => setModal(null)}
           onCreated={(t) => {
             setTarifarios((prev) => [t, ...prev]);
@@ -1529,7 +1593,7 @@ export function SeccionTarifario({ clienteId }: { clienteId: string }) {
         <DuplicarModal
           tarifario={modal.tarifario}
           conceptos={conceptos}
-          alcancesFlujoCorto={alcancesFlujoCorto}
+          reglaServicio={reglaServicio}
           onClose={() => setModal(null)}
           onCreated={(t) => {
             setTarifarios((prev) => [t, ...prev]);

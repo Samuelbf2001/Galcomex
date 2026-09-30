@@ -13,6 +13,11 @@ export type ChecklistItem = {
   recibido: boolean;
   /** Archivos subidos desde el requisito (solo en el detalle del DO). */
   _count?: { documentos: number };
+  /**
+   * Documento que cubre el ítem (BL, FACTURA_COMERCIAL…). 30-sep-2026: si no
+   * aplica al servicio del DO (la nacionalización no tiene BL), no frena.
+   */
+  categoriaDocumento?: string | null;
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -39,6 +44,7 @@ function normalizeItem(raw: Record<string, unknown>): ChecklistItem {
     descripcion: String(raw.descripcion ?? ""),
     requerido: Boolean(raw.requerido),
     recibido: Boolean(raw.recibido),
+    ...(typeof raw.categoriaDocumento === "string" ? { categoriaDocumento: raw.categoriaDocumento } : {}),
   };
 }
 

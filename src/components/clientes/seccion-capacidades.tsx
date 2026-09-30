@@ -27,13 +27,15 @@ const ETIQUETA_GRUPO: Record<string, string> = {
 /** Nombre corto para las casillas; un tipo nuevo usa el nombre que trae el API. */
 const ETIQUETA_TIPO_TRAMITE: Record<string, string> = {
   IMPORTACION: "Importación",
+  EXPORTACION: "Exportación",
   CLASIFICACION: "Clasificación arancelaria",
   OTRO: "Otros (Plan Vallejo, sellos…)",
 };
 
-/** Si el API de tipos falla, al menos se ven los tres de siempre. */
+/** Si el API de tipos falla, al menos se ven los de siempre. */
 const TIPOS_TRAMITE_RESPALDO: TipoTramiteCatalogo[] = [
   { codigo: "IMPORTACION", nombre: "Trámite de importación" },
+  { codigo: "EXPORTACION", nombre: "Exportación" },
   { codigo: "CLASIFICACION", nombre: "Clasificación arancelaria" },
   { codigo: "OTRO", nombre: "Otros servicios" },
 ];

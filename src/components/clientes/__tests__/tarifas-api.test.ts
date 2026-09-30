@@ -5,8 +5,10 @@ import {
   describirCalculo,
   etiquetaCiudad,
   fetchAlcancesFlujoCorto,
+  fetchCatalogoServiciosTarifa,
   fetchTarifarios,
 } from "@/components/clientes/tarifas-api";
+import { reglaServicioDeAlcance } from "@/lib/tramites/servicios";
 
 /** B3 (Diseño A) — helpers de ciudad del cliente HTTP de tarifarios. */
 describe("etiquetaCiudad / CIUDADES", () => {
@@ -49,6 +51,52 @@ describe("Diseño B — cliente HTTP de tarifarios", () => {
       ),
     );
     expect(await fetchAlcancesFlujoCorto()).toEqual(["OTROS"]);
+  });
+
+  it("30-sep — fetchCatalogoServiciosTarifa arma tipos y catálogo; la regla dice qué servicio lleva cada alcance", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        respuesta({
+          tipos: [
+            {
+              codigo: "IMPORTACION",
+              nombre: "Trámite de importación",
+              lineaServicio: "TRAMITE",
+              flujoCorto: false,
+              servicios: [
+                { id: "g", conceptoCodigo: null, nombre: "Importación (tarifa general de la empresa)", tarifaGeneral: true, orden: 10 },
+                { id: "t", conceptoCodigo: "TRASLADO_ZF", nombre: "Traslado de zona franca", tarifaGeneral: false, orden: 20 },
+                { id: "n", conceptoCodigo: "NACIONALIZACION_ZF", nombre: "Nacionalización desde zona franca", tarifaGeneral: false, orden: 30 },
+                { id: "d", conceptoCodigo: "DUTA", nombre: "DUTA (tránsito aduanero)", tarifaGeneral: false, orden: 40 },
+              ],
+            },
+            {
+              codigo: "EXPORTACION",
+              nombre: "Exportación",
+              lineaServicio: "EXPORTACION",
+              flujoCorto: true,
+              servicios: [{ id: "e", conceptoCodigo: "EXPORTACION", nombre: "Exportación", tarifaGeneral: true, orden: 10 }],
+            },
+            { codigo: "OTRO", nombre: "Otros servicios", lineaServicio: "OTROS", flujoCorto: true, servicios: [] },
+          ],
+        }),
+      ),
+    );
+    const { tipos, catalogo } = await fetchCatalogoServiciosTarifa();
+    expect(tipos.map((t) => t.codigo)).toEqual(["IMPORTACION", "EXPORTACION", "OTRO"]);
+    expect(catalogo).toHaveLength(5);
+
+    const tramite = reglaServicioDeAlcance("TRAMITE", tipos, catalogo);
+    expect(tramite.modo).toBe("OPCIONAL");
+    if (tramite.modo === "OPCIONAL") {
+      expect(tramite.permitidos.map((s) => s.conceptoCodigo)).toEqual(["TRASLADO_ZF", "NACIONALIZACION_ZF", "DUTA"]);
+    }
+    expect(reglaServicioDeAlcance("EXPORTACION", tipos, catalogo).modo).toBe("NINGUNO");
+    expect(reglaServicioDeAlcance("OTROS", tipos, catalogo)).toEqual({
+      modo: "OBLIGATORIO",
+      reservados: ["TRASLADO_ZF", "NACIONALIZACION_ZF", "DUTA", "EXPORTACION"],
+    });
   });
 
   it("B2 — un tarifario trae su servicio (código y nombre); una tarifa sin servicio queda en null", async () => {

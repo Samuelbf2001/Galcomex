@@ -46,7 +46,12 @@ export async function cargarCatalogoServicios(db: Cliente = prisma): Promise<Cat
   });
 
   return {
-    tipos: tipos.map(({ servicios: _servicios, ...tipo }) => tipo),
+    tipos: tipos.map((t) => ({
+      codigo: t.codigo,
+      nombre: t.nombre,
+      lineaServicio: t.lineaServicio,
+      flujoCorto: t.flujoCorto,
+    })),
     catalogo: tipos.flatMap((t) => t.servicios),
   };
 }

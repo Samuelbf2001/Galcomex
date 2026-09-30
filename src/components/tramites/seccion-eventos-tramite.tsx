@@ -480,7 +480,16 @@ export function SeccionEventosTramite({
                           className="mt-1 h-4 w-4"
                         />
                         <label htmlFor={`evento-${ev.codigo}`} className="min-w-0 flex-1 cursor-pointer">
-                          <span className="block text-sm font-medium text-slate-900">{ev.nombre}</span>
+                          <span className="block text-sm font-medium text-slate-900">
+                            {ev.nombre}
+                            {/* 30-sep-2026: el evento que cobra la tarifa del servicio del DO
+                                (p. ej. la inspección en la nacionalización). No filtra nada. */}
+                            {!flujoCorto && camposTarifa?.eventos.includes(ev.codigo) ? (
+                              <span className="ml-2 inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 text-[11px] font-semibold text-emerald-800">
+                                lo cobra la tarifa de este servicio
+                              </span>
+                            ) : null}
+                          </span>
                           {ev.descripcion ? <span className="block text-xs text-slate-500">{ev.descripcion}</span> : null}
                           {!marcado && ev.documentosRequeridos.length > 0 ? (
                             <span className="block text-xs text-slate-500">Al marcarlo pide: {ev.documentosRequeridos.join(", ")}</span>

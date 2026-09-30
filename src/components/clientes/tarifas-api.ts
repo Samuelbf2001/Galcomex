@@ -3,6 +3,8 @@
  * `capacidades-api.ts`: nunca se confía en la forma del JSON.
  */
 
+import type { ServicioCatalogo, TipoParaServicio } from "@/lib/tramites/servicios";
+
 export type TipoCalculoTarifa =
   | "FIJO"
   | "POR_UNIDAD"
@@ -460,6 +462,36 @@ export async function fetchAlcancesFlujoCorto(signal?: AbortSignal): Promise<str
     .filter((t) => t.flujoCorto === true && typeof t.lineaServicio === "string")
     .map((t) => String(t.lineaServicio));
   return [...new Set(alcances)];
+}
+
+/**
+ * 30-sep-2026 — tipos de trámite y su catálogo de servicios, para decidir qué
+ * servicio puede declarar una tarifa de cada alcance
+ * (`reglaServicioDeAlcance`, la misma función pura que usa el servidor).
+ */
+export async function fetchCatalogoServiciosTarifa(
+  signal?: AbortSignal,
+): Promise<{ tipos: TipoParaServicio[]; catalogo: ServicioCatalogo[] }> {
+  const body = await request("/api/tipos-tramite", { signal });
+  const lista = isRecord(body) && Array.isArray(body.tipos) ? body.tipos.filter(isRecord) : [];
+  const tipos: TipoParaServicio[] = lista.map((t) => ({
+    codigo: str(t.codigo),
+    nombre: str(t.nombre),
+    lineaServicio: str(t.lineaServicio),
+    flujoCorto: t.flujoCorto === true,
+  }));
+  const catalogo: ServicioCatalogo[] = lista.flatMap((t) =>
+    (Array.isArray(t.servicios) ? t.servicios.filter(isRecord) : []).map((s, i) => ({
+      id: typeof s.id === "string" ? s.id : `${str(t.codigo)}-${i}`,
+      tipoTramiteCodigo: str(t.codigo),
+      conceptoCodigo: typeof s.conceptoCodigo === "string" && s.conceptoCodigo ? s.conceptoCodigo : null,
+      nombre: str(s.nombre),
+      tarifaGeneral: s.tarifaGeneral === true,
+      documentosNoAplican: [],
+      orden: typeof s.orden === "number" ? s.orden : i,
+    })),
+  );
+  return { tipos, catalogo };
 }
 
 /** Catálogo ligero de tarifarios de TODAS las empresas, para "Copiar la tarifa de otra empresa" (B2). */

@@ -136,11 +136,30 @@ function buildTramitesQuery(
   return query ? `?${query}` : "";
 }
 
+/**
+ * Servicio del catálogo de un tipo de trámite (30-sep-2026): Importación
+ * (tarifa general), Traslado, Nacionalización, DUTA; Exportación. `conceptoCodigo`
+ * null = el servicio «tarifa general» de la importación (sin concepto).
+ */
+export type ServicioTramiteOption = {
+  conceptoCodigo: string | null;
+  nombre: string;
+  tarifaGeneral: boolean;
+  documentosNoAplican: string[];
+};
+
 export type TipoTramiteOption = {
   codigo: string;
   nombre: string;
   descripcion: string | null;
   prefijoConsecutivo: string;
+  /**
+   * El número del DO lleva la ciudad (DO.BGT26-0282). false = serie sin ciudad
+   * (Exportación, Clasificación, Otros): el formulario propone Barranquilla.
+   */
+  incluyeCiudadEnConsecutivo: boolean;
+  /** Catálogo de servicios del tipo (vacío = sin catálogo). */
+  servicios: ServicioTramiteOption[];
   requiereAgenciaAduanas: boolean;
   requiereEta: boolean;
   etiquetaReferenciaExterna: string | null;
@@ -529,6 +548,18 @@ function normalizarReglaAgencia(v: unknown): ReglaAgenciaEmpresa | null {
   return regla.agencia || regla.formatoDoAgencia ? regla : null;
 }
 
+function normalizarServicios(valor: unknown): ServicioTramiteOption[] {
+  if (!Array.isArray(valor)) return [];
+  return valor.filter(isRecord).map((s) => ({
+    conceptoCodigo: typeof s.conceptoCodigo === "string" && s.conceptoCodigo ? s.conceptoCodigo : null,
+    nombre: typeof s.nombre === "string" ? s.nombre : "",
+    tarifaGeneral: s.tarifaGeneral === true,
+    documentosNoAplican: Array.isArray(s.documentosNoAplican)
+      ? s.documentosNoAplican.filter((d): d is string => typeof d === "string")
+      : [],
+  }));
+}
+
 /** Tipos que la empresa puede abrir y su agencia fija, en una sola llamada. */
 export async function fetchTiposTramiteEmpresa(
   clienteId: string,
@@ -567,6 +598,8 @@ export async function fetchTiposTramiteEmpresa(
         : null,
     usaCamposDo: tipo.usaCamposDo !== false,
     flujoCorto: tipo.flujoCorto === true,
+    incluyeCiudadEnConsecutivo: tipo.incluyeCiudadEnConsecutivo !== false,
+    servicios: normalizarServicios(tipo.servicios),
   }));
 
   return { tipos, reglaAgencia };
@@ -724,6 +757,10 @@ export type RequisitosDo = {
     /** D3: el DO se crea con el número de contenedores o marcado como carga suelta. */
     requerido: boolean;
   };
+  /** 30-sep-2026: servicio con el que se revisaron tarifa y documentos. */
+  servicio: { codigo: string | null; nombre: string; claveTarifa: string | null } | null;
+  /** 30-sep-2026: número que tomaría el DO y de qué contador (vista previa, no reserva). */
+  numeracion: { siguiente: string; contador: string } | null;
 };
 
 function esDocumentoObligatorio(valor: unknown): valor is DocumentoObligatorioCodigo {
@@ -766,6 +803,21 @@ function normalizarRequisitos(payload: unknown): RequisitosDo {
     contenedores: {
       requerido: contenedores.requerido === true,
     },
+    servicio:
+      isRecord(payload) && isRecord(payload.servicio) && typeof payload.servicio.nombre === "string"
+        ? {
+            codigo: typeof payload.servicio.codigo === "string" ? payload.servicio.codigo : null,
+            nombre: payload.servicio.nombre,
+            claveTarifa: typeof payload.servicio.claveTarifa === "string" ? payload.servicio.claveTarifa : null,
+          }
+        : null,
+    numeracion:
+      isRecord(payload) &&
+      isRecord(payload.numeracion) &&
+      typeof payload.numeracion.siguiente === "string" &&
+      typeof payload.numeracion.contador === "string"
+        ? { siguiente: payload.numeracion.siguiente, contador: payload.numeracion.contador }
+        : null,
   };
 }
 
@@ -780,10 +832,13 @@ export async function fetchRequisitosDo(
   /** B3 — ciudad del DO que se va a crear (una ciudad puede tener tarifario propio, R1). */
   ciudad?: string,
   signal?: AbortSignal,
+  /** 30-sep-2026 — servicio escogido (TRASLADO_ZF, NACIONALIZACION_ZF, DUTA…); vacío = el de por defecto. */
+  servicio?: string,
 ): Promise<RequisitosDo> {
   const params = new URLSearchParams({ clienteId });
   if (tipoTramiteCodigo) params.set("tipoTramiteCodigo", tipoTramiteCodigo);
   if (ciudad) params.set("ciudad", ciudad);
+  if (servicio) params.set("servicio", servicio);
 
   const response = await fetch(`/api/tramites/requisitos?${params.toString()}`, {
     cache: "no-store",

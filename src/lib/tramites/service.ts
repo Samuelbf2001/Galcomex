@@ -1352,6 +1352,13 @@ export const tramiteDetalleInclude = {
       // Flujo corto (OTRO, 26-sep-2026): sin operación de importación, se
       // factura por servicio + valor escrito a mano.
       flujoCorto: true,
+      // 30-sep-2026: catálogo de servicios del tipo, para el editor del
+      // servicio y la marca de la cabecera del DO.
+      servicios: {
+        where: { activo: true },
+        orderBy: { orden: "asc" },
+        select: { conceptoCodigo: true, nombre: true, tarifaGeneral: true, documentosNoAplican: true },
+      },
     },
   },
   // Servicio + valor del flujo corto (solo si `tipoTramite.flujoCorto`).

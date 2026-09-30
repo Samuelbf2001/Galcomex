@@ -89,3 +89,44 @@ describe("ChecklistItemRow — fila del cuadre de plata histórica", () => {
     expect(container.querySelector('input[type="checkbox"]')).toBeNull();
   });
 });
+
+// ─── 30-sep-2026: un documento que no aplica al servicio del DO ───────────────
+describe("ChecklistItemRow — ítem que no aplica al servicio", () => {
+  const BL: ChecklistItem = {
+    id: "item-bl",
+    descripcion: "BL (Bill of Lading)",
+    requerido: true,
+    recibido: false,
+    categoriaDocumento: "BL",
+  };
+
+  async function render(noAplica: string | null) {
+    await act(async () => {
+      root.render(
+        <RolProvider rol="OPERATIVO">
+          <ul>
+            <ChecklistItemRow
+              item={BL}
+              tramiteId="tramite-1"
+              editable={false}
+              noAplica={noAplica}
+              onChanged={() => {}}
+              onSubido={() => {}}
+            />
+          </ul>
+        </RolProvider>,
+      );
+    });
+  }
+
+  it("en una nacionalización el BL dice «no aplica» en vez de «requerido»", async () => {
+    await render("Nacionalización desde zona franca");
+    expect(container.textContent).toContain("(no aplica a Nacionalización desde zona franca)");
+    expect(container.textContent).not.toContain("(requerido)");
+  });
+
+  it("sin servicio que lo quite, sigue «requerido»", async () => {
+    await render(null);
+    expect(container.textContent).toContain("(requerido)");
+  });
+});
