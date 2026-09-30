@@ -12,8 +12,8 @@ import {
   tieneClaveTemporal,
 } from "@/lib/auth/estado-cuenta";
 import {
-  COOKIE_ROL_SIMULADO,
   leerCookie,
+  nombreCookieRolSimulado,
   resolverRolEfectivo,
   type RolSimulable,
 } from "@/lib/auth/rol-simulado";
@@ -44,8 +44,9 @@ export const getSesionReal = cache(async (): Promise<AuthSession | null> => {
  *
  * La identidad no cambia (`user.id`, correo…): lo que haga la administradora
  * queda a su nombre. Se devuelve una COPIA; el objeto cacheado por
- * `getSesionReal` no se muta. El valor de la cookie solo cuenta si el rol real
- * es ADMIN y es uno de los roles simulables: nunca sube permisos.
+ * `getSesionReal` no se muta. El valor de la cookie (`ROL.userId`) solo cuenta
+ * si el rol real es ADMIN, es uno de los roles simulables y el `userId` es el
+ * de esta sesión: nunca sube permisos ni pasa de una persona a otra.
  *
  * La cookie se lee de la cabecera `Cookie` (la misma que ya lee Better Auth).
  */
@@ -54,8 +55,8 @@ export const getSesionCruda = cache(async (): Promise<AuthSession | null> => {
   if (!session) return null;
 
   const cabeceras = await headers();
-  const valor = leerCookie(cabeceras.get("cookie"), COOKIE_ROL_SIMULADO);
-  const { rol, simulado } = resolverRolEfectivo(session.user.rol, valor);
+  const valor = leerCookie(cabeceras.get("cookie"), nombreCookieRolSimulado());
+  const { rol, simulado } = resolverRolEfectivo(session.user.rol, valor, session.user.id);
   if (!simulado) return session;
 
   return { ...session, user: { ...session.user, rol } };
@@ -71,8 +72,8 @@ export const getSimulacionActual = cache(
     if (!session) return null;
 
     const cabeceras = await headers();
-    const valor = leerCookie(cabeceras.get("cookie"), COOKIE_ROL_SIMULADO);
-    const { simulado } = resolverRolEfectivo(session.user.rol, valor);
+    const valor = leerCookie(cabeceras.get("cookie"), nombreCookieRolSimulado());
+    const { simulado } = resolverRolEfectivo(session.user.rol, valor, session.user.id);
     return { rolReal: session.user.rol as Rol, simulado };
   },
 );

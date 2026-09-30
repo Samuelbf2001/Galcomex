@@ -41,7 +41,10 @@ export function FranjaRolSimulado({ rolSimulado }: { rolSimulado: RolSimulable }
         <FlaskConical className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
         <span>
           Estás probando la plataforma como {ETIQUETA_ROL_SIMULABLE[rolSimulado]}. Ves y puedes hacer
-          solo lo que ese rol puede. Lo que hagas queda a tu nombre.
+          solo lo que ese rol puede. Lo que hagas queda a tu nombre.{" "}
+          <strong className="font-extrabold underline decoration-amber-950/60 underline-offset-2">
+            Los cambios que hagas son reales: no es una copia de prueba.
+          </strong>
         </span>
       </p>
       <button

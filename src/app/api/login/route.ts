@@ -7,6 +7,7 @@ import {
   tieneClaveTemporal,
 } from "@/lib/auth/estado-cuenta";
 import { resolverIp } from "@/lib/auth/resolver-ip";
+import { nombreCookieRolSimulado, opcionesCookieRolSimulado } from "@/lib/auth/rol-simulado";
 import { destinoInternoSeguro } from "@/lib/auth/rutas-roles";
 import {
   construirClaveLimite,
@@ -109,6 +110,15 @@ export async function POST(request: NextRequest) {
   const response = quiereJson
     ? NextResponse.json({ ok: true, redirectTo })
     : NextResponse.redirect(new URL(redirectTo, origin));
+
+  // Al iniciar sesión se olvida cualquier «Probar como otro rol» que hubiera
+  // quedado en este navegador: nadie entra ya con un rol simulado. Va ANTES de
+  // copiar las cookies de Better Auth: `response.cookies.set` reescribe todas
+  // las cabeceras `set-cookie` a partir de las que la respuesta ya conocía.
+  response.cookies.set(nombreCookieRolSimulado(), "", {
+    ...opcionesCookieRolSimulado(),
+    maxAge: 0,
+  });
 
   // Better Auth emite VARIAS cookies (session_token + session_data por la
   // caché de cookie): hay que copiarlas una a una, no como cabecera única.
