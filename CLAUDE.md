@@ -206,13 +206,15 @@ fases en `.claude/PLAN-CONFIGURABILIDAD.md`.
   `revisor-borrador.tsx` lo pinta ámbar (`aviso-sin-gastos.tsx`) y `tramite-detalle.tsx` lo muestra como toast de aviso. No
   aplica al «Otros» de «Facturar comisiones» (B10). Texto: «Este trámite no tiene gastos pagados por Galcomex registrados.
   Si Galcomex pagó algo por el cliente (VUCE, puerto, transporte), regístralo antes de aprobar.»
-- **Tipos de trámite:** `IMPORTACION` (DO.BAQ26-0001), `CLASIFICACION`
-  (CLAS26-0001, exige `clasificacion_arancelaria`) y `OTRO` (OTR26-0001:
-  Plan Vallejo, sellos, coordinación logística; sin agencia, ETA ni checklist,
-  factura aparte, línea de cartera `OTROS`). Agencias: Moviaduanas, Coldex,
-  AR Logisty, Cortes.
+- **Tipos de trámite:** `IMPORTACION` (DO.BAQ26-0001; también traslado,
+  nacionalización y DUTA, como servicio — ver «Servicio del trámite»),
+  `EXPORTACION` (DO.EXP26-0013, serie propia sin ciudad, flujo corto, línea de
+  cartera `EXPORTACION`, 30-sep-2026), `CLASIFICACION` (CLAS26-0001, exige
+  `clasificacion_arancelaria`) y `OTRO` (OTR26-0001: Plan Vallejo, sellos,
+  coordinación logística; sin agencia, ETA ni checklist, factura aparte, línea
+  de cartera `OTROS`). Agencias: Moviaduanas, Coldex, AR Logisty, Cortes.
 - **Flujo corto (`TipoTramite.flujoCorto`, decisión de Ernesto 26-sep-2026,
-  hoy solo `OTRO`):** un servicio sin operación de importación — se abre sin
+  hoy `OTRO` y `EXPORTACION`):** un servicio sin operación de importación — se abre sin
   tarifa vigente ni pagos a proveedores, se manda a facturar directo (atajo de
   estados, ver abajo) y se factura por `TramiteDO.valorServicio` (COP sin IVA,
   escrito a mano) + `conceptoServicioCodigo` (`ConceptoVenta`), no por
@@ -561,12 +563,67 @@ Sin registro público, sin doble factor, sin correos: el ADMIN administra las cu
 - **Reglas:** un ADMIN no se desactiva ni se quita el rol ADMIN a sí mismo, y siempre queda al menos un ADMIN activo (se valida con las filas de los ADMIN bloqueadas `FOR UPDATE`, así dos cambios simultáneos no lo rompen). Violaciones → 422; correo repetido → 409.
 - Los campos `activo`/`debeCambiarPassword` pueden faltar en cookies emitidas antes de la migración `20260929000200_usuarios_admin`: leerlos siempre con `estaDesactivado` / `tieneClaveTemporal`.
 
-## Consecutivo automático de DO
+## Consecutivo automático de DO (numeración como Camila, 30-sep-2026)
 
-Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
-- Generado atómicamente en transacción DB (sin race conditions)
-- Único por ciudad + año (constraint `@@unique([ciudad, anio, numero])`)
+Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`; Exportación `DO.EXP{AA}-{NNNN}`
+(sin ciudad); Clasificación `CLAS{AA}-…`; Otros `OTR{AA}-…`. Detalle: `docs/NUMERACION.md`.
+- **Contadores:** el número depende solo de **tipo + ciudad + año**, nunca del servicio.
+  **Barranquilla, Bogotá y Buenaventura comparten UN contador** (`TipoTramite.ciudadesContadorComun`
+  = `[BAQ, BGT, BUN]` en IMPORTACION; las carpetas de Camila cubren del 1 al 281 sin repetir entre
+  las tres): el siguiente es el máximo de las tres + 1, impreso con la ciudad del DO (`DO.BGT26-0282`).
+  Cartagena y Santa Marta, cada una el suyo. Volver a uno por ciudad = `ciudadesContadorComun: []`
+  en el seed (ningún DO cambia de número).
+- **Piso** (`consecutivo_piso`): «el último número de este contador es por lo menos N»; siguiente =
+  `max(MAX(numero), piso) + 1`. Solo se inserta: migración (EXPORTACION:2026 = 12 → la siguiente
+  exportación es la 0013) o `scripts/consecutivos/fijar-piso.ts` (ADMIN, AuditLog
+  `FIJAR_PISO_CONSECUTIVO`). Estado de los contadores: `GET /api/tramites/consecutivos`
+  (ADMIN, REVISOR) o `scripts/consecutivos/ver-contadores.ts`.
+- Generado atómicamente: `pg_advisory_xact_lock(hashtext('tramite-do:{clave}'))` con la clave del
+  contador (`IMPORTACION:BAQ+BGT+BUN:2026`, `IMPORTACION:CTG:2026`, `EXPORTACION:2026`); todos los
+  DOs del grupo toman el mismo candado. Lógica pura en `src/lib/tramites/consecutivo.ts`
+  (`alcanceContador`, `siguienteNumero`).
+- La base NO impide `DO.BAQ26-0282` y `DO.BGT26-0282` a la vez (el índice único es
+  `(tipo, ciudad, año, número)`; el 0098 y el 0277 ya están repetidos, duda de Camila): la defensa
+  es el candado único del grupo.
+- **El año lo pone el servidor** (el de Bogotá). `POST /api/tramites` acepta otro `anio` solo con
+  rol efectivo ADMIN (422 `ANIO_SOLO_ADMIN`); las cargas históricas y el MCP van como ADMIN.
+- El formulario «Crear trámite» no trae ciudad por defecto (hay que escogerla; un tipo sin ciudad en el
+  número propone Barranquilla) y muestra el número que tomará (`requisitos.numeracion`, vista previa).
 - Litoplas SIEMPRE requiere `agenciaAduanas = MOVIADUANAS` y `doAgencia` con formato `I########`
+  (capacidad `regla_agencia_fija`).
+
+## Servicio del trámite (decisión de Ernesto, 30-sep-2026)
+
+La nacionalización, el traslado y la DUTA son **trámites de importación con un servicio**, no
+«Otros». Catálogo en la tabla `servicio_tramite` (migración + seed; sin pantalla de edición):
+IMPORTACION → Importación (tarifa general, `conceptoServicioCodigo = null`), Traslado de zona franca
+(`TRASLADO_ZF`), Nacionalización desde zona franca (`NACIONALIZACION_ZF`, sin BL), DUTA (`DUTA`);
+EXPORTACION → Exportación (`EXPORTACION`, tarifa general). Reglas puras en
+`src/lib/tramites/servicios.ts`; lectura del catálogo en `catalogo-servicios.ts`.
+- **Servicio del DO** (`TramiteDO.conceptoServicioCodigo`, `resolverServicio`): un tipo con catálogo
+  solo acepta los suyos (422 `SERVICIO_NO_PERMITIDO`); un «Otros» no puede usar un servicio de un
+  catálogo (422 `SERVICIO_RESERVADO`); CLASIFICACION no lleva servicio. El valor a mano
+  (`valorServicio`) sigue siendo solo de flujo corto.
+- **Tarifa por servicio en todos los tipos:** la tarifa se busca por empresa + alcance + ciudad + la
+  clave del servicio (`null` = la general). Un servicio sin tarifa propia **nunca** se cobra con otra
+  tarifa ni con `params.comisionDefault`: D1 frena al crear o cambiar el servicio (mensaje con el
+  nombre del servicio, «…o escoge otro servicio») y `generarBorrador` responde 422
+  `SERVICIO_SIN_TARIFA` si no hay tarifa ni comisión escrita a mano. La importación general no cambia.
+- **Qué servicio lleva una tarifa** (`reglaServicioDeAlcance`, generaliza B2): «Otros» obligatorio y
+  sin los reservados; «Trámites» opcional (vacío = general; traslado, nacionalización o DUTA);
+  Exportación, Clasificación y Plan Vallejo sin servicio. Publicar reemplaza solo empresa + alcance +
+  servicio + ciudades.
+- **Requisitos por servicio:** D2 pide los documentos de la empresa menos `documentosNoAplican` del
+  servicio (la nacionalización no pide BL); el checklist no copia esos ítems
+  (`ChecklistItem.categoriaDocumento`) y un ítem pendiente que no aplica al servicio ACTUAL no frena.
+- **Editar el servicio** (`verificarServicioDelDo`, antes `verificarServicioFlujoCorto`): en un tipo
+  con catálogo se cambia mientras no haya borrador ni esté en «Enviado a facturar» o después (409);
+  con D1 no se pasa a un servicio sin tarifa vigente. Cambiar el servicio nunca cambia número ni
+  ciudad.
+- API: `GET /api/tipos-tramite` trae `servicios`; `GET /api/tramites/requisitos?…&servicio=` responde
+  `servicio` y `numeracion`. Conciliación CxP sin cambio (nacionalización y DUTA son IMPORTACION).
+- Datos (no código): el paso de las tarifas de Polyrec ZF de «Otros» a «Trámites» con su servicio lo
+  hace `simulacion-camila-27sep/servicios-tramite-datos.mjs` (por la API, en la ventana, con OK).
 
 ## Transiciones de estado del DO
 
@@ -575,7 +632,7 @@ Formato: `DO.{CIUDAD}{AA}-{NNNN}` — ej. `DO.CTG26-0124`
 - **APERTURA → EN_TRAMITE:** bloqueado si hay `ChecklistItem` requerido sin marcar
 - **Atajo de flujo corto (`TipoTramite.flujoCorto`, decisión de Ernesto 26-sep-2026, hoy `OTRO`):** desde SOLICITUD, APERTURA o EN_TRAMITE también se puede saltar directo a ENVIADO_A_FACTURAR — sin operación de importación no hay EN_PUERTO ni DESPACHADO que pasar. Lógica pura en `lib/tramites/transiciones.ts` (`estadosSiguientes`); el resto del mapa (y las demás reglas de esta sección) es igual para todos los tipos — es un atajo, no una excepción. La UI no filtra el selector "Mover a…": ya lista todos los estados y el servidor decide.
 - **Tarifa vigente (`do_exige_tarifa_vigente`, encendida por defecto solo para `IMPORTACION` y `CLASIFICACION`; la migración `20260923092000` la apaga además en las empresas SOCIO_LM):** sin tarifario VIGENTE hoy de la línea de servicio del tipo (config `tiposTramite`) no se crea el DO (`TarifaVigenteRequeridaError`, 422, `codigo` + `detalles`). El formulario público (`POST /api/solicitudes`, `origen: "SOLICITUD_PUBLICA"`) se retiró el 2026-09-24 (dejaba crear DOs a nombre de un cliente solo con su NIT, sin sesión); los DOs con ese origen que ya existían quedan como históricos y SOLICITUD → APERTURA les sigue exigiendo la tarifa. Sin excepción de ADMIN: se apaga la función en la ficha. `OTRO` (flujo corto) no está en el default: se abre sin tarifa y se factura por `valorServicio`.
-- **BL + factura comercial (`docs_bl_factura_obligatorios`, encendida por defecto, config `tiposTramite`: solo `IMPORTACION`):** pasar de SOLICITUD/APERTURA a EN_TRAMITE o más allá exige documentos `BL` y `FACTURA_COMERCIAL` no eliminados (422 `DOCUMENTOS_OBLIGATORIOS_FALTANTES`). El formulario los pide al crear (se suben justo después del POST). La excepción del ADMIN (`bypassChecklist`) deja pasar con `advertencias` y un `AuditLog` `OMITIR_REQUISITOS` (checklist y documentos pendientes).
+- **BL + factura comercial (`docs_bl_factura_obligatorios`, encendida por defecto, config `tiposTramite`: solo `IMPORTACION`):** pasar de SOLICITUD/APERTURA a EN_TRAMITE o más allá exige documentos `BL` y `FACTURA_COMERCIAL` no eliminados (422 `DOCUMENTOS_OBLIGATORIOS_FALTANTES`), menos los que no aplican al servicio del DO (la nacionalización no pide BL, 30-sep-2026). El formulario los pide al crear (se suben justo después del POST). La excepción del ADMIN (`bypassChecklist`) deja pasar con `advertencias` y un `AuditLog` `OMITIR_REQUISITOS` (checklist y documentos pendientes).
 - Lógica pura de ambas reglas en `src/lib/tramites/requisitos.ts`; la UI las consulta antes de crear con `GET /api/tramites/requisitos?clienteId=&tipoTramiteCodigo=` (`fetchRequisitosDo` en `tramites-api.ts`).
 - **Facturado solo con factura emitida (decisión de Ernesto, 25-sep-2026):** entrar a FACTURADO (o saltar a PAGADO sin pasar por él) exige un borrador FACTURADO del DO; si no, 422 `FACTURA_NO_EMITIDA`. El `bypassChecklist` del ADMIN NO alcanza: forzarlo pide `motivoExcepcion` (≥ 10 caracteres) y deja un `AuditLog` `FORZAR_FACTURADO` (la UI abre `forzar-facturado-modal.tsx`). FACTURADO → PAGADO sigue libre (no revisa saldo) y cerrar/descartar no la pide. Lógica pura en `src/lib/tramites/factura-emitida.ts`.
 - Toda transición queda en `EstadoLog` con usuario y timestamp
