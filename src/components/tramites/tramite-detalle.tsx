@@ -33,6 +33,7 @@ import {
   puedeCerrarCuadre,
   tieneCuadreHistorico,
 } from "@/lib/tramites/cuadre-historico";
+import { conceptosDelEditorFlujoCorto } from "@/lib/tramites/servicios";
 import { fechaCalendarioAInput, formatFechaCalendario } from "@/lib/tiempo/bogota";
 
 import {
@@ -408,6 +409,11 @@ type EditorServicioFlujoCortoProps = {
    */
   soloLecturaPorFactura: boolean;
   onSaved: (updated: TramiteDetalleData) => void;
+  /**
+   * Catálogo de servicios del tipo (30-sep-2026). Con catálogo (Exportación)
+   * el selector solo ofrece esos conceptos; sin catálogo («Otros»), todos.
+   */
+  serviciosTipo?: ServicioTramiteOption[];
 };
 
 function EditorServicioFlujoCorto({
@@ -415,6 +421,7 @@ function EditorServicioFlujoCorto({
   puedeEditar,
   soloLecturaPorFactura,
   onSaved,
+  serviciosTipo = [],
 }: EditorServicioFlujoCortoProps) {
   const { toast } = useToast();
   const [conceptos, setConceptos] = useState<ConceptoVentaRow[]>([]);
@@ -512,7 +519,7 @@ function EditorServicioFlujoCorto({
           className="h-10 w-full min-w-0 border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none focus:border-cyan-600 disabled:opacity-60"
         >
           <option value="">Sin escoger todavía</option>
-          {conceptos.map((c) => (
+          {conceptosDelEditorFlujoCorto(conceptos, serviciosTipo).map((c) => (
             <option key={c.codigo} value={c.codigo}>
               {c.nombre}
             </option>
@@ -1206,6 +1213,7 @@ function TabResumen({
             puedeEditar={puedeEditarServicio}
             soloLecturaPorFactura={puedeEditar && bloqueadoPorFacturaServicio}
             onSaved={onFieldSaved}
+            serviciosTipo={serviciosTipo}
           />
         ) : null}
         <div>

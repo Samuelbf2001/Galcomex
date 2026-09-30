@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  conceptosDelEditorFlujoCorto,
   conceptosReservados,
   reglaServicioDeAlcance,
   resolverServicio,
@@ -226,5 +227,23 @@ describe("catálogo", () => {
     expect(errores.some((e) => e.includes("más de un servicio de tarifa general"))).toBe(true);
     expect(errores.some((e) => e.includes("sin-concepto"))).toBe(true);
     expect(errores.some((e) => e.includes("DUTA está en dos servicios"))).toBe(true);
+  });
+});
+
+describe("conceptosDelEditorFlujoCorto (revisión adversarial)", () => {
+  const conceptos = [{ codigo: "EXPORTACION" }, { codigo: "PLAN_VALLEJO" }, { codigo: "NACIONALIZACION_ZF" }];
+
+  it("Exportación (flujo corto CON catálogo) solo ofrece su servicio", () => {
+    expect(
+      conceptosDelEditorFlujoCorto(conceptos, [{ conceptoCodigo: "EXPORTACION" }]).map((c) => c.codigo),
+    ).toEqual(["EXPORTACION"]);
+  });
+
+  it("«Otros» (sin catálogo) sigue ofreciendo todos los conceptos", () => {
+    expect(conceptosDelEditorFlujoCorto(conceptos, []).map((c) => c.codigo)).toEqual([
+      "EXPORTACION",
+      "PLAN_VALLEJO",
+      "NACIONALIZACION_ZF",
+    ]);
   });
 });

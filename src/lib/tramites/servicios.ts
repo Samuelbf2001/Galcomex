@@ -273,6 +273,21 @@ export function reglaServicioDeAlcance(
   return { modo: "NINGUNO" };
 }
 
+/**
+ * Conceptos que el editor del flujo corto (ficha del DO) puede ofrecer
+ * (revisión adversarial, 30-sep-2026): en un tipo CON catálogo (Exportación)
+ * solo los de su catálogo; sin catálogo («Otros»), todos. El servidor aplica la
+ * misma regla (`resolverServicio`); esto solo evita ofrecer lo que va a
+ * rechazar con 422.
+ */
+export function conceptosDelEditorFlujoCorto<T extends { codigo: string }>(
+  conceptos: readonly T[],
+  serviciosTipo: readonly { conceptoCodigo: string | null }[],
+): T[] {
+  const propios = new Set(serviciosTipo.map((s) => s.conceptoCodigo).filter((c): c is string => Boolean(c)));
+  return propios.size > 0 ? conceptos.filter((c) => propios.has(c.codigo)) : [...conceptos];
+}
+
 /** Problemas del catálogo (vacío = bien): máximo un «tarifa general» por tipo, concepto vacío solo en él, sin conceptos repetidos. */
 export function validarCatalogoServicios(catalogo: readonly ServicioCatalogo[]): string[] {
   const errores: string[] = [];
