@@ -163,6 +163,17 @@ async function main() {
   // solo contador, se vuelve atrás con `ciudadesContadorComun: []` (ningún DO
   // cambia de número). La migración 20260930100000 ya deja este valor: el seed
   // lo repite para que un arranque no lo pise.
+  //
+  // Exportación por ciudad (decisión de Ernesto confirmada por Camila,
+  // 30-sep-2026): el seed fija que Exportación va por ciudad y año sin ciudad
+  // en el número, pero `prefijoConsecutivoPorCiudad` (todos los tipos) y las
+  // `ciudadesContadorComun` de Exportación son DATOS: el prefijo provisional de
+  // Cartagena y Santa Marta y si Bogotá y Buenaventura exportan con
+  // Barranquilla están pendientes de Camila y se cambian con SQL, sin
+  // programar. El seed solo los escribe al CREAR el tipo (ver el bucle); en una
+  // base existente los deja la migración 20260930120000 y después mandan los
+  // datos. `createTramite` no numera si la combinación hace que dos contadores
+  // impriman el mismo número.
   const tiposTramite = [
     {
       codigo: "IMPORTACION",
@@ -173,6 +184,7 @@ async function main() {
       secuenciaPor: SecuenciaTramite.CIUDAD_ANIO,
       incluyeCiudadEnConsecutivo: true,
       ciudadesContadorComun: [Ciudad.BAQ, Ciudad.BGT, Ciudad.BUN],
+      prefijoConsecutivoPorCiudad: {},
       lineaServicio: "TRAMITE",
       facturacionSeparada: false,
       capacidadRequerida: null,
@@ -200,18 +212,24 @@ async function main() {
       orden: 10,
     },
     {
-      // Exportaciones (decisión de Ernesto, 30-sep-2026): serie propia sin
-      // ciudad (DO.EXP26-0013 en adelante, ver el piso más abajo). Flujo corto:
-      // Litoplas tiene anticipos y su exportación real no tuvo pagos; Coldex
-      // puede no tener tarifa y el flujo corto nunca factura un valor por defecto.
+      // Exportaciones (decisión de Ernesto, 30-sep-2026; por ciudad desde la
+      // confirmación de Camila del mismo día): contador por ciudad y año, sin
+      // ciudad en el número. Barranquilla, Bogotá y Buenaventura siguen la serie
+      // DO.EXP26 (0013 en adelante, ver el piso más abajo); Cartagena
+      // (DO.EXP.CTG26-…) y Santa Marta (DO.EXP.SMR26-…) llevan cada una la suya.
+      // Las ciudades comunes y los prefijos por ciudad son datos (solo al crear).
+      // Flujo corto: Litoplas tiene anticipos y su exportación real no tuvo
+      // pagos; Coldex puede no tener tarifa y el flujo corto nunca factura un
+      // valor por defecto.
       codigo: "EXPORTACION",
       nombre: "Exportación",
       descripcion:
-        "Exportaciones de todos los clientes. Serie propia sin ciudad (DO.EXP26-0001). Se abre sin pagos a proveedores y se manda a facturar directo, con la tarifa de exportación de la empresa o con el valor escrito a mano.",
+        "Exportaciones de todos los clientes. Contador por ciudad: Barranquilla, Bogotá y Buenaventura siguen la serie DO.EXP26 (desde la 0013); Cartagena y Santa Marta llevan cada una el suyo, con su propio prefijo. Se abre sin pagos a proveedores y se manda a facturar directo, con la tarifa de exportación de la empresa o con el valor escrito a mano.",
       prefijoConsecutivo: "DO.EXP",
-      secuenciaPor: SecuenciaTramite.ANIO,
+      secuenciaPor: SecuenciaTramite.CIUDAD_ANIO,
       incluyeCiudadEnConsecutivo: false,
-      ciudadesContadorComun: [],
+      ciudadesContadorComun: [Ciudad.BAQ, Ciudad.BGT, Ciudad.BUN],
+      prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR" },
       lineaServicio: "EXPORTACION",
       facturacionSeparada: true,
       capacidadRequerida: null,
@@ -234,6 +252,7 @@ async function main() {
       prefijoConsecutivo: "CLAS",
       secuenciaPor: SecuenciaTramite.ANIO,
       incluyeCiudadEnConsecutivo: false,
+      prefijoConsecutivoPorCiudad: {},
       lineaServicio: "CLASIFICACION",
       facturacionSeparada: true,
       capacidadRequerida: "clasificacion_arancelaria",
@@ -266,6 +285,7 @@ async function main() {
       prefijoConsecutivo: "OTR",
       secuenciaPor: SecuenciaTramite.ANIO,
       incluyeCiudadEnConsecutivo: false,
+      prefijoConsecutivoPorCiudad: {},
       lineaServicio: "OTROS",
       facturacionSeparada: true,
       capacidadRequerida: null,
@@ -282,10 +302,18 @@ async function main() {
     },
   ];
 
+  // Datos de numeración que el seed NO pisa en una base existente (ver arriba):
+  // el prefijo por ciudad de todos los tipos y, en estos tipos, qué ciudades
+  // comparten contador. `undefined` en un update de Prisma = no tocar la columna.
+  const comunesSonDato = new Set(["EXPORTACION"]);
   for (const tipo of tiposTramite) {
     await prisma.tipoTramite.upsert({
       where: { codigo: tipo.codigo },
-      update: tipo,
+      update: {
+        ...tipo,
+        prefijoConsecutivoPorCiudad: undefined,
+        ...(comunesSonDato.has(tipo.codigo) ? { ciudadesContadorComun: undefined } : {}),
+      },
       create: tipo,
     });
   }
@@ -428,19 +456,23 @@ async function main() {
     });
   }
 
-  // Piso de respaldo de la serie DO.EXP26 (la migración 20260930100200 ya lo
-  // inserta): la siguiente exportación es la 0013 sin mover las 10 históricas.
+  // Piso de respaldo de la serie DO.EXP26 de Barranquilla, Bogotá y
+  // Buenaventura (la migración 20260930120000 ya lo inserta, con el mayor entre
+  // el piso anterior de 12 y las exportaciones ya creadas): la siguiente es la
+  // 0013 sin mover las 10 históricas. Solo se crea si falta; nunca se pisa. La
+  // fila vieja 'piso-exportacion-2026' (clave EXPORTACION:2026) queda como
+  // historia del contador por año.
   await prisma.consecutivoPiso.upsert({
-    where: { id: "piso-exportacion-2026" },
+    where: { id: "piso-exportacion-baq-bgt-bun-2026" },
     update: {},
     create: {
-      id: "piso-exportacion-2026",
-      clave: "EXPORTACION:2026",
+      id: "piso-exportacion-baq-bgt-bun-2026",
+      clave: "EXPORTACION:BAQ+BGT+BUN:2026",
       tipoTramiteCodigo: "EXPORTACION",
       anio: 2026,
       ultimoNumero: 12,
       motivo:
-        "DO.EXP26-0001 a 0012 existen fuera del tipo Exportación (10 cargadas como OTR26 el 27-sep; 0010 y 0011 sin cargar). La siguiente es la 0013. Decisión de Ernesto 30-sep-2026: no se renumera el histórico.",
+        "DO.EXP26-0001 a 0012 existen fuera del tipo Exportación (10 cargadas como OTR26 el 27-sep; 0010 y 0011 sin cargar), todas de Barranquilla. La siguiente es la 0013. Decisión de Ernesto 30-sep-2026: no se renumera el histórico; Cartagena y Santa Marta llevan su propio contador.",
     },
   });
 

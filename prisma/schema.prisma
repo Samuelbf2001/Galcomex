@@ -469,6 +469,16 @@ model TipoTramite {
   /// `alcanceContador` en `lib/tramites/consecutivo.ts`.
   ciudadesContadorComun Ciudad[] @default([])
 
+  /// Exportación por ciudad (decisión de Ernesto confirmada por Camila,
+  /// 30-sep-2026). Solo con `secuenciaPor = CIUDAD_ANIO`: prefijo propio de
+  /// algunas ciudades, mapa ciudad → prefijo (EXPORTACION →
+  /// {"CTG": "DO.EXP.CTG", "SMR": "DO.EXP.SMR"}: DO.EXP.CTG26-0001). Una ciudad
+  /// que no está usa `prefijoConsecutivo` (BAQ, BGT, BUN → DO.EXP26-0013). Es un
+  /// DATO: se cambia con SQL, sin programar, y el seed no lo pisa. `createTramite`
+  /// no numera si dos contadores pudieran imprimir el mismo número (ver
+  /// `validarConfigContador` / `problemasDeNumeracion` en `lib/tramites/consecutivo.ts`).
+  prefijoConsecutivoPorCiudad Json @default("{}")
+
   orden     Int      @default(0)
   activo    Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -519,7 +529,9 @@ model ServicioTramite {
 /// AuditLog `FIJAR_PISO_CONSECUTIVO`).
 model ConsecutivoPiso {
   id                String      @id @default(cuid())
-  /// Clave del contador: 'IMPORTACION:BAQ+BGT+BUN:2026', 'EXPORTACION:2026'.
+  /// Clave del contador: 'IMPORTACION:BAQ+BGT+BUN:2026', 'EXPORTACION:BAQ+BGT+BUN:2026',
+  /// 'EXPORTACION:CTG:2026'. Las filas 'EXPORTACION:2026' son historial del
+  /// contador por año (hasta la migración 20260930120000): ya no las usa ningún contador.
   clave             String
   tipoTramiteCodigo String
   tipoTramite       TipoTramite @relation(fields: [tipoTramiteCodigo], references: [codigo], onDelete: Restrict)
