@@ -41,6 +41,8 @@ model User {
   ajustesFacturaProveedor  AjusteFacturaProveedor[] @relation("AjustesFacturaProveedor")
   pagoGruposCreados        PagoGrupo[]              @relation("PagoGrupoCreadoPor")
   pagoGruposAnulados       PagoGrupo[]              @relation("PagoGrupoAnuladoPor")
+  /// Pisos de consecutivo fijados a mano con `scripts/consecutivos/fijar-piso.ts` (30-sep-2026).
+  pisosConsecutivo         ConsecutivoPiso[]        @relation("ConsecutivoPisoCreadoPor")
 
   @@map("user")
 }
@@ -459,14 +461,78 @@ model TipoTramite {
   /// Ver `lib/tramites/flujo-corto.ts` y `lib/tramites/transiciones.ts`.
   flujoCorto Boolean @default(false)
 
+  /// Numeración como Camila (decisión de Ernesto, 30-sep-2026). Solo con
+  /// `secuenciaPor = CIUDAD_ANIO`: ciudades que comparten UN solo contador
+  /// (IMPORTACION → [BAQ, BGT, BUN]: DO.BAQ26-0282, DO.BGT26-0283…). Una ciudad
+  /// fuera de la lista lleva su propio contador (CTG, SMR). Vacío = un contador
+  /// por ciudad, como antes. El número sigue impreso con la ciudad del DO. Ver
+  /// `alcanceContador` en `lib/tramites/consecutivo.ts`.
+  ciudadesContadorComun Ciudad[] @default([])
+
   orden     Int      @default(0)
   activo    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tramites TramiteDO[]
+  tramites  TramiteDO[]
+  /// Catálogo de servicios del tipo (Importación, Traslado, Nacionalización, DUTA).
+  /// Sin filas = el tipo no tiene catálogo (OTRO: cualquier concepto; CLASIFICACION: sin servicio).
+  servicios ServicioTramite[]
+  pisos     ConsecutivoPiso[]
 
   @@map("tipo_tramite")
+}
+
+/// Servicio dentro del trámite normal (decisión de Ernesto, 30-sep-2026): la
+/// nacionalización, el traslado y la DUTA son trámites de importación con un
+/// servicio escogido, no «Otros». Un tipo CON catálogo solo acepta los servicios
+/// de su catálogo; el número del DO nunca depende del servicio. Ver
+/// `lib/tramites/servicios.ts` (`resolverServicio`, `reglaServicioDeAlcance`).
+model ServicioTramite {
+  id                  String               @id
+  tipoTramiteCodigo   String
+  tipoTramite         TipoTramite          @relation(fields: [tipoTramiteCodigo], references: [codigo], onDelete: Restrict)
+  /// Concepto de venta del servicio. NULL solo en el servicio «tarifa general»
+  /// de IMPORTACION (los DOs de importación de siempre, sin concepto).
+  conceptoCodigo      String?
+  concepto            ConceptoVenta?       @relation("ServicioTramiteConcepto", fields: [conceptoCodigo], references: [codigo], onDelete: Restrict)
+  nombre              String
+  /// Los DOs de este servicio se cobran con la tarifa de la línea SIN servicio
+  /// (la de siempre). Máximo uno por tipo, y es el servicio por defecto.
+  tarifaGeneral       Boolean              @default(false)
+  /// Documentos de D2 y del checklist que no aplican a este servicio (la
+  /// nacionalización no tiene BL). Nunca agrega documentos.
+  documentosNoAplican CategoriaDocumento[] @default([])
+  orden               Int                  @default(0)
+  activo              Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@unique([tipoTramiteCodigo, conceptoCodigo])
+  @@map("servicio_tramite")
+}
+
+/// Piso de un contador de consecutivos (30-sep-2026): «el último número de
+/// este contador es por lo menos N». El siguiente número es
+/// `max(MAX(numero), piso) + 1`. Solo se inserta (es su propio historial); lo
+/// escriben las migraciones y `scripts/consecutivos/fijar-piso.ts` (ADMIN, con
+/// AuditLog `FIJAR_PISO_CONSECUTIVO`).
+model ConsecutivoPiso {
+  id                String      @id @default(cuid())
+  /// Clave del contador: 'IMPORTACION:BAQ+BGT+BUN:2026', 'EXPORTACION:2026'.
+  clave             String
+  tipoTramiteCodigo String
+  tipoTramite       TipoTramite @relation(fields: [tipoTramiteCodigo], references: [codigo], onDelete: Restrict)
+  anio              Int?
+  ultimoNumero      Int
+  motivo            String
+  /// null = migración o seed.
+  creadoPorId       String?
+  creadoPor         User?       @relation("ConsecutivoPisoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+  createdAt         DateTime    @default(now())
+
+  @@index([clave])
+  @@map("consecutivo_piso")
 }
 
 enum EstadoTramite {
@@ -534,9 +600,13 @@ model TramiteDO {
   /// factura CONCEPTOS_IVA (función `factura_conceptos_iva`); ver
   /// `lib/tramites/flujo-corto.ts`.
   valorServicio         BigInt?
-  /// Concepto de venta del servicio (PLAN_VALLEJO, SELLOS…). Obligatorio si
-  /// viene `valorServicio`. `onDelete: SetNull` — dar de baja un concepto no
-  /// debe romper el DO que ya lo usó.
+  /// Servicio del DO (concepto de venta). En un tipo de flujo corto sin
+  /// catálogo (OTRO): PLAN_VALLEJO, SELLOS…, obligatorio si viene
+  /// `valorServicio`. En un tipo CON catálogo (30-sep-2026): el servicio
+  /// escogido — IMPORTACION: NULL = «Importación (tarifa general)»,
+  /// TRASLADO_ZF, NACIONALIZACION_ZF o DUTA; EXPORTACION: EXPORTACION. Con él
+  /// se busca la tarifa (`resolverServicio`). Nunca cambia el número del DO.
+  /// `onDelete: SetNull` — dar de baja un concepto no debe romper el DO que ya lo usó.
   conceptoServicioCodigo String?
   conceptoServicio        ConceptoVenta? @relation("TramiteConceptoServicio", fields: [conceptoServicioCodigo], references: [codigo], onDelete: SetNull)
 
@@ -606,6 +676,9 @@ model PlantillaChecklistItem {
   descripcion String
   requerido   Boolean            @default(true)
   orden       Int                @default(0)
+  /// Documento que cubre el ítem (BL, factura comercial…). Al crear un DO no se
+  /// copian los ítems cuya categoría no aplica a su servicio (30-sep-2026).
+  categoriaDocumento CategoriaDocumento?
 
   @@map("plantilla_checklist_item")
 }
@@ -620,6 +693,10 @@ model ChecklistItem {
   validadoPorId   String?
   validadoPor     User?     @relation("ValidadoPor", fields: [validadoPorId], references: [id])
   fechaValidacion DateTime?
+  /// Documento que cubre el ítem (copiado de la plantilla). Un ítem pendiente
+  /// cuya categoría no aplica al servicio ACTUAL del DO no frena APERTURA →
+  /// EN_TRAMITE (30-sep-2026).
+  categoriaDocumento CategoriaDocumento?
 
   /// Archivos subidos desde el propio requisito (fotos de la revisión, registro VUCE…).
   documentos Documento[]
@@ -1628,11 +1705,13 @@ model Tarifario {
   /// que no tenga su propio tarifario VIGENTE en fecha. Una ciudad con
   /// tarifario propio NUNCA cae al general en silencio (ver `tarifarioVigenteDe`).
   ciudades     Ciudad[]        @default([])
-  /// B2 (Diseño B): solo en alcances de flujo corto («Otros servicios»): el
-  /// servicio (concepto de venta) que cobra esta tarifa — DUTA, NACIONALIZACION_ZF…
-  /// Un DO de «Otros» busca su tarifa por empresa + alcance + ciudad + ESTE
-  /// servicio (`TramiteDO.conceptoServicioCodigo`), así varias tarifas de «Otros»
-  /// conviven sin pisarse. NULL en los demás alcances y en tarifas anteriores.
+  /// Servicio (concepto de venta) que cobra esta tarifa. B2 (Diseño B): en
+  /// alcances de flujo corto sin catálogo («Otros servicios») es obligatorio.
+  /// 30-sep-2026: en la línea de trámites es opcional — NULL = tarifa general
+  /// de importación; TRASLADO_ZF, NACIONALIZACION_ZF o DUTA = la de ese
+  /// servicio. Un DO busca su tarifa por empresa + alcance + ciudad + la clave
+  /// de su servicio (`resolverServicio`), así varias tarifas conviven sin
+  /// pisarse. Ver `reglaServicioDeAlcance` en `lib/tramites/servicios.ts`.
   conceptoServicioCodigo String?
   conceptoServicio       ConceptoVenta? @relation("TarifarioServicio", fields: [conceptoServicioCodigo], references: [codigo], onDelete: SetNull)
   vigenteDesde DateTime
@@ -1763,6 +1842,8 @@ model ConceptoVenta {
   tramitesServicio TramiteDO[] @relation("TramiteConceptoServicio")
   /// B2 (Diseño B): tarifarios de «Otros» que cobran este servicio.
   tarifariosServicio Tarifario[] @relation("TarifarioServicio")
+  /// Servicios del catálogo de trámites que usan este concepto (30-sep-2026).
+  serviciosTramite ServicioTramite[] @relation("ServicioTramiteConcepto")
 
   @@index([activo, orden])
   @@map("concepto_venta")
