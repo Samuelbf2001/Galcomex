@@ -6,6 +6,7 @@ import {
   PASSWORD_MAX,
   PASSWORD_MIN,
 } from "@/lib/auth/estado-cuenta";
+import { ROLES_SIMULABLES } from "@/lib/auth/rol-simulado";
 
 export const ROLES_USUARIO = ["ADMIN", "REVISOR", "OPERATIVO", "SOCIO"] as const;
 
@@ -74,6 +75,20 @@ export const resetPasswordSchema = z.strictObject(
   { error: errorDeObjeto },
 );
 
+/**
+ * POST /api/usuarios/rol-simulado — «Probar como otro rol». Solo se puede BAJAR
+ * de rol: ADMIN no es una opción, así que nunca sube permisos.
+ */
+export const probarRolSchema = z.strictObject(
+  {
+    rol: z.enum(ROLES_SIMULABLES, {
+      message: "Rol inválido: usa REVISOR, OPERATIVO o SOCIO",
+    }),
+  },
+  { error: errorDeObjeto },
+);
+
 export type CrearUsuarioInput = z.infer<typeof crearUsuarioSchema>;
 export type ActualizarUsuarioInput = z.infer<typeof actualizarUsuarioSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+export type ProbarRolInput = z.infer<typeof probarRolSchema>;

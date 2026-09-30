@@ -41,6 +41,8 @@ export const EXCEPCIONES_PARIDAD: ExcepcionTipada[] = [
   intencional("PUT", "/api/auth/[param]", "Better Auth"),
   intencional("DELETE", "/api/auth/[param]", "Better Auth"),
   intencional("POST", "/api/login", "Login legacy; el MCP usa Better Auth"),
+  intencional("POST", "/api/usuarios/rol-simulado", "Solo interfaz: «Probar como otro rol» de la administradora es una cookie de navegador, no una operación de agente"),
+  intencional("DELETE", "/api/usuarios/rol-simulado", "Solo interfaz: vuelve de «Probar como otro rol» (borra la cookie del navegador)"),
   intencional("GET", "/api/pse/[param]", "Landing pública del código PSE (María Camila aprueba desde WhatsApp)"),
   intencional("POST", "/api/pse/[param]", "Landing pública del código PSE"),
   intencional("POST", "/api/whatsapp/kapso", "Webhook de Kapso (firmado HMAC): lo llama WhatsApp, no un usuario"),

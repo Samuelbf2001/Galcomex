@@ -6,6 +6,7 @@ import { useState } from "react";
 
 import { describirError, useToast } from "@/components/ui/toast";
 import { authClient } from "@/lib/auth/client";
+import { terminarPruebaRol } from "@/lib/auth/rol-simulado-cliente";
 
 export function LogoutButton() {
   const router = useRouter();
@@ -15,6 +16,11 @@ export function LogoutButton() {
   async function handleLogout() {
     setIsPending(true);
     try {
+      // Si la administradora estaba probando otro rol, se borra esa simulación
+      // ANTES de cerrar la sesión (después ya no habría quién la autorice). Si
+      // falla o tarda, no impide cerrar: la cookie caduca sola a las 4 h y un
+      // no-admin no gana nada con ella.
+      await terminarPruebaRol(3000).catch(() => undefined);
       const result = await authClient.signOut();
       if (result.error) {
         throw new Error(result.error.message || "No fue posible cerrar la sesión.");

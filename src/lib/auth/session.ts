@@ -11,17 +11,71 @@ import {
   estaDesactivado,
   tieneClaveTemporal,
 } from "@/lib/auth/estado-cuenta";
+import {
+  COOKIE_ROL_SIMULADO,
+  leerCookie,
+  resolverRolEfectivo,
+  type RolSimulable,
+} from "@/lib/auth/rol-simulado";
 import { prisma } from "@/lib/db/prisma";
 
 /**
- * Sesión tal como la devuelve Better Auth (cookieCache de 5 min), sin filtrar
- * usuarios desactivados. Deduplicada por request con React.cache.
+ * Sesión REAL tal como la devuelve Better Auth (cookieCache de 5 min), sin
+ * filtrar usuarios desactivados y con el rol que tiene el usuario en la BD.
+ * Deduplicada por request con React.cache.
+ *
+ * Solo la usan quienes necesitan la identidad y el rol verdaderos: la ruta que
+ * activa/desactiva «Probar como otro rol» y `getSimulacionActual`. Todo lo
+ * demás debe pasar por `getSesionCruda`.
  */
-export const getSesionCruda = cache(async (): Promise<AuthSession | null> => {
+export const getSesionReal = cache(async (): Promise<AuthSession | null> => {
   return auth.api.getSession({
     headers: await headers(),
   });
 });
+
+/**
+ * Sesión con el rol EFECTIVO. Es el ÚNICO punto donde se sustituye el rol por
+ * el de «Probar como otro rol» (solo la administradora, ver `rol-simulado.ts`):
+ * de aquí salen `getCurrentSession`, `requireSession`/`requireRole` (las rutas
+ * API), `exigirAccesoPagina`, el layout (menú y `RolProvider`) y la raíz `/`.
+ * Al sustituirlo en un solo lugar, API, páginas y menú aplican el mismo rol
+ * probado y no hay forma de que una capa siga viendo ADMIN.
+ *
+ * La identidad no cambia (`user.id`, correo…): lo que haga la administradora
+ * queda a su nombre. Se devuelve una COPIA; el objeto cacheado por
+ * `getSesionReal` no se muta. El valor de la cookie solo cuenta si el rol real
+ * es ADMIN y es uno de los roles simulables: nunca sube permisos.
+ *
+ * La cookie se lee de la cabecera `Cookie` (la misma que ya lee Better Auth).
+ */
+export const getSesionCruda = cache(async (): Promise<AuthSession | null> => {
+  const session = await getSesionReal();
+  if (!session) return null;
+
+  const cabeceras = await headers();
+  const valor = leerCookie(cabeceras.get("cookie"), COOKIE_ROL_SIMULADO);
+  const { rol, simulado } = resolverRolEfectivo(session.user.rol, valor);
+  if (!simulado) return session;
+
+  return { ...session, user: { ...session.user, rol } };
+});
+
+/**
+ * Rol real y rol que se está probando (si lo hay), para la franja y el
+ * selector de la cabecera. Sin sesión → `null`.
+ */
+export const getSimulacionActual = cache(
+  async (): Promise<{ rolReal: Rol; simulado: RolSimulable | null } | null> => {
+    const session = await getSesionReal();
+    if (!session) return null;
+
+    const cabeceras = await headers();
+    const valor = leerCookie(cabeceras.get("cookie"), COOKIE_ROL_SIMULADO);
+    const { simulado } = resolverRolEfectivo(session.user.rol, valor);
+    return { rolReal: session.user.rol as Rol, simulado };
+  },
+);
 
 /**
  * Sesión actual, deduplicada por request con React.cache: el layout, el guard
