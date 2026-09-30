@@ -14,9 +14,11 @@ import { assertTramiteModificable } from "@/lib/tramites/guard";
 import {
   tramiteDetalleInclude,
   tramiteInclude,
+  TarifaVigenteRequeridaError,
   verificarContenedoresAlEditar,
-  verificarServicioFlujoCorto,
+  verificarServicioDelDo,
 } from "@/lib/tramites/service";
+import { ServicioNoPermitidoError, ServicioReservadoError } from "@/lib/tramites/servicios";
 import { tramiteUpdateSchema } from "@/lib/validations/tramites";
 
 type RouteContext = {
@@ -85,12 +87,15 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     // menos contenedores de los que ya llevan comisión (caso LTRANS).
     await verificarContenedoresAlEditar(before, payload);
     await verificarComisionesAlEditar(before, payload);
-    // Flujo corto (OTRO): servicio + valor a mano solo en un tipo `flujoCorto`;
-    // con un borrador ya generado o desde ENVIADO_A_FACTURAR (A2/B-N2/B-N3),
-    // o sin concepto en el estado combinado (B2), responde 409/422 antes de
-    // guardar nada. `referenciaExterna` entra al mismo chequeo de bloqueo
-    // (sale en "SERVICIO: …" de la factura) sin afectar a otros tipos.
-    await verificarServicioFlujoCorto({
+    // Servicio del DO: valor a mano solo en un tipo `flujoCorto`; el servicio,
+    // en un «Otros» (no reservado) o en un tipo con catálogo (solo los suyos,
+    // 30-sep-2026). Con un borrador ya generado o desde ENVIADO_A_FACTURAR
+    // (A2/B-N2/B-N3), sin concepto en el estado combinado (B2) o, al cambiar
+    // el servicio de un trámite normal, sin tarifa del servicio nuevo (D1),
+    // responde 409/422 antes de guardar nada. `referenciaExterna` entra al
+    // mismo chequeo de bloqueo (sale en "SERVICIO: …" de la factura) sin
+    // afectar a otros tipos. Cambiar el servicio nunca cambia el número.
+    const servicio = await verificarServicioDelDo({
       tipoTramiteCodigo: before.tipoTramiteCodigo,
       tramiteId: before.id,
       estadoActual: before.estado,
@@ -98,14 +103,18 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       valorServicio: payload.valorServicio,
       conceptoServicioCodigo: payload.conceptoServicioCodigo,
       referenciaExterna: payload.referenciaExterna,
+      clienteId: before.clienteId,
+      ciudad: before.ciudad,
     });
+    // Lo que se guarda es lo resuelto (p. ej. EXPORTACION aunque llegue vacío).
+    const data = servicio ? { ...payload, conceptoServicioCodigo: servicio.conceptoServicioCodigo } : payload;
 
     const tramite = await prisma.$transaction(async (tx) => {
       await assertTramiteModificable(tx, before);
 
       const updated = await tx.tramiteDO.update({
         where: { id },
-        data: payload,
+        data,
         include: tramiteInclude,
       });
 
@@ -135,6 +144,17 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       error.code === "P2025"
     ) {
       return NextResponse.json({ error: "Tramite no encontrado" }, { status: 404 });
+    }
+
+    // Servicio (30-sep-2026): el código le dice a la pantalla qué pasó.
+    if (error instanceof ServicioNoPermitidoError || error instanceof ServicioReservadoError) {
+      return NextResponse.json({ error: error.message, codigo: error.codigo }, { status: error.status });
+    }
+    if (error instanceof TarifaVigenteRequeridaError) {
+      return NextResponse.json(
+        { error: error.message, codigo: error.codigo, detalles: error.detalles },
+        { status: error.status },
+      );
     }
 
     if (isDomainError(error)) {

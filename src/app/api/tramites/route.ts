@@ -10,6 +10,7 @@ import {
   listTramites,
   TarifaVigenteRequeridaError,
 } from "@/lib/tramites/service";
+import { ServicioNoPermitidoError, ServicioReservadoError } from "@/lib/tramites/servicios";
 import {
   tramiteCreateSchema,
   tramiteQuerySchema,
@@ -82,6 +83,11 @@ export async function POST(request: NextRequest) {
         { error: error.message, codigo: error.codigo, detalles: error.detalles },
         { status: error.status },
       );
+    }
+
+    // Servicio que el tipo no admite o que es de otro tipo (30-sep-2026).
+    if (error instanceof ServicioNoPermitidoError || error instanceof ServicioReservadoError) {
+      return NextResponse.json({ error: error.message, codigo: error.codigo }, { status: error.status });
     }
 
     // Tipo de trámite inexistente, no habilitado para la empresa o sin agencia
