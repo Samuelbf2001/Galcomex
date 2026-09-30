@@ -155,9 +155,17 @@ export type TipoTramiteOption = {
   prefijoConsecutivo: string;
   /**
    * El número del DO lleva la ciudad (DO.BGT26-0282). false = serie sin ciudad
-   * (Exportación, Clasificación, Otros): el formulario propone Barranquilla.
+   * en el texto (Exportación, Clasificación, Otros).
    */
   incluyeCiudadEnConsecutivo: boolean;
+  /**
+   * La ciudad decide de qué contador sale el número (`secuenciaPor =
+   * CIUDAD_ANIO`): Importación y, desde el 30-sep-2026, Exportación
+   * (Barranquilla-Bogotá-Buenaventura, Cartagena y Santa Marta llevan contadores
+   * distintos aunque el número de exportación no diga la ciudad). El formulario
+   * obliga a escogerla. false (Clasificación, Otros): propone Barranquilla.
+   */
+  numeroPorCiudad: boolean;
   /** Catálogo de servicios del tipo (vacío = sin catálogo). */
   servicios: ServicioTramiteOption[];
   requiereAgenciaAduanas: boolean;
@@ -599,6 +607,8 @@ export async function fetchTiposTramiteEmpresa(
     usaCamposDo: tipo.usaCamposDo !== false,
     flujoCorto: tipo.flujoCorto === true,
     incluyeCiudadEnConsecutivo: tipo.incluyeCiudadEnConsecutivo !== false,
+    // Sin el dato se asume que la ciudad sí cuenta: pedirla nunca da un número equivocado.
+    numeroPorCiudad: tipo.secuenciaPor !== "ANIO" && tipo.secuenciaPor !== "GLOBAL",
     servicios: normalizarServicios(tipo.servicios),
   }));
 

@@ -70,6 +70,7 @@ const TIPO_IMPORTACION: TipoTramiteOption = {
   usaCamposDo: true,
   flujoCorto: false,
   incluyeCiudadEnConsecutivo: true,
+  numeroPorCiudad: true,
   servicios: [],
 };
 
@@ -95,7 +96,25 @@ const TIPO_EXPORTACION: TipoTramiteOption = {
   usaCamposDo: false,
   flujoCorto: true,
   incluyeCiudadEnConsecutivo: false,
+  // 30-sep-2026: el número no dice la ciudad, pero la ciudad decide el contador.
+  numeroPorCiudad: true,
   servicios: [{ conceptoCodigo: "EXPORTACION", nombre: "Exportación", tarifaGeneral: true, documentosNoAplican: [] }],
+};
+
+/** «Otros»: número por año, la ciudad no decide nada. */
+const TIPO_OTRO: TipoTramiteOption = {
+  codigo: "OTRO",
+  nombre: "Otros servicios",
+  descripcion: null,
+  prefijoConsecutivo: "OTR",
+  requiereAgenciaAduanas: false,
+  requiereEta: false,
+  etiquetaReferenciaExterna: "Servicio prestado",
+  usaCamposDo: false,
+  flujoCorto: true,
+  incluyeCiudadEnConsecutivo: false,
+  numeroPorCiudad: false,
+  servicios: [],
 };
 
 function requisitosFixture(
@@ -489,7 +508,7 @@ describe("Crear DO — numeración y servicio (30-sep-2026)", () => {
     expect(container.querySelector('select[name="servicio"]')).toBeNull();
   });
 
-  it("Exportación: propone Barranquilla, no muestra selector de servicio ni concepto", async () => {
+  it("Exportación: la ciudad NO viene puesta (decide el contador); sin selector de servicio ni concepto", async () => {
     vi.mocked(fetchTiposTramiteEmpresa).mockResolvedValue({
       tipos: [TIPO_IMPORTACION_SERVICIOS, TIPO_EXPORTACION],
       reglaAgencia: null,
@@ -504,16 +523,65 @@ describe("Crear DO — numeración y servicio (30-sep-2026)", () => {
     await act(async () => boton.click());
     await esperarRequisitos();
 
-    expect(container.querySelector<HTMLSelectElement>('select[name="ciudad"]')!.value).toBe("BAQ");
+    // 30-sep-2026: Barranquilla-Bogotá-Buenaventura, Cartagena y Santa Marta
+    // exportan con contadores distintos: hay que escoger la ciudad.
+    expect(container.querySelector<HTMLSelectElement>('select[name="ciudad"]')!.value).toBe("");
     expect(container.querySelector('select[name="servicio"]')).toBeNull();
     expect(container.querySelector('select[name="conceptoServicioCodigo"]')).toBeNull();
 
     await enviar();
+    expect(createTramite).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Escoge la ciudad del DO");
+
+    await elegirCiudad("CTG");
+    await esperarRequisitos();
+    // La vista previa del número se pide con la ciudad escogida.
+    const llamadas = vi.mocked(fetchRequisitosDo).mock.calls;
+    expect(llamadas[llamadas.length - 1]?.slice(1, 3)).toEqual(["EXPORTACION", "CTG"]);
+
+    await enviar();
     expect(vi.mocked(createTramite).mock.calls[0][0]).toMatchObject({
-      ciudad: "BAQ",
+      ciudad: "CTG",
       tipoTramiteCodigo: "EXPORTACION",
     });
     expect(vi.mocked(createTramite).mock.calls[0][0].conceptoServicioCodigo).toBeUndefined();
+  });
+
+  it("Exportación: muestra el número y el contador de la ciudad escogida", async () => {
+    vi.mocked(fetchTiposTramiteEmpresa).mockResolvedValue({ tipos: [TIPO_EXPORTACION], reglaAgencia: null });
+    vi.mocked(fetchRequisitosDo).mockImplementation(async (_cliente, _tipo, ciudad) => ({
+      ...requisitosFixture({ requerida: false, cumple: true }),
+      numeracion:
+        ciudad === "CTG"
+          ? { siguiente: "DO.EXP.CTG26-0001", contador: "contador de exportación de Cartagena" }
+          : ciudad
+            ? { siguiente: "DO.EXP26-0013", contador: "contador de exportación Barranquilla, Bogotá y Buenaventura" }
+            : null,
+    }));
+    await montarDialogo();
+    await elegirClienteLitoplas();
+    await esperarRequisitos();
+    expect(container.textContent).toContain("Escoge la ciudad para ver el número.");
+
+    await elegirCiudad("BGT");
+    await esperarRequisitos();
+    expect(container.textContent).toContain("DO.EXP26-0013");
+    expect(container.textContent).toContain("contador de exportación Barranquilla, Bogotá y Buenaventura");
+
+    await elegirCiudad("CTG");
+    await esperarRequisitos();
+    expect(container.textContent).toContain("DO.EXP.CTG26-0001");
+    expect(container.textContent).toContain("contador de exportación de Cartagena");
+  });
+
+  it("Otros (número sin ciudad y por año): propone Barranquilla", async () => {
+    vi.mocked(fetchTiposTramiteEmpresa).mockResolvedValue({ tipos: [TIPO_OTRO], reglaAgencia: null });
+    vi.mocked(fetchRequisitosDo).mockResolvedValue(requisitosFixture({ requerida: false, cumple: true }));
+    await montarDialogo();
+    await elegirClienteLitoplas();
+    await esperarRequisitos();
+
+    expect(container.querySelector<HTMLSelectElement>('select[name="ciudad"]')!.value).toBe("BAQ");
   });
 });
 

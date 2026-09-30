@@ -420,11 +420,14 @@ export function CreateTramiteDialog({
   // propio (R1), así que los requisitos (D1) se vuelven a consultar si cambia.
   // 30-sep-2026: sin valor por defecto (antes Cartagena). En 2026 hay tantos
   // DOs de Cartagena como del grupo Barranquilla-Bogotá-Buenaventura, y una
-  // ciudad equivocada toma el número de otro contador: hay que escogerla. Un
-  // tipo cuyo número no lleva ciudad (Exportación) propone Barranquilla.
+  // ciudad equivocada toma el número de otro contador: hay que escogerla. Lo
+  // mismo en Exportación desde el 30-sep-2026: su número no dice la ciudad,
+  // pero Barranquilla-Bogotá-Buenaventura, Cartagena y Santa Marta llevan
+  // contadores distintos. Solo un tipo cuyo número no depende de la ciudad
+  // (Clasificación, Otros) propone Barranquilla.
   const [ciudadForm, setCiudadForm] = useState("");
   const ciudadEfectiva =
-    ciudadForm || (tipoTramiteSeleccionado && !tipoTramiteSeleccionado.incluyeCiudadEnConsecutivo ? "BAQ" : "");
+    ciudadForm || (tipoTramiteSeleccionado && !tipoTramiteSeleccionado.numeroPorCiudad ? "BAQ" : "");
 
   // Servicio del trámite normal (30-sep-2026): Importación / Traslado /
   // Nacionalización / DUTA. "" = el servicio por defecto del tipo (Importación
