@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  ArrowLeft,
   Banknote,
   CheckSquare,
   ChevronRight,
@@ -23,6 +24,8 @@ import { fetchConceptosVenta, type ConceptoVentaRow } from "@/components/configu
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
+import { EstadoTramiteBadge, etiquetaEstadoTramite } from "@/components/ui/estado-tramite";
+import { describirActividad } from "@/lib/auditoria/describir-actividad";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import type { Rol } from "@/lib/auth/auth";
@@ -105,6 +108,8 @@ type EstadoLogEntry = {
 type AuditLogEntry = {
   id: string;
   accion: string;
+  /** Qué se tocó (TramiteDO, PagoTramite…): da sentido a CREATE/UPDATE. */
+  entidad?: string;
   createdAt: string;
   usuario: { name: string } | null;
 };
@@ -248,31 +253,10 @@ function dateInputToIso(value: string): string | null {
   return new Date(`${value}T00:00:00.000Z`).toISOString();
 }
 
-function statusClassName(status: string) {
-  const n = status.toLowerCase();
-  if (n.includes("cerr") || n.includes("factur") || n.includes("pagad")) {
-    return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  }
-  if (n.includes("despach") || n.includes("enviado")) {
-    return "border-cyan-200 bg-cyan-50 text-cyan-700";
-  }
-  if (n.includes("puerto") || n.includes("tramite")) {
-    return "border-amber-200 bg-amber-50 text-amber-700";
-  }
-  return "border-slate-200 bg-slate-50 text-slate-700";
-}
-
-function accionLabel(accion: string): string {
-  const map: Record<string, string> = {
-    CREATE: "Trámite creado",
-    UPDATE: "Datos actualizados",
-    UPDATE_ESTADO: "Cambio de estado",
-    OMITIR_REQUISITOS: "Avanzó con requisitos pendientes (excepción de ADMIN)",
-    UPDATE_CHECKLIST_ITEM: "Checklist actualizado",
-    APPROVE: "Borrador aprobado",
-    FACTURAR: "Factura generada",
-  };
-  return map[accion] ?? accion;
+/** "creó el DO", "registró un pago a proveedor"… (misma traducción que el Dashboard). */
+function accionLabel(accion: string, entidad = "TramiteDO"): string {
+  const frase = describirActividad({ accion, entidad });
+  return frase.charAt(0).toUpperCase() + frase.slice(1);
 }
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
@@ -655,11 +639,11 @@ function CambioEstadoButton({
           onChange={(e) => { setSelected(e.target.value); setError(null); setFaltantes([]); }}
           disabled={saving}
           aria-label={`Mover ${tramite.consecutivo} a otro estado`}
-          className="h-11 max-w-full rounded-lg border border-slate-300 bg-white px-2 text-sm text-slate-700 outline-none focus:border-cyan-500 disabled:opacity-60"
+          className="h-9 max-w-full border border-slate-300 bg-white px-2 text-sm text-slate-700 outline-none focus:border-cyan-500 disabled:opacity-60"
         >
           <option value="">Mover a...</option>
           {otrosEstados.map((s) => (
-            <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+            <option key={s} value={s}>{etiquetaEstadoTramite(s)}</option>
           ))}
         </select>
         <button
@@ -667,7 +651,7 @@ function CambioEstadoButton({
           onClick={() => void handleCambiar()}
           disabled={saving || !selected}
           aria-label="Confirmar cambio de estado"
-          className="inline-flex h-11 items-center gap-1 rounded-lg border border-cyan-300 bg-cyan-50 px-2 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
+          className="inline-flex h-9 items-center gap-1 border border-cyan-300 bg-cyan-50 px-3 text-sm font-semibold text-cyan-800 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-500"
         >
           {saving ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
           {saving ? "Actualizando…" : "Cambiar estado"}
@@ -920,7 +904,7 @@ export function ChecklistItemRow({
           <span className="text-xs text-rose-500">(requerido)</span>
         ) : null}
         {saving ? (
-          <Loader2 className="h-3 w-3 animate-spin text-slate-400" aria-hidden="true" />
+          <Loader2 className="h-3 w-3 animate-spin text-slate-500" aria-hidden="true" />
         ) : null}
         {/* El cuadre de plata histórica solo lo cierra ADMIN/REVISOR con su casilla:
             subir un archivo desde aquí lo marcaría como recibido (D0). */}
@@ -1219,11 +1203,7 @@ function TabResumen({
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Estado</p>
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
-            <span
-              className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${statusClassName(tramite.estado)}`}
-            >
-              {tramite.estado.replace(/_/g, " ")}
-            </span>
+            <EstadoTramiteBadge estado={tramite.estado} />
           </div>
         </div>
         <div>
@@ -1248,7 +1228,7 @@ function TabResumen({
       {/* Fechas clave con edición inline */}
       <div className="border border-slate-200 bg-white p-5">
         <div className="mb-4 flex items-center gap-2">
-          <Clock className="h-4 w-4 text-slate-400" aria-hidden="true" />
+          <Clock className="h-4 w-4 text-slate-500" aria-hidden="true" />
           <h3 className="text-sm font-semibold text-slate-900">Fechas clave</h3>
           {puedeEditar ? (
             <span className="text-xs text-slate-500">Escribe y guarda solo lo que cambies</span>
@@ -1329,10 +1309,10 @@ function TabResumen({
         <div className="border border-slate-200 bg-white p-5">
           <div className="mb-3 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <CheckSquare className="h-4 w-4 text-slate-400" aria-hidden="true" />
+              <CheckSquare className="h-4 w-4 text-slate-500" aria-hidden="true" />
               <h3 className="text-sm font-semibold text-slate-900">Checklist documental</h3>
               {algunItemEditable ? (
-                <span className="text-xs text-slate-400">(marca los recibidos)</span>
+                <span className="text-xs text-slate-500">(marca los recibidos)</span>
               ) : null}
             </div>
             <span className="text-xs text-slate-500">
@@ -1384,12 +1364,54 @@ function TabResumen({
       {puedeEditar ? <div className="rounded-xl border border-slate-200 bg-white p-5"><InlineTextField label="Comentarios" fieldKey="comentarios" value={tramite.comentarios} tramiteId={tramite.id} onSaved={onFieldSaved} /></div> : tramite.comentarios ? (
         <div className="border border-slate-200 bg-white p-5">
           <div className="mb-2 flex items-center gap-2">
-            <MessageSquare className="h-4 w-4 text-slate-400" aria-hidden="true" />
+            <MessageSquare className="h-4 w-4 text-slate-500" aria-hidden="true" />
             <h3 className="text-sm font-semibold text-slate-900">Comentarios</h3>
           </div>
           <p className="text-sm text-slate-700 whitespace-pre-line">{tramite.comentarios}</p>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// ─── Cabecera: número del DO, estado y cliente ────────────────────────────────
+
+/**
+ * Lo primero que se lee al abrir un DO: su número, su estado y de quién es.
+ * Antes la página decía "Detalle del trámite" y el número aparecía más abajo.
+ */
+function CabeceraTramite({ tramite }: { tramite: TramiteDetalleData | null }) {
+  const tipo = tramite?.tipoTramite?.nombre ?? (tramite ? "Importación" : null);
+  return (
+    <div className="mb-5 flex items-start gap-3">
+      <Link
+        href="/tramites"
+        className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center border border-slate-300 bg-white text-slate-600 transition hover:bg-slate-50"
+        aria-label="Volver a trámites"
+      >
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+      </Link>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h1 className="whitespace-nowrap text-2xl font-semibold tracking-normal">
+            {tramite?.consecutivo ?? "Trámite"}
+          </h1>
+          {tramite ? <EstadoTramiteBadge estado={tramite.estado} /> : null}
+        </div>
+        {tramite ? (
+          <p className="mt-0.5 text-sm text-slate-600">
+            <EnlaceCliente id={tramite.cliente.id} className="font-medium">
+              {tramite.cliente.nombre}
+            </EnlaceCliente>
+            <span className="text-slate-500"> · </span>
+            {tipo}
+            <span className="text-slate-500"> · </span>
+            {tramite.ciudad}
+          </p>
+        ) : (
+          <p className="mt-0.5 text-sm text-slate-500">Hoja de trabajo, documentos, pagos y facturación del DO.</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -1419,7 +1441,7 @@ function TabHistorial({ tramite }: { tramite: TramiteDetalleData }) {
     ...auditLogs.map((a): TimelineItem => ({
       kind: "audit",
       id: a.id,
-      label: accionLabel(a.accion),
+      label: accionLabel(a.accion, a.entidad),
       usuario: a.usuario?.name ?? null,
       date: a.createdAt,
     })),
@@ -1440,15 +1462,16 @@ function TabHistorial({ tramite }: { tramite: TramiteDetalleData }) {
       <ol className="space-y-3">
         {items.map((item) => (
           <li key={`${item.kind}-${item.id}`} className="flex items-start gap-3 text-sm">
-            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
             <div className="min-w-0 flex-1">
               {item.kind === "audit" ? (
                 <span className="font-medium text-slate-900">{item.label}</span>
               ) : (
                 <>
-                  <span className="font-medium text-slate-900">{item.antes}</span>
-                  <span className="mx-1 text-slate-400">→</span>
-                  <span className="font-medium text-slate-900">{item.des}</span>
+                  <span className="text-slate-600">Estado: </span>
+                  <span className="font-medium text-slate-900">{etiquetaEstadoTramite(item.antes)}</span>
+                  <span className="mx-1 text-slate-500">→</span>
+                  <span className="font-medium text-slate-900">{etiquetaEstadoTramite(item.des)}</span>
                 </>
               )}
               {item.kind === "audit" && item.usuario ? (
@@ -1457,7 +1480,7 @@ function TabHistorial({ tramite }: { tramite: TramiteDetalleData }) {
                   {item.usuario}
                 </span>
               ) : null}
-              <span className="ml-2 text-xs text-slate-400">{formatDateTime(item.date)}</span>
+              <span className="ml-2 text-xs text-slate-500">{formatDateTime(item.date)}</span>
             </div>
           </li>
         ))}
@@ -1628,7 +1651,7 @@ function TabFacturacion({
   return (
     <div className="border border-slate-200 bg-white p-5">
       <div className="mb-4 flex items-center gap-2">
-        <FileText className="h-4 w-4 text-slate-400" aria-hidden="true" />
+        <FileText className="h-4 w-4 text-slate-500" aria-hidden="true" />
         <h3 className="text-sm font-semibold text-slate-900">Facturación</h3>
       </div>
       {!esFacturable ? (
@@ -1889,17 +1912,25 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
   }, [selectTab]);
 
   if (loadState === "loading" && !tramite) {
-    return <DetalleSkeleton />;
+    return (
+      <>
+        <CabeceraTramite tramite={null} />
+        <DetalleSkeleton />
+      </>
+    );
   }
 
   if (!tramite) {
     return (
-      <ModuleState
-        type="error"
-        title="No se pudo cargar el trámite"
-        detail={loadError ?? "Error desconocido."}
-        action={{ label: "Reintentar", onClick: reload }}
-      />
+      <>
+        <CabeceraTramite tramite={null} />
+        <ModuleState
+          type="error"
+          title="No se pudo cargar el trámite"
+          detail={loadError ?? "Error desconocido."}
+          action={{ label: "Reintentar", onClick: reload }}
+        />
+      </>
     );
   }
 
@@ -1938,6 +1969,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
 
   return (
     <div className="space-y-0">
+      <CabeceraTramite tramite={tramite} />
       {loadError ? <div className="mb-4"><ModuleState type="error" title="No se pudo actualizar el trámite" detail="Conservamos la información anterior y tus cambios sin guardar. Reintenta para ver los datos más recientes." action={{ label: "Reintentar", onClick: reload }} /></div> : null}
       {esCerrado ? (
         <Alert variant="warning" className="mb-4">
@@ -1990,11 +2022,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
               Estado
             </p>
             <div className="mt-0.5 flex flex-wrap items-center gap-2">
-              <span
-                className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${statusClassName(tramite.estado)}`}
-              >
-                {tramite.estado.replace(/_/g, " ")}
-              </span>
+              <EstadoTramiteBadge estado={tramite.estado} />
               {puedeEstado && (!esCerrado || userRol === "ADMIN") ? (
                 <CambioEstadoButton tramite={tramite} onChanged={handleEstadoChanged} />
               ) : null}
@@ -2009,7 +2037,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
 
           {/* Acciones */}
           <div className="flex flex-wrap items-center gap-2">
-            {puedeAnticipo && activeTab !== "resumen" ? (
+            {puedeAnticipo ? (
               <button
                 type="button"
                 onClick={() => setTopAction("anticipo")}
@@ -2021,7 +2049,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
                 Registrar anticipo
               </button>
             ) : null}
-            {puedePago && activeTab !== "pagos" ? (
+            {puedePago ? (
               <button
                 type="button"
                 onClick={() => {
@@ -2036,7 +2064,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
                 Pago a proveedor
               </button>
             ) : null}
-            {puedeFacturaProveedor && activeTab !== "facturas-proveedor" ? (
+            {puedeFacturaProveedor ? (
               <button
                 type="button"
                 onClick={() => setTopAction("factura")}
@@ -2100,7 +2128,7 @@ export function TramiteDetalle({ tramiteId }: { tramiteId: string }) {
               selectTab(TABS[next].id);
               document.getElementById(`tab-${TABS[next].id}`)?.focus();
             }}
-            className={`inline-flex h-10 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-medium transition ${
+            className={`inline-flex h-10 shrink-0 items-center gap-2 border-b-2 px-3 text-sm font-medium transition 2xl:px-4 ${
               activeTab === tab.id
                 ? "border-slate-950 text-slate-950"
                 : "border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-900"

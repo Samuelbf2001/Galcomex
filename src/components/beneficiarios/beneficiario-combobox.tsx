@@ -284,19 +284,21 @@ export function BeneficiarioCombobox(props: Props) {
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className="flex min-h-10 w-full items-center justify-between border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-50"
+        className="flex min-h-10 w-full items-center justify-between border border-slate-300 bg-white px-3 py-1.5 text-left text-sm outline-none focus:border-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-50"
       >
-        <span className="flex flex-wrap gap-1.5">
+        <span className="flex min-w-0 flex-1 flex-wrap gap-1.5">
           {!hasValue ? (
-            <span className="text-slate-400">{placeholder}</span>
+            <span className="text-slate-500">{placeholder}</span>
           ) : multi ? (
             props.value.map((b) => (
               <span
                 key={b.id}
-                className="inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-xs text-cyan-800"
+                className="inline-flex max-w-full items-start gap-1 border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-left text-xs text-cyan-800"
               >
-                <span className="font-medium">{b.nombre}</span>
-                {b.nit ? <span className="text-cyan-600">{b.nit}</span> : null}
+                <span className="flex min-w-0 flex-col">
+                  <span className="font-medium">{b.nombre}</span>
+                  {b.nit ? <span className="whitespace-nowrap text-[11px] text-cyan-700">{b.nit}</span> : null}
+                </span>
                 <span
                   role="button"
                   tabIndex={0}
@@ -304,7 +306,7 @@ export function BeneficiarioCombobox(props: Props) {
                   onKeyDown={(e) =>
                     e.key === "Enter" && handleClearOne(b.id, e as unknown as React.MouseEvent)
                   }
-                  className="ml-0.5 text-cyan-500 hover:text-rose-600"
+                  className="-my-1 -mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center text-cyan-600 hover:text-rose-600"
                   aria-label={`Quitar ${b.nombre}`}
                 >
                   <X className="h-3 w-3" />
@@ -312,10 +314,10 @@ export function BeneficiarioCombobox(props: Props) {
               </span>
             ))
           ) : (
-            <span className="flex items-center gap-2 text-slate-800">
+            <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-left text-slate-800">
               <span className="font-medium">{props.value!.nombre}</span>
               {props.value!.nit ? (
-                <span className="text-slate-400 text-xs">{props.value!.nit}</span>
+                <span className="whitespace-nowrap text-xs text-slate-500">{props.value!.nit}</span>
               ) : null}
             </span>
           )}
@@ -330,13 +332,13 @@ export function BeneficiarioCombobox(props: Props) {
               onKeyDown={(e) =>
                 e.key === "Enter" && handleClearAll(e as unknown as React.MouseEvent)
               }
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:text-slate-700"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-500 hover:text-slate-700"
               aria-label="Limpiar selección"
             >
               <X className="h-3.5 w-3.5" />
             </span>
           ) : null}
-          <Search className="h-3.5 w-3.5 text-slate-400" />
+          <Search className="h-3.5 w-3.5 text-slate-500" />
         </div>
       </button>
 
@@ -409,7 +411,7 @@ export function BeneficiarioCombobox(props: Props) {
                 }}
                 placeholder="Nombre o NIT…"
                 aria-label="Buscar beneficiario por nombre o NIT"
-                className="h-8 w-full bg-slate-50 px-2 text-sm outline-none placeholder:text-slate-400"
+                className="h-8 w-full bg-slate-50 px-2 text-sm outline-none placeholder:text-slate-500"
               />
             </div>
           )}
@@ -434,7 +436,7 @@ export function BeneficiarioCombobox(props: Props) {
                   </button>
                 </div>
               ) : filtered.length === 0 && !noExiste ? (
-                <div className="px-3 py-3 text-sm text-slate-400">
+                <div className="px-3 py-3 text-sm text-slate-500">
                   {queryTrimmed ? "Sin resultados." : "No hay beneficiarios registrados."}
                 </div>
               ) : (
@@ -464,7 +466,7 @@ export function BeneficiarioCombobox(props: Props) {
                     )}
                     <span className="font-medium text-slate-800">{b.nombre}</span>
                     {b.nit ? (
-                      <span className="text-xs text-slate-400">{b.nit}</span>
+                      <span className="text-xs text-slate-500">{b.nit}</span>
                     ) : null}
                   </button>
                 ))

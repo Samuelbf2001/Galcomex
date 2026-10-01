@@ -15,6 +15,7 @@ import {
 import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
@@ -93,6 +94,18 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
       BigInt(datos.tasaIva),
     );
   }, [datos, marcadas]);
+
+  // La tabla de «por facturar» muestra una página; las marcadas y los totales
+  // siguen siendo los de TODAS las comisiones. Va antes de los `return null`.
+  const filasPorFacturar = useMemo(() => datos?.filas ?? [], [datos]);
+  const {
+    visibles: filasPagina,
+    pagina,
+    porPagina,
+    total: totalPorFacturar,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(filasPorFacturar, 25, { pagina: "pagComisiones" });
 
   if (!puedeVer) return null;
   if (
@@ -178,7 +191,7 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
     <section className="border border-slate-200 bg-white p-5">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <HandCoins className="h-4 w-4 text-slate-400" aria-hidden="true" />
+          <HandCoins className="h-4 w-4 text-slate-500" aria-hidden="true" />
           <h2 className="text-base font-semibold text-slate-900">Comisiones por contenedor — por facturar</h2>
         </div>
         <button
@@ -257,58 +270,69 @@ export function SeccionComisionesEmpresa({ empresaId }: { empresaId: string }) {
               }
             />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
-                    {puedeFacturar ? (
-                      <th className="w-8 px-2 py-2">
-                        <span className="sr-only">Facturar</span>
-                      </th>
-                    ) : null}
-                    <th className="px-2 py-2">DO</th>
-                    <th className="px-2 py-2">Empresa del DO</th>
-                    <th className="px-2 py-2">Referencia</th>
-                    <th className="px-2 py-2 text-right">Contenedores del DO</th>
-                    <th className="px-2 py-2 text-right">Con comisión</th>
-                    <th className="px-2 py-2 text-right">Subtotal</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {datos.filas.map((f) => (
-                    <tr key={f.comisionId || f.tramiteId}>
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
                       {puedeFacturar ? (
-                        <td className="px-2 py-2">
-                          <input
-                            type="checkbox"
-                            checked={marcadas.has(f.comisionId)}
-                            disabled={facturando}
-                            onChange={() => alternar(f.comisionId)}
-                            aria-label={`Facturar la comisión de ${f.consecutivo}`}
-                            className="h-4 w-4"
-                          />
-                        </td>
+                        <th className="w-8 px-2 py-2">
+                          <span className="sr-only">Facturar</span>
+                        </th>
                       ) : null}
-                      <td className="px-2 py-2 font-medium">
-                        <EnlaceTramite id={f.tramiteId}>{f.consecutivo}</EnlaceTramite>
-                      </td>
-                      <td className="px-2 py-2 text-slate-700">{f.empresaDo}</td>
-                      <td className="px-2 py-2 text-slate-600">{f.referencia ?? "—"}</td>
-                      <td className="px-2 py-2 text-right text-slate-700">{f.numContenedores ?? "—"}</td>
-                      <td className="px-2 py-2 text-right font-semibold text-slate-900">{f.unidades}</td>
-                      <td className="px-2 py-2 text-right font-mono text-slate-900">{formatCOP(f.subtotal)}</td>
+                      <th className="px-2 py-2">DO</th>
+                      <th className="px-2 py-2">Empresa del DO</th>
+                      <th className="px-2 py-2">Referencia</th>
+                      <th className="px-2 py-2 text-right">Contenedores del DO</th>
+                      <th className="px-2 py-2 text-right">Con comisión</th>
+                      <th className="px-2 py-2 text-right">Subtotal</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filasPagina.map((f) => (
+                      <tr key={f.comisionId || f.tramiteId}>
+                        {puedeFacturar ? (
+                          <td className="px-2 py-2">
+                            <input
+                              type="checkbox"
+                              checked={marcadas.has(f.comisionId)}
+                              disabled={facturando}
+                              onChange={() => alternar(f.comisionId)}
+                              aria-label={`Facturar la comisión de ${f.consecutivo}`}
+                              className="h-4 w-4"
+                            />
+                          </td>
+                        ) : null}
+                        <td className="px-2 py-2 font-medium">
+                          <EnlaceTramite id={f.tramiteId}>{f.consecutivo}</EnlaceTramite>
+                        </td>
+                        <td className="px-2 py-2 text-slate-700">{f.empresaDo}</td>
+                        <td className="px-2 py-2 text-slate-600">{f.referencia ?? "—"}</td>
+                        <td className="px-2 py-2 text-right text-slate-700">{f.numContenedores ?? "—"}</td>
+                        <td className="px-2 py-2 text-right font-semibold text-slate-900">{f.unidades}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-900">{formatCOP(f.subtotal)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Paginacion
+                total={totalPorFacturar}
+                pagina={pagina}
+                porPagina={porPagina}
+                onPaginaChange={setPagina}
+                onPorPaginaChange={setPorPagina}
+                etiqueta="comisiones"
+              />
+            </>
           )}
 
           {puedeFacturar && datos.filas.length > 0 && seleccion ? (
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-slate-500">
                 Se crea un servicio «Otros» a nombre de esta empresa; las comisiones marcadas quedan ligadas a él y
-                ya no se pueden cambiar ni cobrar otra vez.
+                ya no se pueden cambiar ni cobrar otra vez. Marcadas: {marcadas.size} de {datos.filas.length}{" "}
+                (en todas las páginas).
               </p>
               <button
                 type="button"

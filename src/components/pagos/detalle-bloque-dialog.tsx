@@ -89,7 +89,7 @@ export function DetalleBloqueDialog({ grupoPagoId, onClose }: DetalleBloqueDialo
   return (
     <ModalShell open onClose={onClose} title="Detalle del pago en bloque" size="lg">
       {loading ? (
-        <div className="flex items-center justify-center py-10 text-slate-400">
+        <div className="flex items-center justify-center py-10 text-slate-500">
           <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
         </div>
       ) : error ? (
@@ -122,19 +122,19 @@ export function DetalleBloqueDialog({ grupoPagoId, onClose }: DetalleBloqueDialo
 
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-4">
             <div>
-              <dt className="text-slate-400">Fecha</dt>
+              <dt className="text-slate-500">Fecha</dt>
               <dd className="font-medium text-slate-800">{formatDate(grupo.fecha) || "—"}</dd>
             </div>
             <div>
-              <dt className="text-slate-400">Valor</dt>
+              <dt className="text-slate-500">Valor</dt>
               <dd className="font-medium text-slate-800">{formatCOP(grupo.valor)}</dd>
             </div>
             <div>
-              <dt className="text-slate-400">Canal</dt>
+              <dt className="text-slate-500">Canal</dt>
               <dd className="font-medium text-slate-800">{CANAL_LABEL[grupo.canalPago] ?? grupo.canalPago}</dd>
             </div>
             <div>
-              <dt className="text-slate-400">Costo de la transferencia</dt>
+              <dt className="text-slate-500">Costo de la transferencia</dt>
               <dd className="font-medium text-slate-800">
                 {formatCOP(grupo.costoBancario)}
                 {BigInt(grupo.costoBancario || "0") > 0n && grupo.costoAsumidoPor
@@ -146,7 +146,7 @@ export function DetalleBloqueDialog({ grupoPagoId, onClose }: DetalleBloqueDialo
 
           {grupo.concepto ? (
             <p className="text-sm text-slate-600">
-              <span className="text-slate-400">Concepto: </span>
+              <span className="text-slate-500">Concepto: </span>
               {grupo.concepto}
             </p>
           ) : null}

@@ -28,6 +28,7 @@ import { SeccionTarifario } from "@/components/clientes/seccion-tarifario";
 import { fetchTarifarios, type TarifarioRow } from "@/components/clientes/tarifas-api";
 import { ModuleState } from "@/components/layout/module-state";
 import { EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { EstadoTramiteBadge } from "@/components/ui/estado-tramite";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, Skeleton, TableSkeleton } from "@/components/ui/skeleton";
@@ -95,24 +96,6 @@ export function seccionesDeFicha(empresa: EmpresaParaSecciones): SeccionesDeFich
     tramitesSoloSiTiene: proveedorPuro,
   };
 }
-
-function estadoBadgeClass(estado: string): string {
-  const n = estado.toLowerCase();
-  if (n.includes("cerr") || n.includes("pagad")) {
-    return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  }
-  if (n.includes("facturado")) {
-    return "border-violet-200 bg-violet-50 text-violet-700";
-  }
-  if (n.includes("facturar")) {
-    return "border-amber-200 bg-amber-50 text-amber-700";
-  }
-  if (n.includes("tramite") || n.includes("puerto") || n.includes("apertura")) {
-    return "border-cyan-200 bg-cyan-50 text-cyan-700";
-  }
-  return "border-slate-200 bg-slate-50 text-slate-700";
-}
-
 
 // ---------------------------------------------------------------------------
 // Sub-componente: modal editar cliente
@@ -318,10 +301,10 @@ function EditClienteModal({ cliente, onClose, onSaved }: EditClienteModalProps) 
 // ---------------------------------------------------------------------------
 
 function SeccionTramites({ tramites, aviso }: { tramites: TramiteResumen[]; aviso?: string }) {
-  const { visibles, pagina, porPagina, total, setPagina, setPorPagina } = usePaginacionLocal(tramites, 25);
+  const { visibles, pagina, porPagina, total, setPagina, setPorPagina } = usePaginacionLocal(tramites, 25, { pagina: "pagTramites" });
 
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+    <div className="overflow-hidden border border-slate-200 bg-white">
       {aviso ? (
         <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
           {aviso}
@@ -359,16 +342,12 @@ function SeccionTramites({ tramites, aviso }: { tramites: TramiteResumen[]; avis
                   </td>
                   <td className="px-4 py-3 text-slate-600">{tramite.ciudad}</td>
                   <td className="px-4 py-3">
-                    <span
-                      className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${estadoBadgeClass(tramite.estado)}`}
-                    >
-                      {tramite.estado}
-                    </span>
+                    <EstadoTramiteBadge estado={tramite.estado} />
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-0">
                     <Link
                       href={`/tramites/${tramite.id}`}
-                      className="inline-flex h-11 w-11 items-center justify-center text-slate-400 transition hover:text-cyan-700"
+                      className="flex h-11 w-11 items-center justify-center text-slate-500 transition hover:text-cyan-700"
                       aria-label={`Ver trámite ${tramite.consecutivo}`}
                       title="Ver trámite"
                     >
@@ -399,82 +378,95 @@ function SeccionTramites({ tramites, aviso }: { tramites: TramiteResumen[]; avis
 // ---------------------------------------------------------------------------
 
 function SeccionAnticipos({ anticipos }: { anticipos: AnticipoResumen[] }) {
+  const { visibles, pagina, porPagina, total, setPagina, setPorPagina } = usePaginacionLocal(anticipos, 25, { pagina: "pagAnticipos" });
+
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+    <div className="overflow-hidden border border-slate-200 bg-white">
       <div className="border-b border-slate-200 px-4 py-3">
         <p className="text-sm font-semibold text-slate-900">Anticipos ({anticipos.length})</p>
       </div>
 
-      <table className="min-w-[580px] w-full border-collapse text-left text-sm">
-        <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-          <tr>
-            <th className="border-b border-slate-200 px-4 py-3">Fecha</th>
-            <th className="border-b border-slate-200 px-4 py-3 text-right">Monto</th>
-            <th className="border-b border-slate-200 px-4 py-3 text-right">Aplicado</th>
-            <th className="border-b border-slate-200 px-4 py-3 text-right">Restante</th>
-            <th className="border-b border-slate-200 px-4 py-3">Canal</th>
-            <th className="border-b border-slate-200 px-4 py-3">Verificado</th>
-          </tr>
-        </thead>
-        <tbody>
-          {anticipos.length === 0 ? (
+      <div className="overflow-x-auto">
+        <table className="min-w-[580px] w-full border-collapse text-left text-sm">
+          <thead className="bg-slate-50 text-xs uppercase text-slate-500">
             <tr>
-              <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                Sin anticipos registrados
-              </td>
+              <th className="border-b border-slate-200 px-4 py-3">Fecha</th>
+              <th className="border-b border-slate-200 px-4 py-3 text-right">Monto</th>
+              <th className="border-b border-slate-200 px-4 py-3 text-right">Aplicado</th>
+              <th className="border-b border-slate-200 px-4 py-3 text-right">Restante</th>
+              <th className="border-b border-slate-200 px-4 py-3">Canal</th>
+              <th className="border-b border-slate-200 px-4 py-3">Verificado</th>
             </tr>
-          ) : (
-            anticipos.map((anticipo) => {
-              let restante = "0";
-              try {
-                const r = BigInt(anticipo.monto) - BigInt(anticipo.montoAplicado);
-                restante = r.toString();
-              } catch { /* noop */ }
+          </thead>
+          <tbody>
+            {visibles.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                  Sin anticipos registrados
+                </td>
+              </tr>
+            ) : (
+              visibles.map((anticipo) => {
+                let restante = "0";
+                try {
+                  const r = BigInt(anticipo.monto) - BigInt(anticipo.montoAplicado);
+                  restante = r.toString();
+                } catch { /* noop */ }
+  
+                return (
+                  <tr
+                    key={anticipo.id}
+                    className="border-b border-slate-100 last:border-b-0"
+                  >
+                    <td className="px-4 py-3 text-slate-600">{formatDate(anticipo.fecha)}</td>
+                    <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
+                      {formatCOP(anticipo.monto)}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-slate-600">
+                      {formatCOP(anticipo.montoAplicado)}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono font-semibold">
+                      <span
+                        className={(() => {
+                          try {
+                            const n = BigInt(restante);
+                            if (n > 0n) return "text-emerald-700";
+                            if (n < 0n) return "text-rose-600";
+                          } catch { /* noop */ }
+                          return "text-slate-500";
+                        })()}
+                      >
+                        {formatCOP(restante)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-600">{anticipo.canalPago}</td>
+                    <td className="px-4 py-3">
+                      {anticipo.verificadoBanco ? (
+                        <CheckCircle2
+                          className="h-4 w-4 text-emerald-600"
+                          aria-label="Verificado en banco"
+                          role="img"
+                        />
+                      ) : (
+                        <span className="text-xs text-slate-500">Pendiente</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
 
-              return (
-                <tr
-                  key={anticipo.id}
-                  className="border-b border-slate-100 last:border-b-0"
-                >
-                  <td className="px-4 py-3 text-slate-600">{formatDate(anticipo.fecha)}</td>
-                  <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
-                    {formatCOP(anticipo.monto)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono text-slate-600">
-                    {formatCOP(anticipo.montoAplicado)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono font-semibold">
-                    <span
-                      className={(() => {
-                        try {
-                          const n = BigInt(restante);
-                          if (n > 0n) return "text-emerald-700";
-                          if (n < 0n) return "text-rose-600";
-                        } catch { /* noop */ }
-                        return "text-slate-500";
-                      })()}
-                    >
-                      {formatCOP(restante)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-slate-600">{anticipo.canalPago}</td>
-                  <td className="px-4 py-3">
-                    {anticipo.verificadoBanco ? (
-                      <CheckCircle2
-                        className="h-4 w-4 text-emerald-600"
-                        aria-label="Verificado en banco"
-                        role="img"
-                      />
-                    ) : (
-                      <span className="text-xs text-slate-400">Pendiente</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
+      <Paginacion
+        total={total}
+        pagina={pagina}
+        porPagina={porPagina}
+        onPaginaChange={setPagina}
+        onPorPaginaChange={setPorPagina}
+        etiqueta="anticipos"
+      />
     </div>
   );
 }
@@ -618,7 +610,7 @@ export function ClienteCabecera({
 
 function SeccionSkeleton({ rows, cols, rowHeight }: { rows: number; cols: number; rowHeight?: number }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+    <div className="overflow-x-auto border border-slate-200 bg-white">
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
         <Skeleton className="h-4 w-32" />
         <Skeleton className="h-9 w-32" />
@@ -658,7 +650,7 @@ function FichaSkeleton() {
       </div>
       {/* Cartera (reemplaza a Facturas), cuenta corriente (3 KPI + tabla), trámites y anticipos. */}
       <SeccionSkeleton rows={3} cols={6} />
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+      <div className="overflow-x-auto border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-4 py-3">
           <Skeleton className="h-4 w-40" />
           <Skeleton className="mt-2 h-3 w-96 max-w-full" />
@@ -794,8 +786,8 @@ export function ClienteDetallePage({
       />
 
       {loadState === "error" ? <ModuleState type="error" title="No se pudo actualizar la ficha" detail="Conservamos la información anterior y tus cambios sin guardar." action={{ label: "Reintentar", onClick: recargar }} /> : null}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-slate-500" role="status">{loadState === "loading" ? "Actualizando ficha…" : "Datos, operación y cuenta de la empresa"}</p>
+      <div className="flex items-center justify-end gap-3">
+        <p className="sr-only" role="status">{loadState === "loading" ? "Actualizando ficha…" : ""}</p>
         <button
           type="button"
           onClick={recargar}

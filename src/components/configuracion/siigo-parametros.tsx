@@ -401,7 +401,7 @@ export function SiigoParametros() {
                             {campo.label}
                           </label>
                           <p className="mt-0.5 text-xs text-slate-500">{campo.ayuda}</p>
-                          <p className="mt-0.5 font-mono text-[10px] uppercase text-slate-400">
+                          <p className="mt-0.5 font-mono text-[11px] uppercase text-slate-500">
                             {campo.clave}
                           </p>
                         </div>
@@ -427,7 +427,7 @@ export function SiigoParametros() {
                             ))}
                           </select>
                           {fecha ? (
-                            <p className="text-[10px] text-slate-400">
+                            <p className="text-[11px] text-slate-500">
                               Última actualización:{" "}
                               {new Date(fecha).toLocaleString("es-CO", {
                                 dateStyle: "short",

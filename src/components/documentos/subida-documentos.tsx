@@ -229,7 +229,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
         }`}
       >
         <Upload
-          className={`h-8 w-8 ${isDragging ? "text-cyan-500" : "text-slate-400"}`}
+          className={`h-8 w-8 ${isDragging ? "text-cyan-500" : "text-slate-500"}`}
           aria-hidden="true"
         />
         <p className="text-sm text-slate-600">
@@ -320,7 +320,7 @@ export function SubidaDocumentos({ tramiteId, onDocumentoSubido }: SubidaDocumen
                     e.stopPropagation();
                     quitarDeCola(archivo.id);
                   }}
-                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center text-slate-400 transition hover:text-slate-700"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center text-slate-500 transition hover:text-slate-700"
                   aria-label={`Quitar ${archivo.file.name} de la cola`}
                 >
                   <X className="h-3.5 w-3.5" aria-hidden="true" />

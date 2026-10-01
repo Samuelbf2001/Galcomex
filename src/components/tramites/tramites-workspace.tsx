@@ -26,7 +26,9 @@ import { KanbanTramites } from "@/components/tramites/kanban-tramites";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { EncabezadoOrdenable } from "@/components/ui/encabezado-ordenable";
+import { EstadoTramiteBadge, etiquetaEstadoTramite } from "@/components/ui/estado-tramite";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { useNumeroUrl, useParametroUrl } from "@/components/ui/estado-url";
 import { Paginacion } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -134,31 +136,11 @@ const ESTADOS_TRAMITE = [
   "CERRADO",
 ] as const;
 
-function normalizeFilter(value: string) {
-  return value.trim().toLocaleLowerCase("es-CO");
-}
-
-function statusClassName(status: string) {
-  const normalized = normalizeFilter(status);
-
-  if (normalized.includes("cerr") || normalized.includes("fact")) {
-    return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  }
-
-  if (normalized.includes("anul") || normalized.includes("cancel") || normalized.includes("error")) {
-    return "border-rose-200 bg-rose-50 text-rose-700";
-  }
-
-  if (normalized.includes("pend") || normalized.includes("revision")) {
-    return "border-amber-200 bg-amber-50 text-amber-700";
-  }
-
-  if (normalized.includes("proceso") || normalized.includes("activo") || normalized.includes("abier")) {
-    return "border-cyan-200 bg-cyan-50 text-cyan-700";
-  }
-
-  return "border-slate-200 bg-slate-50 text-slate-700";
-}
+/**
+ * El botón de `EncabezadoOrdenable` trae `px-4`; las celdas de la tabla usan
+ * `px-3` para que quepan todas las columnas, y el encabezado debe alinear con ellas.
+ */
+const CELDA_ENCABEZADO = "[&>button]:px-3";
 
 type ResultadoTramites = {
   /** Clave de filtros+página+recarga a la que pertenece este resultado. */
@@ -1082,7 +1064,7 @@ export function CreateTramiteDialog({
           ) : null}
 
           {pideEta && clienteSeleccionado?.tipo !== "SOCIO_LM" ? (
-            <label className="space-y-1.5">
+            <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">ETA</span>
               <input
                 name="eta"
@@ -1144,9 +1126,9 @@ export function CreateTramiteDialog({
                       <span className="w-full sm:w-44 shrink-0 text-sm font-medium text-rose-700">{label} *</span>
                       {file ? (
                         <>
-                          <FileText className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                          <FileText className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
                           <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{file.name}</span>
-                          <span className="shrink-0 text-xs text-slate-400">
+                          <span className="shrink-0 text-xs text-slate-500">
                             {file.size < 1024 * 1024
                               ? `${(file.size / 1024).toFixed(0)} KB`
                               : `${(file.size / 1024 / 1024).toFixed(1)} MB`}
@@ -1154,7 +1136,7 @@ export function CreateTramiteDialog({
                           <button
                             type="button"
                             onClick={() => setStagedFiles((prev) => ({ ...prev, [key]: null }))}
-                            className="shrink-0 p-1 text-slate-400 transition hover:text-red-500"
+                            className="shrink-0 p-1 text-slate-500 transition hover:text-red-500"
                             aria-label={`Quitar ${label}`}
                           >
                             <Trash2 className="h-4 w-4" aria-hidden="true" />
@@ -1195,7 +1177,10 @@ export function CreateTramiteDialog({
               tiene documentos de importación: se factura directo. */}
           {esFlujoCorto ? null : (
           <div className="space-y-2">
-            <span className="text-sm font-medium text-slate-700">Documentos adjuntos</span>
+            <div>
+              <span className="block text-sm font-medium text-slate-700">Documentos adjuntos</span>
+              <span className="block text-xs text-slate-500">{ALLOWED_FILE_TYPES_LABEL}</span>
+            </div>
             <ul className="divide-y divide-slate-100 border border-slate-200 bg-white">
               {CATEGORIAS.filter(({ key }) => !documentosRequeridos.includes(key as DocumentoObligatorioCodigo)).map(({ key, label }) => {
                 const file = stagedFiles[key] ?? null;
@@ -1205,9 +1190,9 @@ export function CreateTramiteDialog({
                     <span className="w-full sm:w-44 shrink-0 text-sm text-slate-600">{label}</span>
                     {file ? (
                       <>
-                        <FileText className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                        <FileText className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
                         <span className="min-w-0 flex-1 truncate text-sm text-slate-700">{file.name}</span>
-                        <span className="shrink-0 text-xs text-slate-400">
+                        <span className="shrink-0 text-xs text-slate-500">
                           {file.size < 1024 * 1024
                             ? `${(file.size / 1024).toFixed(0)} KB`
                             : `${(file.size / 1024 / 1024).toFixed(1)} MB`}
@@ -1215,7 +1200,7 @@ export function CreateTramiteDialog({
                         <button
                           type="button"
                           onClick={() => setStagedFiles((prev) => ({ ...prev, [key]: null }))}
-                          className="shrink-0 p-1 text-slate-400 transition hover:text-red-500"
+                          className="shrink-0 p-1 text-slate-500 transition hover:text-red-500"
                           aria-label={`Quitar ${label}`}
                         >
                           <Trash2 className="h-4 w-4" aria-hidden="true" />
@@ -1231,7 +1216,6 @@ export function CreateTramiteDialog({
                           <Upload className="h-3.5 w-3.5" aria-hidden="true" />
                           Seleccionar
                         </button>
-                        <span className="text-xs text-slate-400">{ALLOWED_FILE_TYPES_LABEL}</span>
                       </>
                     )}
                     <input
@@ -1303,17 +1287,24 @@ export function TramitesWorkspace() {
   const router = useRouter();
   const puedeCrearDO = usePermiso(ROLES_CREAR_DO);
   const [createOpen, setCreateOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [estado, setEstado] = useState(allFilter);
-  const [ciudad, setCiudad] = useState(allFilter);
-  const [clienteId, setClienteId] = useState(allFilter);
-  const [tipoCliente, setTipoCliente] = useState(allFilter);
-  const [facturado, setFacturado] = useState<FacturadoFilter>("todos");
-  const [viewMode, setViewMode] = useState<ViewMode>("tabla");
+  // Búsqueda, filtros, vista y página viven en la dirección (?estado=…&pagina=3):
+  // al abrir un DO y volver con «atrás», la lista sigue exactamente donde estaba.
+  const [busquedaUrl, setBusquedaUrl] = useParametroUrl("q", "");
+  const [search, setSearch] = useState(busquedaUrl);
+  const [debouncedSearch, setDebouncedSearch] = useState(busquedaUrl);
+  const [estado, setEstado] = useParametroUrl("estado", allFilter);
+  const [ciudad, setCiudad] = useParametroUrl("ciudad", allFilter);
+  const [clienteId, setClienteId] = useParametroUrl("cliente", allFilter);
+  const [tipoCliente, setTipoCliente] = useParametroUrl("tipo", allFilter);
+  const [facturadoUrl, setFacturadoUrl] = useParametroUrl("facturado", "todos");
+  const facturado = facturadoUrl as FacturadoFilter;
+  const setFacturado = setFacturadoUrl as (valor: FacturadoFilter) => void;
+  const [vistaUrl, setVistaUrl] = useParametroUrl("vista", "tabla");
+  const viewMode: ViewMode = vistaUrl === "kanban" ? "kanban" : "tabla";
+  const setViewMode = setVistaUrl as (valor: ViewMode) => void;
   const [filterClientes, setFilterClientes] = useState<ClienteOption[]>([]);
-  const [pagina, setPagina] = useState(1);
-  const [porPagina, setPorPagina] = useState(25);
+  const [pagina, setPagina] = useNumeroUrl("pagina", 1);
+  const [porPagina, setPorPagina] = useNumeroUrl("porPagina", 25);
   const [reloadSignal, setReloadSignal] = useState(0);
   // Orden de la vista tabla (A8). `null` = orden de siempre (DO más nuevo
   // primero) — el mismo que usa la vista kanban, que nunca lo recibe.
@@ -1338,9 +1329,12 @@ export function TramitesWorkspace() {
 
   // Debounce del texto de busqueda para no re-consultar por cada tecla.
   useEffect(() => {
-    const timeout = setTimeout(() => setDebouncedSearch(search), 300);
+    const timeout = setTimeout(() => {
+      setDebouncedSearch(search);
+      setBusquedaUrl(search.trim());
+    }, 300);
     return () => clearTimeout(timeout);
-  }, [search]);
+  }, [search, setBusquedaUrl]);
 
   // Clientes para el select del filtro (independiente del dialogo de creacion).
   useEffect(() => {
@@ -1371,9 +1365,14 @@ export function TramitesWorkspace() {
   // visible de antes ya no tiene sentido con el nuevo resultado. Reset en
   // async para evitar el warning de react-hooks/set-state-in-effect (mismo
   // idioma que seccion-documentos.tsx).
+  // Solo cuando los filtros CAMBIAN: al montar (volver con «atrás») se
+  // respeta la página guardada en la dirección.
+  const filtrosPrevios = useRef(filters);
   useEffect(() => {
+    if (filtrosPrevios.current === filters) return;
+    filtrosPrevios.current = filters;
     Promise.resolve().then(() => setPagina(1));
-  }, [filters]);
+  }, [filters, setPagina]);
 
   // Vista tabla: página server-side (25/50/100, por defecto 25), con el
   // orden que haya elegido el usuario (A8).
@@ -1407,6 +1406,7 @@ export function TramitesWorkspace() {
   function limpiarFiltros() {
     setSearch("");
     setDebouncedSearch("");
+    setBusquedaUrl("");
     setEstado(allFilter);
     setCiudad(allFilter);
     setClienteId(allFilter);
@@ -1494,32 +1494,47 @@ export function TramitesWorkspace() {
           Filtros operativos
         </div>
         <div className="space-y-3 px-4 py-3">
-          <label className="relative block">
-            <span className="sr-only">Buscar trámite</span>
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-              aria-hidden="true"
-            />
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Buscar por número de DO"
-              className="h-10 w-full border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
-            />
-          </label>
+          <div className="flex items-center gap-3">
+            <label className="relative block min-w-0 flex-1">
+              <span className="sr-only">Buscar trámite</span>
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
+                aria-hidden="true"
+              />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Buscar por número de DO"
+                className="h-10 w-full border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-500 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              />
+            </label>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]">
+            {hasFilters && (vistaActiva.state === "loading" || vistaActiva.rows.length > 0) ? <button
+              type="button"
+              onClick={limpiarFiltros}
+              disabled={!hasFilters}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 whitespace-nowrap border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+              Limpiar filtros
+            </button> : null}
+          </div>
+
+          {/* Cinco filtros: en 1280 px de pantalla (menú lateral incluido) cada
+              uno recibe ~170 px y el texto se cortaba; hasta 1400 px van en
+              tres columnas y solo después en una fila. */}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 min-[1400px]:grid-cols-5">
             <label>
               <span className="sr-only">Filtrar por estado</span>
               <select
                 value={estado}
                 onChange={(event) => setEstado(event.target.value)}
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                className="h-10 w-full min-w-0 border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
               >
                 <option value={allFilter}>Todos los estados</option>
                 {ESTADOS_TRAMITE.map((option) => (
                   <option key={option} value={option}>
-                    {option}
+                    {etiquetaEstadoTramite(option)}
                   </option>
                 ))}
               </select>
@@ -1530,7 +1545,7 @@ export function TramitesWorkspace() {
               <select
                 value={ciudad}
                 onChange={(event) => setCiudad(event.target.value)}
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                className="h-10 w-full min-w-0 border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
               >
                 <option value={allFilter}>Todas las ciudades</option>
                 {CIUDADES_TRAMITE.map((option) => (
@@ -1546,7 +1561,7 @@ export function TramitesWorkspace() {
               <select
                 value={clienteId}
                 onChange={(event) => setClienteId(event.target.value)}
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                className="h-10 w-full min-w-0 border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
               >
                 <option value={allFilter}>Todos los clientes</option>
                 {filterClientes.map((cliente) => (
@@ -1562,7 +1577,7 @@ export function TramitesWorkspace() {
               <select
                 value={tipoCliente}
                 onChange={(event) => setTipoCliente(event.target.value)}
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                className="h-10 w-full min-w-0 border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
               >
                 <option value={allFilter}>Propio y Socio</option>
                 <option value="PROPIO">Galcomex (propio)</option>
@@ -1575,23 +1590,13 @@ export function TramitesWorkspace() {
               <select
                 value={facturado}
                 onChange={(event) => setFacturado(event.target.value as FacturadoFilter)}
-                className="h-10 w-full border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                className="h-10 w-full min-w-0 border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
               >
                 <option value="todos">Facturado: todos</option>
                 <option value="si">Facturados</option>
                 <option value="no">No facturados</option>
               </select>
             </label>
-
-            {hasFilters && (vistaActiva.state === "loading" || vistaActiva.rows.length > 0) ? <button
-              type="button"
-              onClick={limpiarFiltros}
-              disabled={!hasFilters}
-              className="inline-flex h-10 items-center justify-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RotateCcw className="h-4 w-4" aria-hidden="true" />
-              Limpiar filtros
-            </button> : null}
           </div>
         </div>
       </div>
@@ -1648,33 +1653,30 @@ export function TramitesWorkspace() {
             </div>
           ) : (
           <div className="overflow-x-auto" aria-busy={tabla.state === "loading"}>
-            <table className="min-w-[1080px] w-full border-collapse text-left text-sm">
+            <table className="w-full border-collapse text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
-                  <EncabezadoOrdenable campo="consecutivo" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar}>
+                  <EncabezadoOrdenable campo="consecutivo" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar} className={CELDA_ENCABEZADO}>
                     DO
                   </EncabezadoOrdenable>
-                  <EncabezadoOrdenable campo="cliente" ordenActual={orden} onOrdenar={handleOrdenar}>
+                  <EncabezadoOrdenable campo="cliente" ordenActual={orden} onOrdenar={handleOrdenar} className={`min-w-[13rem] ${CELDA_ENCABEZADO}`}>
                     Cliente
                   </EncabezadoOrdenable>
-                  <EncabezadoOrdenable campo="estado" ordenActual={orden} onOrdenar={handleOrdenar}>
+                  <EncabezadoOrdenable campo="estado" ordenActual={orden} onOrdenar={handleOrdenar} className={CELDA_ENCABEZADO}>
                     Estado
                   </EncabezadoOrdenable>
-                  <EncabezadoOrdenable campo="ciudad" ordenActual={orden} onOrdenar={handleOrdenar}>
-                    Ciudad
-                  </EncabezadoOrdenable>
-                  <EncabezadoOrdenable campo="modalidad" ordenActual={orden} onOrdenar={handleOrdenar}>
+                  <EncabezadoOrdenable campo="modalidad" ordenActual={orden} onOrdenar={handleOrdenar} className={CELDA_ENCABEZADO}>
                     Modalidad
                   </EncabezadoOrdenable>
-                  <th className="border-b border-slate-200 px-4 py-3">Referencia</th>
-                  <EncabezadoOrdenable campo="apertura" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar}>
+                  <th className="border-b border-slate-200 px-3 py-3">Referencia</th>
+                  <EncabezadoOrdenable campo="apertura" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar} className={CELDA_ENCABEZADO}>
                     Apertura
                   </EncabezadoOrdenable>
-                  <EncabezadoOrdenable campo="movimiento" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar}>
+                  <EncabezadoOrdenable campo="movimiento" tipo="fecha" ordenActual={orden} onOrdenar={handleOrdenar} className={CELDA_ENCABEZADO}>
                     Movimiento
                   </EncabezadoOrdenable>
-                  <th className="border-b border-slate-200 px-4 py-3">Docs</th>
-                  <EncabezadoOrdenable campo="responsable" ordenActual={orden} onOrdenar={handleOrdenar}>
+                  <th className="border-b border-slate-200 px-3 py-3">Docs</th>
+                  <EncabezadoOrdenable campo="responsable" ordenActual={orden} onOrdenar={handleOrdenar} className={CELDA_ENCABEZADO}>
                     Responsable
                   </EncabezadoOrdenable>
                 </tr>
@@ -1685,58 +1687,54 @@ export function TramitesWorkspace() {
                         key={tramite.id}
                         className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
                       >
-                        <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-950">
+                        <td className="px-3 py-3 font-semibold text-slate-950">
                           <EnlaceTramite id={tramite.id}>{tramite.doNumber}</EnlaceTramite>
-                          {tramite.esHistorico ? (
-                            <span
-                              className="ml-2 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
-                              title={
-                                tramite.tieneCuadre
-                                  ? "Histórico: plata cargada desde Siigo; revisar el cuadre"
-                                  : "Cargado desde el archivo histórico: tiene carpeta y documentos, sin detalle financiero"
-                              }
-                            >
-                              Histórico
-                            </span>
-                          ) : null}
-                          {tramite.cuadrePendiente ? (
-                            <span
-                              className="ml-1 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
-                              title="Falta cerrar el ítem «CUADRE DE PLATA HISTÓRICA» (ADMIN o REVISOR)"
-                            >
-                              Cuadre pendiente
-                            </span>
-                          ) : null}
+                          <div className="mt-1 flex flex-wrap items-center gap-1">
+                            <span className="mr-0.5 text-xs font-normal text-slate-500" title="Ciudad">{tramite.ciudad}</span>
+                              {tramite.esHistorico ? (
+                                <span
+                                  className="inline-flex h-5 items-center whitespace-nowrap border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
+                                  title={
+                                    tramite.tieneCuadre
+                                      ? "Histórico: plata cargada desde Siigo; revisar el cuadre"
+                                      : "Cargado desde el archivo histórico: tiene carpeta y documentos, sin detalle financiero"
+                                  }
+                                >
+                                  Histórico
+                                </span>
+                              ) : null}
+                              {tramite.cuadrePendiente ? (
+                                <span
+                                  className="inline-flex h-5 items-center whitespace-nowrap border border-amber-300 bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-800"
+                                  title="Falta cerrar el ítem «CUADRE DE PLATA HISTÓRICA» (ADMIN o REVISOR)"
+                                >
+                                  Cuadre pendiente
+                                </span>
+                              ) : null}
+                          </div>
                         </td>
-                        <td className="px-4 py-3 text-slate-700">
+                        <td className="min-w-[12rem] px-3 py-3 text-slate-700">
                           <EnlaceCliente id={tramite.clienteId}>{tramite.cliente}</EnlaceCliente>
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3">
-                          <span
-                            className={`inline-flex h-7 items-center border px-2 text-xs font-semibold ${statusClassName(
-                              tramite.estado,
-                            )}`}
-                          >
-                            {tramite.estado}
-                          </span>
+                        <td className="whitespace-nowrap px-3 py-3">
+                          <EstadoTramiteBadge estado={tramite.estado} />
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-slate-700">
-                          {tramite.ciudad}
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-700">
+                          {tramite.modalidad === "Sin modalidad" ? <span className="text-slate-500">—</span> : tramite.modalidad}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-slate-700">
-                          {tramite.modalidad}
+                        <td className="px-3 py-3 text-slate-700">
+                          {tramite.referencia === "-" ? <span className="text-slate-500">—</span> : tramite.referencia}
                         </td>
-                        <td className="px-4 py-3 text-slate-700">{tramite.referencia}</td>
-                        <td className="whitespace-nowrap px-4 py-3 text-slate-700">
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-700">
                           {tramite.fechaApertura}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-slate-700">
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-700">
                           {tramite.ultimoMovimiento}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-slate-700">
-                          {tramite.documentosPendientes ?? "-"}
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-700">
+                          {tramite.documentosPendientes ?? <span className="text-slate-500">—</span>}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-slate-700">
+                        <td className="min-w-[8rem] px-3 py-3 text-slate-700">
                           {tramite.responsable}
                         </td>
                       </tr>

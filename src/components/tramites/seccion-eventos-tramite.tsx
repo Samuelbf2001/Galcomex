@@ -338,7 +338,7 @@ export function SeccionEventosTramite({
     <div className="border border-slate-200 bg-white p-5">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Calculator className="h-4 w-4 text-slate-400" aria-hidden="true" />
+          <Calculator className="h-4 w-4 text-slate-500" aria-hidden="true" />
           <h3 className="text-sm font-semibold text-slate-900">Base de cálculo y eventos</h3>
         </div>
         <button type="button" onClick={recargar} className="inline-flex h-8 items-center gap-1 border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 hover:bg-slate-50" aria-label="Refrescar">
@@ -495,7 +495,7 @@ export function SeccionEventosTramite({
                             <span className="block text-xs text-slate-500">Al marcarlo pide: {ev.documentosRequeridos.join(", ")}</span>
                           ) : null}
                           {marcado ? (
-                            <span className="block text-[11px] text-slate-400">
+                            <span className="block text-[11px] text-slate-500">
                               Marcado por {marcado.marcadoPor}
                             </span>
                           ) : null}
@@ -512,7 +512,7 @@ export function SeccionEventosTramite({
                             className="h-8 w-16 border border-slate-300 px-2 text-sm"
                           />
                         ) : null}
-                        {ocupado ? <Loader2 className="mt-1 h-4 w-4 animate-spin text-slate-400" aria-hidden="true" /> : null}
+                        {ocupado ? <Loader2 className="mt-1 h-4 w-4 animate-spin text-slate-500" aria-hidden="true" /> : null}
                         </div>
                         {marcado && ev.documentosRequeridos.length > 0 ? (
                           <DocumentosDelEvento
@@ -568,8 +568,8 @@ export function SeccionEventosTramite({
                             <tr key={`${l.concepto}-${i}`} className="border-t border-slate-100">
                               <td className="px-3 py-2">
                                 <span className="font-medium text-slate-900">{l.nombrePublico}</span>
-                                {l.origen === "EVENTO" ? <span className="ml-2 border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-semibold uppercase text-cyan-700">evento</span> : null}
-                                {!l.aplicaIva ? <span className="ml-2 text-[10px] uppercase text-slate-400">sin IVA</span> : null}
+                                {l.origen === "EVENTO" ? <span className="ml-2 border border-cyan-200 bg-cyan-50 px-1.5 text-[11px] font-semibold uppercase text-cyan-700">evento</span> : null}
+                                {!l.aplicaIva ? <span className="ml-2 text-[11px] uppercase text-slate-500">sin IVA</span> : null}
                               </td>
                               <td className="px-3 py-2 text-xs text-slate-500">{l.detalle}</td>
                               <td className="px-3 py-2 text-right font-mono text-slate-900">{formatCOP(l.valor)}</td>
@@ -661,7 +661,7 @@ function DocumentosDelEvento({
                 onSubido={onSubido}
               />
             ) : (
-              <span className="text-xs text-slate-400">preparando…</span>
+              <span className="text-xs text-slate-500">preparando…</span>
             )}
           </li>
         ))}

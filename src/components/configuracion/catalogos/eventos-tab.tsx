@@ -88,7 +88,7 @@ function DocumentosRequeridosEditor({
       </div>
 
       {documentos.length === 0 ? (
-        <p className="text-xs text-slate-400">Este evento no exige documentos en el checklist.</p>
+        <p className="text-xs text-slate-500">Este evento no exige documentos en el checklist.</p>
       ) : (
         <ul className="divide-y divide-slate-100 border border-slate-200">
           {documentos.map((doc, index) => (
@@ -99,7 +99,7 @@ function DocumentosRequeridosEditor({
                 onClick={() => mover(index, -1)}
                 disabled={disabled || index === 0}
                 aria-label={`Subir "${doc}"`}
-                className="text-slate-400 hover:text-slate-700 disabled:opacity-30"
+                className="text-slate-500 hover:text-slate-700 disabled:opacity-30"
               >
                 <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
@@ -108,7 +108,7 @@ function DocumentosRequeridosEditor({
                 onClick={() => mover(index, 1)}
                 disabled={disabled || index === documentos.length - 1}
                 aria-label={`Bajar "${doc}"`}
-                className="text-slate-400 hover:text-slate-700 disabled:opacity-30"
+                className="text-slate-500 hover:text-slate-700 disabled:opacity-30"
               >
                 <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
@@ -362,11 +362,11 @@ export function EventosTab() {
             </thead>
             <tbody>
               {eventos.map((e) => (
-                <tr key={e.codigo} className="border-b border-slate-100 align-top">
-                  <td className="px-4 py-3">
+                <tr key={e.codigo} className="border-b border-slate-100 align-middle">
+                  <td className="align-middle px-4 py-3">
                     <BadgeCodigo codigo={e.codigo} />
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="align-middle px-4 py-3">
                     <p className="font-medium text-slate-800">{e.nombre}</p>
                     {e.descripcion ? (
                       <p className="mt-0.5 max-w-xs truncate text-xs text-slate-500" title={e.descripcion}>
@@ -374,18 +374,18 @@ export function EventosTab() {
                       </p>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-600">
+                  <td className="align-middle px-4 py-3 text-xs text-slate-600">
                     {e.documentosRequeridos.length === 0
                       ? "Sin documentos"
                       : `${e.documentosRequeridos.length} documento${e.documentosRequeridos.length === 1 ? "" : "s"}`}
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-600">{e.permiteCantidad ? "Sí" : "No"}</td>
-                  <td className="px-4 py-3 text-right text-xs text-slate-600">{e.tramitesMarcados}</td>
-                  <td className="px-4 py-3">
+                  <td className="align-middle px-4 py-3 text-xs text-slate-600">{e.permiteCantidad ? "Sí" : "No"}</td>
+                  <td className="align-middle px-4 py-3 text-right text-xs text-slate-600">{e.tramitesMarcados}</td>
+                  <td className="align-middle px-4 py-3">
                     <BadgeActivo activo={e.activo} />
                   </td>
                   {puedeEditar ? (
-                    <td className="px-4 py-3 text-right">
+                    <td className="align-middle px-4 py-3 text-right">
                       <button
                         type="button"
                         onClick={() => setEditando(e)}

@@ -565,7 +565,7 @@ type VisorSoporteProps = {
 function VisorSoporte({ linea, facturasByNumFactura, facturasById, downloadUrlByDocId }: VisorSoporteProps) {
   if (!linea) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 bg-slate-50 text-slate-400">
+      <div className="flex flex-col items-center justify-center gap-3 bg-slate-50 text-slate-500">
         <FileText className="h-10 w-10" aria-hidden="true" />
         <p className="text-sm">Selecciona una línea para ver su soporte</p>
       </div>
@@ -626,13 +626,13 @@ function VisorSoporte({ linea, facturasByNumFactura, facturasById, downloadUrlBy
               Ver documento adjunto
             </a>
           ) : (
-            <p className="mt-1 text-xs text-slate-400">
+            <p className="mt-1 text-xs text-slate-500">
               Factura vinculada, sin documento adjunto.
             </p>
           )}
         </div>
       ) : (
-        <div className="flex min-h-32 flex-col items-center justify-center gap-2 border border-dashed border-slate-300 bg-slate-50 text-slate-400">
+        <div className="flex min-h-32 flex-col items-center justify-center gap-2 border border-dashed border-slate-300 bg-slate-50 text-slate-500">
           <FileText className="h-8 w-8" aria-hidden="true" />
           <p className="text-xs text-center leading-relaxed px-4">
             {linea.numSoporte
@@ -1248,7 +1248,7 @@ export function RevisorBorrador({
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
               <EnlaceCliente id={tramite.cliente.id}>{tramite.cliente.nombre}</EnlaceCliente>
-              <span className="ml-1.5 text-slate-400">{tramite.cliente.nit}</span>
+              <span className="ml-1.5 text-slate-500">{tramite.cliente.nit}</span>
             </p>
           </div>
         </div>
@@ -1357,7 +1357,7 @@ export function RevisorBorrador({
                 ))}
               </select>
               {guardandoFormaPago ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-hidden="true" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-500" aria-hidden="true" />
               ) : null}
             </div>
           ) : null}
@@ -1633,7 +1633,7 @@ export function RevisorBorrador({
                   </tr>
                 </thead>
                 <tbody>
-                  {lineas.map((linea) => {
+                  {lineas.map((linea, posicion) => {
                     const isSelected = lineaSeleccionada?.id === linea.id;
                     const rowBg = isSelected
                       ? "bg-cyan-50"
@@ -1649,7 +1649,7 @@ export function RevisorBorrador({
                         onClick={() => seleccionarLinea(linea)}
                         className={`border-b border-slate-100 last:border-b-0 cursor-pointer ${rowBg} transition-colors`}
                       >
-                        <td className="px-3 py-2 text-xs text-slate-400">{linea.orden}</td>
+                        <td className="px-3 py-2 text-xs text-slate-500">{posicion + 1}</td>
                         <td className="px-3 py-2">
                           <span className="font-medium text-slate-900">{linea.concepto}</span>
                         </td>
@@ -1678,7 +1678,7 @@ export function RevisorBorrador({
                                 className={`inline-flex h-7 w-7 items-center justify-center border transition ${
                                   linea.estadoLocal === "aprobada"
                                     ? "border-emerald-400 bg-emerald-100 text-emerald-700"
-                                    : "border-slate-300 text-slate-400 hover:border-emerald-400 hover:text-emerald-600"
+                                    : "border-slate-300 text-slate-500 hover:border-emerald-400 hover:text-emerald-600"
                                 }`}
                               >
                                 <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
@@ -1698,7 +1698,7 @@ export function RevisorBorrador({
                                 className={`inline-flex h-7 w-7 items-center justify-center border transition ${
                                   linea.estadoLocal === "observada"
                                     ? "border-amber-400 bg-amber-100 text-amber-700"
-                                    : "border-slate-300 text-slate-400 hover:border-amber-400 hover:text-amber-600"
+                                    : "border-slate-300 text-slate-500 hover:border-amber-400 hover:text-amber-600"
                                 }`}
                               >
                                 <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1894,12 +1894,12 @@ export function RevisorBorrador({
                     : ""}
                   )
                 </span>
-                <span className="text-slate-400">{validacionesCerrado ? "+" : "−"}</span>
+                <span className="text-slate-500">{validacionesCerrado ? "+" : "−"}</span>
               </button>
 
               {!validacionesCerrado ? (
                 cargandoValidaciones ? (
-                  <p className="text-xs text-slate-400">Cargando validaciones...</p>
+                  <p className="text-xs text-slate-500">Cargando validaciones...</p>
                 ) : (
                   <div className="space-y-2">
                     {validaciones.proveedores.map((v) => {
@@ -1982,7 +1982,7 @@ export function RevisorBorrador({
                             <span className="min-w-0 truncate text-slate-700">
                               {p.concepto}
                               {p.numSoporte ? (
-                                <span className="ml-1 font-mono text-slate-400">
+                                <span className="ml-1 font-mono text-slate-500">
                                   ({p.numSoporte})
                                 </span>
                               ) : null}
@@ -2009,12 +2009,12 @@ export function RevisorBorrador({
                 className="mb-3 flex w-full items-center justify-between text-xs font-medium uppercase tracking-wide text-slate-500 hover:text-slate-700"
               >
                 <span>Cruce pagos vs factura ({cruce.length})</span>
-                <span className="text-slate-400">{cruceCerrado ? "+" : "−"}</span>
+                <span className="text-slate-500">{cruceCerrado ? "+" : "−"}</span>
               </button>
 
               {!cruceCerrado ? (
                 cargandoCruce ? (
-                  <p className="text-xs text-slate-400">Cargando cruce...</p>
+                  <p className="text-xs text-slate-500">Cargando cruce...</p>
                 ) : (
                   <div className="space-y-2">
                     {cruce.map((fp) => {

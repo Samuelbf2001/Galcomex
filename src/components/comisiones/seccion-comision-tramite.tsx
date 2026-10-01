@@ -123,7 +123,7 @@ export function SeccionComisionTramite({
     <div className="border border-slate-200 bg-white p-5">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <HandCoins className="h-4 w-4 text-slate-400" aria-hidden="true" />
+          <HandCoins className="h-4 w-4 text-slate-500" aria-hidden="true" />
           <h3 className="text-sm font-semibold text-slate-900">Comisión por contenedor</h3>
         </div>
         <button
@@ -187,7 +187,7 @@ export function SeccionComisionTramite({
                       type="button"
                       disabled={guardando}
                       onClick={() => void quitar(c)}
-                      className="p-1 text-slate-400 transition hover:text-red-600 disabled:opacity-50"
+                      className="p-1 text-slate-500 transition hover:text-red-600 disabled:opacity-50"
                       aria-label={`Quitar comisión de ${c.nombre}`}
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />

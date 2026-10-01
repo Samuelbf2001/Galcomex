@@ -444,7 +444,7 @@ export function ConciliarLoteModal({
         <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <label className="flex flex-col gap-1 text-xs">
-              <span className="text-[10px] font-semibold uppercase text-slate-500">
+              <span className="text-[11px] font-semibold uppercase text-slate-500">
                 Fecha del pago
               </span>
               <input
@@ -457,7 +457,7 @@ export function ConciliarLoteModal({
             </label>
 
             <label className="flex flex-col gap-1 text-xs">
-              <span className="text-[10px] font-semibold uppercase text-slate-500">
+              <span className="text-[11px] font-semibold uppercase text-slate-500">
                 Canal / recaudo
               </span>
               <select
@@ -491,7 +491,7 @@ export function ConciliarLoteModal({
             </label>
 
             <div className="flex flex-col gap-1 text-xs">
-              <span className="text-[10px] font-semibold uppercase text-slate-500">
+              <span className="text-[11px] font-semibold uppercase text-slate-500">
                 Comprobante (opcional)
               </span>
               <label className="inline-flex h-8 cursor-pointer items-center gap-1 border border-slate-300 bg-white px-2 text-xs text-slate-700 hover:bg-slate-50">
@@ -508,7 +508,7 @@ export function ConciliarLoteModal({
                 />
               </label>
               {archivo ? (
-                <div className="text-[10px]">
+                <div className="text-[11px]">
                   {uploadState === "uploading" ? (
                     <span className="inline-flex items-center gap-1 text-slate-600">
                       <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -543,7 +543,7 @@ export function ConciliarLoteModal({
         {/* Tabla de trámites (read-only) */}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] border-collapse text-left text-xs">
-            <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase text-slate-500">
+            <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
               <tr>
                 <th className="border-b border-slate-200 px-3 py-2">Trámite</th>
                 <th className="border-b border-slate-200 px-3 py-2 text-right">
@@ -574,7 +574,7 @@ export function ConciliarLoteModal({
                     ? "text-violet-700"
                     : fila.saldoNeto < 0n
                       ? "text-rose-700"
-                      : "text-slate-400";
+                      : "text-slate-500";
 
                 return (
                   <tr
@@ -601,7 +601,7 @@ export function ConciliarLoteModal({
 
                     <td className="px-3 py-2">
                       <span
-                        className={`inline-flex h-5 items-center border px-1.5 text-[10px] font-semibold ${tipoChipClass}`}
+                        className={`inline-flex h-5 items-center border px-1.5 text-[11px] font-semibold ${tipoChipClass}`}
                       >
                         {fila.tipo ?? "SIN SALDO"}
                       </span>
@@ -615,13 +615,13 @@ export function ConciliarLoteModal({
                       <td className="px-3 py-2">
                         {fila.resultado ? (
                           fila.resultado.ok ? (
-                            <span className="inline-flex items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                            <span className="inline-flex items-center gap-1 border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
                               OK · saldo {formatCOP(fila.resultado.saldoNeto)}
                             </span>
                           ) : (
                             <span
                               title={fila.resultado.error}
-                              className="inline-flex items-center gap-1 border border-rose-300 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700"
+                              className="inline-flex items-center gap-1 border border-rose-300 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700"
                             >
                               {fila.resultado.status}:{" "}
                               {fila.resultado.error.slice(0, 60)}
@@ -629,11 +629,11 @@ export function ConciliarLoteModal({
                             </span>
                           )
                         ) : fila.tipo === null ? (
-                          <span className="text-[10px] text-slate-400">
+                          <span className="text-[11px] text-slate-500">
                             omitido
                           </span>
                         ) : (
-                          <span className="text-[10px] text-slate-400">—</span>
+                          <span className="text-[11px] text-slate-500">—</span>
                         )}
                       </td>
                     ) : null}

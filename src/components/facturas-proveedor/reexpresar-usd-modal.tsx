@@ -188,7 +188,7 @@ export function ReexpresarUsdModal({ factura, onClose, onReexpresada }: Reexpres
             placeholder="Por qué se re-expresa esta factura…"
             className="w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan-600"
           />
-          <span className="text-[11px] text-slate-400">
+          <span className="text-[11px] text-slate-500">
             {motivo.trim().length}/{MOTIVO_MIN} caracteres mínimos
           </span>
         </label>

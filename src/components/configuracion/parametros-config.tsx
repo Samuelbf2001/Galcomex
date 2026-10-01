@@ -115,74 +115,53 @@ export function ParametrosConfig({
               <th className="border-b border-slate-200 px-4 py-3">Clave</th>
               <th className="border-b border-slate-200 px-4 py-3">Valor</th>
               <th className="border-b border-slate-200 px-4 py-3">Descripción</th>
-              {esAdmin ? (
-                <th className="border-b border-slate-200 px-4 py-3 text-right">
-                  Acción
-                </th>
-              ) : null}
             </tr>
           </thead>
           <tbody>
             {parametros.map((parametro) => (
-              <tr key={parametro.id} className="border-b border-slate-100 align-top">
-                <td className="px-4 py-3 font-mono text-xs">{parametro.clave}</td>
-                <td className="px-4 py-3">
+              <tr key={parametro.id} className="border-b border-slate-100 align-middle">
+                <td className="px-4 py-3 align-middle font-mono text-xs">{parametro.clave}</td>
+                <td className="px-4 py-3 align-middle">
                   {esAdmin && editando === parametro.clave ? (
                     <div className="flex flex-col gap-1">
-                      {esParametroMonedaCOP(parametro.clave) ? (
-                        <CampoMoneda
-                          value={valor}
-                          onValueChange={setValor}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void guardar(parametro.clave);
-                            if (e.key === "Escape") cerrar();
-                          }}
-                          permitirNegativo={permiteNegativoParametro(parametro.clave)}
-                          autoFocus
-                          disabled={guardando}
-                          aria-label={`Valor de ${parametro.clave}`}
-                          aria-invalid={error ? true : undefined}
-                          aria-describedby={error ? errorId : undefined}
-                          wrapperClassName="w-48"
-                          className={`h-8 w-full border px-2 text-sm outline-none focus:border-cyan-600 ${
-                            error ? "border-rose-500" : "border-slate-300"
-                          }`}
-                        />
-                      ) : (
-                        <input
-                          value={valor}
-                          onChange={(e) => setValor(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void guardar(parametro.clave);
-                            if (e.key === "Escape") cerrar();
-                          }}
-                          autoFocus
-                          disabled={guardando}
-                          aria-label={`Valor de ${parametro.clave}`}
-                          aria-invalid={error ? true : undefined}
-                          aria-describedby={error ? errorId : undefined}
-                          className={`h-8 w-48 border px-2 text-sm outline-none focus:border-cyan-600 ${
-                            error ? "border-rose-500" : "border-slate-300"
-                          }`}
-                        />
-                      )}
-                      {error ? (
-                        <span id={errorId} role="alert" className="text-xs text-red-600">
-                          {error}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : (
-                    esAdmin ? <button type="button" disabled={editando !== null} onClick={() => abrir(parametro)} aria-label={`Editar valor de ${parametro.clave}`} className="min-h-10 rounded border border-dashed border-slate-300 px-3 text-left font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60">{parametro.valor}</button> : parametro.valor
-                  )}
-                </td>
-                <td className="px-4 py-3 text-slate-600">
-                  {parametro.descripcion}
-                </td>
-                {esAdmin ? (
-                  <td className="px-4 py-3 text-right">
-                    {editando === parametro.clave ? (
-                      <div className="flex justify-end gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {esParametroMonedaCOP(parametro.clave) ? (
+                          <CampoMoneda
+                            value={valor}
+                            onValueChange={setValor}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void guardar(parametro.clave);
+                              if (e.key === "Escape") cerrar();
+                            }}
+                            permitirNegativo={permiteNegativoParametro(parametro.clave)}
+                            autoFocus
+                            disabled={guardando}
+                            aria-label={`Valor de ${parametro.clave}`}
+                            aria-invalid={error ? true : undefined}
+                            aria-describedby={error ? errorId : undefined}
+                            wrapperClassName="w-48"
+                            className={`h-8 w-full border px-2 text-sm outline-none focus:border-cyan-600 ${
+                              error ? "border-rose-500" : "border-slate-300"
+                            }`}
+                          />
+                        ) : (
+                          <input
+                            value={valor}
+                            onChange={(e) => setValor(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void guardar(parametro.clave);
+                              if (e.key === "Escape") cerrar();
+                            }}
+                            autoFocus
+                            disabled={guardando}
+                            aria-label={`Valor de ${parametro.clave}`}
+                            aria-invalid={error ? true : undefined}
+                            aria-describedby={error ? errorId : undefined}
+                            className={`h-8 w-48 border px-2 text-sm outline-none focus:border-cyan-600 ${
+                              error ? "border-rose-500" : "border-slate-300"
+                            }`}
+                          />
+                        )}
                         <button
                           type="button"
                           onClick={cerrar}
@@ -203,9 +182,35 @@ export function ParametrosConfig({
                           {guardando ? "Guardando…" : "Guardar"}
                         </button>
                       </div>
-                    ) : null}
-                  </td>
-                ) : null}
+                      {error ? (
+                        <span id={errorId} role="alert" className="text-xs text-red-600">
+                          {error}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : esAdmin ? (
+                    <button
+                      type="button"
+                      disabled={editando !== null}
+                      onClick={() => abrir(parametro)}
+                      aria-label={`Editar valor de ${parametro.clave}`}
+                      className="min-h-10 min-w-[9rem] border border-dashed border-slate-300 px-3 text-left font-medium text-cyan-800 hover:border-cyan-500 hover:bg-cyan-50 disabled:opacity-60"
+                    >
+                      {parametro.valor.trim() === "" ? (
+                        <span className="whitespace-nowrap font-normal italic text-slate-500">Sin valor · clic para escribir</span>
+                      ) : (
+                        parametro.valor
+                      )}
+                    </button>
+                  ) : parametro.valor.trim() === "" ? (
+                    <span className="italic text-slate-500">Sin valor</span>
+                  ) : (
+                    parametro.valor
+                  )}
+                </td>
+                <td className="px-4 py-3 align-middle text-slate-600">
+                  {parametro.descripcion}
+                </td>
               </tr>
             ))}
           </tbody>

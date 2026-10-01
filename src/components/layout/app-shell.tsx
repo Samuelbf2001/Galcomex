@@ -7,6 +7,7 @@ import { useState, type ReactNode } from "react";
 
 import { FranjaRolSimulado } from "@/components/layout/franja-rol-simulado";
 import { LogoutButton } from "@/components/layout/logout-button";
+import { useMenuContraido } from "@/components/layout/menu-contraido";
 import { SelectorRolSimulado } from "@/components/layout/selector-rol-simulado";
 import { Sidebar } from "@/components/layout/sidebar";
 import type { Rol } from "@/lib/auth/auth";
@@ -32,6 +33,7 @@ type AppShellProps = {
  */
 export function AppShell({ rol, rolReal, rolSimulado, nombre, email, children }: AppShellProps) {
   const [menuAbierto, setMenuAbierto] = useState(false);
+  const [menuContraido, alternarMenu] = useMenuContraido();
   const pathname = usePathname();
   const modulo = rutaDashboardDe(pathname);
 
@@ -40,7 +42,7 @@ export function AppShell({ rol, rolReal, rolSimulado, nombre, email, children }:
       <a href="#contenido-principal" className="sr-only z-50 rounded-lg bg-white p-3 text-slate-900 focus:not-sr-only focus:fixed focus:left-4 focus:top-4">Saltar al contenido</a>
       {rolSimulado ? <FranjaRolSimulado rolSimulado={rolSimulado} /> : null}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-      <Sidebar rol={rol} abierto={menuAbierto} onCerrar={() => setMenuAbierto(false)} />
+      <Sidebar rol={rol} abierto={menuAbierto} onCerrar={() => setMenuAbierto(false)} contraido={menuContraido} onAlternarContraido={alternarMenu} />
       <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">

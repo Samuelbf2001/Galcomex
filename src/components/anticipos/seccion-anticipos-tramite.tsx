@@ -678,12 +678,12 @@ function FilaAplicacion({ ap, puedeVerificar, onVerificado }: FilaAplicacionProp
       <td className="px-4 py-3">
         <div className="flex flex-wrap items-center gap-1.5">
           {verificado ? (
-            <span className="inline-flex items-center gap-1 border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+            <span className="inline-flex items-center gap-1 border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700">
               <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
               Verificado
             </span>
           ) : (
-            <span className="inline-flex items-center border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+            <span className="inline-flex items-center border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700">
               Pendiente de verificar
             </span>
           )}
@@ -692,7 +692,7 @@ function FilaAplicacion({ ap, puedeVerificar, onVerificado }: FilaAplicacionProp
               type="button"
               onClick={() => void handleVerificar()}
               disabled={verificando}
-              className="inline-flex h-6 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-[10px] font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
+              className="inline-flex h-6 items-center gap-1 border border-cyan-300 bg-cyan-50 px-2 text-[11px] font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
               title="Marcar como verificado"
               aria-label={`Marcar como verificado el anticipo del ${formatDate(ap.anticipo.fecha)}`}
             >
@@ -704,7 +704,7 @@ function FilaAplicacion({ ap, puedeVerificar, onVerificado }: FilaAplicacionProp
           ) : null}
         </div>
         {verificarError ? (
-          <p className="mt-1 text-[10px] font-medium text-rose-600">{verificarError}</p>
+          <p className="mt-1 text-[11px] font-medium text-rose-600">{verificarError}</p>
         ) : null}
       </td>
       <td className="px-4 py-3">
@@ -713,7 +713,7 @@ function FilaAplicacion({ ap, puedeVerificar, onVerificado }: FilaAplicacionProp
             type="button"
             onClick={() => void handleDescargar()}
             disabled={descargando}
-            className="inline-flex h-6 items-center gap-1 border border-slate-300 bg-white px-2 text-[10px] font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            className="inline-flex h-6 items-center gap-1 border border-slate-300 bg-white px-2 text-[11px] font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
             title="Ver comprobante"
             aria-label={`Ver comprobante del anticipo del ${formatDate(ap.anticipo.fecha)}`}
           >
@@ -725,10 +725,10 @@ function FilaAplicacion({ ap, puedeVerificar, onVerificado }: FilaAplicacionProp
             Ver
           </button>
         ) : (
-          <span className="text-xs text-slate-400">—</span>
+          <span className="text-xs text-slate-500">—</span>
         )}
         {descargaError ? (
-          <p className="mt-1 text-[10px] font-medium text-rose-600">{descargaError}</p>
+          <p className="mt-1 text-[11px] font-medium text-rose-600">{descargaError}</p>
         ) : null}
       </td>
     </tr>

@@ -388,7 +388,7 @@ function TarjetaDocumento({
             type="button"
             onClick={handleEliminar}
             disabled={eliminando}
-            className="inline-flex h-8 w-8 items-center justify-center border border-slate-200 text-slate-400 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
+            className="inline-flex h-8 w-8 items-center justify-center border border-slate-200 text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
             aria-label={`Eliminar ${doc.nombreArchivo}`}
             title="Eliminar"
           >

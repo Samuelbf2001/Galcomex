@@ -25,6 +25,7 @@ import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useRol } from "@/lib/auth/rol-context";
@@ -115,7 +116,7 @@ function saldoChip(aFavor: string, aCargo: string): React.ReactNode {
       <span className="text-rose-600 font-medium">-{formatCOP(aCargo)}</span>
     );
   }
-  return <span className="text-slate-400">—</span>;
+  return <span className="text-slate-500">—</span>;
 }
 
 /** Chip de estado del ledger para un destino */
@@ -598,7 +599,7 @@ function PagosList({
 
   if (pagosFiltrados.length === 0) {
     return (
-      <p className="px-4 py-2 text-xs text-slate-400">Sin pagos registrados.</p>
+      <p className="px-4 py-2 text-xs text-slate-500">Sin pagos registrados.</p>
     );
   }
 
@@ -727,12 +728,12 @@ function PagosList({
               </td>
               <td className="px-4 py-1.5 whitespace-nowrap">
                 {p.estado === "VERIFICADO" && (
-                  <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                  <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700">
                     VERIFICADO
                   </span>
                 )}
                 {p.estado === "BORRADOR" && (
-                  <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                  <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-semibold text-slate-500">
                     BORRADOR
                   </span>
                 )}
@@ -751,7 +752,7 @@ function PagosList({
                   </button>
                 )}
                 {p.estado === "REALIZADO" && !puedeVerificar && (
-                  <span className="inline-flex items-center border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                  <span className="inline-flex items-center border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-500">
                     REALIZADO
                   </span>
                 )}
@@ -869,7 +870,7 @@ function FilaFactura({
           )}
           {factura.historicaSinCobros ? (
             <span
-              className="ml-2 inline-flex h-5 items-center border border-amber-300 bg-amber-50 px-1.5 font-sans text-[11px] font-semibold text-amber-800"
+              className="mt-1 flex h-5 w-fit items-center border border-amber-300 bg-amber-50 px-1.5 font-sans text-[11px] font-semibold text-amber-800"
               title="Cartera histórica 2026: saldo de Siigo sin los cobros cargados. No gestionar cobros ni devolver o cruzar hasta cargar los cobros."
             >
               Histórico · cobros sin cargar
@@ -931,7 +932,7 @@ function FilaFactura({
 
         {/* Acciones */}
         <td className="px-4 py-3 text-right whitespace-nowrap">
-          <div className="flex items-center justify-end gap-1.5">
+          <div className="flex flex-nowrap items-center justify-end gap-1.5">
             {puedeRegistrarPago ? (
               <button
                 type="button"
@@ -1193,6 +1194,10 @@ export function CarteraWorkspace() {
       if (d) params.set("desde", d);
       if (h) params.set("hasta", h);
       if (linea) params.set("linea", linea);
+      // La dirección se rearma de cero (cambió un filtro → página 1), pero el
+      // tamaño de página elegido se conserva.
+      const tamPagina = new URLSearchParams(window.location.search).get("paginaTam");
+      if (tamPagina) params.set("paginaTam", tamPagina);
       const next =
         params.toString() ? `?${params.toString()}` : window.location.pathname;
       router.replace(next, { scroll: false });
@@ -1245,36 +1250,79 @@ export function CarteraWorkspace() {
     return () => controller.abort();
   }, [clienteId, soloPendientes, desde, hasta, lineaServicio, reloadKey]);
 
+  // ── Facturas de la lista (filtradas y paginadas) ─────────────────────────
+
+  const facturas = useMemo<FacturaRow[]>(
+    () => cartera?.facturas ?? [],
+    [cartera],
+  );
+
+  // Filtro de rango de fechas: el servidor ya filtra por desde/hasta (feature
+  // VPS); este pase client-side se mantiene como consistencia visual (feature
+  // ola 2) y como respaldo si el payload trae facturas fuera de rango.
+  // Las tarjetas de cruce (CruceTarjetas) siguen mostrando el saldo oficial
+  // completo del cliente, sin acotar por fecha, para no sugerir que el saldo
+  // real cambia según el rango elegido; solo la tabla y su total "real a LM"
+  // se acotan al rango visible.
+  const facturasVisibles = useMemo(
+    () =>
+      facturas.filter((f) => {
+        const fechaStr = f.fecha.slice(0, 10);
+        if (desde && fechaStr < desde) return false;
+        if (hasta && fechaStr > hasta) return false;
+        return true;
+      }),
+    [facturas, desde, hasta],
+  );
+
+  // La tabla muestra una página; el total real, los saldos y la selección
+  // (casilla «seleccionar todas») siguen trabajando con TODAS las facturas.
+  const {
+    visibles: facturasPagina,
+    pagina,
+    porPagina,
+    total: totalFacturas,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(facturasVisibles, 25, { pagina: "pagina" });
+
   // ── Handlers ────────────────────────────────────────────────────────────
 
+  // Cambiar cualquier filtro vuelve a la página 1 de la lista de facturas.
   function handleClienteChange(id: string) {
     setClienteId(id);
+    setPagina(1);
     syncUrl(id, soloPendientes, desde, hasta, lineaServicio);
   }
 
   function handlePendientesChange(val: boolean) {
     setSoloPendientes(val);
+    setPagina(1);
     syncUrl(clienteId, val, desde, hasta, lineaServicio);
   }
 
   function handleDesdeChange(val: string) {
     setDesde(val);
+    setPagina(1);
     syncUrl(clienteId, soloPendientes, val, hasta, lineaServicio);
   }
 
   function handleHastaChange(val: string) {
     setHasta(val);
+    setPagina(1);
     syncUrl(clienteId, soloPendientes, desde, val, lineaServicio);
   }
 
   function handleLimpiarFechas() {
     setDesde("");
     setHasta("");
+    setPagina(1);
     syncUrl(clienteId, soloPendientes, "", "", lineaServicio);
   }
 
   function handleLineaChange(val: string) {
     setLineaServicio(val);
+    setPagina(1);
     syncUrl(clienteId, soloPendientes, desde, hasta, val);
   }
 
@@ -1331,11 +1379,6 @@ export function CarteraWorkspace() {
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
-
-  const facturas = useMemo<FacturaRow[]>(
-    () => cartera?.facturas ?? [],
-    [cartera],
-  );
 
   // ── Selección batch: helpers derivados ──────────────────────────────────
   const isElegible = useCallback(
@@ -1400,19 +1443,6 @@ export function CarteraWorkspace() {
   }, [facturas]);
   const nombreCliente = clientes.find((c) => c.id === clienteId)?.nombre ?? "";
 
-  // Filtro de rango de fechas: el servidor ya filtra por desde/hasta (feature
-  // VPS); este pase client-side se mantiene como consistencia visual (feature
-  // ola 2) y como respaldo si el payload trae facturas fuera de rango.
-  // Las tarjetas de cruce (CruceTarjetas) siguen mostrando el saldo oficial
-  // completo del cliente, sin acotar por fecha, para no sugerir que el saldo
-  // real cambia según el rango elegido; solo la tabla y su total "real a LM"
-  // se acotan al rango visible.
-  const facturasVisibles = facturas.filter((f) => {
-    const fechaStr = f.fecha.slice(0, 10);
-    if (desde && fechaStr < desde) return false;
-    if (hasta && fechaStr > hasta) return false;
-    return true;
-  });
   const hayFiltroFecha = Boolean(desde || hasta);
 
   return (
@@ -1461,167 +1491,175 @@ export function CarteraWorkspace() {
         </div>
 
         {/* Selector de cliente + filtros */}
-        <div className="flex flex-wrap items-end gap-3 border border-slate-200 bg-white px-4 py-3">
-          {/* Selector cliente */}
-          <label className="flex flex-col gap-1 min-w-64">
-            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
-              Cliente
-            </span>
-            {clientesError ? (
-              <p className="text-xs text-rose-600">{clientesError}</p>
-            ) : (
+        <div className="space-y-3 border border-slate-200 bg-white px-4 py-3">
+          {/* Fila 1: cliente, qué facturas ver y línea de servicio */}
+          <div className="flex flex-wrap items-end gap-3">
+            {/* Selector cliente */}
+            <label className="flex min-w-64 max-w-xl flex-1 flex-col gap-1">
+              <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+                Cliente
+              </span>
+              {clientesError ? (
+                <p className="text-xs text-rose-600">{clientesError}</p>
+              ) : (
+                <select
+                  value={clienteId}
+                  onChange={(e) => handleClienteChange(e.target.value)}
+                  disabled={clientesLoading}
+                  className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600 disabled:opacity-60"
+                >
+                  <option value="">
+                    {clientesLoading ? "Cargando…" : "Seleccionar cliente"}
+                  </option>
+                  {clientes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre} — {c.nit}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
+
+            {/* Filtro pendientes */}
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+                Facturas
+              </span>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handlePendientesChange(false)}
+                  className={`h-10 border px-3 text-xs font-semibold transition ${
+                    !soloPendientes
+                      ? "border-slate-950 bg-slate-950 text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  Todas
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePendientesChange(true)}
+                  className={`h-10 border px-3 text-xs font-semibold transition ${
+                    soloPendientes
+                      ? "border-slate-950 bg-slate-950 text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  Solo pendientes
+                </button>
+              </div>
+            </div>
+
+            {/* Línea de servicio: la cartera de trámites y la de clasificaciones van separadas */}
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+                Línea
+              </span>
               <select
-                value={clienteId}
-                onChange={(e) => handleClienteChange(e.target.value)}
-                disabled={clientesLoading}
-                className="h-10 w-80 max-w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600 disabled:opacity-60"
+                value={lineaServicio}
+                onChange={(e) => handleLineaChange(e.target.value)}
+                aria-label="Línea de servicio"
+                className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
               >
-                <option value="">
-                  {clientesLoading ? "Cargando…" : "Seleccionar cliente"}
-                </option>
-                {clientes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.nombre} — {c.nit}
+                {LINEAS_SERVICIO.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {l.label}
                   </option>
                 ))}
               </select>
-            )}
-          </label>
-
-          {/* Filtro pendientes */}
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
-              Facturas
-            </span>
-            <div className="flex gap-1.5">
-              <button
-                type="button"
-                onClick={() => handlePendientesChange(false)}
-                className={`h-10 border px-3 text-xs font-semibold transition ${
-                  !soloPendientes
-                    ? "border-slate-950 bg-slate-950 text-white"
-                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                Todas
-              </button>
-              <button
-                type="button"
-                onClick={() => handlePendientesChange(true)}
-                className={`h-10 border px-3 text-xs font-semibold transition ${
-                  soloPendientes
-                    ? "border-amber-600 bg-amber-600 text-white"
-                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                Solo pendientes
-              </button>
             </div>
           </div>
 
-          {/* Línea de servicio: la cartera de trámites y la de clasificaciones van separadas */}
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
-              Línea
-            </span>
-            <select
-              value={lineaServicio}
-              onChange={(e) => handleLineaChange(e.target.value)}
-              aria-label="Línea de servicio"
-              className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
-            >
-              {LINEAS_SERVICIO.map((l) => (
-                <option key={l.value} value={l.value}>
-                  {l.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Fila 2: periodo, vista y actualizar */}
+          <div className="flex flex-wrap items-end gap-3">
+            {/* Filtro por periodo de fechas (fecha de emisión de la factura): Desde y Hasta van juntos */}
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+                  Desde
+                </span>
+                <input
+                  type="date"
+                  value={desde}
+                  max={hasta || undefined}
+                  onChange={(e) => handleDesdeChange(e.target.value)}
+                  aria-label="Desde (fecha de emisión de la factura)"
+                  className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+                  Hasta
+                </span>
+                <input
+                  type="date"
+                  value={hasta}
+                  min={desde || undefined}
+                  onChange={(e) => handleHastaChange(e.target.value)}
+                  aria-label="Hasta (fecha de emisión de la factura)"
+                  className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
+                />
+              </div>
+              {(desde || hasta) && (
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-transparent uppercase tracking-wide select-none">
+                    Limpiar
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleLimpiarFechas}
+                    className="h-10 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                  >
+                    Limpiar fechas
+                  </button>
+                </div>
+              )}
+            </div>
 
-          {/* Filtro por periodo de fechas (fecha de emisión de la factura) */}
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
-              Desde
-            </span>
-            <input
-              type="date"
-              value={desde}
-              max={hasta || undefined}
-              onChange={(e) => handleDesdeChange(e.target.value)}
-              aria-label="Desde (fecha de emisión de la factura)"
-              className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
-              Hasta
-            </span>
-            <input
-              type="date"
-              value={hasta}
-              min={desde || undefined}
-              onChange={(e) => handleHastaChange(e.target.value)}
-              aria-label="Hasta (fecha de emisión de la factura)"
-              className="h-10 border border-slate-300 bg-white px-2 text-xs text-slate-700"
-            />
-          </div>
-          {(desde || hasta) && (
+            {/* Vista cliente / LM */}
             <div className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-transparent uppercase tracking-wide select-none">
-                Limpiar
+              <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
+                Vista
               </span>
-              <button
-                type="button"
-                onClick={handleLimpiarFechas}
-                className="h-10 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                Limpiar fechas
-              </button>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleVistaChange("cliente")}
+                  className={`h-10 border px-3 text-xs font-semibold transition ${
+                    vista === "cliente"
+                      ? "border-slate-950 bg-slate-950 text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  Cliente
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleVistaChange("lm")}
+                  className={`h-10 border px-3 text-xs font-semibold transition ${
+                    vista === "lm"
+                      ? "border-slate-950 bg-slate-950 text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  LM
+                </button>
+              </div>
             </div>
-          )}
 
-          {/* Vista cliente / LM */}
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
-              Vista
-            </span>
-            <div className="flex gap-1.5">
+            {/* Refrescar */}
+            {clienteId && (
               <button
                 type="button"
-                onClick={() => handleVistaChange("cliente")}
-                className={`h-10 border px-3 text-xs font-semibold transition ${
-                  vista === "cliente"
-                    ? "border-cyan-700 bg-cyan-700 text-white"
-                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
+                onClick={() => recargar()}
+                className="ml-auto inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
               >
-                Cliente
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                Actualizar
               </button>
-              <button
-                type="button"
-                onClick={() => handleVistaChange("lm")}
-                className={`h-10 border px-3 text-xs font-semibold transition ${
-                  vista === "lm"
-                    ? "border-violet-700 bg-violet-700 text-white"
-                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                LM
-              </button>
-            </div>
+            )}
           </div>
-
-          {/* Refrescar */}
-          {clienteId && (
-            <button
-              type="button"
-              onClick={() => recargar()}
-              className="ml-auto inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              Actualizar
-            </button>
-          )}
         </div>
 
         {/* Error global */}
@@ -1753,7 +1791,8 @@ export function CarteraWorkspace() {
                               checked={allElegiblesSelected}
                               disabled={facturasElegibles.length === 0}
                               onChange={toggleAll}
-                              aria-label="Seleccionar todas las facturas con saldo para conciliar"
+                              aria-label="Seleccionar todas las facturas con saldo para conciliar (de todas las páginas)"
+                              title="Selecciona todas las facturas con saldo, de todas las páginas"
                               className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
                             />
                           </th>
@@ -1772,7 +1811,7 @@ export function CarteraWorkspace() {
                       </tr>
                     </thead>
                     <tbody>
-                      {facturasVisibles.map((f) => (
+                      {facturasPagina.map((f) => (
                         <FilaFactura
                           key={f.id}
                           factura={f}
@@ -1832,11 +1871,20 @@ export function CarteraWorkspace() {
                             : formatCOP(totalRealLM < 0n ? (-totalRealLM).toString() : totalRealLM.toString())}
                         </span>
                         {" "}
-                        <span className="text-slate-400 font-normal italic">(pendiente confirmar fórmula con Camila)</span>
+                        <span className="text-slate-500 font-normal italic">(pendiente confirmar fórmula con Camila)</span>
                       </span>
                     );
                   })()}
                 </div>
+
+                <Paginacion
+                  total={totalFacturas}
+                  pagina={pagina}
+                  porPagina={porPagina}
+                  onPaginaChange={setPagina}
+                  onPorPaginaChange={setPorPagina}
+                  etiqueta="facturas"
+                />
               </div>
             )}
           </>

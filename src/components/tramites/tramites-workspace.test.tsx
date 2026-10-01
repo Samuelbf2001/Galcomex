@@ -45,7 +45,10 @@ vi.mock("@/lib/auth/rol-context", () => ({
   useEsAdmin: () => rol === "ADMIN",
   useRol: () => rol,
 }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(window.location.search),
+}));
 vi.mock("@/components/ui/toast", () => ({
   useToast: () => ({ toast: vi.fn() }),
   describirError: (error: unknown, fallback?: string) =>
@@ -163,6 +166,8 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  // Filtros y página viven en la URL: cada prueba empieza con la dirección limpia.
+  window.history.replaceState(null, "", "/tramites");
   vi.clearAllMocks();
   rol = "ADMIN";
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

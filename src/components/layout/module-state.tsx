@@ -33,7 +33,7 @@ export function ModuleState({ type, title, detail, action, children }: ModuleSta
 
   return (
     <div
-      className={`flex min-h-44 flex-col justify-center gap-4 rounded-xl border px-5 py-6 text-sm shadow-sm ${tone}`}
+      className={`flex min-h-32 flex-col justify-center gap-4 border px-5 py-6 text-sm ${tone}`}
       role={type === "error" ? "alert" : "status"}
       aria-atomic="true"
       aria-busy={type === "loading" ? true : undefined}
@@ -54,7 +54,7 @@ export function ModuleState({ type, title, detail, action, children }: ModuleSta
           <button
             type="button"
             onClick={action.onClick}
-            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            className="inline-flex min-h-11 items-center gap-2 border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
           >
             {(action.icon ?? type === "error") ? (
               <RotateCcw className="h-4 w-4" aria-hidden="true" />

@@ -35,6 +35,12 @@ button:enabled, select:enabled, summary { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 
 main { scrollbar-gutter: stable; }
+
+/* En las tablas, lo alineado a la derecha son montos, cantidades y acciones:
+   nunca se parten en dos líneas ("−" arriba y "$ 1.025.000" abajo). */
+td.text-right { white-space: nowrap; }
+/* Las cifras se alinean por columnas (todas las cifras del mismo ancho). */
+td.text-right, th.text-right { font-variant-numeric: tabular-nums; }
 input, select, textarea { accent-color: #0e7490; }
 
 @media (max-width: 640px), (pointer: coarse) {

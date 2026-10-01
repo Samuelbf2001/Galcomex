@@ -21,6 +21,8 @@ import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { escribirParametrosUrl, useParametroUrl } from "@/components/ui/estado-url";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
@@ -263,7 +265,7 @@ function CreateAnticipoModal({ clientes, onClose, onCreated }: CreateModalProps)
               <label
                 className={`inline-flex h-10 cursor-pointer items-center gap-2 border px-3 text-sm font-medium transition ${
                   !clienteId
-                    ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                    ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500"
                     : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
                 }`}
               >
@@ -523,7 +525,7 @@ function AnticipoFila({
             <button
               type="button"
               onClick={() => setExpanded(!expanded)}
-              className="text-slate-400 transition hover:text-slate-700"
+              className="text-slate-500 transition hover:text-slate-700"
               aria-label={
                 expanded
                   ? `Ocultar desglose del anticipo de ${anticipo.clienteNombre || "cliente"}`
@@ -560,7 +562,7 @@ function AnticipoFila({
         </td>
 
         {/* Recaudo */}
-        <td className="px-3 py-2.5 text-sm text-slate-600">
+        <td className="min-w-[7rem] px-3 py-2.5 text-sm text-slate-600">
           {TIPOS_RECAUDO.find((t) => t.value === anticipo.tipoRecaudo)?.label ?? anticipo.tipoRecaudo}
           {anticipo.origenAbono ? (
             <span className="block text-xs text-slate-500">
@@ -574,7 +576,7 @@ function AnticipoFila({
           {anticipo.estado === "VERIFICADO" ? (
             <CheckCircle2 className="inline h-4 w-4 text-emerald-600" aria-label="Verificado" />
           ) : (
-            <span className="text-xs text-slate-400">—</span>
+            <span className="text-xs text-slate-500">—</span>
           )}
         </td>
 
@@ -589,15 +591,15 @@ function AnticipoFila({
         </td>
 
         {/* Acciones */}
-        <td className="px-3 py-2.5">
-          <div className="flex flex-wrap items-center gap-1.5">
+        <td className="whitespace-nowrap px-3 py-2.5">
+          <div className="flex flex-nowrap items-center gap-1.5">
             {anticipo.estado === "VERIFICADO" && (
-              <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+              <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700">
                 VERIFICADO
               </span>
             )}
             {anticipo.estado === "BORRADOR" && (
-              <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+              <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-semibold text-slate-500">
                 BORRADOR
               </span>
             )}
@@ -616,7 +618,7 @@ function AnticipoFila({
               </button>
             )}
             {anticipo.estado === "REALIZADO" && !puedeVerificar && (
-              <span className="inline-flex items-center border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+              <span className="inline-flex items-center border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-500">
                 REALIZADO
               </span>
             )}
@@ -654,7 +656,7 @@ function AnticipoFila({
             ) : null}
           </div>
           {descargaError ? (
-            <p className="mt-1 text-[10px] font-medium text-rose-600">{descargaError}</p>
+            <p className="mt-1 whitespace-normal text-[11px] font-medium text-rose-600">{descargaError}</p>
           ) : null}
         </td>
       </tr>
@@ -668,7 +670,7 @@ function AnticipoFila({
             </p>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-xs uppercase text-slate-400">
+                <tr className="text-xs uppercase text-slate-500">
                   <th className="pb-1 text-left font-medium">Consecutivo DO</th>
                   <th className="pb-1 text-right font-medium">Monto aplicado</th>
                   {puedeEliminarAplicacion ? <th className="pb-1 w-8"></th> : null}
@@ -691,7 +693,7 @@ function AnticipoFila({
                           type="button"
                           onClick={() => onEliminarAplicacion(anticipo.id, ap.aplicacionId)}
                           disabled={deletingAplicacionId !== null}
-                          className="inline-flex h-6 w-6 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                          className="inline-flex h-6 w-6 items-center justify-center text-slate-500 transition hover:text-rose-600 disabled:opacity-40"
                           aria-label={`Eliminar aplicación de ${formatCOP(ap.montoAplicado)} en ${ap.consecutivo}`}
                           title="Eliminar aplicación"
                         >
@@ -738,12 +740,31 @@ export function AnticiposWorkspace() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [conSaldo, setConSaldo] = useState(false);
+  // Todos / Con saldo vive en la dirección (?filtro=saldo): al volver con «atrás»
+  // queda el mismo. Sin `filtro` todavía, manda el enlace del Dashboard
+  // (?con_saldo=true); en cuanto el usuario elige uno, ese enlace deja de mandar.
+  const [filtroUrl, setFiltroUrl] = useParametroUrl("filtro", "");
+  const [conSaldoDashboard] = useParametroUrl("con_saldo", "");
+  const conSaldo = filtroUrl ? filtroUrl === "saldo" : conSaldoDashboard === "true";
   const [createOpen, setCreateOpen] = useState(false);
   const [aplicarTarget, setAplicarTarget] = useState<AnticipoRow | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [deletingAplicacionId, setDeletingAplicacionId] = useState<string | null>(null);
   const [verificandoId, setVerificandoId] = useState<string | null>(null);
+  const {
+    visibles: anticiposVisibles,
+    pagina,
+    porPagina,
+    total: totalAnticipos,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(anticipos, 25, { pagina: "pagina", porPagina: "porPagina" });
+
+  function elegirFiltro(conSaldoNuevo: boolean) {
+    escribirParametrosUrl({ con_saldo: null });
+    setFiltroUrl(conSaldoNuevo ? "saldo" : "todos");
+    setPagina(1);
+  }
 
   // Carga inicial
   useEffect(() => {
@@ -953,7 +974,7 @@ export function AnticiposWorkspace() {
         <div className="grid grid-cols-3 gap-4">
           {[
             { label: "Total recibido", value: stats.total.toString(), color: "text-slate-900" },
-            { label: "Aplicado a DOs", value: stats.aplicado.toString(), color: "text-slate-700" },
+            { label: "Aplicado a los DO", value: stats.aplicado.toString(), color: "text-slate-700" },
             { label: "Saldo disponible", value: stats.restante.toString(), color: "text-emerald-700" },
           ].map((s) => (
             <div key={s.label} className="border border-slate-200 bg-white px-4 py-3">
@@ -969,7 +990,7 @@ export function AnticiposWorkspace() {
         <span className="font-medium text-slate-700">Filtro:</span>
         <button
           type="button"
-          onClick={() => setConSaldo(false)}
+          onClick={() => elegirFiltro(false)}
           className={`h-8 border px-3 text-xs font-semibold transition ${
             !conSaldo
               ? "border-slate-950 bg-slate-950 text-white"
@@ -980,7 +1001,7 @@ export function AnticiposWorkspace() {
         </button>
         <button
           type="button"
-          onClick={() => setConSaldo(true)}
+          onClick={() => elegirFiltro(true)}
           className={`h-8 border px-3 text-xs font-semibold transition ${
             conSaldo
               ? "border-emerald-700 bg-emerald-700 text-white"
@@ -1058,7 +1079,7 @@ export function AnticiposWorkspace() {
                   </td>
                 </tr>
               ) : (
-                anticipos.map((anticipo) => (
+                anticiposVisibles.map((anticipo) => (
                   <AnticipoFila
                     key={anticipo.id}
                     anticipo={anticipo}
@@ -1078,6 +1099,14 @@ export function AnticiposWorkspace() {
             </tbody>
           </table>
         </div>
+        <Paginacion
+          total={totalAnticipos}
+          pagina={pagina}
+          porPagina={porPagina}
+          onPaginaChange={setPagina}
+          onPorPaginaChange={setPorPagina}
+          etiqueta="anticipos"
+        />
       </div>
       )}
 

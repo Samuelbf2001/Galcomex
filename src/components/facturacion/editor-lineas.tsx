@@ -136,7 +136,7 @@ function FacturasMultiSelect({
 
   if (facturas.length === 0) {
     return (
-      <span className="text-sm text-slate-400">Sin facturas en el trámite</span>
+      <span className="text-sm text-slate-500">Sin facturas en el trámite</span>
     );
   }
 
@@ -152,7 +152,7 @@ function FacturasMultiSelect({
         }`}
       >
         <span
-          className={`truncate ${nombres.length === 0 ? "text-slate-400" : "text-slate-700"}`}
+          className={`truncate ${nombres.length === 0 ? "text-slate-500" : "text-slate-700"}`}
         >
           {nombres.length === 0 ? placeholder : nombres.join(", ")}
         </span>
@@ -186,7 +186,7 @@ function FacturasMultiSelect({
                   activa
                     ? "bg-cyan-50"
                     : otraClave
-                      ? "cursor-not-allowed bg-slate-50 text-slate-400"
+                      ? "cursor-not-allowed bg-slate-50 text-slate-500"
                       : "hover:bg-slate-50"
                 }`}
                 title={
@@ -206,14 +206,14 @@ function FacturasMultiSelect({
                 <span className="min-w-0 flex-1">
                   <span
                     className={`block truncate font-medium ${
-                      otraClave ? "text-slate-400" : "text-slate-800"
+                      otraClave ? "text-slate-500" : "text-slate-800"
                     }`}
                   >
                     {f.proveedorNombre}
                   </span>
                   <span
                     className={`block truncate text-sm ${
-                      otraClave ? "text-slate-400" : "text-slate-500"
+                      otraClave ? "text-slate-500" : "text-slate-500"
                     }`}
                   >
                     {f.numFactura} · {formatCOP(f.valor)}
@@ -336,7 +336,7 @@ function SiigoProductoSelect({
         }`}
       >
         <span
-          className={`truncate ${hayEtiqueta ? "text-slate-700" : "text-slate-400"}`}
+          className={`truncate ${hayEtiqueta ? "text-slate-700" : "text-slate-500"}`}
         >
           {textoVisible}
         </span>
@@ -373,7 +373,7 @@ function SiigoProductoSelect({
               </button>
             ) : null}
             {filtrados.length === 0 ? (
-              <p className="px-3 py-3 text-center text-xs text-slate-400">
+              <p className="px-3 py-3 text-center text-xs text-slate-500">
                 {productos.length === 0 ? "No hay productos disponibles en Siigo." : "No hay productos con ese código o nombre."}
               </p>
             ) : (
@@ -511,7 +511,7 @@ function ComentariosCabecera({
         </button>
       </div>
       {borradorLocal.length === 0 ? (
-        <div className="px-3 py-3 text-sm text-slate-400">
+        <div className="px-3 py-3 text-sm text-slate-500">
           Sin comentarios. Agrega una fila para describir la factura.
         </div>
       ) : (
@@ -543,14 +543,14 @@ function ComentariosCabecera({
                       ? "Ej. Mercancía. Puerto de entrada."
                       : "Otro comentario…"
               }
-              className="min-w-0 flex-1 border border-transparent bg-transparent px-2 py-1.5 text-sm text-slate-800 placeholder:text-slate-400 hover:border-slate-200 focus:border-slate-400 focus:outline-none"
+              className="min-w-0 flex-1 border border-transparent bg-transparent px-2 py-1.5 text-sm text-slate-800 placeholder:text-slate-500 hover:border-slate-200 focus:border-slate-400 focus:outline-none"
             />
             <button
               type="button"
               onClick={() => eliminar(idx)}
               disabled={guardando}
               aria-label={`Eliminar fila ${idx + 1}`}
-              className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-50"
+              className="inline-flex h-7 w-7 items-center justify-center text-slate-500 transition hover:text-rose-600 disabled:opacity-50"
             >
               <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
@@ -930,15 +930,15 @@ function SubseccionLineas({
           </tr>
         </thead>
         <tbody>
-          {lineas.map((linea) => (
+          {lineas.map((linea, posicion) => (
             <tr key={linea.id} className="border-b border-slate-100 align-top">
-              <td className="px-2 py-2 text-slate-400">{linea.orden}</td>
+              <td className="px-2 py-2 text-slate-500">{posicion + 1}</td>
               <td className="px-2 py-2">
                 {puedeEditar && !linea.tipoFija ? (
                   <CampoLinea valor={linea.concepto} etiqueta={`Concepto de la línea ${linea.orden}`} guardando={guardando} guardar={(concepto) => ejecutar(() => apiActualizarLinea(borradorId, linea.id, { concepto }))} />
                 ) : <span className="font-medium text-slate-800">{linea.concepto}</span>}
                 {linea.tipoFija ? (
-                  <span className="ml-1.5 inline-block rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                  <span className="ml-1.5 inline-block rounded bg-slate-200 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                     {formato === "CONCEPTOS_IVA" ? "Calculada" : "Fija"}
                   </span>
                 ) : null}
@@ -1001,12 +1001,12 @@ function SubseccionLineas({
                           onSelect={(p) => void cambiarProductoLinea(linea, p)}
                         />
                         {linea.tipoFija && linea.siigoProductoId ? (
-                          <span className="mt-1 block text-[10px] text-slate-500">
+                          <span className="mt-1 block text-[11px] text-slate-500">
                             Producto por defecto del sistema; cámbialo solo si está mal.
                           </span>
                         ) : null}
                         {linea.siigoProductoId ? (
-                          <span className="mt-1 block text-[10px] text-slate-400">
+                          <span className="mt-1 block text-[11px] text-slate-500">
                             {
                               badgeImpuestoProducto(
                                 productos.find((p) => p.id === linea.siigoProductoId) ?? null,
@@ -1019,7 +1019,7 @@ function SubseccionLineas({
                   }
                   if (linea.siigoProductoId) {
                     return (
-                      <span className="ml-1 text-[10px] text-slate-400">
+                      <span className="ml-1 text-[11px] text-slate-500">
                         {linea.siigoProductoCodigo}
                         {" · "}
                         {
@@ -1039,7 +1039,7 @@ function SubseccionLineas({
                 ) : null}
               </td>
               {!compacto ? (
-                <td className="px-2 py-2 font-mono text-slate-600">
+                <td className="px-2 py-2 font-mono text-slate-600 [overflow-wrap:normal]">
                   {linea.numSoporte ?? "—"}
                 </td>
               ) : null}
@@ -1058,13 +1058,12 @@ function SubseccionLineas({
                       disabled={guardando}
                     />
                   ) : linea.facturasVinculadas.length === 0 ? (
-                    <span className="text-xs text-slate-400">—</span>
+                    <span className="text-xs text-slate-500">—</span>
                   ) : (
                     <span className="text-xs text-slate-700">
-                      {facturas
-                        .filter((f) => linea.facturasVinculadas.includes(f.id))
-                        .map((f) => f.proveedorNombre)
-                        .join(", ")}
+                      {proveedoresAgrupados(
+                        facturas.filter((f) => linea.facturasVinculadas.includes(f.id)).map((f) => f.proveedorNombre),
+                      )}
                     </span>
                   )}
                   {/* NIT del tercero manual — solo si no hay factura vinculada
@@ -1074,7 +1073,7 @@ function SubseccionLineas({
                   !linea.tipoFija &&
                   linea.facturasVinculadas.length === 0 ? (
                     <div className="mt-1.5 flex items-center gap-1.5">
-                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                      <span className="text-[11px] uppercase tracking-wide text-slate-500">
                         Id. Tercero
                       </span>
                       {puedeEditar ? (
@@ -1108,7 +1107,7 @@ function SubseccionLineas({
               {puedeEditar ? (
                 <td className="px-2 py-2 text-right">
                   {linea.tipoFija ? (
-                    <span className="text-xs text-slate-400">—</span>
+                    <span className="text-xs text-slate-500">—</span>
                   ) : (
                     <button
                       type="button"
@@ -1128,7 +1127,7 @@ function SubseccionLineas({
             <tr>
               <td
                 colSpan={colsAntes + 1 + colsDespues}
-                className="px-2 py-3 text-center text-xs text-slate-400"
+                className="px-2 py-3 text-center text-xs text-slate-500"
               >
                 Sin líneas en esta sección.
               </td>
@@ -1258,7 +1257,7 @@ function SubseccionLineas({
                   onToggle={toggleNuevaFactura}
                 />
               </div>
-              <span className="text-[11px] text-slate-400">
+              <span className="text-[11px] text-slate-500">
                 El N° de soporte se toma del número de la factura vinculada.
               </span>
             </div>
@@ -1278,7 +1277,7 @@ function SubseccionLineas({
                 className="h-7 w-56 border border-slate-300 px-2 text-xs text-slate-800 focus:border-slate-400 focus:outline-none"
                 inputMode="numeric"
               />
-              <span className="text-[11px] text-slate-400">
+              <span className="text-[11px] text-slate-500">
                 Solo si la línea no tiene factura vinculada.
               </span>
             </div>
@@ -1506,11 +1505,11 @@ export function EditorLineas({
         {borrador.formatoFactura === "CONCEPTOS_IVA" ? (
           // Cada concepto es su propia línea editable: no hay comisión global.
           <>
-            <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
+            <div className="flex w-full max-w-md justify-between text-xs text-slate-500">
               <span>↳ Conceptos propios (base del IVA)</span>
               <span>{formatCOP(borrador.comision)}</span>
             </div>
-            <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
+            <div className="flex w-full max-w-md justify-between text-xs text-slate-500">
               <span>↳ IVA por ítem (incluido en operacional)</span>
               <span>{formatCOP(borrador.ivaComision)}</span>
             </div>
@@ -1526,7 +1525,7 @@ export function EditorLineas({
               guardando={guardando}
               ejecutar={ejecutar}
             />
-            <div className="flex w-full max-w-md justify-between text-xs text-slate-400">
+            <div className="flex w-full max-w-md justify-between text-xs text-slate-500">
               <span>↳ IVA comisión (incluido en operacional)</span>
               <span>{formatCOP(borrador.ivaComision)}</span>
             </div>
@@ -1555,7 +1554,7 @@ export function EditorLineas({
           </span>
         </div>
         <div className="mt-1 flex w-full max-w-md justify-between text-xs">
-          <span className="text-slate-400">Total guardado (BD)</span>
+          <span className="text-slate-500">Total guardado (BD)</span>
           <span className="text-slate-500">
             {formatCOP(totalMotor.toString())}
           </span>
@@ -1573,4 +1572,13 @@ export function EditorLineas({
       </div>
     </div>
   );
+}
+
+/** ["A","A","B"] → "A (2 facturas), B": cada proveedor una sola vez. */
+function proveedoresAgrupados(nombres: string[]): string {
+  const conteo = new Map<string, number>();
+  for (const nombre of nombres) conteo.set(nombre, (conteo.get(nombre) ?? 0) + 1);
+  return [...conteo.entries()]
+    .map(([nombre, n]) => (n > 1 ? `${nombre} (${n} facturas)` : nombre))
+    .join(", ");
 }

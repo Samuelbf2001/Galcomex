@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   ArrowRight,
+  CheckCircle2,
   Clock,
   FileText,
   Receipt,
@@ -17,6 +18,8 @@ import { ModuleState } from "@/components/layout/module-state";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError } from "@/components/ui/toast";
 import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { EstadoTramiteBadge, etiquetaEstadoTramite } from "@/components/ui/estado-tramite";
+import { describirActividad } from "@/lib/auditoria/describir-actividad";
 
 import {
   type DashboardApiData,
@@ -30,7 +33,6 @@ import {
   formatCOP,
   formatDate,
   formatDateTime,
-  labelEstado,
 } from "./dashboard-api";
 
 // ─── Tipos locales ────────────────────────────────────────────────────────────
@@ -52,7 +54,7 @@ function MetricCard({ label, value, sub, href, icon, alert = false }: MetricCard
   return (
     <Link
       href={href}
-      className={`group block border bg-white p-4 transition hover:bg-slate-50 ${
+      className={`group flex h-full flex-col border bg-white p-4 transition hover:bg-slate-50 ${
         alert ? "border-rose-300" : "border-slate-200"
       }`}
     >
@@ -60,7 +62,7 @@ function MetricCard({ label, value, sub, href, icon, alert = false }: MetricCard
         <p className={`text-xs font-medium uppercase tracking-wide ${alert ? "text-rose-600" : "text-slate-500"}`}>
           {label}
         </p>
-        <span className={`mt-0.5 ${alert ? "text-rose-400" : "text-slate-400"}`}>
+        <span className={`mt-0.5 ${alert ? "text-rose-400" : "text-slate-500"}`}>
           {icon}
         </span>
       </div>
@@ -70,7 +72,7 @@ function MetricCard({ label, value, sub, href, icon, alert = false }: MetricCard
       {sub ? (
         <p className="mt-0.5 text-xs text-slate-500">{sub}</p>
       ) : null}
-      <p className="mt-2 flex items-center gap-1 text-xs text-cyan-700">
+      <p className="mt-auto flex items-center gap-1 pt-2 text-xs text-cyan-700">
         Ver módulo <ArrowRight className="h-3 w-3" aria-hidden="true" />
       </p>
     </Link>
@@ -117,9 +119,7 @@ function TablaPendientesFacturar({ rows }: { rows: PendienteFacturarRow[] }) {
                 <EnlaceCliente id={row.clienteId}>{row.clienteNombre}</EnlaceCliente>
               </td>
               <td className="px-4 py-3 whitespace-nowrap">
-                <span className="inline-flex h-5 items-center border border-slate-200 bg-white px-1.5 text-xs text-slate-600">
-                  {labelEstado(row.estado)}
-                </span>
+                <EstadoTramiteBadge estado={row.estado} />
               </td>
               <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
                 {formatDate(row.fechaRef)}
@@ -157,14 +157,14 @@ function TablaCarteraVencida({ rows }: { rows: CarteraVencidaRow[] }) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[500px] border-collapse text-left text-sm">
+      <table className="w-full border-collapse text-left text-sm">
         <thead className="bg-slate-50 text-xs uppercase text-slate-500">
           <tr>
-            <th className="border-b border-slate-200 px-4 py-2.5">Factura</th>
-            <th className="border-b border-slate-200 px-4 py-2.5">Cliente</th>
-            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Saldo a cobrar</th>
-            <th className="border-b border-slate-200 px-4 py-2.5">Fecha</th>
-            <th className="border-b border-slate-200 px-4 py-2.5 text-right">Días</th>
+            <th className="border-b border-slate-200 px-3 py-2.5">Factura</th>
+            <th className="border-b border-slate-200 px-3 py-2.5">Cliente</th>
+            <th className="whitespace-nowrap border-b border-slate-200 px-3 py-2.5 text-right">Por cobrar</th>
+            <th className="border-b border-slate-200 px-3 py-2.5">Fecha</th>
+            <th className="border-b border-slate-200 px-3 py-2.5 text-right">Días</th>
           </tr>
         </thead>
         <tbody>
@@ -173,21 +173,21 @@ function TablaCarteraVencida({ rows }: { rows: CarteraVencidaRow[] }) {
               key={row.id}
               className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50 transition-colors"
             >
-              <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
+              <td className="px-3 py-2.5 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
                 <EnlaceFacturaVenta tramiteId={row.tramiteId} borradorId={row.borradorId}>
                   {row.numSiigo}
                 </EnlaceFacturaVenta>
               </td>
-              <td className="px-4 py-3 text-xs text-slate-700 whitespace-nowrap">
+              <td className="min-w-[9rem] px-3 py-2.5 text-xs text-slate-700">
                 <EnlaceCliente id={row.clienteId}>{row.clienteNombre}</EnlaceCliente>
               </td>
-              <td className="px-4 py-3 text-right text-sm font-semibold text-rose-600 whitespace-nowrap">
+              <td className="px-3 py-2.5 text-right text-sm font-semibold text-rose-600 whitespace-nowrap">
                 {formatCOP(row.saldoACargoCliente)}
               </td>
-              <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
+              <td className="px-3 py-2.5 text-xs text-slate-600 whitespace-nowrap">
                 {formatDate(row.fechaFactura)}
               </td>
-              <td className="px-4 py-3 text-right text-xs text-slate-500 whitespace-nowrap">
+              <td className="px-3 py-2.5 text-right text-xs text-slate-500 whitespace-nowrap">
                 {row.diasAntiguedad}d
               </td>
             </tr>
@@ -306,160 +306,8 @@ function TablaCarteraHistorica({ resumen }: { resumen: CarteraHistoricaResumen }
 
 // ─── Actividad reciente en lenguaje humano ────────────────────────────────────
 
-/**
- * Traducción `entidad:accion` → frase. Los códigos vienen de los `AuditLog`
- * que escriben los servicios (`grep -rn "accion:" src/lib`): CREATE/UPDATE/
- * DELETE son genéricos y solo tienen sentido junto a la entidad, por eso la
- * clave compuesta va primero y `ACCIONES_GENERICAS` es el segundo intento.
- */
-const ACTIVIDAD_POR_ENTIDAD: Record<string, string> = {
-  // Trámites (DO)
-  "TramiteDO:CREATE": "creó el DO",
-  "TramiteDO:CREATE_TRAMITE": "creó el DO",
-  "TramiteDO:CREAR_TRAMITE": "creó el DO",
-  "TramiteDO:UPDATE": "editó el DO",
-  "TramiteDO:UPDATE_ESTADO": "cambió el estado del DO",
-  "TramiteDO:CAMBIO_ESTADO": "cambió el estado del DO",
-  "TramiteDO:REAPERTURA": "reabrió el DO",
-  "TramiteDO:OMITIR_REQUISITOS": "avanzó el DO con requisitos pendientes (excepción de ADMIN)",
-  // Borradores de factura de venta
-  "BorradorFactura:CREATE": "generó un borrador de factura",
-  "BorradorFactura:UPDATE": "actualizó un borrador de factura",
-  "BorradorFactura:UPDATE_ESTADO": "cambió el estado de un borrador de factura",
-  "BorradorFactura:FACTURAR": "marcó como facturado un borrador",
-  "BorradorFactura:UPDATE_COMISION": "actualizó la comisión de un borrador",
-  "BorradorFactura:UPDATE_COMISION_INTERNA_LM": "actualizó la comisión interna LM de un borrador",
-  "BorradorFactura:UPDATE_COMENTARIOS": "editó las observaciones de un borrador",
-  "BorradorFactura:SIIGO_ENVIAR_OK": "envió una factura a SIIGO",
-  "BorradorFactura:SIIGO_ENVIAR_ERROR": "intentó enviar una factura a SIIGO (falló)",
-  "BorradorFactura:SIIGO_SINCRONIZAR": "sincronizó una factura desde SIIGO",
-  "LineaRevision:CREATE": "agregó una línea al borrador",
-  "LineaRevision:UPDATE": "editó una línea del borrador",
-  "LineaRevision:DELETE": "eliminó una línea del borrador",
-  // Cartera
-  "Factura:UPDATE": "actualizó una factura",
-  "PagoFactura:CREATE": "registró un abono o devolución de factura",
-  "PagoFactura:CREATE_PAGO": "registró un abono o devolución de factura",
-  "PagoFactura:DELETE": "anuló un pago de factura",
-  "PagoFactura:VERIFICAR": "verificó en banco un pago de factura",
-  "ConciliacionBatchCartera:CREATE": "concilió un lote de cartera",
-  // Anticipos
-  "Anticipo:CREATE": "registró un anticipo",
-  "Anticipo:CREATE_ANTICIPO": "registró un anticipo",
-  "Anticipo:VERIFICAR": "verificó en banco un anticipo",
-  "AplicacionAnticipo:APLICAR_ANTICIPO": "aplicó un anticipo a un DO",
-  "AplicacionAnticipo:ELIMINAR_APLICACION_ANTICIPO": "quitó la aplicación de un anticipo",
-  // Pagos a proveedores / facturas de proveedor
-  "PagoTramite:CREATE": "registró un pago a proveedor",
-  "PagoTramite:CREATE_PAGO": "registró un pago a proveedor",
-  "PagoTramite:UPDATE": "editó un pago a proveedor",
-  "PagoTramite:DELETE": "eliminó un pago a proveedor",
-  "PagoTramiteGrupo:CREATE": "registró un grupo de pagos a proveedores",
-  "FacturaProveedor:CREATE": "registró una factura de proveedor",
-  "FacturaProveedor:UPDATE": "editó una factura de proveedor",
-  "FacturaProveedor:DELETE": "eliminó una factura de proveedor",
-  "FacturaProveedor:UPDATE_ESTADO": "cambió el estado de una factura de proveedor",
-  // Beneficiarios y cuenta corriente
-  "Beneficiario:CREATE_BENEFICIARIO": "creó un beneficiario",
-  "Beneficiario:UPDATE_BENEFICIARIO": "editó un beneficiario",
-  "MovimientoCuenta:CREATE_MOVIMIENTO_CUENTA": "registró un movimiento de cuenta corriente",
-  "MovimientoCuenta:DELETE_MOVIMIENTO_CUENTA": "eliminó un movimiento de cuenta corriente",
-  // Documentos
-  "Documento:CREATE": "subió un documento",
-  "Documento:DELETE": "eliminó un documento",
-  "Documento:REPLACE": "reemplazó un documento",
-  "ChecklistItem:UPDATE_CHECKLIST_ITEM": "marcó o desmarcó un ítem del checklist",
-  "DocumentoEnlace:CREATE": "creó un enlace para compartir un documento",
-  "DocumentoEnlace:REVOKE": "revocó un enlace de documento",
-  // Configuración
-  "EmpresaCapacidad:SET_CAPACIDAD_EMPRESA": "activó o desactivó una función de la empresa",
-  "EmpresaCapacidad:RESET_CAPACIDAD_EMPRESA": "restableció una función de la empresa",
-  "Parametro:UPDATE": "editó un parámetro del sistema",
-  "MatrizRecaudo:UPDATE": "editó la matriz de recaudo",
-  "MatrizPago:UPDATE": "editó la matriz de pagos",
-  "SiigoProducto:SYNC": "sincronizó los productos de SIIGO",
-  "SiigoImpuesto:SYNC": "sincronizó los impuestos de SIIGO",
-  "SiigoFormaPago:SYNC": "sincronizó las formas de pago de SIIGO",
-  "SiigoTipoComprobante:SYNC": "sincronizó los tipos de comprobante de SIIGO",
-  "SiigoVendedor:SYNC": "sincronizó los vendedores de SIIGO",
-  "SiigoProductoImpuesto:UPDATE": "asoció impuestos a un producto de SIIGO",
-  "User:RESET_PASSWORD": "restableció la contraseña de un usuario",
-};
-
-/** Segundo intento: solo por acción (para entidades nuevas o no listadas). */
-const ACCIONES_GENERICAS: Record<string, string> = {
-  CREATE: "creó",
-  CREATE_TRAMITE: "creó el DO",
-  CREAR_TRAMITE: "creó el DO",
-  UPDATE: "editó",
-  UPDATE_ESTADO: "cambió el estado de",
-  CAMBIO_ESTADO: "cambió el estado de",
-  DELETE: "eliminó",
-  REPLACE: "reemplazó",
-  REVOKE: "revocó",
-  SYNC: "sincronizó",
-  VERIFICAR: "verificó",
-  FACTURAR: "marcó como facturado",
-  REAPERTURA: "reabrió",
-  CREATE_PAGO: "registró un pago",
-  CREATE_ANTICIPO: "registró un anticipo",
-  APLICAR_ANTICIPO: "aplicó un anticipo",
-  ELIMINAR_APLICACION_ANTICIPO: "quitó la aplicación de un anticipo",
-  SET_CAPACIDAD_EMPRESA: "activó o desactivó una función de la empresa",
-  RESET_CAPACIDAD_EMPRESA: "restableció una función de la empresa",
-  RESET_PASSWORD: "restableció una contraseña",
-};
-
-/** Nombre legible de la entidad, para las acciones genéricas y el fallback. */
-const ENTIDAD_LEGIBLE: Record<string, string> = {
-  TramiteDO: "el DO",
-  BorradorFactura: "un borrador de factura",
-  LineaRevision: "una línea de borrador",
-  Factura: "una factura",
-  PagoFactura: "un pago de factura",
-  ConciliacionBatchCartera: "un lote de cartera",
-  Anticipo: "un anticipo",
-  AplicacionAnticipo: "una aplicación de anticipo",
-  PagoTramite: "un pago a proveedor",
-  PagoTramiteGrupo: "un grupo de pagos",
-  FacturaProveedor: "una factura de proveedor",
-  Beneficiario: "un beneficiario",
-  MovimientoCuenta: "un movimiento de cuenta corriente",
-  Documento: "un documento",
-  DocumentoEnlace: "un enlace de documento",
-  EmpresaCapacidad: "una función de la empresa",
-  Parametro: "un parámetro",
-  MatrizRecaudo: "la matriz de recaudo",
-  MatrizPago: "la matriz de pagos",
-  User: "un usuario",
-};
-
-/** "SET_CAPACIDAD_EMPRESA" → "Set capacidad empresa". */
-function humanizarCodigo(codigo: string): string {
-  const texto = codigo.replace(/_/g, " ").trim().toLowerCase();
-  return texto ? texto.charAt(0).toUpperCase() + texto.slice(1) : codigo;
-}
-
-/**
- * Frase para la actividad, sin el nombre del usuario: "creó el DO",
- * "registró un anticipo", …  Orden: entidad+acción → acción+entidad legible →
- * fallback legible del código.
- */
-export function describirActividad(row: Pick<ActividadRecienteRow, "accion" | "entidad">): string {
-  const porEntidad = ACTIVIDAD_POR_ENTIDAD[`${row.entidad}:${row.accion}`];
-  if (porEntidad) return porEntidad;
-
-  const generica = ACCIONES_GENERICAS[row.accion];
-  const entidad = ENTIDAD_LEGIBLE[row.entidad];
-  if (generica && entidad) {
-    // "creó" + "un anticipo" → "creó un anticipo"; "cambió el estado de" + "el DO"
-    return `${generica} ${entidad}`;
-  }
-  if (generica) return `${generica} ${humanizarCodigo(row.entidad).toLowerCase()}`;
-
-  const accion = humanizarCodigo(row.accion).toLowerCase();
-  return entidad ? `${accion} · ${entidad}` : `${accion} · ${humanizarCodigo(row.entidad)}`;
-}
+// La traducción entidad+acción → frase vive en lib/auditoria (la comparte el Historial del DO).
+export { describirActividad };
 
 /** Inicial para el avatar de la fila. */
 function inicialUsuario(nombre: string): string {
@@ -489,13 +337,10 @@ function ListaActividad({ rows }: { rows: ActividadRecienteRow[] }) {
               {inicialUsuario(usuario)}
             </span>
             <div className="min-w-0 flex-1">
-              <p
-                className="truncate text-sm text-slate-800"
-                title={`${row.entidad} · ${row.accion}`}
-              >
+              <p className="line-clamp-2 text-sm text-slate-800">
                 <span className="font-medium">{usuario}</span> {describirActividad(row)}
-                <span className="text-slate-400"> · {formatDateTime(row.createdAt)}</span>
               </p>
+              <p className="mt-0.5 text-xs text-slate-500">{formatDateTime(row.createdAt)}</p>
             </div>
           </li>
         );
@@ -611,15 +456,9 @@ export function DashboardWorkspace() {
         </div>
       ) : null}
 
-      {/* Tarjetas de métricas */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <MetricCard
-          label="DOs activos"
-          value={String(data.dosActivos)}
-          sub="Trámites que aún no se han cerrado"
-          href="/tramites"
-          icon={<TrendingUp className="h-4 w-4" aria-hidden="true" />}
-        />
+      {/* Tarjetas de métricas. Orden fijo: primera fila = lo que pide acción;
+          segunda = contexto. Siempre en el mismo sitio, haya o no alerta. */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <MetricCard
           label="Pendientes de facturar"
           value={String(data.cantidadPendientesFacturar)}
@@ -649,21 +488,6 @@ export function DashboardWorkspace() {
           alert={data.cantidadFacturasVencidas > 0}
         />
         <MetricCard
-          label="Anticipos con saldo"
-          value={
-            data.anticiposConSaldo.cantidad > 0
-              ? formatCOP(data.anticiposConSaldo.totalRestante)
-              : "$0"
-          }
-          sub={
-            data.anticiposConSaldo.cantidad > 0
-              ? `${data.anticiposConSaldo.cantidad} anticipo${data.anticiposConSaldo.cantidad !== 1 ? "s" : ""} disponibles`
-              : "Sin saldo disponible"
-          }
-          href="/anticipos?con_saldo=true"
-          icon={<FileText className="h-4 w-4" aria-hidden="true" />}
-        />
-        <MetricCard
           label="Pagos sin comprobante"
           value={String(data.cantidadPagosSinComprobante)}
           sub={
@@ -674,6 +498,28 @@ export function DashboardWorkspace() {
           href="/pagos"
           icon={<Receipt className="h-4 w-4" aria-hidden="true" />}
           alert={data.cantidadPagosSinComprobante > 0}
+        />
+        <MetricCard
+          label="DO activos"
+          value={String(data.dosActivos)}
+          sub="Trámites que aún no se han cerrado"
+          href="/tramites"
+          icon={<TrendingUp className="h-4 w-4" aria-hidden="true" />}
+        />
+        <MetricCard
+          label="Anticipos con saldo"
+          value={
+            data.anticiposConSaldo.cantidad > 0
+              ? formatCOP(data.anticiposConSaldo.totalRestante)
+              : "$0"
+          }
+          sub={
+            data.anticiposConSaldo.cantidad > 0
+              ? `${data.anticiposConSaldo.cantidad} anticipo${data.anticiposConSaldo.cantidad !== 1 ? "s" : ""} con saldo disponible`
+              : "Sin saldo disponible"
+          }
+          href="/anticipos?con_saldo=true"
+          icon={<FileText className="h-4 w-4" aria-hidden="true" />}
         />
         {muestraHistorica ? (
           // Sin `alert`: no es deuda confirmada (faltan los cobros históricos).
@@ -687,52 +533,57 @@ export function DashboardWorkspace() {
         ) : null}
       </div>
 
+      {/* Lo que no tiene nada pendiente ocupa una sola línea neutra: la atención
+          se queda en lo que sí pide acción. */}
+      {data.pendientesFacturar.length === 0 || data.alertasCartera.length === 0 ? (
+        <ul className="divide-y divide-slate-100 border border-slate-200 bg-white">
+          {data.pendientesFacturar.length === 0 ? (
+            <FilaTodoEnOrden texto="No hay DO pendientes de facturar." href="/tramites" enlace="Ver trámites" />
+          ) : null}
+          {data.alertasCartera.length === 0 ? (
+            <FilaTodoEnOrden
+              texto="Ningún cliente está por debajo del umbral de alerta de cartera."
+              href="/cartera"
+              enlace="Ir a cartera"
+            />
+          ) : null}
+        </ul>
+      ) : null}
+
       {/* Sección pendientes de facturar */}
-      <div className="overflow-hidden border border-slate-200 bg-white">
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2.5">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-slate-900">
-              Pendientes de facturar
-            </h2>
-            {alertaPendientes ? (
-              <span className="inline-flex items-center gap-1 border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-xs font-medium text-rose-700">
-                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-                SLA excedido
-              </span>
-            ) : null}
+      {data.pendientesFacturar.length > 0 ? (
+        <div className="overflow-hidden border border-slate-200 bg-white">
+          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Pendientes de facturar
+              </h2>
+              {alertaPendientes ? (
+                <span className="inline-flex items-center gap-1 border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-xs font-medium text-rose-700">
+                  <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                  SLA excedido
+                </span>
+              ) : null}
+            </div>
+            <Link
+              href="/tramites"
+              className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+            >
+              Ver todos <ArrowRight className="h-3 w-3" aria-hidden="true" />
+            </Link>
           </div>
-          <Link
-            href="/tramites"
-            className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
-          >
-            Ver todos <ArrowRight className="h-3 w-3" aria-hidden="true" />
-          </Link>
+          <TablaPendientesFacturar rows={data.pendientesFacturar} />
         </div>
-        <TablaPendientesFacturar rows={data.pendientesFacturar} />
-      </div>
+      ) : null}
 
       {/* Sección alertas de cartera — clientes bajo el umbral configurado */}
-      <div className="overflow-hidden border border-rose-200 bg-white">
-        <div className="flex items-center justify-between border-b border-rose-200 bg-rose-50/60 px-4 py-2.5">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-rose-600" aria-hidden="true" />
-            <h2 className="text-sm font-semibold text-rose-900">Alertas de cartera</h2>
-          </div>
-          <Link
-            href="/cartera"
-            className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
-          >
-            Ir a cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
-          </Link>
-        </div>
-        <TablaAlertasCartera rows={data.alertasCartera} />
-      </div>
-
-      {/* Cartera histórica 2026 — facturas de trámites históricos sin cobros cargados (D0) */}
-      {muestraHistorica ? (
-        <div className="overflow-hidden border border-amber-200 bg-white">
-          <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50/60 px-4 py-2.5">
-            <h2 className="text-sm font-semibold text-amber-900">{historica.titulo}</h2>
+      {data.alertasCartera.length > 0 ? (
+        <div className="overflow-hidden border border-rose-200 bg-white">
+          <div className="flex items-center justify-between border-b border-rose-200 bg-rose-50/60 px-4 py-2.5">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-rose-600" aria-hidden="true" />
+              <h2 className="text-sm font-semibold text-rose-900">Alertas de cartera</h2>
+            </div>
             <Link
               href="/cartera"
               className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
@@ -740,17 +591,12 @@ export function DashboardWorkspace() {
               Ir a cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
             </Link>
           </div>
-          <p className="border-b border-amber-100 px-4 py-2.5 text-xs text-amber-900">
-            Facturas de trámites históricos cargadas desde Siigo sin sus cobros. No es deuda confirmada: no gestionar
-            cobros ni devolver o cruzar saldos a favor hasta cargar los cobros. Cada factura sale de aquí sola cuando se
-            le registra un cobro.
-          </p>
-          <TablaCarteraHistorica resumen={historica} />
+          <TablaAlertasCartera rows={data.alertasCartera} />
         </div>
       ) : null}
 
-      {/* Grid: cartera vencida + actividad reciente */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      {/* Grid: cartera vencida (más ancha: es una tabla) + actividad reciente */}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         {/* Cartera vencida */}
         <div className="overflow-hidden border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2.5">
@@ -776,7 +622,7 @@ export function DashboardWorkspace() {
         </div>
 
         {/* Actividad reciente */}
-        <div className="overflow-hidden border border-slate-200 bg-white">
+        <div className="self-start overflow-hidden border border-slate-200 bg-white">
           <div className="flex items-center border-b border-slate-200 px-4 py-2.5">
             <h2 className="text-sm font-semibold text-slate-900">
               Actividad reciente
@@ -785,6 +631,28 @@ export function DashboardWorkspace() {
           <ListaActividad rows={data.actividadReciente} />
         </div>
       </div>
+
+      {/* Cartera histórica 2026 — facturas de trámites históricos sin cobros cargados (D0).
+          Va después de lo vencido: es contexto, no deuda confirmada. */}
+      {muestraHistorica ? (
+        <div className="overflow-hidden border border-amber-200 bg-white">
+          <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50/60 px-4 py-2.5">
+            <h2 className="text-sm font-semibold text-amber-900">{historica.titulo}</h2>
+            <Link
+              href="/cartera"
+              className="flex items-center gap-1 text-xs text-cyan-700 hover:underline"
+            >
+              Ir a cartera <ArrowRight className="h-3 w-3" aria-hidden="true" />
+            </Link>
+          </div>
+          <p className="border-b border-amber-100 px-4 py-2.5 text-xs leading-relaxed text-amber-900">
+            Facturas de trámites históricos cargadas desde Siigo sin sus cobros. No es deuda confirmada: no gestionar
+            cobros ni devolver o cruzar saldos a favor hasta cargar los cobros. Cada factura sale de aquí sola cuando se
+            le registra un cobro.
+          </p>
+          <TablaCarteraHistorica resumen={historica} />
+        </div>
+      ) : null}
 
       {/* Pipeline de DOs por estado */}
       <div className="overflow-hidden border border-slate-200 bg-white">
@@ -800,12 +668,28 @@ export function DashboardWorkspace() {
             .map((d) => (
               <div key={d.estado} className="min-w-24 px-4 py-3 text-center">
                 <p className="text-lg font-semibold text-slate-900">{d.count}</p>
-                <p className="mt-0.5 text-xs text-slate-500">{labelEstado(d.estado)}</p>
+                <p className="mt-0.5 text-xs text-slate-500">{etiquetaEstadoTramite(d.estado)}</p>
               </div>
             ))}
         </div>
       </div>
     </section>
+  );
+}
+
+// ─── Fila "todo en orden" ────────────────────────────────────────────────────
+
+function FilaTodoEnOrden({ texto, href, enlace }: { texto: string; href: string; enlace: string }) {
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-sm text-slate-600">
+      <span className="flex items-center gap-2">
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+        {texto}
+      </span>
+      <Link href={href} className="flex items-center gap-1 text-xs text-cyan-700 hover:underline">
+        {enlace} <ArrowRight className="h-3 w-3" aria-hidden="true" />
+      </Link>
+    </li>
   );
 }
 

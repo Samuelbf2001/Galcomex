@@ -184,7 +184,7 @@ function FilaCapacidad({
     <div className="flex items-start gap-4 border-b border-slate-100 px-4 py-3 last:border-b-0">
       <div className="pt-0.5">
         {guardando ? (
-          <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
+          <Loader2 className="h-5 w-5 animate-spin text-slate-500" aria-hidden="true" />
         ) : (
           <Interruptor
             activo={capacidad.habilitado}

@@ -93,7 +93,7 @@ function SiigoProductoSelect({
           disabled ? "cursor-default opacity-70" : "hover:border-slate-400"
         }`}
       >
-        <span className={`truncate ${seleccionado ? "text-slate-900" : "text-slate-400"}`}>
+        <span className={`truncate ${seleccionado ? "text-slate-900" : "text-slate-500"}`}>
           {seleccionado ? `${seleccionado.codigo} — ${seleccionado.nombre}` : "Sin producto por defecto"}
         </span>
         <ChevronDown
@@ -127,7 +127,7 @@ function SiigoProductoSelect({
               </button>
             ) : null}
             {filtrados.length === 0 ? (
-              <p className="px-3 py-3 text-center text-xs text-slate-400">
+              <p className="px-3 py-3 text-center text-xs text-slate-500">
                 {productos.length === 0
                   ? "No hay productos sincronizados desde Siigo."
                   : "No hay productos con ese código o nombre."}
@@ -536,38 +536,38 @@ export function ConceptosTab() {
           <table className="w-full border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
-                <th className="border-b border-slate-200 px-4 py-3">Código</th>
-                <th className="border-b border-slate-200 px-4 py-3">Nombre para el cliente</th>
-                <th className="border-b border-slate-200 px-4 py-3">Producto Siigo</th>
-                <th className="border-b border-slate-200 px-4 py-3">IVA</th>
-                <th className="border-b border-slate-200 px-4 py-3">Tipo de cobro</th>
-                <th className="border-b border-slate-200 px-4 py-3 text-right">Orden</th>
-                <th className="border-b border-slate-200 px-4 py-3 text-right">Ítems enlazados</th>
-                <th className="border-b border-slate-200 px-4 py-3">Estado</th>
-                {puedeEditar ? <th className="border-b border-slate-200 px-4 py-3 text-right">Acción</th> : null}
+                <th className="border-b border-slate-200 px-3 py-3">Código</th>
+                <th className="border-b border-slate-200 px-3 py-3">Nombre para el cliente</th>
+                <th className="border-b border-slate-200 px-3 py-3">Producto Siigo</th>
+                <th className="border-b border-slate-200 px-3 py-3">IVA</th>
+                <th className="border-b border-slate-200 px-3 py-3">Tipo de cobro</th>
+                <th className="border-b border-slate-200 px-3 py-3 text-right">Orden</th>
+                <th className="border-b border-slate-200 px-3 py-3 text-right">Ítems enlazados</th>
+                <th className="border-b border-slate-200 px-3 py-3">Estado</th>
+                {puedeEditar ? <th className="border-b border-slate-200 px-3 py-3 text-right">Acción</th> : null}
               </tr>
             </thead>
             <tbody>
               {conceptos.map((c) => (
-                <tr key={c.id} className="border-b border-slate-100 align-top">
-                  <td className="px-4 py-3">
+                <tr key={c.id} className="border-b border-slate-100 align-middle">
+                  <td className="align-middle px-3 py-3">
                     <BadgeCodigo codigo={c.codigo} />
                   </td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{c.nombre}</td>
-                  <td className="px-4 py-3 text-xs text-slate-600">
+                  <td className="align-middle px-3 py-3 font-medium text-slate-800">{c.nombre}</td>
+                  <td className="align-middle px-3 py-3 text-xs text-slate-600">
                     {c.siigoProducto ? `${c.siigoProducto.codigo} — ${c.siigoProducto.nombre}` : "—"}
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-600">{c.aplicaIva ? "Sí" : "No"}</td>
-                  <td className="px-4 py-3 text-xs text-slate-600">
+                  <td className="align-middle px-3 py-3 text-xs text-slate-600">{c.aplicaIva ? "Sí" : "No"}</td>
+                  <td className="align-middle px-3 py-3 text-xs text-slate-600">
                     {TIPOS_CALCULO.find((t) => t.value === c.tipoCalculoSugerido)?.label ?? "—"}
                   </td>
-                  <td className="px-4 py-3 text-right text-xs text-slate-600">{c.orden}</td>
-                  <td className="px-4 py-3 text-right text-xs text-slate-600">{c.itemsEnlazados}</td>
-                  <td className="px-4 py-3">
+                  <td className="align-middle px-3 py-3 text-right text-xs text-slate-600">{c.orden}</td>
+                  <td className="align-middle px-3 py-3 text-right text-xs text-slate-600">{c.itemsEnlazados}</td>
+                  <td className="align-middle px-3 py-3">
                     <BadgeActivo activo={c.activo} />
                   </td>
                   {puedeEditar ? (
-                    <td className="px-4 py-3 text-right">
+                    <td className="align-middle px-3 py-3 text-right">
                       <button
                         type="button"
                         onClick={() => abrirModal(c)}

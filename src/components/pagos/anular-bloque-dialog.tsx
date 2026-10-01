@@ -84,7 +84,7 @@ export function AnularBloqueDialog({ grupoPagoId, resumen, onClose, onDone }: An
             placeholder="Por qué se anula este pago en bloque…"
             className="w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan-600"
           />
-          <span className="text-[11px] text-slate-400">
+          <span className="text-[11px] text-slate-500">
             {motivo.trim().length}/{MOTIVO_MIN} caracteres mínimos
           </span>
         </label>

@@ -3,6 +3,8 @@
 import {
   Banknote,
   BriefcaseBusiness,
+  ChevronsLeft,
+  ChevronsRight,
   ClipboardList,
   FileCheck2,
   FolderOpen,
@@ -53,6 +55,9 @@ type SidebarProps = {
   /** En pantallas pequeñas el sidebar es un panel deslizante. */
   abierto?: boolean;
   onCerrar?: () => void;
+  /** Escritorio: menú contraído a solo íconos (más espacio para las tablas). */
+  contraido?: boolean;
+  onAlternarContraido?: () => void;
 };
 
 /**
@@ -60,7 +65,7 @@ type SidebarProps = {
  * (`RUTAS_DASHBOARD`), marca el módulo activo con `aria-current` y en
  * pantallas < 1024 px se convierte en un panel que se abre desde la cabecera.
  */
-export function Sidebar({ rol, abierto = false, onCerrar }: SidebarProps) {
+export function Sidebar({ rol, abierto = false, onCerrar, contraido = false, onAlternarContraido }: SidebarProps) {
   const pathname = usePathname();
   const activa = rutaDashboardDe(pathname)?.href;
   const items = rutasVisiblesPara(rol);
@@ -91,34 +96,53 @@ export function Sidebar({ rol, abierto = false, onCerrar }: SidebarProps) {
   ];
 
   function content(mobile: boolean) {
+    // Solo el menú de escritorio se contrae; el panel del celular siempre va completo.
+    const compacto = !mobile && contraido;
     return <>
-      <div className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-800 px-5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-400 text-slate-950"><BriefcaseBusiness className="h-5 w-5" aria-hidden="true" /></div>
-        <div className="min-w-0 flex-1"><p className="text-sm font-semibold leading-5">Galcomex</p><p className="text-xs text-slate-400">Operación interna</p></div>
+      <div className={"flex h-16 shrink-0 items-center gap-3 border-b border-slate-800 " + (compacto ? "justify-center px-2" : "px-5")}>
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-400 text-slate-950"><BriefcaseBusiness className="h-5 w-5" aria-hidden="true" /></div>
+        {compacto ? null : <div className="min-w-0 flex-1"><p className="text-sm font-semibold leading-5">Galcomex</p><p className="text-xs text-slate-400">Operación interna</p></div>}
         {mobile ? <button type="button" onClick={onCerrar} className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-slate-300 hover:bg-slate-800" aria-label="Cerrar menú"><X className="h-5 w-5" aria-hidden="true" /></button> : null}
       </div>
-      <nav aria-label="Secciones" className="flex-1 space-y-5 overflow-y-auto px-3 py-5">
+      <nav aria-label="Secciones" className={"flex-1 space-y-5 overflow-y-auto py-5 " + (compacto ? "px-2" : "px-3")}>
         {groups.map((group) => {
           const visible = group.paths.flatMap((path) => items.filter((item) => item.href === path));
           if (!visible.length) return null;
           return <div key={group.title}>
-            <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group.title}</p>
+            {compacto
+              ? <p className="sr-only">{group.title}</p>
+              : <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group.title}</p>}
             <div className="space-y-1">{visible.map((item) => {
               const Icon = ICONOS[item.href] ?? Ship;
               const esActiva = item.href === activa;
-              return <Link key={item.href} href={item.href} onClick={onCerrar} aria-current={esActiva ? "page" : undefined} className={"flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition " + (esActiva ? "bg-cyan-500/15 text-white shadow-[inset_3px_0_0_0_#22d3ee]" : "text-slate-300 hover:bg-slate-900 hover:text-white")}>
-                <Icon className={"h-4 w-4 shrink-0 " + (esActiva ? "text-cyan-300" : "")} aria-hidden="true" />{item.label}
+              return <Link key={item.href} href={item.href} onClick={onCerrar} aria-current={esActiva ? "page" : undefined} title={compacto ? item.label : undefined} className={"flex min-h-11 items-center gap-3 rounded-lg py-2 text-sm font-medium transition " + (compacto ? "justify-center px-0 " : "px-3 ") + (esActiva ? "bg-cyan-500/15 text-white shadow-[inset_3px_0_0_0_#22d3ee]" : "text-slate-300 hover:bg-slate-900 hover:text-white")}>
+                <Icon className={"h-4 w-4 shrink-0 " + (esActiva ? "text-cyan-300" : "")} aria-hidden="true" />
+                {compacto ? <span className="sr-only">{item.label}</span> : item.label}
               </Link>;
             })}</div>
           </div>;
         })}
       </nav>
-      <div className="shrink-0 border-t border-slate-800 px-5 py-4 text-xs text-slate-400">Perfil: <span className="font-semibold text-slate-200">{NOMBRE_ROL[rol]}</span></div>
+      <div className={"flex shrink-0 items-center gap-2 border-t border-slate-800 py-3 text-xs text-slate-400 " + (compacto ? "justify-center px-2" : "justify-between pl-5 pr-3")}>
+        {compacto ? null : <span>Perfil: <span className="font-semibold text-slate-200">{NOMBRE_ROL[rol]}</span></span>}
+        {!mobile && onAlternarContraido ? (
+          <button
+            type="button"
+            onClick={onAlternarContraido}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-900 hover:text-white"
+            title={contraido ? "Expandir menú" : "Contraer menú (más espacio para las tablas)"}
+            aria-label={contraido ? "Expandir menú" : "Contraer menú"}
+            aria-expanded={!contraido}
+          >
+            {contraido ? <ChevronsRight className="h-4 w-4" aria-hidden="true" /> : <ChevronsLeft className="h-4 w-4" aria-hidden="true" />}
+          </button>
+        ) : null}
+      </div>
     </>;
   }
 
   return <>
-    <aside aria-label="Menú principal" className="hidden h-full w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-950 text-slate-100 lg:flex">{content(false)}</aside>
+    <aside aria-label="Menú principal" className={"hidden h-full shrink-0 flex-col border-r border-slate-800 bg-slate-950 text-slate-100 lg:flex " + (contraido ? "w-16" : "w-64")}>{content(false)}</aside>
     <dialog ref={dialogRef} id="mobile-navigation" aria-label="Menú principal"
       onKeyDown={(event) => {
         if (event.key !== "Tab") return;

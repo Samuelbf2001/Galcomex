@@ -1,7 +1,7 @@
 "use client";
 
 import { Loader2, Plus, RotateCcw, Search } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import {
   ClientesApiError,
@@ -15,7 +15,9 @@ import { claseCampo, MensajeCampo } from "@/components/clientes/form-campos";
 import { ModuleState } from "@/components/layout/module-state";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente } from "@/components/ui/enlace-entidad";
+import { useParametroUrl } from "@/components/ui/estado-url";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useEsAdmin } from "@/lib/auth/rol-context";
@@ -62,15 +64,29 @@ export function ClientesWorkspace() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const [rol, setRol] = useState("todos");
+  // Búsqueda, rol y página viven en la dirección (?q=…&rol=…&pagina=2): al abrir
+  // una ficha y volver con «atrás», la lista sigue como estaba.
+  const [search, setSearch] = useParametroUrl("q", "");
+  const [rol, setRol] = useParametroUrl("rol", "todos");
   const query = search.trim().toLocaleLowerCase("es-CO");
-  const visibles = clientes.filter((cliente) =>
-    [cliente.nombre, cliente.nit, cliente.contactoNombre, cliente.contactoEmail].some((valor) => valor?.toLocaleLowerCase("es-CO").includes(query)) &&
-    (rol === "todos" || (rol === "cliente" ? cliente.esCliente : cliente.esProveedor)),
+  const visibles = useMemo(
+    () =>
+      clientes.filter((cliente) =>
+        [cliente.nombre, cliente.nit, cliente.contactoNombre, cliente.contactoEmail].some((valor) => valor?.toLocaleLowerCase("es-CO").includes(query)) &&
+        (rol === "todos" || (rol === "cliente" ? cliente.esCliente : cliente.esProveedor)),
+      ),
+    [clientes, query, rol],
   );
+  const {
+    visibles: clientesPagina,
+    pagina,
+    porPagina,
+    total: totalVisibles,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(visibles, 25, { pagina: "pagina" });
   const hasFilters = Boolean(query) || rol !== "todos";
-  function limpiarFiltros() { setSearch(""); setRol("todos"); }
+  function limpiarFiltros() { setSearch(""); setRol("todos"); setPagina(1); }
 
 
   useEffect(() => {
@@ -130,9 +146,9 @@ export function ClientesWorkspace() {
         </div>
       </div>
 
-      {clientes.length > 0 ? <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
-        <label className="min-w-0 flex-1 space-y-1.5"><span className="text-xs font-medium text-slate-600">Buscar empresa</span><div className="relative"><Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-slate-400" aria-hidden="true" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre, NIT o contacto" className="h-11 w-full rounded-lg border border-slate-300 pl-9 pr-3 text-sm" /></div></label>
-        <label className="space-y-1.5"><span className="block text-xs font-medium text-slate-600">Rol</span><select value={rol} onChange={(event) => setRol(event.target.value)} className="h-11 rounded-lg border border-slate-300 bg-white px-3 text-sm"><option value="todos">Todos los roles</option><option value="cliente">Clientes</option><option value="proveedor">Proveedores</option></select></label>
+      {clientes.length > 0 ? <div className="flex flex-wrap items-end gap-3 border border-slate-200 bg-white p-4">
+        <label className="min-w-0 flex-1 space-y-1.5"><span className="text-xs font-medium text-slate-600">Buscar empresa</span><div className="relative"><Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-slate-500" aria-hidden="true" /><input value={search} onChange={(event) => { setSearch(event.target.value); setPagina(1); }} placeholder="Nombre, NIT o contacto" className="h-11 w-full border border-slate-300 pl-9 pr-3 text-sm" /></div></label>
+        <label className="space-y-1.5"><span className="block text-xs font-medium text-slate-600">Rol</span><select value={rol} onChange={(event) => { setRol(event.target.value); setPagina(1); }} className="h-11 border border-slate-300 bg-white px-3 text-sm"><option value="todos">Todos los roles</option><option value="cliente">Clientes</option><option value="proveedor">Proveedores</option></select></label>
         {hasFilters && visibles.length > 0 ? <button type="button" onClick={limpiarFiltros} className="h-11 px-3 text-sm text-cyan-700">Limpiar filtros</button> : null}
         <p className="w-full text-xs text-slate-500" role="status">{loadState === "loading" ? "Actualizando empresas…" : `${visibles.length} de ${clientes.length} empresas`}</p>
       </div> : null}
@@ -164,37 +180,47 @@ export function ClientesWorkspace() {
       ) : visibles.length === 0 ? (
         <ModuleState type="empty" title="No hay empresas que coincidan" detail="Prueba otro nombre, NIT o rol." action={{ label: "Limpiar filtros", onClick: limpiarFiltros, icon: false }} />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white" aria-busy={loadState === "loading"}>
-          <table className="min-w-[660px] w-full border-collapse text-left text-sm">
-            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-              <tr>
-                <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
-                <th className="border-b border-slate-200 px-4 py-3">NIT</th>
-                <th className="border-b border-slate-200 px-4 py-3">Rol</th>
-                <th className="border-b border-slate-200 px-4 py-3">Contacto</th>
-                <th className="border-b border-slate-200 px-4 py-3">Tarifas</th>
-                <th className="border-b border-slate-200 px-4 py-3">Estado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibles.map((cliente) => (
-                <tr key={cliente.id} className="border-b border-slate-100 transition hover:bg-cyan-50/40">
-                  <td className="px-4 py-3 font-medium">
-                    <EnlaceCliente id={cliente.id} className="inline-flex min-h-11 items-center">
-                      {cliente.nombre}
-                    </EnlaceCliente>
-                  </td>
-                  <td className="px-4 py-3">{cliente.nit}</td>
-                  <td className="px-4 py-3">
-                    <RolEmpresa cliente={cliente} />
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{cliente.contactoNombre ?? "-"}</td>
-                  <td className="px-4 py-3">{cliente.tarifas.length}</td>
-                  <td className="px-4 py-3">{cliente.activo ? "Activo" : "Inactivo"}</td>
+        <div className="border border-slate-200 bg-white" aria-busy={loadState === "loading"}>
+          <div className="overflow-x-auto">
+            <table className="min-w-[660px] w-full border-collapse text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
+                  <th className="border-b border-slate-200 px-4 py-3">NIT</th>
+                  <th className="border-b border-slate-200 px-4 py-3">Rol</th>
+                  <th className="border-b border-slate-200 px-4 py-3">Contacto</th>
+                  <th className="border-b border-slate-200 px-4 py-3">Tarifas</th>
+                  <th className="border-b border-slate-200 px-4 py-3">Estado</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {clientesPagina.map((cliente) => (
+                  <tr key={cliente.id} className="border-b border-slate-100 transition hover:bg-cyan-50/40">
+                    <td className="px-4 py-0 font-medium">
+                      <EnlaceCliente id={cliente.id} className="inline-flex min-h-11 items-center">
+                        {cliente.nombre}
+                      </EnlaceCliente>
+                    </td>
+                    <td className="px-4 py-3">{cliente.nit}</td>
+                    <td className="px-4 py-3">
+                      <RolEmpresa cliente={cliente} />
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">{cliente.contactoNombre ?? "-"}</td>
+                    <td className="px-4 py-3">{cliente.tarifas.length}</td>
+                    <td className="px-4 py-3">{cliente.activo ? "Activo" : "Inactivo"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Paginacion
+            total={totalVisibles}
+            pagina={pagina}
+            porPagina={porPagina}
+            onPaginaChange={setPagina}
+            onPorPaginaChange={setPorPagina}
+            etiqueta="empresas"
+          />
         </div>
       )}
 

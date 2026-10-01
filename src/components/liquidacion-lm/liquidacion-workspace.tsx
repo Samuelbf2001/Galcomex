@@ -9,6 +9,7 @@ import type {
 } from "@/components/cartera/cartera-api";
 import { ModuleState } from "@/components/layout/module-state";
 import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { useRol } from "@/lib/auth/rol-context";
 
@@ -22,6 +23,9 @@ import {
 } from "./liquidacion-api";
 
 // ─── Helpers visuales ─────────────────────────────────────────────────────────
+
+/** Mismo estilo para todos los rótulos de la barra de filtros. */
+const ETIQUETA_FILTRO = "text-xs font-medium uppercase tracking-wide text-slate-600";
 
 function montoClass(value: string): string {
   try {
@@ -153,18 +157,6 @@ export function LiquidacionWorkspace() {
     return () => controller.abort();
   }, []);
 
-  const aplicarFiltro = () => {
-    setSelectedIds(new Set());
-    cargar(desde, hasta);
-  };
-
-  const limpiarFiltro = () => {
-    setDesde("");
-    setHasta("");
-    setSelectedIds(new Set());
-    cargar("", "");
-  };
-
   const tramites = useMemo(() => data?.tramites ?? [], [data]);
 
   const isElegible = useCallback(
@@ -176,6 +168,31 @@ export function LiquidacionWorkspace() {
     () => (soloPendientes ? tramites.filter(isElegible) : tramites),
     [tramites, soloPendientes, isElegible],
   );
+
+  // La tabla muestra una página; el saldo neto, la selección y «seleccionar
+  // todos» siguen trabajando con TODOS los trámites visibles.
+  const {
+    visibles: tramitesPagina,
+    pagina,
+    porPagina,
+    total: totalTramites,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(tramitesVisibles, 25, { pagina: "pagina" });
+
+  const aplicarFiltro = () => {
+    setSelectedIds(new Set());
+    setPagina(1);
+    cargar(desde, hasta);
+  };
+
+  const limpiarFiltro = () => {
+    setDesde("");
+    setHasta("");
+    setSelectedIds(new Set());
+    setPagina(1);
+    cargar("", "");
+  };
 
   const elegibles = useMemo(
     () => tramitesVisibles.filter(isElegible),
@@ -252,38 +269,38 @@ export function LiquidacionWorkspace() {
           <h1 className="text-xl font-semibold text-slate-900">Liquidación LM</h1>
           <p className="text-sm text-slate-600">
             Cuenta corriente con el socio Lucho. Netea el saldo de cruce de los
-            trámites SOCIO_LM facturados en el período para saldar en un solo pago.
+            trámites del socio Luis Martínez facturados en el período para saldar en un solo pago.
           </p>
         </header>
 
         {/* Filtros */}
         <div className="flex flex-wrap items-end gap-3 border border-slate-200 bg-white p-4">
-          <label className="flex flex-col gap-1 text-sm text-slate-700">
-            Desde (fecha factura)
+          <label className="flex flex-col gap-1">
+            <span className={ETIQUETA_FILTRO}>Desde (fecha factura)</span>
             <input
               type="date"
               value={desde}
               max={hasta || undefined}
               onChange={(e) => setDesde(e.target.value)}
               aria-label="Desde (fecha de factura)"
-              className="h-9 rounded-md border border-slate-300 px-2 text-sm"
+              className="h-9 border border-slate-300 px-2 text-sm"
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm text-slate-700">
-            Hasta (fecha factura)
+          <label className="flex flex-col gap-1">
+            <span className={ETIQUETA_FILTRO}>Hasta (fecha factura)</span>
             <input
               type="date"
               value={hasta}
               min={desde || undefined}
               onChange={(e) => setHasta(e.target.value)}
               aria-label="Hasta (fecha de factura)"
-              className="h-9 rounded-md border border-slate-300 px-2 text-sm"
+              className="h-9 border border-slate-300 px-2 text-sm"
             />
           </label>
           <button
             type="button"
             onClick={aplicarFiltro}
-            className="h-9 rounded-md bg-slate-900 px-4 text-sm font-medium text-white transition hover:bg-slate-700"
+            className="h-9 bg-slate-900 px-4 text-sm font-medium text-white transition hover:bg-slate-700"
           >
             Aplicar
           </button>
@@ -291,20 +308,18 @@ export function LiquidacionWorkspace() {
             <button
               type="button"
               onClick={limpiarFiltro}
-              className="h-9 rounded-md border border-slate-300 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="h-9 border border-slate-300 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
             >
               Limpiar
             </button>
           )}
 
           <div className="flex flex-col gap-1 ml-auto">
-            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Trámites
-            </span>
+            <span className={ETIQUETA_FILTRO}>Trámites</span>
             <div className="flex gap-1.5">
               <button
                 type="button"
-                onClick={() => { setSoloPendientes(false); setSelectedIds(new Set()); }}
+                onClick={() => { setSoloPendientes(false); setSelectedIds(new Set()); setPagina(1); }}
                 className={`h-9 border px-3 text-xs font-semibold transition ${
                   !soloPendientes
                     ? "border-slate-900 bg-slate-900 text-white"
@@ -315,7 +330,7 @@ export function LiquidacionWorkspace() {
               </button>
               <button
                 type="button"
-                onClick={() => { setSoloPendientes(true); setSelectedIds(new Set()); }}
+                onClick={() => { setSoloPendientes(true); setSelectedIds(new Set()); setPagina(1); }}
                 className={`h-9 border px-3 text-xs font-semibold transition ${
                   soloPendientes
                     ? "border-amber-600 bg-amber-600 text-white"
@@ -344,7 +359,7 @@ export function LiquidacionWorkspace() {
           <ModuleState
             type="empty"
             title="Sin trámites para liquidar"
-            detail="No hay trámites SOCIO_LM facturados en el período seleccionado."
+            detail="No hay trámites del socio Luis Martínez facturados en el período seleccionado."
           />
         ) : (
           <>
@@ -436,7 +451,8 @@ export function LiquidacionWorkspace() {
                             checked={allElegiblesSelected}
                             disabled={elegibles.length === 0}
                             onChange={toggleAll}
-                            aria-label="Seleccionar todos los trámites pendientes por saldar"
+                            aria-label="Seleccionar todos los trámites pendientes por saldar (de todas las páginas)"
+                            title="Selecciona todos los pendientes, de todas las páginas"
                             className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
                           />
                         </th>
@@ -451,7 +467,7 @@ export function LiquidacionWorkspace() {
                     </tr>
                   </thead>
                   <tbody>
-                    {tramitesVisibles.map((t) => {
+                    {tramitesPagina.map((t) => {
                       const cruzado = safeBigInt(t.saldoLM) === 0n;
                       const eligible = !cruzado;
                       const selected = selectedIds.has(t.facturaId);
@@ -460,7 +476,7 @@ export function LiquidacionWorkspace() {
                           key={t.borradorId}
                           className={`border-b border-slate-100 last:border-0 transition-colors ${
                             cruzado
-                              ? "bg-slate-50/50 text-slate-400"
+                              ? "bg-slate-50/50 text-slate-500"
                               : "hover:bg-slate-50"
                           }`}
                         >
@@ -536,6 +552,17 @@ export function LiquidacionWorkspace() {
                   </tfoot>
                 </table>
               </div>
+
+              {totalTramites > 0 ? (
+                <Paginacion
+                  total={totalTramites}
+                  pagina={pagina}
+                  porPagina={porPagina}
+                  onPaginaChange={setPagina}
+                  onPorPaginaChange={setPorPagina}
+                  etiqueta="trámites"
+                />
+              ) : null}
             </div>
           </>
         )}

@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Paginacion, usePaginacionLocal } from "./paginacion";
+import { Paginacion, paginasVisibles, usePaginacionLocal } from "./paginacion";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -145,5 +145,60 @@ describe("usePaginacionLocal", () => {
     // La lista se reduce a 2 ítems (1 sola página): la página vuelve a 1 sola.
     await act(async () => root.render(<Harness items={[1, 2]} />));
     expect(leerInfo()).toBe("pagina=1 porPagina=2 total=2 visibles=1,2");
+  });
+});
+
+// ── Números de página y memoria en la URL ───────────────────────────────────
+
+describe("paginasVisibles", () => {
+  it("muestra todas cuando son pocas", () => {
+    expect(paginasVisibles(1, 5)).toEqual([1, 2, 3, 4, 5]);
+  });
+  it("con muchas: primera, última y vecinas de la actual, siempre 7 casillas", () => {
+    expect(paginasVisibles(1, 13)).toEqual([1, 2, 3, 4, 5, "…", 13]);
+    expect(paginasVisibles(7, 13)).toEqual([1, "…", 6, 7, 8, "…", 13]);
+    expect(paginasVisibles(13, 13)).toEqual([1, "…", 9, 10, 11, 12, 13]);
+  });
+});
+
+describe("Paginacion: saltar a una página", () => {
+  it("el número de página lleva directo a esa página y marca la actual", async () => {
+    const onPaginaChange = vi.fn();
+    await act(async () =>
+      root.render(<Paginacion total={302} pagina={1} porPagina={25} onPaginaChange={onPaginaChange} onPorPaginaChange={vi.fn()} />),
+    );
+    const actual = container.querySelector('button[aria-current="page"]') as HTMLButtonElement;
+    expect(actual.textContent).toBe("1");
+    const ultima = container.querySelector('button[aria-label="Página 13"]') as HTMLButtonElement;
+    await act(async () => ultima.click());
+    expect(onPaginaChange).toHaveBeenCalledWith(13);
+  });
+});
+
+function HarnessUrl({ items }: { items: number[] }) {
+  const { pagina, visibles, setPagina } = usePaginacionLocal(items, 2, { pagina: "pagPrueba" });
+  return (
+    <div>
+      <p data-testid="info">{`pagina=${pagina} visibles=${visibles.join(",")}`}</p>
+      <button type="button" onClick={() => setPagina(pagina + 1)}>
+        siguiente
+      </button>
+    </div>
+  );
+}
+
+describe("usePaginacionLocal en la URL", () => {
+  it("recuerda la página en la dirección y la retoma al volver", async () => {
+    window.history.replaceState(null, "", "/pagos");
+    await act(async () => root.render(<HarnessUrl items={[1, 2, 3, 4, 5]} />));
+    await act(async () => (container.querySelector("button") as HTMLButtonElement).click());
+    expect(window.location.search).toBe("?pagPrueba=2");
+
+    // Volver a la pantalla (montarla de nuevo con esa dirección) la deja en la página 2.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(<HarnessUrl items={[1, 2, 3, 4, 5]} />));
+    expect(leerInfo()).toBe("pagina=2 visibles=3,4");
+    window.history.replaceState(null, "", "/");
   });
 });

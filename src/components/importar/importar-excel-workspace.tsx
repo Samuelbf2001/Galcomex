@@ -273,7 +273,7 @@ export function ImportarExcelWorkspace() {
                 type="button"
                 onClick={quitarArchivo}
                 disabled={ocupado}
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-slate-400 transition hover:text-slate-700 disabled:opacity-50"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-slate-500 transition hover:text-slate-700 disabled:opacity-50"
                 aria-label="Quitar archivo seleccionado"
               >
                 <X className="h-3.5 w-3.5" aria-hidden="true" />
@@ -286,7 +286,7 @@ export function ImportarExcelWorkspace() {
               disabled={ocupado}
               className="flex w-full max-w-md cursor-pointer flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center transition hover:border-slate-400 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <UploadCloud className="h-7 w-7 text-slate-400" aria-hidden="true" />
+              <UploadCloud className="h-7 w-7 text-slate-500" aria-hidden="true" />
               <span className="text-sm text-slate-600">
                 <span className="font-semibold text-slate-900">
                   Selecciona el archivo
@@ -482,7 +482,7 @@ function FilaHoja({ hoja }: { hoja: ResultadoHoja }) {
             <button
               type="button"
               onClick={() => setAbierta((v) => !v)}
-              className="inline-flex h-6 w-6 items-center justify-center text-slate-400 transition hover:text-slate-700"
+              className="inline-flex h-6 w-6 items-center justify-center text-slate-500 transition hover:text-slate-700"
               aria-label={abierta ? "Ocultar reconciliación" : "Ver reconciliación"}
               aria-expanded={abierta}
             >

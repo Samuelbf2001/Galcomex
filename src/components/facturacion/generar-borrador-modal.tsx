@@ -558,7 +558,7 @@ export function GenerarBorradorModal({ tramite, onClose, onGenerado }: GenerarBo
               className={INPUT}
             />
             {conComisionPorDefecto ? (
-              <span className="text-xs text-slate-400">Default: $150.000</span>
+              <span className="text-xs text-slate-500">Default: $150.000</span>
             ) : null}
           </label>
         ) : null}
@@ -573,7 +573,7 @@ export function GenerarBorradorModal({ tramite, onClose, onGenerado }: GenerarBo
                 placeholder="0"
                 className={INPUT}
               />
-              <span className="text-xs text-slate-400">
+              <span className="text-xs text-slate-500">
                 Monto atribuible al socio LM. Dejar vacío si no aplica.
               </span>
             </label>
@@ -586,7 +586,7 @@ export function GenerarBorradorModal({ tramite, onClose, onGenerado }: GenerarBo
                 placeholder="0"
                 className={INPUT}
               />
-              <span className="text-xs text-slate-400">
+              <span className="text-xs text-slate-500">
                 RETE IVA + RETE FTE + RETE ICA. Dejar en 0 si no aplica.
               </span>
             </label>
@@ -608,7 +608,7 @@ export function GenerarBorradorModal({ tramite, onClose, onGenerado }: GenerarBo
                 Desglosar conceptos operacionales
               </span>
             </label>
-            <p className="mt-0.5 ml-6 text-xs text-slate-400">
+            <p className="mt-0.5 ml-6 text-xs text-slate-500">
               Ej: Revisión documentos + Sistematización + Logística operativa (suma = comisión)
             </p>
           </div>
@@ -636,7 +636,7 @@ export function GenerarBorradorModal({ tramite, onClose, onGenerado }: GenerarBo
                   <button
                     type="button"
                     onClick={() => removeConcepto(c.id)}
-                    className="inline-flex h-8 w-8 items-center justify-center text-slate-400 hover:text-rose-600"
+                    className="inline-flex h-8 w-8 items-center justify-center text-slate-500 hover:text-rose-600"
                     aria-label="Eliminar concepto"
                   >
                     <X className="h-3.5 w-3.5" />

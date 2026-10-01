@@ -9,7 +9,6 @@ import {
   Plus,
   RotateCcw,
   Trash2,
-  Upload,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -17,6 +16,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
+import { escribirParametrosUrl, useParametroUrl } from "@/components/ui/estado-url";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import {
   CANALES_PAGO,
   PagosApiError,
@@ -307,7 +308,7 @@ async function fetchPagosGlobalDirecto(
     clienteId?: string;
     canalPago?: CanalPago | "";
     soloPendientes?: boolean;
-    proveedor?: ProveedorSeleccion | null;
+    proveedor?: Pick<ProveedorSeleccion, "tipo" | "id"> | null;
   },
   signal?: AbortSignal,
 ): Promise<PagosGlobalDataLocal> {
@@ -712,8 +713,8 @@ function FilaPagoRow({
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
-        {/* DO */}
-        <td className="whitespace-nowrap px-3 py-2">
+        {/* DO y, debajo, el cliente */}
+        <td className="min-w-[9rem] px-2.5 py-2">
           <EnlaceTramite
             id={fila.tramiteId}
             tab="pagos"
@@ -721,26 +722,38 @@ function FilaPagoRow({
           >
             {fila.consecutivo}
           </EnlaceTramite>
+          <span className="mt-0.5 block text-xs leading-snug text-slate-600">
+            <EnlaceCliente id={fila.clienteId}>{fila.clienteNombre}</EnlaceCliente>
+          </span>
         </td>
 
-        {/* Cliente */}
-        <td className="px-3 py-2 text-sm text-slate-700">
-          <EnlaceCliente id={fila.clienteId}>{fila.clienteNombre}</EnlaceCliente>
-        </td>
-
-        {/* Concepto */}
-        <td className="px-3 py-2">
+        {/* Concepto: el texto real mide 60–90 caracteres, así que crece en alto en vez de cortarse */}
+        <td className="px-2.5 py-2">
           {readOnly ? (
-            <span className="block min-w-[140px] px-1 text-sm text-slate-800">{fila.concepto}</span>
+            <span className="block min-w-[15rem] px-1 text-sm leading-snug text-slate-800">{fila.concepto}</span>
           ) : (
-            <input
+            <textarea
+              rows={1}
               value={fila.editingConcepto}
-              onChange={(e) => onChange(fila.id, "editingConcepto", e.target.value)}
+              onChange={(e) => onChange(fila.id, "editingConcepto", e.target.value.replace(/\r?\n/g, " "))}
               onBlur={() => onBlur(fila.id)}
+              onKeyDown={(e) => {
+                // Enter confirma (como en el input de antes); no inserta saltos de línea.
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
+              }}
               aria-label={`Concepto del ${etiqueta}`}
-              className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
+              className="w-full min-w-[15rem] resize-none [field-sizing:content] border border-transparent bg-transparent px-1 py-1 text-sm leading-snug text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
             />
           )}
+          {fila.beneficiarios && !nombraBeneficiario(fila.concepto, fila.beneficiarios) ? (
+            <p className="px-1 text-xs text-slate-600">
+              <span className="text-slate-500">Beneficiario: </span>
+              {fila.beneficiarios}
+            </p>
+          ) : null}
           {fila.aplicaciones.length > 0 ? (
             <div className="space-y-0.5 px-1 pb-0.5">
               {fila.aplicaciones.map((a) => (
@@ -753,40 +766,42 @@ function FilaPagoRow({
           {fila.faltaComprobante || fila.grupoPagoId ? (
             <div className="flex flex-wrap gap-1 px-1 pb-0.5">
               {fila.faltaComprobante ? (
-                <span
-                  className="inline-flex items-center gap-1 border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
-                  title="Pago sin comprobante bancario"
-                >
-                  <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-                  Falta comprobante
-                </span>
-              ) : null}
-              {fila.faltaComprobante && !readOnly ? (
-                <label
-                  className={`inline-flex w-fit items-center gap-1 border border-amber-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-50 ${
-                    fila.saving ? "cursor-not-allowed opacity-60" : "cursor-pointer"
-                  }`}
-                  title="Adjuntar el comprobante bancario a este pago"
-                >
-                  <Upload className="h-3 w-3" aria-hidden="true" />
-                  Adjuntar comprobante
-                  <input
-                    type="file"
-                    accept=".pdf,.jpg,.jpeg,.png"
-                    disabled={fila.saving}
-                    className="hidden"
-                    aria-label={`Adjuntar comprobante bancario del ${etiqueta}`}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) onAdjuntarComprobante(fila, file);
-                      e.target.value = "";
-                    }}
-                  />
-                </label>
+                readOnly ? (
+                  <span
+                    className="inline-flex items-center gap-1 whitespace-nowrap border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700"
+                    title="Pago sin comprobante bancario"
+                  >
+                    <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                    Falta comprobante
+                  </span>
+                ) : (
+                  // Una sola acción: avisa que falta el comprobante y deja adjuntarlo.
+                  <label
+                    className={`inline-flex w-fit items-center gap-1 whitespace-nowrap border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 ${
+                      fila.saving ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                    }`}
+                    title="Falta el comprobante bancario de este pago: adjúntalo aquí"
+                  >
+                    <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                    Falta comprobante · Adjuntar
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      disabled={fila.saving}
+                      className="hidden"
+                      aria-label={`Adjuntar comprobante bancario del ${etiqueta}`}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) onAdjuntarComprobante(fila, file);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                )
               ) : null}
               {fila.grupoPagoId ? (
                 <span
-                  className="inline-flex items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700"
+                  className="inline-flex items-center whitespace-nowrap border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[11px] font-semibold text-cyan-700"
                   title={
                     fila.grupoOtrosDOs.length > 0
                       ? `Pago en bloque — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
@@ -800,13 +815,9 @@ function FilaPagoRow({
           ) : null}
         </td>
 
-        {/* Beneficiarios (solo lectura en vista global) */}
-        <td className="px-3 py-2 text-sm text-slate-700">
-          {fila.beneficiarios || <span className="text-slate-400">—</span>}
-        </td>
 
         {/* N° soporte */}
-        <td className="px-3 py-2">
+        <td className="px-2.5 py-2">
           {readOnly ? (
             <span className="text-sm text-slate-700">{fila.numSoporte ?? "—"}</span>
           ) : (
@@ -816,13 +827,13 @@ function FilaPagoRow({
               onBlur={() => onBlur(fila.id)}
               placeholder="—"
               aria-label={`Número de soporte del ${etiqueta}`}
-              className="h-8 w-full min-w-[100px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-cyan-400 focus:bg-white"
+              className="h-8 w-full min-w-[6.5rem] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none [field-sizing:content] placeholder:text-slate-500 focus:border-cyan-400 focus:bg-white"
             />
           )}
         </td>
 
         {/* Valor */}
-        <td className="px-3 py-2 text-right">
+        <td className="px-2.5 py-2 text-right">
           {soloLecturaDinero ? (
             <span className="text-sm font-medium text-slate-900" title={fila.tieneFacturas || fila.esBloque ? "Pago con facturas o de un bloque: anula y registra de nuevo para cambiar el valor" : undefined}>
               {formatCOP(fila.valor)}
@@ -840,7 +851,7 @@ function FilaPagoRow({
         </td>
 
         {/* Canal */}
-        <td className="px-3 py-2">
+        <td className="px-2.5 py-2">
           {soloLecturaDinero ? (
             <span className="text-sm text-slate-700">{canalPagoLabel(fila.canalPago)}</span>
           ) : (
@@ -863,9 +874,9 @@ function FilaPagoRow({
         </td>
 
         {/* Fecha real */}
-        <td className="px-3 py-2">
+        <td className="px-2.5 py-2">
           {readOnly ? (
-            <span className="text-sm text-slate-700">
+            <span className="whitespace-nowrap text-sm text-slate-700">
               {fila.fechaRealPago ? formatDate(fila.fechaRealPago) : "—"}
             </span>
           ) : (
@@ -881,16 +892,16 @@ function FilaPagoRow({
         </td>
 
         {/* Costo bancario (solo lectura) */}
-        <td className="px-3 py-2 text-right text-sm text-slate-600">
+        <td className="px-2.5 py-2 text-right text-sm text-slate-600">
           {formatCOP(fila.costoBancario)}
         </td>
 
         {/* Acciones */}
-        <td className="px-3 py-2">
+        <td className="px-2.5 py-2">
           {readOnly ? null : (
             <div className="flex items-center gap-1">
               {fila.saving ? (
-                <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
+                <Loader2 className="h-4 w-4 animate-spin text-slate-500" aria-hidden="true" />
               ) : fila.dirty ? (
                 <span className="h-2 w-2 rounded-full bg-amber-400" title="Cambios pendientes" />
               ) : (
@@ -898,7 +909,7 @@ function FilaPagoRow({
               )}
               {fila.esBloque && fila.grupoPagoId ? (
                 // Un pago de bloque no se borra suelto: se anula el bloque completo.
-                <>
+                <span className="flex flex-col items-start">
                   <button
                     type="button"
                     onClick={() => onVerBloque(fila.grupoPagoId as string)}
@@ -915,13 +926,13 @@ function FilaPagoRow({
                       Anular bloque
                     </button>
                   ) : null}
-                </>
+                </span>
               ) : (
                 <button
                   type="button"
                   onClick={() => onDelete(fila)}
                   disabled={isDeleting}
-                  className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                  className="inline-flex h-7 w-7 items-center justify-center text-slate-500 transition hover:text-rose-600 disabled:opacity-40"
                   aria-label={`Eliminar ${etiqueta}`}
                   title="Eliminar pago"
                 >
@@ -939,7 +950,7 @@ function FilaPagoRow({
 
       {fila.errorFila ? (
         <tr className="bg-rose-50">
-          <td colSpan={10} className="px-3 py-1.5 text-xs text-rose-700" role="alert">
+          <td colSpan={8} className="px-3 py-1.5 text-xs text-rose-700" role="alert">
             <AlertTriangle className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
             {fila.errorFila} — los valores anteriores se restauraron.
           </td>
@@ -982,15 +993,35 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
   const [bloqueParaDetalle, setBloqueParaDetalle] = useState<string | null>(null);
   const [bloqueParaAnular, setBloqueParaAnular] = useState<{ grupoPagoId: string; resumen: string } | null>(null);
 
-  // Filtros
-  const [filtroCliente, setFiltroCliente] = useState("");
-  const [filtroCanal, setFiltroCanal] = useState<CanalPago | "">("");
-  const [soloPendientes, setSoloPendientes] = useState(false);
-  const [busqueda, setBusqueda] = useState("");
+  // Filtros: viven en la dirección (?cliente=…&canal=…&sinFecha=1&q=…&proveedor=…)
+  // para que, al abrir un DO y volver con «atrás», la lista siga igual.
+  const [filtroCliente, setFiltroCliente] = useParametroUrl("cliente", "");
+  const [canalUrl, setCanalUrl] = useParametroUrl("canal", "");
+  const filtroCanal: CanalPago | "" = CANALES_PAGO.some((c) => c.value === canalUrl) ? (canalUrl as CanalPago) : "";
+  const setFiltroCanal = setCanalUrl as (valor: CanalPago | "") => void;
+  const [sinFechaUrl, setSinFechaUrl] = useParametroUrl("sinFecha", "");
+  const soloPendientes = sinFechaUrl === "1";
+  // La búsqueda filtra en el momento (texto del input); a la dirección se escribe
+  // con un pequeño debounce, como en trámites.
+  const [busquedaUrl, setBusquedaUrl] = useParametroUrl("q", "");
+  const [busqueda, setBusqueda] = useState(busquedaUrl);
 
-  // Filtro "Proveedor" (§D.5)
+  // Filtro "Proveedor" (§D.5): en la dirección como `proveedor=EMPRESA:<id>` o `FICHA:<id>`.
+  const [proveedorUrl, setProveedorUrl] = useParametroUrl("proveedor", "");
   const [proveedorOptions, setProveedorOptions] = useState<ProveedorSeleccion[]>([]);
-  const [proveedorSel, setProveedorSel] = useState<ProveedorSeleccion | null>(null);
+  const [proveedorSel, setProveedorSelEstado] = useState<ProveedorSeleccion | null>(() => {
+    // Manda lo que dejó el usuario en la dirección; si no hay, el enlace directo
+    // desde la ficha del proveedor (`proveedorInicial`).
+    const [tipo, id] = proveedorUrl.split(":");
+    if ((tipo === "EMPRESA" || tipo === "FICHA") && id) return { tipo, id, nombre: "", nit: null };
+    return proveedorInicial ? { tipo: proveedorInicial.tipo, id: proveedorInicial.id, nombre: "", nit: null } : null;
+  });
+  /** Cambio hecho por el usuario: se recuerda en la dirección y el enlace directo ya no manda. */
+  function setProveedorSel(seleccion: ProveedorSeleccion | null) {
+    setProveedorSelEstado(seleccion);
+    escribirParametrosUrl({ proveedorEmpresaId: null, beneficiarioId: null });
+    setProveedorUrl(seleccion ? `${seleccion.tipo}:${seleccion.id}` : "");
+  }
   const [resumenProveedor, setResumenProveedor] = useState<ResumenCxpJson | null>(null);
   const [proveedorMeta, setProveedorMeta] = useState<ProveedorMeta | null>(null);
 
@@ -1002,10 +1033,12 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
     fetchProveedorOptions(controller.signal)
       .then((opts) => {
         setProveedorOptions(opts);
-        setProveedorSel((actual) => {
-          if (actual || !proveedorInicial) return actual;
-          const match = opts.find((o) => o.tipo === proveedorInicial.tipo && o.id === proveedorInicial.id);
-          return match ?? { tipo: proveedorInicial.tipo, id: proveedorInicial.id, nombre: "", nit: null };
+        // El proveedor llega de la dirección o del enlace directo solo con tipo e id:
+        // aquí se completan su nombre y NIT con los de la lista.
+        setProveedorSelEstado((actual) => {
+          if (!actual || actual.nombre) return actual;
+          const match = opts.find((o) => o.tipo === actual.tipo && o.id === actual.id);
+          return match ?? actual;
         });
       })
       .catch((caught: unknown) => {
@@ -1014,8 +1047,17 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
         // resto del módulo sigue funcionando sin ese filtro.
       });
     return () => controller.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proveedorInicial?.tipo, proveedorInicial?.id]);
+  }, []);
+
+  // La búsqueda se recuerda en la dirección con debounce (no una escritura por tecla).
+  useEffect(() => {
+    const timeout = setTimeout(() => setBusquedaUrl(busqueda.trim()), 300);
+    return () => clearTimeout(timeout);
+  }, [busqueda, setBusquedaUrl]);
+
+  // El servidor solo necesita tipo e id del proveedor: completar su nombre al
+  // llegar la lista de proveedores no debe volver a pedir los pagos.
+  const proveedorClave = proveedorSel ? `${proveedorSel.tipo}:${proveedorSel.id}` : "";
 
   // --- Carga ---
   useEffect(() => {
@@ -1025,13 +1067,14 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
       setLoadState("loading");
       setLoadError(null);
 
+      const [tipoProveedor, idProveedor] = proveedorClave.split(":");
       const [data, clientesData, tramitesData] = await Promise.all([
         fetchPagosGlobalDirecto(
           {
             clienteId: filtroCliente || undefined,
             canalPago: filtroCanal || undefined,
             soloPendientes: soloPendientes || undefined,
-            proveedor: proveedorSel,
+            proveedor: idProveedor ? { tipo: tipoProveedor as ProveedorTipo, id: idProveedor } : null,
           },
           controller.signal,
         ),
@@ -1060,7 +1103,7 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
     });
 
     return () => controller.abort();
-  }, [reloadKey, filtroCliente, filtroCanal, soloPendientes, proveedorSel]);
+  }, [reloadKey, filtroCliente, filtroCanal, soloPendientes, proveedorClave]);
 
 
   // Búsqueda en cliente (concepto / beneficiario / N° soporte / DO)
@@ -1075,6 +1118,11 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
         f.consecutivo.toLowerCase().includes(q),
     );
   }, [filas, busqueda]);
+
+  // Paginación en memoria: 461 pagos de golpe pasan de 6.000 px. Los totales de
+  // arriba vienen del servidor sobre TODOS los pagos filtrados, no solo la página.
+  const pag = usePaginacionLocal(filasVisibles, 25, { pagina: "pagina", porPagina: "porPagina" });
+  const { setPagina } = pag;
 
   // --- Edición inline ---
   function handleFieldChange(
@@ -1294,15 +1342,15 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
 
   return (
     <section className="space-y-5">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-normal">Pagos</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Vista global de todos los pagos de todos los DOs. El libro por trámite sigue intacto.
+            Todos los pagos a proveedores, de todos los DO.
           </p>
         </div>
         {puedeEditar ? (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={abrirBloqueSinProveedor}
@@ -1359,9 +1407,12 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
       <div className="flex flex-wrap items-center gap-3 border border-slate-200 bg-white px-4 py-3 text-sm">
         <select
           value={filtroCliente}
-          onChange={(e) => setFiltroCliente(e.target.value)}
+          onChange={(e) => {
+            setFiltroCliente(e.target.value);
+            setPagina(1);
+          }}
           aria-label="Filtrar por cliente"
-          className="h-9 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
+          className="h-9 min-w-0 max-w-full border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
         >
           <option value="">Todos los clientes</option>
           {clientes.map((c) => (
@@ -1375,6 +1426,7 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
           value={proveedorSel ? `${proveedorSel.tipo}:${proveedorSel.id}` : ""}
           onChange={(e) => {
             const v = e.target.value;
+            setPagina(1);
             // Al cambiar de proveedor, la franja no puede seguir mostrando las cifras
             // del anterior mientras llega (o falla) la carga del nuevo.
             setResumenProveedor(null);
@@ -1388,7 +1440,7 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
             setProveedorSel(encontrado ?? { tipo, id, nombre: "", nit: null });
           }}
           aria-label="Filtrar por proveedor"
-          className="h-9 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
+          className="h-9 min-w-0 max-w-full border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
         >
           <option value="">Todos los proveedores</option>
           {proveedorOptions.some((o) => o.tipo === "EMPRESA") ? (
@@ -1417,9 +1469,12 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
 
         <select
           value={filtroCanal}
-          onChange={(e) => setFiltroCanal(e.target.value as CanalPago | "")}
+          onChange={(e) => {
+            setFiltroCanal(e.target.value as CanalPago | "");
+            setPagina(1);
+          }}
           aria-label="Filtrar por canal de pago"
-          className="h-9 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
+          className="h-9 min-w-0 max-w-full border border-slate-300 bg-white px-2 text-sm outline-none focus:border-cyan-600"
         >
           <option value="">Todos los canales</option>
           {CANALES_PAGO.map((c) => (
@@ -1431,7 +1486,10 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
 
         <button
           type="button"
-          onClick={() => setSoloPendientes((v) => !v)}
+          onClick={() => {
+            setSinFechaUrl(soloPendientes ? "" : "1");
+            setPagina(1);
+          }}
           aria-pressed={soloPendientes}
           title="Pagos a los que les falta la fecha real de pago. No es lo que se le debe a proveedores."
           className={`h-9 border px-3 text-xs font-semibold transition ${
@@ -1445,7 +1503,10 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
 
         <input
           value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
+          onChange={(e) => {
+            setBusqueda(e.target.value);
+            setPagina(1);
+          }}
           placeholder="Buscar concepto, beneficiario, DO…"
           aria-label="Buscar por concepto, beneficiario, soporte o DO"
           className="h-9 min-w-[220px] flex-1 border border-slate-300 px-3 text-sm outline-none focus:border-cyan-600"
@@ -1562,22 +1623,20 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
           <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
-                <th className="border-b border-slate-200 px-3 py-2">DO</th>
-                <th className="border-b border-slate-200 px-3 py-2">Cliente</th>
-                <th className="border-b border-slate-200 px-3 py-2">Concepto</th>
-                <th className="border-b border-slate-200 px-3 py-2">Beneficiarios</th>
-                <th className="border-b border-slate-200 px-3 py-2">N° soporte</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-right">Valor (COP)</th>
-                <th className="border-b border-slate-200 px-3 py-2">Canal</th>
-                <th className="border-b border-slate-200 px-3 py-2">Fecha de pago</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-right">Costo bancario</th>
-                <th className="border-b border-slate-200 px-3 py-2 w-12">
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2">DO y cliente</th>
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2" title="Concepto, beneficiario y facturas que cubre">Pago</th>
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2">N° soporte</th>
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2 text-right">Valor (COP)</th>
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2">Canal</th>
+                <th className="border-b border-slate-200 px-2.5 py-2">Fecha de pago</th>
+                <th className="border-b border-slate-200 px-2.5 py-2 text-right">Costo bancario</th>
+                <th className="w-12 whitespace-nowrap border-b border-slate-200 px-2.5 py-2">
                   <span className="sr-only">Acciones</span>
                 </th>
               </tr>
             </thead>
             <tbody>
-              {filasVisibles.map((fila) => (
+              {pag.visibles.map((fila) => (
                 <FilaPagoRow
                   key={fila.id}
                   fila={fila}
@@ -1605,6 +1664,16 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
           </table>
         </div>
         )}
+        {loadState === "ready" && filasVisibles.length > 0 ? (
+          <Paginacion
+            total={pag.total}
+            pagina={pag.pagina}
+            porPagina={pag.porPagina}
+            onPaginaChange={pag.setPagina}
+            onPorPaginaChange={pag.setPorPagina}
+            etiqueta="pagos"
+          />
+        ) : null}
       </div>
       )}
 
@@ -1644,4 +1713,12 @@ export function PagosWorkspace({ proveedorInicial = null }: PagosWorkspaceProps)
       ) : null}
     </section>
   );
+}
+
+/** ¿El concepto ya dice a quién se le pagó? ("PAGO SOCIEDAD PORTUARIA…" + "SOCIEDAD PORTUARIA…"). */
+function nombraBeneficiario(concepto: string | null | undefined, beneficiarios: string): boolean {
+  const normalizar = (t: string) =>
+    t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/\s+/g, " ").trim();
+  const enConcepto = normalizar(concepto ?? "");
+  return beneficiarios.split(",").every((nombre) => enConcepto.includes(normalizar(nombre)));
 }

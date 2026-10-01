@@ -381,7 +381,7 @@ export function PagoEnBloqueModal({
                   </div>
                   <table className="w-full border-collapse text-left text-sm">
                     <thead>
-                      <tr className="border-t border-slate-100 text-[11px] uppercase tracking-wide text-slate-400">
+                      <tr className="border-t border-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
                         <th scope="col" className="w-8 px-3 py-1.5">
                           <span className="sr-only">Incluir</span>
                         </th>
@@ -412,7 +412,7 @@ export function PagoEnBloqueModal({
                             </td>
                             <td className="px-3 py-2 font-medium text-slate-800">
                               {f.numFacturaVisible}
-                              {f.marca ? <div className="text-xs font-normal text-slate-400">{f.marca}</div> : null}
+                              {f.marca ? <div className="text-xs font-normal text-slate-500">{f.marca}</div> : null}
                             </td>
                             <td className="px-3 py-2 text-slate-500">{formatDate(f.fecha)}</td>
                             <td className="px-3 py-2 text-right text-slate-600">{formatCOP(f.valor)}</td>
@@ -438,7 +438,7 @@ export function PagoEnBloqueModal({
                                   ) : null}
                                 </>
                               ) : (
-                                <span className="text-xs text-slate-400">{f.motivoNoPagable?.mensaje ?? "No pagable"}</span>
+                                <span className="text-xs text-slate-500">{f.motivoNoPagable?.mensaje ?? "No pagable"}</span>
                               )}
                             </td>
                           </tr>
@@ -464,7 +464,7 @@ export function PagoEnBloqueModal({
 
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">
-              Concepto <span className="font-normal text-slate-400">(opcional)</span>
+              Concepto <span className="font-normal text-slate-500">(opcional)</span>
             </span>
             <input
               value={concepto}
@@ -518,7 +518,7 @@ export function PagoEnBloqueModal({
             <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">
                 Comprobante de comercio
-                <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                <span className="ml-1.5 font-normal text-slate-500">(opcional)</span>
               </span>
               <input
                 type="file"
@@ -534,7 +534,7 @@ export function PagoEnBloqueModal({
 
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-slate-700">
-              Valor que salió del banco <span className="font-normal text-slate-400">(opcional)</span>
+              Valor que salió del banco <span className="font-normal text-slate-500">(opcional)</span>
             </span>
             <CampoMoneda
               value={valorTransferidoRaw}
@@ -564,9 +564,9 @@ export function PagoEnBloqueModal({
               ))}
             </select>
             {opciones.notaSoloGalcomex ? (
-              <p className="text-[11px] text-slate-400">{opciones.notaSoloGalcomex}</p>
+              <p className="text-[11px] text-slate-500">{opciones.notaSoloGalcomex}</p>
             ) : (
-              <p className="text-[11px] text-slate-400">
+              <p className="text-[11px] text-slate-500">
                 El costo se registra una sola vez para todo el bloque; el sistema lo calcula según el canal escogido.
               </p>
             )}

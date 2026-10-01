@@ -73,14 +73,18 @@ function EnlaceSiPermitido({
   );
 }
 
+/** Los consecutivos (DO.BAQ26-0255, BAQ-18767) nunca se parten en dos líneas. */
+const IDENTIFICADOR = "whitespace-nowrap";
+
 /** Nombre/consecutivo de un DO → /tramites/[id] (opcionalmente en una pestaña). */
 export function EnlaceTramite({
   id,
   tab,
   children,
-  className,
+  className: claseExtra,
   title,
 }: BaseProps & { id: string | null | undefined; tab?: TabTramite }) {
+  const className = cn(IDENTIFICADOR, claseExtra);
   if (!id) return <span className={className}>{children}</span>;
   return (
     <EnlaceSiPermitido
@@ -121,10 +125,11 @@ export function EnlaceFacturaVenta({
   tramiteId,
   borradorId,
   children,
-  className,
+  className: claseExtra,
   title,
 }: BaseProps & { tramiteId: string | null | undefined; borradorId?: string | null }) {
   const rol = useRol();
+  const className = cn(IDENTIFICADOR, claseExtra);
   if (!tramiteId) return <span className={className}>{children}</span>;
   const href = rutaPermitida("/facturacion", rol)
     ? rutaFacturaVenta(tramiteId, borradorId)

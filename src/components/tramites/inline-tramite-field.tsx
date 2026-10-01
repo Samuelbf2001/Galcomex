@@ -42,14 +42,14 @@ export function InlineTramiteField({ label, type, value, onSave }: {
     disabled: saving,
     "aria-invalid": Boolean(error),
     "aria-describedby": error ? `${id}-error` : undefined,
-    className: "min-h-11 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100 disabled:opacity-60",
+    className: "min-h-11 w-full min-w-0 border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100 disabled:opacity-60",
   };
   return (
     <form onSubmit={save} className="min-w-0 space-y-2" aria-busy={saving}>
-      <label htmlFor={id} className="block text-xs font-medium text-slate-500">{label}</label>
-      {type === "textarea" ? <textarea {...inputProps} rows={3} placeholder="Añade una nota para el equipo" /> : <input {...inputProps} type={type} placeholder="Sin registrar" />}
+      <label htmlFor={id} className="block text-xs font-medium uppercase tracking-wide text-slate-500">{label}</label>
+      {type === "textarea" ? <textarea {...inputProps} rows={3} className={`${inputProps.className} max-h-[28rem] min-h-[5.5rem] leading-relaxed [field-sizing:content]`} placeholder="Añade una nota para el equipo" /> : <input {...inputProps} type={type} placeholder="Sin registrar" />}
       {changed || saving ? <div className="flex flex-wrap items-center gap-2">
-        <button type="submit" disabled={saving} className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-cyan-700 px-3 text-sm font-semibold text-white disabled:opacity-60">
+        <button type="submit" disabled={saving} className="inline-flex min-h-11 items-center gap-2 bg-cyan-700 px-3 text-sm font-semibold text-white disabled:opacity-60">
           {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}{saving ? "Guardando…" : error ? "Reintentar guardado" : "Guardar"}
         </button>
         <button type="button" disabled={saving} onClick={() => { setDraft(null); setError(null); }} className="min-h-11 px-3 text-sm text-slate-600">Deshacer</button>

@@ -10,7 +10,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ModuleState } from "@/components/layout/module-state";
 import {
@@ -31,6 +31,9 @@ import {
 import { GenerarBorradorModal } from "@/components/facturacion/generar-borrador-modal";
 import { RevisorBorrador } from "@/components/facturacion/revisor-borrador";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { EstadoTramiteBadge } from "@/components/ui/estado-tramite";
+import { useParametroUrl } from "@/components/ui/estado-url";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useRol } from "@/lib/auth/rol-context";
@@ -54,20 +57,6 @@ type TramiteConBorradores = TramiteParaFacturacion & {
 type FiltroEstado = EstadoBorrador | "TODOS";
 
 // ─── Helpers visuales ─────────────────────────────────────────────────────────
-
-function estadoTramiteColor(estado: string): string {
-  const e = estado.toLowerCase();
-  if (e.includes("facturado") || e.includes("cerrado") || e.includes("pagado")) {
-    return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  }
-  if (e.includes("facturar")) {
-    return "border-amber-200 bg-amber-50 text-amber-700";
-  }
-  if (e.includes("tramite") || e.includes("puerto") || e.includes("apertura")) {
-    return "border-cyan-200 bg-cyan-50 text-cyan-700";
-  }
-  return "border-slate-200 bg-slate-50 text-slate-700";
-}
 
 function ultimoBorrador(borradores: BorradorRow[]): BorradorRow | null {
   if (borradores.length === 0) return null;
@@ -190,17 +179,13 @@ function FilaTramite({
       </td>
 
       <td className="px-4 py-3">
-        <span
-          className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${estadoTramiteColor(tramite.estado)}`}
-        >
-          {tramite.estado.replace(/_/g, " ")}
-        </span>
+        <EstadoTramiteBadge estado={tramite.estado} />
       </td>
 
       <td className="px-4 py-3">
         {tramite.cargandoBorradores ? (
           <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
-            <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
+            <Loader2 className="h-4 w-4 animate-spin text-slate-500" aria-hidden="true" />
             Cargando…
           </span>
         ) : conError ? (
@@ -222,28 +207,28 @@ function FilaTramite({
         ) : borrador ? (
           <div className="flex items-center gap-2">
             <span
-              className={`inline-flex h-6 items-center border px-2 text-xs font-semibold ${estadoBorradorColorClass(borrador.estado)}`}
+              className={`inline-flex h-6 items-center whitespace-nowrap border px-2 text-xs font-semibold ${estadoBorradorColorClass(borrador.estado)}`}
             >
               {ESTADO_BORRADOR_LABEL[borrador.estado]}
             </span>
             {borrador.numFacturaSiigo ? (
-              <span className="font-mono text-xs text-slate-600">
+              <span className="whitespace-nowrap font-mono text-xs text-slate-600">
                 {borrador.numFacturaSiigo}
               </span>
             ) : null}
           </div>
         ) : (
-          <span className="text-xs text-slate-400">Sin borrador</span>
+          <span className="text-xs text-slate-500">Sin borrador</span>
         )}
       </td>
 
       <td className="px-4 py-3 text-right">
         {borrador ? (
-          <span className="text-sm font-semibold text-slate-900">
+          <span className="whitespace-nowrap text-sm font-semibold text-slate-900">
             {formatCOP(borrador.totalFactura)}
           </span>
         ) : (
-          <span className="text-xs text-slate-400">—</span>
+          <span className="text-xs text-slate-500">—</span>
         )}
       </td>
 
@@ -251,38 +236,38 @@ function FilaTramite({
         {borrador ? (
           <div className="flex flex-col items-end gap-0.5">
             {BigInt(borrador.saldoAFavorCliente) > 0n ? (
-              <span className="text-emerald-700 font-medium">
+              <span className="whitespace-nowrap text-emerald-700 font-medium">
                 +{formatCOP(borrador.saldoAFavorCliente)} cliente
               </span>
             ) : null}
             {BigInt(borrador.saldoACargoCliente) > 0n ? (
-              <span className="text-rose-600 font-medium">
+              <span className="whitespace-nowrap text-rose-600 font-medium">
                 -{formatCOP(borrador.saldoACargoCliente)} cliente
               </span>
             ) : null}
             {BigInt(borrador.saldoAFavorLM) > 0n ? (
-              <span className="text-emerald-600 text-xs">
+              <span className="whitespace-nowrap text-emerald-600 text-xs">
                 +{formatCOP(borrador.saldoAFavorLM)} LM
               </span>
             ) : null}
             {BigInt(borrador.saldoACargoLM) > 0n ? (
-              <span className="text-rose-500 text-xs">
+              <span className="whitespace-nowrap text-rose-500 text-xs">
                 -{formatCOP(borrador.saldoACargoLM)} LM
               </span>
             ) : null}
           </div>
         ) : (
-          <span className="text-xs text-slate-400">—</span>
+          <span className="text-xs text-slate-500">—</span>
         )}
       </td>
 
-      <td className="px-4 py-3">
-        <div className="flex items-center justify-end gap-2">
+      <td className="whitespace-nowrap px-4 py-3">
+        <div className="flex flex-nowrap items-center justify-end gap-2">
           {borrador ? (
             <button
               type="button"
               onClick={() => onRevisar(borrador)}
-              className="inline-flex h-8 items-center gap-1.5 border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+              className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
             >
               <FileText className="h-3.5 w-3.5" aria-hidden="true" />
               Revisar
@@ -294,7 +279,7 @@ function FilaTramite({
               type="button"
               onClick={() => descargarSiigoImport(borrador.id)}
               title="Descargar archivo de importación de SIIGO (Excel formato facturas de venta)"
-              className="inline-flex h-8 items-center gap-1.5 border border-emerald-300 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+              className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap border border-emerald-300 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
             >
               <Download className="h-3.5 w-3.5" aria-hidden="true" />
               SIIGO
@@ -311,7 +296,7 @@ function FilaTramite({
             <button
               type="button"
               onClick={onGenerar}
-              className="inline-flex h-8 items-center gap-1.5 bg-slate-950 px-3 text-xs font-semibold text-white transition hover:bg-slate-800"
+              className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap bg-slate-950 px-3 text-xs font-semibold text-white transition hover:bg-slate-800"
             >
               <Plus className="h-3.5 w-3.5" aria-hidden="true" />
               {borrador ? "Nuevo" : "Generar"} borrador
@@ -338,7 +323,11 @@ export function FacturacionWorkspace() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [filtro, setFiltro] = useState<FiltroEstado>("TODOS");
+  // La pestaña de estado vive en la dirección (?estado=APROBADO): al volver con
+  // «atrás» queda la misma. Convive con `tramiteId` y `borrador` (enlace directo).
+  const [estadoUrl, setEstadoUrl] = useParametroUrl("estado", "TODOS");
+  const filtro: FiltroEstado = FILTROS.some((f) => f.value === estadoUrl) ? (estadoUrl as FiltroEstado) : "TODOS";
+  const setFiltro = setEstadoUrl as (valor: FiltroEstado) => void;
 
   // Modal generar borrador
   const [tramiteParaGenerar, setTramiteParaGenerar] =
@@ -554,11 +543,23 @@ export function FacturacionWorkspace() {
 
   // ── Filtrado ───────────────────────────────────────────────────────────────
 
-  const tramitesFiltrados = tramites.filter((t) => {
-    if (filtro === "TODOS") return true;
-    const borrador = ultimoBorrador(t.borradores);
-    return borrador?.estado === filtro;
-  });
+  const tramitesFiltrados = useMemo(
+    () =>
+      tramites.filter((t) => {
+        if (filtro === "TODOS") return true;
+        const borrador = ultimoBorrador(t.borradores);
+        return borrador?.estado === filtro;
+      }),
+    [tramites, filtro],
+  );
+  const {
+    visibles: tramitesVisibles,
+    pagina,
+    porPagina,
+    total: totalFiltrados,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(tramitesFiltrados, 25, { pagina: "pagina", porPagina: "porPagina" });
 
   // Alerta "Aprobados pendientes de enviar a SIIGO" — independiente del filtro
   // activo, para que Camila (ADMIN) siempre la vea al entrar al módulo.
@@ -642,7 +643,10 @@ export function FacturacionWorkspace() {
             <button
               key={f.value}
               type="button"
-              onClick={() => setFiltro(f.value)}
+              onClick={() => {
+                setFiltro(f.value);
+                setPagina(1);
+              }}
               className={`h-8 border px-3 text-xs font-semibold transition ${
                 filtro === f.value
                   ? "border-slate-950 bg-slate-950 text-white"
@@ -695,13 +699,13 @@ export function FacturacionWorkspace() {
                     <th className="border-b border-slate-200 px-4 py-2 text-right">
                       Saldos
                     </th>
-                    <th className="border-b border-slate-200 px-4 py-2 text-right w-48">
+                    <th className="border-b border-slate-200 px-4 py-2 text-right">
                       Acciones
                     </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {tramitesFiltrados.map((tramite) => (
+                  {tramitesVisibles.map((tramite) => (
                     <FilaTramite
                       key={tramite.id}
                       tramite={tramite}
@@ -717,6 +721,14 @@ export function FacturacionWorkspace() {
                 </tbody>
               </table>
             </div>
+            <Paginacion
+              total={totalFiltrados}
+              pagina={pagina}
+              porPagina={porPagina}
+              onPaginaChange={setPagina}
+              onPorPaginaChange={setPorPagina}
+              etiqueta="trámites"
+            />
           </div>
         )}
       </section>

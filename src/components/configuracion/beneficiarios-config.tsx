@@ -13,6 +13,7 @@ import {
   invalidarCatalogos,
 } from "@/components/configuracion/catalogos-cache";
 import { ModuleState } from "@/components/layout/module-state";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
@@ -42,6 +43,16 @@ export function BeneficiariosConfig() {
   const [guardando, setGuardando] = useState<string | null>(null); // id en guardado
   const [errorGuardado, setErrorGuardado] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // La página de Configuración tiene varias secciones: cada lista guarda la
+  // suya en la dirección con un nombre propio.
+  const {
+    visibles: beneficiariosPagina,
+    pagina,
+    porPagina,
+    total: totalBeneficiarios,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(beneficiarios, 25, { pagina: "pagProveedores" });
 
   useEffect(() => {
     let cancelado = false;
@@ -191,7 +202,7 @@ export function BeneficiariosConfig() {
           type="button"
           onClick={cancelarEdicion}
           disabled={enGuardado}
-          className="text-xs text-slate-400 disabled:opacity-50"
+          className="text-xs text-slate-500 disabled:opacity-50"
         >
           Cancelar
         </button>
@@ -246,130 +257,146 @@ export function BeneficiariosConfig() {
           action={{ label: "Reintentar", onClick: recargar }}
         />
       ) : (
-        <div className="overflow-x-auto border border-slate-200 bg-white">
-          <table className="w-full border-collapse text-left text-sm">
-            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-              <tr>
-                <th className="border-b border-slate-200 px-4 py-2">Nombre</th>
-                <th className="border-b border-slate-200 px-4 py-2">Empresa</th>
-                <th className="border-b border-slate-200 px-4 py-2">NIT</th>
-                <th className="border-b border-slate-200 px-4 py-2">Banco</th>
-                <th className="border-b border-slate-200 px-4 py-2">Nombre corto (factura de venta)</th>
-                <th className="border-b border-slate-200 px-4 py-2">Numerar &quot;FE 11298&quot;</th>
-              </tr>
-            </thead>
-            <tbody>
-              {beneficiarios.length === 0 && (
+        <div className="border border-slate-200 bg-white">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
-                  <td colSpan={6} className="px-4 py-4 text-center text-slate-400">
-                    <ModuleState type="empty" title="No hay beneficiarios registrados" detail="Los proveedores y beneficiarios que registres aparecerán aquí para completar sus datos." />
-                  </td>
+                  <th className="border-b border-slate-200 px-4 py-2">Nombre</th>
+                  <th className="border-b border-slate-200 px-4 py-2">Empresa</th>
+                  <th className="border-b border-slate-200 px-4 py-2">NIT</th>
+                  <th className="border-b border-slate-200 px-4 py-2">Banco</th>
+                  <th className="border-b border-slate-200 px-4 py-2">Nombre corto (factura de venta)</th>
+                  <th className="border-b border-slate-200 px-4 py-2">Numerar &quot;FE 11298&quot;</th>
                 </tr>
-              )}
-              {beneficiarios.map((b) => (
-                <tr key={b.id} className="border-b border-slate-100 last:border-0">
-                  {/* Nombre */}
-                  <td className="px-4 py-2">
-                    {renderEditor(b, "nombre") ??
-                      (puedeEditar ? (
-                        <button
-                          type="button"
-                          disabled={edit !== null}
-                          onClick={() => iniciarEdicion(b, "nombre")}
-                          className="text-left hover:underline"
-                          title="Editar nombre"
-                          aria-label={`Editar nombre de ${b.nombre}`}
-                        >
-                          {b.nombre}
-                        </button>
-                      ) : (
-                        <span>{b.nombre}</span>
-                      ))}
-                  </td>
+              </thead>
+              <tbody>
+                {beneficiarios.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-4 text-center text-slate-500">
+                      <ModuleState type="empty" title="No hay beneficiarios registrados" detail="Los proveedores y beneficiarios que registres aparecerán aquí para completar sus datos." />
+                    </td>
+                  </tr>
+                )}
+                {beneficiariosPagina.map((b) => (
+                  <tr key={b.id} className="border-b border-slate-100 align-middle last:border-0">
+                    {/* Nombre */}
+                    <td className="px-4 py-2 align-middle">
+                      {renderEditor(b, "nombre") ??
+                        (puedeEditar ? (
+                          <button
+                            type="button"
+                            disabled={edit !== null}
+                            onClick={() => iniciarEdicion(b, "nombre")}
+                            className="text-left hover:underline"
+                            title="Editar nombre"
+                            aria-label={`Editar nombre de ${b.nombre}`}
+                          >
+                            {b.nombre}
+                          </button>
+                        ) : (
+                          <span>{b.nombre}</span>
+                        ))}
+                    </td>
 
-                  {/* Empresa (fase 3) */}
-                  <td className="px-4 py-2 text-sm">
-                    {b.empresa ? (
-                      <Link href={`/clientes/${b.empresa.id}`} className="text-cyan-700 hover:underline">
-                        {b.empresa.nombre}
-                      </Link>
-                    ) : b.esFichaSocio ? (
-                      <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600" title="Ficha de pago del socio: no es una empresa">
-                        Socio
-                      </span>
-                    ) : (
-                      <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">Sin empresa</span>
-                    )}
-                  </td>
-
-                  {/* NIT (sin DV) + DV */}
-                  <td className="px-4 py-2">
-                    {renderEditor(b, "nit") ??
-                      (puedeEditar ? (
-                        <button
-                          type="button"
-                          disabled={edit !== null}
-                          onClick={() => iniciarEdicion(b, "nit")}
-                          className={`font-mono text-sm ${
-                            b.nit
-                              ? "text-slate-700 hover:underline"
-                              : "text-amber-600 hover:underline"
-                          }`}
-                          title="Editar NIT y dígito de verificación"
-                          aria-label={`Editar NIT de ${b.nombre}`}
-                        >
-                          {b.nit ?? "— Sin NIT —"}
-                        </button>
-                      ) : (
-                        <span className={`font-mono text-sm ${b.nit ? "text-slate-700" : "text-amber-600"}`}>
-                          {b.nit ?? "— Sin NIT —"}
+                    {/* Empresa (fase 3) */}
+                    <td className="px-4 py-2 align-middle text-sm">
+                      {b.empresa ? (
+                        <Link href={`/clientes/${b.empresa.id}`} className="text-cyan-700 hover:underline">
+                          {b.empresa.nombre}
+                        </Link>
+                      ) : b.esFichaSocio ? (
+                        <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600" title="Ficha de pago del socio: no es una empresa">
+                          Socio
                         </span>
-                      ))}
-                  </td>
-
-                  {/* Banco */}
-                  <td className="px-4 py-2 text-xs text-slate-500">
-                    {b.banco ?? "—"}
-                    {b.numCuenta ? ` · ${b.numCuenta}` : ""}
-                  </td>
-
-                  {/* Nombre corto */}
-                  <td className="px-4 py-2">
-                    {renderEditor(b, "nombreCorto") ??
-                      (puedeEditar ? (
-                        <button
-                          type="button"
-                          disabled={edit !== null}
-                          onClick={() => iniciarEdicion(b, "nombreCorto")}
-                          className="text-left text-xs text-slate-600 hover:underline"
-                          title='Nombre como sale en la línea de terceros ("ALMACARGA")'
-                          aria-label={`Editar nombre corto de ${b.nombre}`}
-                        >
-                          {b.nombreCorto ?? <span className="text-slate-300">—</span>}
-                        </button>
                       ) : (
-                        <span className="text-xs text-slate-600">{b.nombreCorto ?? "—"}</span>
-                      ))}
-                  </td>
+                        <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">Sin empresa</span>
+                      )}
+                    </td>
 
-                  {/* Numerar "FE 11298" */}
-                  <td className="px-4 py-2">
-                    <label className="inline-flex items-center gap-1.5 text-xs text-slate-600">
-                      <input
-                        type="checkbox"
-                        checked={b.numFacturaConEspacio}
-                        disabled={!puedeEditar || guardando === b.id}
-                        onChange={() => void toggleNumFacturaConEspacio(b)}
-                        className="h-3.5 w-3.5"
-                        aria-label={`Numerar las facturas de ${b.nombre} como "FE 11298"`}
-                      />
-                      {guardando === b.id ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
-                    </label>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    {/* NIT (sin DV) + DV */}
+                    <td className="whitespace-nowrap px-4 py-2 align-middle">
+                      {renderEditor(b, "nit") ??
+                        (puedeEditar ? (
+                          <button
+                            type="button"
+                            disabled={edit !== null}
+                            onClick={() => iniciarEdicion(b, "nit")}
+                            className={`font-mono text-sm ${
+                              b.nit
+                                ? "text-slate-700 hover:underline"
+                                : "text-amber-600 hover:underline"
+                            }`}
+                            title="Editar NIT y dígito de verificación"
+                            aria-label={`Editar NIT de ${b.nombre}`}
+                          >
+                            {b.nit ?? "— Sin NIT —"}
+                          </button>
+                        ) : (
+                          <span className={`font-mono text-sm ${b.nit ? "text-slate-700" : "text-amber-600"}`}>
+                            {b.nit ?? "— Sin NIT —"}
+                          </span>
+                        ))}
+                    </td>
+
+                    {/* Banco */}
+                    <td className="px-4 py-2 align-middle text-xs text-slate-500">
+                      {b.banco ?? "—"}
+                      {b.numCuenta ? ` · ${b.numCuenta}` : ""}
+                    </td>
+
+                    {/* Nombre corto */}
+                    <td className="px-4 py-2 align-middle">
+                      {renderEditor(b, "nombreCorto") ??
+                        (puedeEditar ? (
+                          <button
+                            type="button"
+                            disabled={edit !== null}
+                            onClick={() => iniciarEdicion(b, "nombreCorto")}
+                            className="text-left text-xs text-slate-600 hover:underline"
+                            title='Nombre como sale en la línea de terceros ("ALMACARGA")'
+                            aria-label={`Editar nombre corto de ${b.nombre}`}
+                          >
+                            {b.nombreCorto ?? <span className="text-slate-300">—</span>}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-slate-600">{b.nombreCorto ?? "—"}</span>
+                        ))}
+                    </td>
+
+                    {/* Numerar "FE 11298" */}
+                    <td className="px-4 py-2 align-middle">
+                      <label className="flex w-fit items-center gap-1.5 text-xs text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={b.numFacturaConEspacio}
+                          disabled={!puedeEditar || guardando === b.id}
+                          onChange={() => void toggleNumFacturaConEspacio(b)}
+                          className="h-3.5 w-3.5"
+                          aria-label={`Numerar las facturas de ${b.nombre} como "FE 11298"`}
+                        />
+                        {guardando === b.id ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
+                      </label>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {totalBeneficiarios > 0 ? (
+            <Paginacion
+              total={totalBeneficiarios}
+              pagina={pagina}
+              porPagina={porPagina}
+              onPaginaChange={(siguiente) => {
+                // Una edición abierta en otra página bloquearía los demás botones.
+                cancelarEdicion();
+                setPagina(siguiente);
+              }}
+              onPorPaginaChange={setPorPagina}
+              etiqueta="proveedores"
+            />
+          ) : null}
         </div>
       )}
     </div>

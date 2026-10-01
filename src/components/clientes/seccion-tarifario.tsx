@@ -703,7 +703,7 @@ function ConceptoVentaSelect({
           value && !seleccionado ? "border-red-300" : "border-slate-300"
         }`}
       >
-        <span className={`truncate ${seleccionado ? "text-slate-900" : value ? "text-red-600" : "text-slate-400"}`}>
+        <span className={`truncate ${seleccionado ? "text-slate-900" : value ? "text-red-600" : "text-slate-500"}`}>
           {seleccionado
             ? etiquetaConcepto(seleccionado)
             : value
@@ -729,7 +729,7 @@ function ConceptoVentaSelect({
           </div>
           <div className="max-h-64 overflow-auto">
             {filtrados.length === 0 ? (
-              <p className="px-3 py-3 text-center text-xs text-slate-400">
+              <p className="px-3 py-3 text-center text-xs text-slate-500">
                 {conceptos.length === 0
                   ? "No hay conceptos activos en el catálogo."
                   : "No hay conceptos con ese nombre o código."}
@@ -1333,7 +1333,7 @@ function TarjetaTarifario({
                           {it.nombrePublico}
                           {it.restaAgenciamiento ? (
                             <span
-                              className="border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+                              className="border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-700"
                               title="Se resta el agenciamiento estándar de la agencia del DO"
                             >
                               − agencia
@@ -1347,7 +1347,7 @@ function TarjetaTarifario({
                       <td className="px-4 py-2 text-slate-700">
                         {it.disparador === "SIEMPRE" ? "Siempre" : it.disparador === "MANUAL" ? "A mano" : `Si ${nombreEvento(it.eventoCodigo).toLowerCase()}`}
                       </td>
-                      <td className="px-4 py-2 text-slate-700">{it.siigoCodigo ?? <span className="text-slate-400">—</span>}</td>
+                      <td className="px-4 py-2 text-slate-700">{it.siigoCodigo ?? <span className="text-slate-500">—</span>}</td>
                       <td className="px-4 py-2 text-slate-700">{it.aplicaIva ? "Sí" : "No"}</td>
                       {editable && esBorrador ? (
                         <td className="px-4 py-2">

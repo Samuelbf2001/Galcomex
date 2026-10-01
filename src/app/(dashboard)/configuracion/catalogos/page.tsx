@@ -9,8 +9,7 @@ export default async function CatalogosPage() {
       <div>
         <h1 className="text-2xl font-semibold">Catálogos</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Conceptos de venta, eventos y productos Siigo con sus impuestos: un solo lugar para lo
-          que antes vivía repartido entre migraciones, código y memoria.
+          Conceptos de venta, eventos y productos Siigo con sus impuestos, todo en un solo lugar.
         </p>
       </div>
       <CatalogosWorkspace />

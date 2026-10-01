@@ -78,7 +78,7 @@ export function ArchivosClientesWorkspace() {
 
       <div className="flex flex-wrap items-center gap-3 border border-slate-200 bg-white px-4 py-3">
         <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden="true" />
           <input
             type="search"
             value={filtro}
@@ -133,7 +133,7 @@ export function ArchivosClientesWorkspace() {
 
 function FilaCliente({ cliente, atenuado }: { cliente: ClienteConArchivos; atenuado?: boolean }) {
   return (
-    <tr className={`border-b border-slate-100 hover:bg-slate-50 ${atenuado ? "text-slate-400" : ""}`}>
+    <tr className={`border-b border-slate-100 hover:bg-slate-50 ${atenuado ? "text-slate-500" : ""}`}>
       <td className="px-4 py-2.5">
         <Link
           href={`/archivos/clientes/${cliente.id}`}

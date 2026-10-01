@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, ChevronDown, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
   catalogoFormasPago,
@@ -29,6 +29,7 @@ import {
 import { ModuleState } from "@/components/layout/module-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { Skeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 
@@ -86,7 +87,7 @@ function BadgeActivo({ activo }: { activo: boolean }) {
 function BadgeOrigenImpuesto({ origen }: { origen: "SIIGO" | "MANUAL" }) {
   return (
     <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
         origen === "SIIGO"
           ? "bg-slate-100 text-slate-600"
           : "bg-amber-100 text-amber-700"
@@ -245,7 +246,7 @@ function ImpuestosMultiSelect({
                     </div>
                     <div className="flex-1">
                       <div className="font-medium text-slate-800">{imp.nombre}</div>
-                      <div className="text-[10px] text-slate-500">
+                      <div className="text-[11px] text-slate-500">
                         {imp.tipo} · {imp.porcentaje}%
                       </div>
                     </div>
@@ -301,13 +302,28 @@ function ProductosModal({
 }) {
   const [q, setQ] = useState("");
 
-  const filtrados = q.trim()
-    ? productos.filter(
-        (p) =>
-          p.codigo.toLowerCase().includes(q.toLowerCase()) ||
-          p.nombre.toLowerCase().includes(q.toLowerCase()),
-      )
-    : productos;
+  const filtrados = useMemo(
+    () =>
+      q.trim()
+        ? productos.filter(
+            (p) =>
+              p.codigo.toLowerCase().includes(q.toLowerCase()) ||
+              p.nombre.toLowerCase().includes(q.toLowerCase()),
+          )
+        : productos,
+    [productos, q],
+  );
+  // La lista vive en una ventana (modal) que no se restaura al volver con
+  // «atrás», así que su página no se guarda en la dirección: cada vez que se
+  // abre empieza en la página 1.
+  const {
+    visibles: productosPagina,
+    pagina,
+    porPagina,
+    total: totalFiltrados,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(filtrados, 25);
 
   return (
     <ModalShell
@@ -321,7 +337,10 @@ function ProductosModal({
         <div className="border-b border-slate-200 px-5 py-3">
           <input
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setPagina(1);
+            }}
             placeholder="Filtrar por código o nombre…"
             aria-label="Filtrar productos por código o nombre"
             className="w-72 border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-slate-400"
@@ -347,66 +366,78 @@ function ProductosModal({
               />
             </div>
           ) : (
-            <table className="w-full border-collapse text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500 sticky top-0">
-                <tr>
-                  <th className="border-b border-slate-200 px-4 py-3">Código</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Grupo contable</th>
-                  <th className="border-b border-slate-200 px-4 py-3">IVA</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Impuestos</th>
-                  <th className="border-b border-slate-200 px-4 py-3">Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtrados.length === 0 ? (
+            <>
+              <table className="w-full border-collapse text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase text-slate-500 sticky top-0">
                   <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan={6}>
-                      {q ? "Sin resultados para el filtro." : "Sin productos sincronizados."}
-                    </td>
+                    <th className="border-b border-slate-200 px-4 py-3">Código</th>
+                    <th className="border-b border-slate-200 px-4 py-3">Nombre</th>
+                    <th className="border-b border-slate-200 px-4 py-3">Grupo contable</th>
+                    <th className="border-b border-slate-200 px-4 py-3">IVA</th>
+                    <th className="border-b border-slate-200 px-4 py-3">Impuestos</th>
+                    <th className="border-b border-slate-200 px-4 py-3">Estado</th>
                   </tr>
-                ) : (
-                  filtrados.map((p) => (
-                    <tr key={p.id} className="border-b border-slate-100 align-top">
-                      <td className="px-4 py-3 font-mono text-xs">{p.codigo}</td>
-                      <td className="px-4 py-3 font-medium">{p.nombre}</td>
-                      <td className="px-4 py-3 text-xs text-slate-600">{p.grupoContableNombre}</td>
-                      <td className="px-4 py-3 text-xs text-slate-600">{p.clasificacionIva}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-col gap-2">
-                          {p.impuestos.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
-                              {p.impuestos.map((i) => (
-                                <span
-                                  key={i.id}
-                                  className="inline-flex items-center gap-1 rounded bg-cyan-50 px-2 py-0.5 text-[10px] font-medium text-cyan-700"
-                                  title={`${i.tipo} · ${i.porcentaje}%`}
-                                >
-                                  {i.nombre}
-                                  <BadgeOrigenImpuesto origen={i.origen} />
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-xs text-slate-400">Sin asignar</span>
-                          )}
-                          <ImpuestosMultiSelect
-                            // Remonta (y resetea la selección) cuando cambian los asignados.
-                            key={p.impuestos.map((i) => i.id).join(",")}
-                            todos={impuestosCatalogo}
-                            asignados={p.impuestos}
-                            onSave={(ids) => onSaveImpuestos(p.id, ids)}
-                          />
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <BadgeActivo activo={p.activo} />
+                </thead>
+                <tbody>
+                  {filtrados.length === 0 ? (
+                    <tr>
+                      <td className="px-4 py-8 text-center text-slate-500" colSpan={6}>
+                        {q ? "Sin resultados para el filtro." : "Sin productos sincronizados."}
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    productosPagina.map((p) => (
+                      <tr key={p.id} className="border-b border-slate-100 align-middle">
+                        <td className="px-4 py-3 font-mono text-xs">{p.codigo}</td>
+                        <td className="px-4 py-3 font-medium">{p.nombre}</td>
+                        <td className="px-4 py-3 text-xs text-slate-600">{p.grupoContableNombre}</td>
+                        <td className="px-4 py-3 text-xs text-slate-600">{p.clasificacionIva}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-col gap-2">
+                            {p.impuestos.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {p.impuestos.map((i) => (
+                                  <span
+                                    key={i.id}
+                                    className="inline-flex items-center gap-1 rounded bg-cyan-50 px-2 py-0.5 text-[11px] font-medium text-cyan-700"
+                                    title={`${i.tipo} · ${i.porcentaje}%`}
+                                  >
+                                    {i.nombre}
+                                    <BadgeOrigenImpuesto origen={i.origen} />
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-500">Sin asignar</span>
+                            )}
+                            <ImpuestosMultiSelect
+                              // Remonta (y resetea la selección) cuando cambian los asignados.
+                              key={p.impuestos.map((i) => i.id).join(",")}
+                              todos={impuestosCatalogo}
+                              asignados={p.impuestos}
+                              onSave={(ids) => onSaveImpuestos(p.id, ids)}
+                            />
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <BadgeActivo activo={p.activo} />
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+              {totalFiltrados > 0 ? (
+                <Paginacion
+                  total={totalFiltrados}
+                  pagina={pagina}
+                  porPagina={porPagina}
+                  onPaginaChange={setPagina}
+                  onPorPaginaChange={setPorPagina}
+                  etiqueta="productos"
+                />
+              ) : null}
+            </>
           )}
         </div>
       </div>

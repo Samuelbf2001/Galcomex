@@ -14,6 +14,8 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
+import { etiquetaEstadoTramite } from "@/components/ui/estado-tramite";
+import { ESTADO_BORRADOR_LABEL, type EstadoBorrador } from "@/components/facturacion/facturacion-api";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
@@ -452,7 +454,7 @@ export function HojaTramite({
           <p className="mt-0.5 text-lg font-bold text-slate-950">{hoja.consecutivo}</p>
           <p className="text-sm text-slate-700">
             <EnlaceCliente id={hoja.cliente.id}>{hoja.cliente.nombre}</EnlaceCliente>{" "}
-            <span className="text-slate-400">· {hoja.cliente.nit}</span>
+            <span className="text-slate-500">· {hoja.cliente.nit}</span>
           </p>
           {hoja.doCliente ? (
             <p className="text-xs text-slate-500">DO cliente: {hoja.doCliente}</p>
@@ -471,11 +473,11 @@ export function HojaTramite({
               </EnlaceFacturaVenta>
             </p>
           ) : (
-            <p className="mt-0.5 text-sm text-slate-400">Sin factura generada</p>
+            <p className="mt-0.5 text-sm text-slate-500">Sin factura generada</p>
           )}
           {hoja.borrador ? (
             <p className="text-xs text-slate-500">
-              Estado: {hoja.borrador.estado}
+              Estado: {etiquetaEstadoBorrador(hoja.borrador.estado)}
               {hoja.borrador.fechaFactura ? ` · ${formatDate(hoja.borrador.fechaFactura)}` : ""}
             </p>
           ) : null}
@@ -483,7 +485,7 @@ export function HojaTramite({
         <div className="bg-white px-4 py-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Estado DO</p>
           <p className="mt-0.5 text-sm font-semibold text-slate-800">
-            {hoja.estado.replace(/_/g, " ")}
+            {etiquetaEstadoTramite(hoja.estado)}
           </p>
         </div>
       </div>
@@ -521,7 +523,7 @@ export function HojaTramite({
                     {ap.anticipo.verificadoBanco ? (
                       <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-600" aria-hidden="true" />
                     ) : (
-                      <span className="text-xs text-slate-400">—</span>
+                      <span className="text-xs text-slate-500">—</span>
                     )}
                   </td>
                 </tr>
@@ -577,10 +579,10 @@ export function HojaTramite({
             <tbody>
               {/* Fila de anticipo como punto de partida del saldo */}
               <tr className="border-b border-slate-100 bg-emerald-50/40">
-                <td className="px-3 py-2 text-xs text-slate-400">0</td>
+                <td className="px-3 py-2 text-xs text-slate-500">0</td>
                 <td className="px-3 py-2 font-medium text-slate-700">Anticipo aplicado</td>
-                <td className="px-3 py-2 text-slate-400">—</td>
-                <td className="px-3 py-2 text-right font-mono text-slate-400">—</td>
+                <td className="px-3 py-2 text-slate-500">—</td>
+                <td className="px-3 py-2 text-right font-mono text-slate-500">—</td>
                 <td
                   className={`px-3 py-2 text-right font-mono font-semibold ${saldoColor(libro.totalAnticipoAplicado)} ${saldoBg(libro.totalAnticipoAplicado)}`}
                 >
@@ -603,12 +605,12 @@ export function HojaTramite({
                 const noCobrable = bigOrZero(p.noCobrable ?? "0");
                 return (
                   <tr key={p.id} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50">
-                    <td className="px-3 py-2 text-xs text-slate-400">{idx + 1}</td>
+                    <td className="px-3 py-2 text-xs text-slate-500">{idx + 1}</td>
                     <td className="px-3 py-2 text-slate-800">
                       {p.concepto}
-                      {p.beneficiarios && p.beneficiarios.length > 0 ? (
-                        <span className="block text-xs text-slate-400">
-                          {p.beneficiarios.map((b) => b.nombre).join(", ")}
+                      {beneficiariosNoNombrados(p.concepto, p.beneficiarios).length > 0 ? (
+                        <span className="block text-xs text-slate-500">
+                          {beneficiariosNoNombrados(p.concepto, p.beneficiarios).join(", ")}
                         </span>
                       ) : null}
                       {noCobrable > 0n ? (
@@ -630,7 +632,7 @@ export function HojaTramite({
                       {bigOrZero(p.costoBancario) > 0n &&
                       p.costoBancarioCobrable !== undefined &&
                       bigOrZero(p.costoBancarioCobrable ?? "0") === 0n ? (
-                        <span className="block font-sans text-[10px] text-slate-400">lo asume Galcomex</span>
+                        <span className="block font-sans text-[11px] text-slate-500">lo asume Galcomex</span>
                       ) : null}
                     </td>
                   </tr>
@@ -648,7 +650,7 @@ export function HojaTramite({
                   <td className="px-3 py-2 text-right font-mono text-slate-500">
                     {formatCOP(totalNoCobrable.toString())}
                   </td>
-                  <td className="px-3 py-2 text-right text-xs text-slate-400">sin efecto en el saldo</td>
+                  <td className="px-3 py-2 text-right text-xs text-slate-500">sin efecto en el saldo</td>
                   <td className="px-3 py-2" />
                   <td className="px-3 py-2" />
                 </tr>
@@ -838,7 +840,7 @@ function TotalesFactura({
       <SaldoChip label="Saldo LM" favor={lmFavor} cargo={lmCargo} />
       <div className="border border-slate-200 bg-white px-4 py-3">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Estado factura</p>
-        <p className="mt-0.5 text-sm font-semibold text-slate-800">{borrador.estado}</p>
+        <p className="mt-0.5 text-sm font-semibold text-slate-800">{etiquetaEstadoBorrador(borrador.estado)}</p>
       </div>
     </div>
   );
@@ -1362,4 +1364,28 @@ function ComisionInternaBlock({
       ) : null}
     </div>
   );
+}
+
+/** "EN_REVISION" → "En revisión"; un estado desconocido se muestra tal cual. */
+function etiquetaEstadoBorrador(estado: string): string {
+  return ESTADO_BORRADOR_LABEL[estado as EstadoBorrador] ?? estado;
+}
+
+function normalizarNombre(texto: string): string {
+  return texto
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Beneficiarios del pago que el concepto todavía no menciona. */
+function beneficiariosNoNombrados(
+  concepto: string | null | undefined,
+  beneficiarios: { nombre: string }[] | null | undefined,
+): string[] {
+  if (!beneficiarios || beneficiarios.length === 0) return [];
+  const enConcepto = normalizarNombre(concepto ?? "");
+  return beneficiarios.map((b) => b.nombre).filter((nombre) => !enConcepto.includes(normalizarNombre(nombre)));
 }

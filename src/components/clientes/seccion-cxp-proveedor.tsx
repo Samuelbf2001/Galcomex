@@ -18,6 +18,7 @@ import type {
 } from "@/lib/cxp/contratos-api";
 import { EnlaceTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast } from "@/components/ui/toast";
 import { usePermiso } from "@/lib/auth/rol-context";
@@ -167,9 +168,9 @@ function FilaFactura({
         <td className="px-3 py-2.5">
           <span className="inline-flex items-center gap-1.5 font-mono font-semibold text-slate-900">
             {expandida ? (
-              <ChevronDown className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+              <ChevronDown className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
             ) : (
-              <ChevronRight className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+              <ChevronRight className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
             )}
             {f.numFacturaVisible}
           </span>
@@ -187,7 +188,7 @@ function FilaFactura({
             f.fechaPago ? (
               pagoTexto
             ) : (
-              <span className="text-slate-400">{pagoTexto}</span>
+              <span className="text-slate-500">{pagoTexto}</span>
             )
           ) : (
             "—"
@@ -199,7 +200,7 @@ function FilaFactura({
             {f.etiqueta}
           </span>
           {f.saldo !== "0" && !f.pagable && f.motivoNoPagable ? (
-            <span className="mt-1 block text-[11px] font-normal text-slate-400">{f.motivoNoPagable.mensaje}</span>
+            <span className="mt-1 block text-[11px] font-normal text-slate-500">{f.motivoNoPagable.mensaje}</span>
           ) : null}
         </td>
       </tr>
@@ -208,27 +209,27 @@ function FilaFactura({
           <td colSpan={8} className="px-4 py-3">
             <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
               <div>
-                <dt className="text-slate-400">Cliente</dt>
+                <dt className="text-slate-500">Cliente</dt>
                 <dd className="font-medium text-slate-700">{f.clienteNombre}</dd>
               </div>
               <div>
-                <dt className="text-slate-400">Pagado</dt>
+                <dt className="text-slate-500">Pagado</dt>
                 <dd className="font-medium text-slate-700">{formatCOP(f.aplicado)}</dd>
               </div>
               {f.compensado !== "0" ? (
                 <div>
-                  <dt className="text-slate-400">Cruzado en cuenta corriente</dt>
+                  <dt className="text-slate-500">Cruzado en cuenta corriente</dt>
                   <dd className="font-medium text-slate-700">{formatCOP(f.compensado)}</dd>
                 </div>
               ) : null}
               {f.montoAjustes !== "0" ? (
                 <div>
-                  <dt className="text-slate-400">Ajuste de migración</dt>
+                  <dt className="text-slate-500">Ajuste de migración</dt>
                   <dd className="font-medium text-slate-700">{formatCOP(f.montoAjustes)}</dd>
                 </div>
               ) : null}
               <div>
-                <dt className="text-slate-400">Cobrada al cliente</dt>
+                <dt className="text-slate-500">Cobrada al cliente</dt>
                 <dd className="font-medium text-slate-700">
                   {f.facturadaAlCliente
                     ? `${f.facturadaAlCliente.numSiigo ?? "en revisión"} (${f.clienteNombre})`
@@ -238,7 +239,7 @@ function FilaFactura({
             </dl>
             {f.pagos.length > 0 ? (
               <div className="mt-3">
-                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Pagos</p>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pagos</p>
                 <ul className="space-y-1">
                   {f.pagos
                     .filter((p) => p.monto !== "0")
@@ -246,7 +247,7 @@ function FilaFactura({
                       <li key={p.pagoId} className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
                         <span>{p.fechaRealPago ? formatFechaCalendario(p.fechaRealPago) : "sin fecha"}</span>
                         <span className="font-mono font-semibold text-slate-800">{formatCOP(p.monto)}</span>
-                        {p.esHistorico ? <span className="text-slate-400">· histórico</span> : null}
+                        {p.esHistorico ? <span className="text-slate-500">· histórico</span> : null}
                         {p.comprobante ? (
                           <button
                             type="button"
@@ -293,27 +294,27 @@ function TarjetaFactura({
         <div className="flex shrink-0 items-center gap-2">
           <div className="text-right">
             <p className="font-mono text-sm font-semibold text-slate-900">{formatCOP(f.saldo)}</p>
-            <span className={`inline-flex h-5 items-center whitespace-nowrap border px-1.5 text-[10px] font-semibold ${CHIP_CLASE[f.etiqueta] ?? "border-slate-200 bg-slate-50 text-slate-600"}`}>
+            <span className={`inline-flex h-5 items-center whitespace-nowrap border px-1.5 text-[11px] font-semibold ${CHIP_CLASE[f.etiqueta] ?? "border-slate-200 bg-slate-50 text-slate-600"}`}>
               {f.etiqueta}
             </span>
           </div>
-          {expandida ? <ChevronDown className="h-4 w-4 text-slate-400" aria-hidden="true" /> : <ChevronRight className="h-4 w-4 text-slate-400" aria-hidden="true" />}
+          {expandida ? <ChevronDown className="h-4 w-4 text-slate-500" aria-hidden="true" /> : <ChevronRight className="h-4 w-4 text-slate-500" aria-hidden="true" />}
         </div>
       </button>
       {expandida ? (
         <dl className="grid grid-cols-2 gap-2 border-t border-slate-100 bg-slate-50/70 px-3 py-3 text-xs">
-          <div><dt className="text-slate-400">Fecha</dt><dd className="font-medium text-slate-700">{formatFechaCalendario(f.fecha)}</dd></div>
-          <div><dt className="text-slate-400">Total</dt><dd className="font-medium text-slate-700">{formatCOP(f.valor)}</dd></div>
-          <div><dt className="text-slate-400">Pagado</dt><dd className="font-medium text-slate-700">{formatCOP(f.aplicado)}</dd></div>
+          <div><dt className="text-slate-500">Fecha</dt><dd className="font-medium text-slate-700">{formatFechaCalendario(f.fecha)}</dd></div>
+          <div><dt className="text-slate-500">Total</dt><dd className="font-medium text-slate-700">{formatCOP(f.valor)}</dd></div>
+          <div><dt className="text-slate-500">Pagado</dt><dd className="font-medium text-slate-700">{formatCOP(f.aplicado)}</dd></div>
           {f.compensado !== "0" ? (
-            <div><dt className="text-slate-400">Cruzado</dt><dd className="font-medium text-slate-700">{formatCOP(f.compensado)}</dd></div>
+            <div><dt className="text-slate-500">Cruzado</dt><dd className="font-medium text-slate-700">{formatCOP(f.compensado)}</dd></div>
           ) : null}
           {f.montoAjustes !== "0" ? (
-            <div><dt className="text-slate-400">Ajuste de migración</dt><dd className="font-medium text-slate-700">{formatCOP(f.montoAjustes)}</dd></div>
+            <div><dt className="text-slate-500">Ajuste de migración</dt><dd className="font-medium text-slate-700">{formatCOP(f.montoAjustes)}</dd></div>
           ) : null}
-          <div><dt className="text-slate-400">Cliente</dt><dd className="font-medium text-slate-700">{f.clienteNombre}</dd></div>
+          <div><dt className="text-slate-500">Cliente</dt><dd className="font-medium text-slate-700">{f.clienteNombre}</dd></div>
           {f.motivoNoPagable ? (
-            <div className="col-span-2"><dt className="text-slate-400">Por qué no se puede pagar</dt><dd className="text-slate-600">{f.motivoNoPagable.mensaje}</dd></div>
+            <div className="col-span-2"><dt className="text-slate-500">Por qué no se puede pagar</dt><dd className="text-slate-600">{f.motivoNoPagable.mensaje}</dd></div>
           ) : null}
         </dl>
       ) : null}
@@ -351,7 +352,7 @@ function FilaPago({
         <td className="px-3 py-2.5 text-slate-600">{p.fecha ? formatFechaCalendario(p.fecha) : "—"}</td>
         <td className="px-3 py-2.5 text-slate-800">
           {p.concepto}
-          {esBloque ? <span className="ml-1.5 inline-flex h-5 items-center border border-slate-200 bg-slate-50 px-1.5 text-[10px] font-semibold uppercase text-slate-500">Bloque</span> : null}
+          {esBloque ? <span className="ml-1.5 inline-flex h-5 items-center border border-slate-200 bg-slate-50 px-1.5 text-[11px] font-semibold uppercase text-slate-500">Bloque</span> : null}
         </td>
         <td className="px-3 py-2.5 text-right font-mono font-semibold text-slate-900">{formatCOP(p.valor)}</td>
         <td className="px-3 py-2.5 text-slate-600">{CANAL_LABEL[p.canalPago] ?? p.canalPago}</td>
@@ -359,7 +360,7 @@ function FilaPago({
           {p.costoBancario !== "0" ? (
             <>
               {formatCOP(p.costoBancario)}
-              {p.costoAsumidoPor ? <span className="block text-[11px] text-slate-400">{COSTO_ASUMIDO_LABEL[p.costoAsumidoPor] ?? p.costoAsumidoPor}</span> : null}
+              {p.costoAsumidoPor ? <span className="block text-[11px] text-slate-500">{COSTO_ASUMIDO_LABEL[p.costoAsumidoPor] ?? p.costoAsumidoPor}</span> : null}
             </>
           ) : (
             "—"
@@ -383,7 +384,7 @@ function FilaPago({
         </td>
         <td className="px-3 py-2.5 text-right">
           {p.esHistorico ? (
-            <span className="text-xs text-slate-400">Conciliado con el Excel</span>
+            <span className="text-xs text-slate-500">Conciliado con el Excel</span>
           ) : esAdmin && esBloque && p.estado === "ACTIVO" ? (
             <button
               type="button"
@@ -401,7 +402,7 @@ function FilaPago({
       {!esBloque && expandido ? (
         <tr className="border-b border-slate-100 bg-slate-50/70 last:border-b-0">
           <td colSpan={8} className="px-4 py-3 text-xs">
-            <p className="mb-1 font-semibold uppercase tracking-wide text-slate-400">Facturas cubiertas</p>
+            <p className="mb-1 font-semibold uppercase tracking-wide text-slate-500">Facturas cubiertas</p>
             <ul className="space-y-0.5">
               {p.facturas.map((f) => (
                 <li key={f.facturaId} className="flex items-center justify-between text-slate-600">
@@ -519,6 +520,27 @@ export function SeccionCxpProveedor({
     () => (cuenta ? filtrarFacturasCxp(cuenta.facturas, filtro, busqueda) : []),
     [cuenta, filtro, busqueda],
   );
+
+  // Un proveedor grande (Almacarga) tiene cientos de facturas y de pagos: cada
+  // lista muestra una página y guarda la suya en la dirección (la ficha de la
+  // empresa tiene otras listas). Totales y exportación usan la cuenta completa.
+  const {
+    visibles: facturasPagina,
+    pagina: paginaFacturas,
+    porPagina: porPaginaFacturas,
+    total: totalFacturas,
+    setPagina: setPaginaFacturas,
+    setPorPagina: setPorPaginaFacturas,
+  } = usePaginacionLocal(visibles, 25, { pagina: "pagCxp" });
+  const pagosCuenta = useMemo(() => cuenta?.pagos ?? [], [cuenta]);
+  const {
+    visibles: pagosPagina,
+    pagina: paginaPagos,
+    porPagina: porPaginaPagos,
+    total: totalPagos,
+    setPagina: setPaginaPagos,
+    setPorPagina: setPorPaginaPagos,
+  } = usePaginacionLocal(pagosCuenta, 25, { pagina: "pagCxpPagos" });
 
   const conciliacionPendiente = cuenta?.fichas.some((f) => f.conciliacionPendiente) ?? false;
   const nombreCorto = cuenta?.empresa.nombreCorto ?? nombreEmpresa;
@@ -682,7 +704,7 @@ export function SeccionCxpProveedor({
                       {d.etiqueta} <strong className="font-mono text-slate-800">{formatCOP(d.valor)}</strong>
                     </span>
                   ))}
-                  <span className="text-slate-400"> (Total = Pagado + esto + Le debemos)</span>
+                  <span className="text-slate-500"> (Total = Pagado + esto + Le debemos)</span>
                 </div>
               ) : null}
               {cuenta.resumen.pagadoSinFactura !== "0" ? (
@@ -705,7 +727,10 @@ export function SeccionCxpProveedor({
                   <button
                     key={opcion}
                     type="button"
-                    onClick={() => setFiltro(opcion)}
+                    onClick={() => {
+                      setFiltro(opcion);
+                      setPaginaFacturas(1);
+                    }}
                     className={`h-8 px-3 text-xs font-semibold transition ${
                       filtro === opcion ? "bg-slate-950 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
                     }`}
@@ -717,7 +742,10 @@ export function SeccionCxpProveedor({
             </div>
             <input
               value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
+              onChange={(e) => {
+                setBusqueda(e.target.value);
+                setPaginaFacturas(1);
+              }}
               placeholder="Factura, DO (26-0238) o marca"
               className="h-8 min-w-0 flex-1 border border-slate-300 px-2.5 text-xs focus:border-slate-500 focus:outline-none"
             />
@@ -744,17 +772,25 @@ export function SeccionCxpProveedor({
                     </tr>
                   </thead>
                   <tbody>
-                    {visibles.map((f) => (
+                    {facturasPagina.map((f) => (
                       <FilaFactura key={f.id} f={f} expandida={expandidas.has(f.id)} onToggle={() => toggleFactura(f.id)} />
                     ))}
                   </tbody>
                 </table>
               </div>
               <div className="sm:hidden">
-                {visibles.map((f) => (
+                {facturasPagina.map((f) => (
                   <TarjetaFactura key={f.id} f={f} expandida={expandidas.has(f.id)} onToggle={() => toggleFactura(f.id)} />
                 ))}
               </div>
+              <Paginacion
+                total={totalFacturas}
+                pagina={paginaFacturas}
+                porPagina={porPaginaFacturas}
+                onPaginaChange={setPaginaFacturas}
+                onPorPaginaChange={setPorPaginaFacturas}
+                etiqueta="facturas"
+              />
             </>
           )}
 
@@ -767,7 +803,7 @@ export function SeccionCxpProveedor({
               <span />
             )}
             {cuenta.historialDesde ? (
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500">
                 Historial en el sistema desde {formatFechaCalendario(cuenta.historialDesde)}. Las facturas anteriores
                 están en tu Excel de cartera.
               </p>
@@ -785,33 +821,43 @@ export function SeccionCxpProveedor({
                   <ModuleState type="empty" title="Sin pagos registrados todavía" />
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[820px] border-collapse text-left text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                      <tr>
-                        <th className="border-b border-slate-200 px-3 py-2.5">Fecha</th>
-                        <th className="border-b border-slate-200 px-3 py-2.5">Concepto</th>
-                        <th className="border-b border-slate-200 px-3 py-2.5 text-right">Valor</th>
-                        <th className="border-b border-slate-200 px-3 py-2.5">Canal</th>
-                        <th className="border-b border-slate-200 px-3 py-2.5">Costo transferencia</th>
-                        <th className="border-b border-slate-200 px-3 py-2.5">DOs</th>
-                        <th className="border-b border-slate-200 px-3 py-2.5">Estado</th>
-                        <th className="border-b border-slate-200 px-3 py-2.5" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {cuenta.pagos.map((p) => (
-                        <FilaPago
-                          key={`${p.tipo}-${p.id}`}
-                          p={p}
-                          esAdmin={esAdmin}
-                          onVerDetalle={setDetalleBloqueId}
-                          onAnular={setAnulando}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+                      <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                        <tr>
+                          <th className="border-b border-slate-200 px-3 py-2.5">Fecha</th>
+                          <th className="border-b border-slate-200 px-3 py-2.5">Concepto</th>
+                          <th className="border-b border-slate-200 px-3 py-2.5 text-right">Valor</th>
+                          <th className="border-b border-slate-200 px-3 py-2.5">Canal</th>
+                          <th className="border-b border-slate-200 px-3 py-2.5">Costo transferencia</th>
+                          <th className="border-b border-slate-200 px-3 py-2.5">DOs</th>
+                          <th className="border-b border-slate-200 px-3 py-2.5">Estado</th>
+                          <th className="border-b border-slate-200 px-3 py-2.5" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pagosPagina.map((p) => (
+                          <FilaPago
+                            key={`${p.tipo}-${p.id}`}
+                            p={p}
+                            esAdmin={esAdmin}
+                            onVerDetalle={setDetalleBloqueId}
+                            onAnular={setAnulando}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <Paginacion
+                    total={totalPagos}
+                    pagina={paginaPagos}
+                    porPagina={porPaginaPagos}
+                    onPaginaChange={setPaginaPagos}
+                    onPorPaginaChange={setPorPaginaPagos}
+                    etiqueta="pagos"
+                  />
+                </>
               )}
             </div>
           ) : null}
@@ -832,7 +878,7 @@ export function SeccionCxpProveedor({
                 className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm hover:bg-slate-50"
               >
                 <span className="font-medium text-slate-800">{f.nombreCorto ?? f.nombre}</span>
-                <span className="text-xs text-slate-400">{f.nit ?? "sin NIT"}</span>
+                <span className="text-xs text-slate-500">{f.nit ?? "sin NIT"}</span>
               </button>
             ))}
           </div>

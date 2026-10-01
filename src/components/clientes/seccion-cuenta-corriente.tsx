@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertCircle, ArrowLeftRight, FileText, Loader2, Plus, Trash2, Undo2 } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { CompensacionModal } from "@/components/clientes/compensacion-modal";
 import {
@@ -20,6 +20,7 @@ import { ModuleState } from "@/components/layout/module-state";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { EnlaceFacturaVenta, EnlaceTramite, type TabTramite } from "@/components/ui/enlace-entidad";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { describirError, useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useEsAdmin, usePermiso } from "@/lib/auth/rol-context";
@@ -341,7 +342,7 @@ function FilaMovimiento({
           </button>
         ) : null}
         {movimiento.compensacionId ? (
-          <span className="ml-2 inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-semibold uppercase text-cyan-700">
+          <span className="ml-2 inline-flex items-center gap-1 border border-cyan-200 bg-cyan-50 px-1.5 text-[11px] font-semibold uppercase text-cyan-700">
             <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />
             cruce
             {onDeshacer ? (
@@ -420,7 +421,18 @@ export function SeccionCuentaCorriente({
   const [cruceAbierto, setCruceAbierto] = useState(false);
   const [deshaciendo, setDeshaciendo] = useState<string | null>(null);
   const [eliminandoId, setEliminandoId] = useState<string | null>(null);
-  const [verTodo, setVerTodo] = useState(false);
+  // Los movimientos van paginados (la página se guarda en la dirección con un
+  // nombre propio: la ficha de la empresa tiene otras listas). El saldo y los
+  // totales salen de la cuenta completa. Va antes de los `return null` de abajo.
+  const movimientos = useMemo(() => cuenta?.movimientos ?? [], [cuenta]);
+  const {
+    visibles,
+    pagina,
+    porPagina,
+    total: totalMovimientos,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(movimientos, 25, { pagina: "pagCuenta" });
   const { toast } = useToast();
   const confirmar = useConfirm();
 
@@ -519,8 +531,6 @@ export function SeccionCuentaCorriente({
   if (loadState === "ready" && cuenta && proveedorPuro && !cuenta.permiteCargosManuales) return null;
 
   const neto = cuenta ? BigInt(cuenta.neto) : 0n;
-  const visibles =
-    cuenta && !verTodo ? cuenta.movimientos.slice(0, 12) : (cuenta?.movimientos ?? []);
   const corto = cuenta ? nombreCortoEmpresa(cuenta.empresa.nombre) : "";
   // "Registrar factura" (M1: capacidad `cargos_manuales_contraparte`) ya no
   // exige que la empresa esté marcada como proveedora — cualquier empresa con
@@ -681,19 +691,14 @@ export function SeccionCuentaCorriente({
                 </tbody>
               </table>
 
-              {cuenta.movimientos.length > visibles.length || verTodo ? (
-                <div className="border-t border-slate-200 px-4 py-2.5 text-center">
-                  <button
-                    type="button"
-                    onClick={() => setVerTodo((actual) => !actual)}
-                    className="text-sm font-semibold text-cyan-700 transition hover:text-cyan-900"
-                  >
-                    {verTodo
-                      ? "Ver solo los últimos"
-                      : `Ver los ${cuenta.movimientos.length} movimientos`}
-                  </button>
-                </div>
-              ) : null}
+              <Paginacion
+                total={totalMovimientos}
+                pagina={pagina}
+                porPagina={porPagina}
+                onPaginaChange={setPagina}
+                onPorPaginaChange={setPorPagina}
+                etiqueta="movimientos"
+              />
             </>
           )}
         </>

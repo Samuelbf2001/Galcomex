@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import {
   type ArchivoRow,
@@ -33,9 +33,19 @@ import {
 } from "@/components/archivos/archivos-api";
 import { ModuleState } from "@/components/layout/module-state";
 import { EnlaceCliente, EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { TableSkeleton } from "@/components/ui/skeleton";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
+
+/** Carpetas y archivos de una carpeta van en una sola lista paginada (carpetas primero). */
+type FilaExplorador =
+  | { tipo: "carpeta"; carpeta: CarpetaRow }
+  | { tipo: "archivo"; archivo: ArchivoRow };
+
+/** Una carpeta como `tramites/` tiene cientos de entradas: páginas más grandes que en el resto del sistema. */
+const POR_PAGINA_ARCHIVOS = 50;
+const OPCIONES_POR_PAGINA_ARCHIVOS = [50, 100, 200];
 
 function hrefDe(prefix: string): string {
   return prefix ? `/archivos?p=${encodeURIComponent(prefix)}` : "/archivos";
@@ -58,7 +68,7 @@ function Migas({ migas }: { migas: CarpetaData["migas"] }) {
           const ultima = i === migas.length - 1;
           return (
             <li key={m.prefix || "raiz"} className="flex items-center gap-1">
-              {i > 0 ? <ChevronRight className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" /> : null}
+              {i > 0 ? <ChevronRight className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" /> : null}
               {ultima ? (
                 <span className="font-semibold text-slate-900" aria-current="location">{m.nombre}</span>
               ) : (
@@ -99,11 +109,11 @@ function FilaCarpeta({ carpeta }: { carpeta: CarpetaRow }) {
         ) : detalleCategoria ? (
           <span className="inline-flex items-center border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-xs font-medium text-slate-700">{detalleCategoria}</span>
         ) : (
-          <span className="text-slate-400">Carpeta</span>
+          <span className="text-slate-500">Carpeta</span>
         )}
       </td>
-      <td className="px-4 py-2.5 text-right text-slate-400">—</td>
-      <td className="px-4 py-2.5 text-slate-400">—</td>
+      <td className="px-4 py-2.5 text-right text-slate-500">—</td>
+      <td className="px-4 py-2.5 text-slate-500">—</td>
       <td className="px-4 py-2.5 text-right">
         <Link href={hrefDe(carpeta.prefix)} className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-100">
           Abrir
@@ -124,7 +134,7 @@ function FilaArchivo({ archivo }: { archivo: ArchivoRow }) {
           <div className="min-w-0">
             <p className="truncate font-medium text-slate-900" title={nombre}>{nombre}</p>
             {archivo.nombreRegistrado && archivo.nombreRegistrado !== archivo.nombre ? (
-              <p className="truncate text-xs text-slate-400" title={archivo.nombre}>{archivo.nombre}</p>
+              <p className="truncate text-xs text-slate-500" title={archivo.nombre}>{archivo.nombre}</p>
             ) : null}
           </div>
         </div>
@@ -138,7 +148,7 @@ function FilaArchivo({ archivo }: { archivo: ArchivoRow }) {
             <EnlaceTramite id={archivo.tramite.id}>{archivo.tramite.consecutivo}</EnlaceTramite>
           ) : null}
           {archivo.subidoPor ? <span className="text-xs text-slate-500">subido por {archivo.subidoPor}</span> : null}
-          {!categoria && !archivo.tramite ? <span className="text-xs text-slate-400">Cargado por fuera de la app</span> : null}
+          {!categoria && !archivo.tramite ? <span className="text-xs text-slate-500">Cargado por fuera de la app</span> : null}
         </span>
       </td>
       <td className="px-4 py-2.5 text-right tabular-nums text-slate-700">{formatBytes(archivo.size)}</td>
@@ -230,6 +240,33 @@ export function ArchivosWorkspace() {
     [data, filtroNorm],
   );
 
+  const filas = useMemo<FilaExplorador[]>(
+    () => [
+      ...carpetas.map((carpeta) => ({ tipo: "carpeta" as const, carpeta })),
+      ...archivos.map((archivo) => ({ tipo: "archivo" as const, archivo })),
+    ],
+    [carpetas, archivos],
+  );
+  const {
+    visibles: filasPagina,
+    pagina,
+    porPagina,
+    total: totalFilas,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(filas, POR_PAGINA_ARCHIVOS, { pagina: "pagina" });
+
+  // Entrar a otra carpeta (o subir) vuelve a la página 1. Solo cuando la carpeta
+  // CAMBIA: al montar (volver con «atrás» desde un DO) se respeta la página que
+  // guarda la dirección. Reaplicar el tamaño elegido también lo reescribe en la
+  // dirección nueva, que el enlace de la carpeta dejó sin él.
+  const prefixPrevio = useRef(prefix);
+  useEffect(() => {
+    if (prefixPrevio.current === prefix) return;
+    prefixPrevio.current = prefix;
+    Promise.resolve().then(() => setPorPagina(porPagina));
+  }, [prefix, porPagina, setPorPagina]);
+
   function onIrDo(event: FormEvent) {
     event.preventDefault();
     const valor = irDo.trim();
@@ -287,11 +324,14 @@ export function ArchivosWorkspace() {
           <button type="submit" className="inline-flex h-9 items-center rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-100">Ir</button>
         </form>
         <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden="true" />
           <input
             type="search"
             value={filtro}
-            onChange={(e) => setFiltro(e.target.value)}
+            onChange={(e) => {
+              setFiltro(e.target.value);
+              setPagina(1);
+            }}
             placeholder="Filtrar en esta carpeta"
             aria-label="Filtrar en esta carpeta"
             className="h-9 w-56 rounded-lg border border-slate-300 pl-8 pr-2 text-sm"
@@ -319,38 +359,56 @@ export function ArchivosWorkspace() {
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-          <table className="w-full min-w-[900px] border-collapse text-left text-sm">
-            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-              <tr>
-                <th className="border-b border-slate-200 px-4 py-2.5">Nombre</th>
-                <th className="border-b border-slate-200 px-4 py-2.5">Detalle</th>
-                <th className="border-b border-slate-200 px-4 py-2.5 text-right">Tamaño</th>
-                <th className="border-b border-slate-200 px-4 py-2.5">Modificado</th>
-                <th className="border-b border-slate-200 px-4 py-2.5 text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {carpetas.map((c) => <FilaCarpeta key={c.prefix} carpeta={c} />)}
-              {archivos.map((a) => <FilaArchivo key={a.key} archivo={a} />)}
-              {sinCoincidencias ? (
+        <div className="rounded-xl border border-slate-200 bg-white">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                    Nada coincide con “{filtro}” en esta carpeta.
-                    <button type="button" onClick={() => setFiltro("")} className="ml-2 inline-flex items-center gap-1 text-cyan-700 hover:underline">
-                      <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                      Quitar filtro
-                    </button>
-                  </td>
+                  <th className="border-b border-slate-200 px-4 py-2.5">Nombre</th>
+                  <th className="border-b border-slate-200 px-4 py-2.5">Detalle</th>
+                  <th className="border-b border-slate-200 px-4 py-2.5 text-right">Tamaño</th>
+                  <th className="border-b border-slate-200 px-4 py-2.5">Modificado</th>
+                  <th className="border-b border-slate-200 px-4 py-2.5 text-right">Acciones</th>
                 </tr>
-              ) : null}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filasPagina.map((f) =>
+                  f.tipo === "carpeta" ? (
+                    <FilaCarpeta key={f.carpeta.prefix} carpeta={f.carpeta} />
+                  ) : (
+                    <FilaArchivo key={f.archivo.key} archivo={f.archivo} />
+                  ),
+                )}
+                {sinCoincidencias ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                      Nada coincide con “{filtro}” en esta carpeta.
+                      <button type="button" onClick={() => { setFiltro(""); setPagina(1); }} className="ml-2 inline-flex items-center gap-1 text-cyan-700 hover:underline">
+                        <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                        Quitar filtro
+                      </button>
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
           {data ? (
             <p className="border-t border-slate-200 px-4 py-2 text-xs text-slate-500">
               {data.resumen.carpetas} carpeta{data.resumen.carpetas === 1 ? "" : "s"} · {data.resumen.archivos} archivo{data.resumen.archivos === 1 ? "" : "s"}
               {data.resumen.bytes > 0 ? ` · ${formatBytes(data.resumen.bytes)} en esta carpeta` : ""}
             </p>
+          ) : null}
+          {totalFilas > 0 ? (
+            <Paginacion
+              total={totalFilas}
+              pagina={pagina}
+              porPagina={porPagina}
+              onPaginaChange={setPagina}
+              onPorPaginaChange={setPorPagina}
+              opciones={OPCIONES_POR_PAGINA_ARCHIVOS}
+              etiqueta="elementos"
+            />
           ) : null}
         </div>
       )}

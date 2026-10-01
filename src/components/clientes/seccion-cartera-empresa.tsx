@@ -162,6 +162,7 @@ export function SeccionCarteraEmpresa({
   const { visibles, pagina, porPagina, setPagina, setPorPagina, total } = usePaginacionLocal(
     ordenadas,
     25,
+    { pagina: "pagCartera" },
   );
 
   if (!puedeVer) return null;
@@ -264,7 +265,7 @@ export function SeccionCarteraEmpresa({
 
                   return (
                     <tr key={f.id} className="border-b border-slate-100 last:border-b-0">
-                      <td className="px-4 py-2.5 font-mono font-semibold">
+                      <td className="whitespace-nowrap px-4 py-2.5 font-mono font-semibold">
                         <EnlaceFacturaVenta
                           tramiteId={f.borrador?.tramiteId ?? null}
                           borradorId={f.borradorId}
@@ -272,12 +273,12 @@ export function SeccionCarteraEmpresa({
                           {f.numSiigo}
                         </EnlaceFacturaVenta>
                       </td>
-                      <td className="px-4 py-2.5">
+                      <td className="whitespace-nowrap px-4 py-2.5">
                         <EnlaceTramite id={f.borrador?.tramiteId ?? null}>
                           {f.borrador?.tramite.consecutivo ?? "—"}
                         </EnlaceTramite>
                       </td>
-                      <td className="px-4 py-2.5 text-slate-600">{formatDate(f.fecha)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-slate-600">{formatDate(f.fecha)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-slate-900">
                         {formatCOP(f.totalFactura)}
                       </td>
@@ -302,7 +303,7 @@ export function SeccionCarteraEmpresa({
                           {ESTADO_CARTERA_LABEL[estado]}
                         </span>
                       </td>
-                      <td className="px-4 py-2.5 text-slate-600">{formatDate(f.fechaPagoCliente)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-slate-600">{formatDate(f.fechaPagoCliente)}</td>
                     </tr>
                   );
                 })}

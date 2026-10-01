@@ -11,8 +11,11 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import { OPCIONES_RECAUDO_PAGO } from "@/components/cartera/cartera-api";
 import { ModuleState } from "@/components/layout/module-state";
 import { EnlaceCliente, EnlaceFacturaVenta, EnlaceTramite } from "@/components/ui/enlace-entidad";
+import { humanizarCodigo } from "@/components/ui/estado-tramite";
+import { Paginacion, usePaginacionLocal } from "@/components/ui/paginacion";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { hoyBogotaISO } from "@/lib/tiempo/bogota";
 import {
@@ -72,6 +75,12 @@ function referenciaCell(fila: FilaIngreso): React.ReactNode {
       {fila.referencia}
     </EnlaceFacturaVenta>
   );
+}
+
+/** Canal de pago/recaudo en texto legible: «Otros bancos (digital)», no OTROS_BANCOS. */
+function etiquetaCanal(canal: string): string {
+  if (!canal) return "—";
+  return OPCIONES_RECAUDO_PAGO.find((o) => o.value === canal)?.label ?? humanizarCodigo(canal);
 }
 
 function saldoCorridoCell(valor: string): React.ReactNode {
@@ -156,6 +165,17 @@ export function IngresosWorkspace() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // La tabla muestra una página; los totales y el saldo corrido de cada fila
+  // salen de la lista completa (`filas`).
+  const {
+    visibles: filasPagina,
+    pagina,
+    porPagina,
+    total: totalFilas,
+    setPagina,
+    setPorPagina,
+  } = usePaginacionLocal(filas, 25, { pagina: "pagina" });
+
   // ── Sincronizar URL ──────────────────────────────────────────────────────
 
   const syncUrl = useCallback(
@@ -166,6 +186,10 @@ export function IngresosWorkspace() {
       // reinterprete como "mes actual" al recargar la página.
       params.set("desde", d);
       params.set("hasta", h);
+      // La dirección se rearma de cero (cambió un filtro → página 1), pero el
+      // tamaño de página elegido se conserva.
+      const tamPagina = new URLSearchParams(window.location.search).get("paginaTam");
+      if (tamPagina) params.set("paginaTam", tamPagina);
       router.replace(`?${params.toString()}`, { scroll: false });
     },
     [router],
@@ -174,6 +198,7 @@ export function IngresosWorkspace() {
   function aplicarRango(d: string, h: string) {
     setDesde(d);
     setHasta(h);
+    setPagina(1);
     syncUrl(clienteId, d, h);
   }
 
@@ -274,10 +299,10 @@ export function IngresosWorkspace() {
       ) : null}
       {/* Filtros */}
       <div className="flex flex-wrap items-end gap-3 border border-slate-200 bg-white px-4 py-3">
-        <Filter className="h-4 w-4 text-slate-400 self-end mb-2.5" aria-hidden="true" />
+        <Filter className="h-4 w-4 text-slate-500 self-end mb-2.5" aria-hidden="true" />
 
         {/* Cliente */}
-        <label className="flex w-full min-w-0 flex-col gap-1 sm:w-auto">
+        <label className="flex min-w-[14rem] max-w-80 flex-1 flex-col gap-1">
           <span className="text-xs font-medium text-slate-600 uppercase tracking-wide">
             Cliente
           </span>
@@ -286,10 +311,11 @@ export function IngresosWorkspace() {
             disabled={clientesEstado !== "ready"}
             onChange={(e) => {
               setClienteId(e.target.value);
+              setPagina(1);
               syncUrl(e.target.value, desde, hasta);
             }}
             aria-label="Filtrar por cliente"
-            className="h-10 w-80 max-w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
+            className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-600"
           >
             <option value="">{clientesEstado === "loading" ? "Cargando clientes…" : "Todos los clientes"}</option>
             {clienteId && !clientes.some((c) => c.id === clienteId) ? <option value={clienteId}>Cliente seleccionado</option> : null}
@@ -369,7 +395,7 @@ export function IngresosWorkspace() {
           type="button"
           onClick={() => recargar()}
           disabled={loadState === "loading"}
-          className="ml-auto inline-flex h-10 items-center gap-2 border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+          className="ml-auto inline-flex h-10 shrink-0 items-center gap-2 whitespace-nowrap border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
         >
           <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
           {loadState === "loading" ? "Actualizando…" : "Actualizar"}
@@ -378,10 +404,10 @@ export function IngresosWorkspace() {
 
       {/* Rango activo */}
       <p className="flex items-center gap-1.5 text-xs text-slate-600" aria-live="polite">
-        <CalendarDays className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+        <CalendarDays className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
         Mostrando movimientos de{" "}
         <span className="font-semibold text-slate-800">{rangoActivo}</span>
-        {esMesActual ? <span className="text-slate-400">(mes actual)</span> : null}
+        {esMesActual ? <span className="text-slate-500">(mes actual)</span> : null}
       </p>
 
       {/* Tarjetas de totales */}
@@ -455,7 +481,7 @@ export function IngresosWorkspace() {
           detail={`No hay anticipos, abonos ni devoluciones en ${rangoActivo}.`}
           action={
             desde || hasta || clienteId
-              ? { label: "Quitar filtros", onClick: () => { setClienteId(""); setDesde(""); setHasta(""); syncUrl("", "", ""); }, icon: false }
+              ? { label: "Quitar filtros", onClick: () => { setClienteId(""); setDesde(""); setHasta(""); setPagina(1); syncUrl("", "", ""); }, icon: false }
               : undefined
           }
         />
@@ -488,7 +514,7 @@ export function IngresosWorkspace() {
                 </tr>
               </thead>
               <tbody>
-                {filas.map((f) => (
+                {filasPagina.map((f) => (
                   <tr
                     key={f.id}
                     className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
@@ -509,7 +535,7 @@ export function IngresosWorkspace() {
                       {montoCell(f)}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
-                      {f.canalPago}
+                      {etiquetaCanal(f.canalPago)}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       {f.verificadoBanco ? (
@@ -526,6 +552,14 @@ export function IngresosWorkspace() {
               </tbody>
             </table>
           </div>
+          <Paginacion
+            total={totalFilas}
+            pagina={pagina}
+            porPagina={porPagina}
+            onPaginaChange={setPagina}
+            onPorPaginaChange={setPorPagina}
+            etiqueta="movimientos"
+          />
         </div>
       ) : null}
     </section>

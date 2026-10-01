@@ -58,7 +58,7 @@ export default function PsePage({ params }: { params: Promise<{ token: string }>
     <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
       <div className="w-full max-w-sm border border-slate-200 bg-white p-8 shadow-sm">
         {/* Logo / marca */}
-        <p className="mb-6 text-center text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <p className="mb-6 text-center text-xs font-semibold uppercase tracking-widest text-slate-500">
           Galcomex · Pagos PSE
         </p>
 

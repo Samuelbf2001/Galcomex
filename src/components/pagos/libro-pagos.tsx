@@ -11,7 +11,6 @@ import {
   Plus,
   Search,
   Trash2,
-  Upload,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -19,7 +18,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ModuleState } from "@/components/layout/module-state";
 import { CampoMoneda } from "@/components/ui/campo-moneda";
 import { useConfirm } from "@/components/ui/confirm-dialog";
-import { EnlaceCliente, EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
+import { EnlaceFacturaVenta } from "@/components/ui/enlace-entidad";
+import { humanizarCodigo } from "@/components/ui/estado-tramite";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { CardsSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { describirError, useToast, type ToastVariant } from "@/components/ui/toast";
@@ -141,59 +141,6 @@ function formatDate(iso: string): string {
   return formatFechaCalendario(iso);
 }
 
-function statusClassName(status: string) {
-  const n = status.toLowerCase();
-  if (n.includes("cerr") || n.includes("fact") || n.includes("pagad")) {
-    return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  }
-  if (n.includes("anul") || n.includes("cancel")) {
-    return "border-rose-200 bg-rose-50 text-rose-700";
-  }
-  if (n.includes("facturar")) {
-    return "border-amber-200 bg-amber-50 text-amber-700";
-  }
-  if (n.includes("tramite") || n.includes("puerto") || n.includes("apertura")) {
-    return "border-cyan-200 bg-cyan-50 text-cyan-700";
-  }
-  return "border-slate-200 bg-slate-50 text-slate-700";
-}
-
-// ---------------------------------------------------------------------------
-// Sub-componente: cabecera del DO
-// ---------------------------------------------------------------------------
-
-function DoHeader({ tramite }: { tramite: TramiteDetail }) {
-  return (
-    <div className="flex flex-wrap items-start gap-x-8 gap-y-2 border border-slate-200 bg-white px-5 py-4">
-      <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Consecutivo</p>
-        <p className="mt-0.5 text-lg font-bold text-slate-950">{tramite.consecutivo}</p>
-      </div>
-      <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Cliente</p>
-        <p className="mt-0.5 text-sm font-semibold text-slate-800">
-          <EnlaceCliente id={tramite.cliente.id}>{tramite.cliente.nombre}</EnlaceCliente>
-          <span className="ml-1.5 font-normal text-slate-500">{tramite.cliente.nit}</span>
-        </p>
-      </div>
-      <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Estado</p>
-        <span
-          className={`mt-0.5 inline-flex h-7 items-center border px-2 text-xs font-semibold ${statusClassName(tramite.estado)}`}
-        >
-          {tramite.estado}
-        </span>
-      </div>
-      {tramite.eta ? (
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">ETA</p>
-          <p className="mt-0.5 text-sm text-slate-700">{formatDate(tramite.eta)}</p>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Sub-componente: sección de anticipos (fiel al Excel — encima de los pagos)
 // ---------------------------------------------------------------------------
@@ -209,7 +156,7 @@ function canalLabel(canal: string): string {
     PSE: "PSE",
     OTRO: "Otro",
   };
-  return map[canal] ?? canal;
+  return map[canal] ?? humanizarCodigo(canal);
 }
 
 function SeccionAnticipos({
@@ -268,7 +215,7 @@ function SeccionAnticipos({
                       {ap.anticipo.verificadoBanco ? (
                         <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />
                       ) : (
-                        <span className="text-xs text-slate-400">Pendiente</span>
+                        <span className="text-xs text-slate-500">Pendiente</span>
                       )}
                     </td>
                   </tr>
@@ -360,7 +307,7 @@ function ResumenLibro({
           <span className={`text-base ${saldoColorClass(libro.saldoFinal)}`}>
             {formatCOP(libro.saldoFinal)}
           </span>
-          <span className="ml-2 text-[11px] text-slate-400">
+          <span className="ml-2 text-[11px] text-slate-500">
             no incluye comisión, IVA, 4x1000 ni costos
           </span>
         </div>
@@ -475,7 +422,7 @@ function FacturasProveedorCombobox({
       >
         <span className="flex flex-wrap gap-1.5 text-left">
           {selectedFacturas.length === 0 ? (
-            <span className="text-slate-400">{placeholder}</span>
+            <span className="text-slate-500">{placeholder}</span>
           ) : (
             selectedFacturas.map((factura) => (
               <span
@@ -494,7 +441,7 @@ function FacturasProveedorCombobox({
                       removeFactura(factura.id, event as unknown as React.MouseEvent);
                     }
                   }}
-                  className="text-cyan-500 hover:text-rose-600"
+                  className="-my-1 -mr-1 inline-flex h-6 w-6 items-center justify-center text-cyan-600 hover:text-rose-600"
                   aria-label={`Quitar factura ${factura.numFactura}`}
                 >
                   <X className="h-3 w-3" />
@@ -516,13 +463,13 @@ function FacturasProveedorCombobox({
                   clearAll(event as unknown as React.MouseEvent);
                 }
               }}
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:text-slate-700"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-500 hover:text-slate-700"
               aria-label="Limpiar facturas seleccionadas"
             >
               <X className="h-3.5 w-3.5" />
             </span>
           ) : null}
-          <Search className="h-3.5 w-3.5 text-slate-400" />
+          <Search className="h-3.5 w-3.5 text-slate-500" />
         </div>
       </button>
 
@@ -540,13 +487,13 @@ function FacturasProveedorCombobox({
                 }
               }}
               placeholder="Número o proveedor…"
-              className="h-8 w-full bg-slate-50 px-2 text-sm outline-none placeholder:text-slate-400"
+              className="h-8 w-full bg-slate-50 px-2 text-sm outline-none placeholder:text-slate-500"
             />
           </div>
 
           <div className="max-h-52 overflow-y-auto">
             {filteredFacturas.length === 0 ? (
-              <div className="px-3 py-3 text-sm text-slate-400">
+              <div className="px-3 py-3 text-sm text-slate-500">
                 {query.trim() ? "Sin resultados." : "No hay facturas disponibles."}
               </div>
             ) : (
@@ -589,7 +536,7 @@ function FacturasProveedorCombobox({
                     </span>
                     <span className="flex items-center gap-2">
                       <span
-                        className={`inline-flex items-center border px-1.5 py-0.5 text-[10px] font-semibold ${
+                        className={`inline-flex items-center border px-1.5 py-0.5 text-[11px] font-semibold ${
                           factura.etiqueta === "Pendiente"
                             ? "border-amber-200 bg-amber-50 text-amber-700"
                             : factura.etiqueta === "Pagada"
@@ -1124,7 +1071,7 @@ export function NuevoPagoModal({
               <div className="space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">
                   Facturas de proveedor a cubrir
-                  <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                  <span className="ml-1.5 font-normal text-slate-500">(opcional)</span>
                   {facturasSeleccionadas.length > 0 ? (
                     <span className="ml-2 font-normal text-slate-500">
                       — {facturasSeleccionadas.length} seleccionada{facturasSeleccionadas.length === 1 ? "" : "s"} · Total: {formatCOP(sumaFacturas.toString())}
@@ -1134,7 +1081,7 @@ export function NuevoPagoModal({
                 {facturasLoadError ? (
                   <p className="text-xs text-rose-600">No se pudieron cargar las facturas.</p>
                 ) : facturasDisponibles.length === 0 ? (
-                    <p className="rounded border border-slate-200 px-3 py-2 text-xs text-slate-400">
+                    <p className="rounded border border-slate-200 px-3 py-2 text-xs text-slate-500">
                       Sin facturas de proveedor registradas para este trámite.
                     </p>
                 ) : (
@@ -1158,7 +1105,7 @@ export function NuevoPagoModal({
                             <div key={id} className="flex items-center gap-3 px-3 py-2">
                               <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
                                 {fp.numFacturaVisible}
-                                <span className="ml-1.5 text-xs text-slate-400">
+                                <span className="ml-1.5 text-xs text-slate-500">
                                   saldo {formatCOP(fp.saldo)}
                                 </span>
                               </span>
@@ -1203,7 +1150,7 @@ export function NuevoPagoModal({
                   <span className="text-sm font-medium text-slate-700">
                     Valor (COP) *
                     {facturasSeleccionadas.length > 0 ? (
-                      <span className="ml-1.5 font-normal text-slate-400">(= suma de las facturas)</span>
+                      <span className="ml-1.5 font-normal text-slate-500">(= suma de las facturas)</span>
                     ) : null}
                   </span>
                   <CampoMoneda
@@ -1236,7 +1183,7 @@ export function NuevoPagoModal({
                 <div className="space-y-1.5">
                   <span className="text-sm font-medium text-slate-700">
                     Banco (tercero del 4x1000)
-                    <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                    <span className="ml-1.5 font-normal text-slate-500">(opcional)</span>
                   </span>
                   <BeneficiarioCombobox
                     mode="single"
@@ -1269,7 +1216,7 @@ export function NuevoPagoModal({
                   <label className="block space-y-1.5">
                     <span className="text-sm font-medium text-slate-700">
                       Comprobante bancario
-                      <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                      <span className="ml-1.5 font-normal text-slate-500">(opcional)</span>
                     </span>
                     <input
                       type="file"
@@ -1288,7 +1235,7 @@ export function NuevoPagoModal({
                   <label className="block space-y-1.5">
                     <span className="text-sm font-medium text-slate-700">
                       Comprobante de comercio
-                      <span className="ml-1.5 font-normal text-slate-400">(opcional)</span>
+                      <span className="ml-1.5 font-normal text-slate-500">(opcional)</span>
                     </span>
                     <input
                       type="file"
@@ -1846,8 +1793,6 @@ export function LibroPagos({ tramiteId, refreshToken = 0, onCambio }: LibroPagos
 
   return (
     <section className="space-y-4">
-      <DoHeader tramite={tramite} />
-
       {!puedeEditar ? (
         <p className="flex items-center gap-2 border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
           <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -1893,23 +1838,21 @@ export function LibroPagos({ tramiteId, refreshToken = 0, onCambio }: LibroPagos
           <table className="w-full min-w-[900px] border-collapse text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
-                <th className="sticky left-0 z-10 w-8 border-b border-r border-slate-200 bg-slate-50 px-3 py-2">#</th>
-                <th className="border-b border-slate-200 px-3 py-2">Concepto</th>
-                <th className="border-b border-slate-200 px-3 py-2">Beneficiarios</th>
-                <th className="border-b border-slate-200 px-3 py-2">N° soporte</th>
-                <th className="border-b border-slate-200 px-3 py-2">Facturas / Vía</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-right">Valor (COP)</th>
-                <th className="border-b border-slate-200 px-3 py-2">Canal de pago</th>
-                <th className="border-b border-slate-200 px-3 py-2">Fecha de pago</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-right">Costo bancario</th>
-                <th className="border-b border-slate-200 px-3 py-2 text-right">Saldo operativo</th>
-                <th className="border-b border-slate-200 px-3 py-2 w-12"></th>
+                <th className="sticky left-0 z-10 w-8 whitespace-nowrap border-b border-r border-slate-200 bg-slate-50 px-2.5 py-2">#</th>
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2" title="Concepto, beneficiario y facturas que cubre">Pago</th>
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2">N° soporte</th>
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2 text-right">Valor (COP)</th>
+                <th className="whitespace-nowrap border-b border-slate-200 px-2.5 py-2">Canal</th>
+                <th className="border-b border-slate-200 px-2.5 py-2">Fecha de pago</th>
+                <th className="border-b border-slate-200 px-2.5 py-2 text-right">Costo bancario</th>
+                <th className="border-b border-slate-200 px-2.5 py-2 text-right">Saldo operativo</th>
+                <th className="w-12 whitespace-nowrap border-b border-slate-200 px-2.5 py-2"></th>
               </tr>
             </thead>
             <tbody>
               {filas.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-10 text-center text-sm text-slate-500">
+                  <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
                     Sin pagos registrados.
                     {puedeEditar ? ' Usa "Nuevo pago" para agregar el primero.' : ""}
                   </td>
@@ -1975,14 +1918,14 @@ export function LibroPagos({ tramiteId, refreshToken = 0, onCambio }: LibroPagos
 function estadoMovimientoBadge(estado: EstadoMovimiento) {
   if (estado === "VERIFICADO") {
     return (
-      <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+      <span className="inline-flex items-center border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700">
         VERIFICADO
       </span>
     );
   }
   if (estado === "BORRADOR") {
     return (
-      <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+      <span className="inline-flex items-center border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-semibold text-slate-500">
         BORRADOR
       </span>
     );
@@ -2049,111 +1992,101 @@ function FilaPago({
   return (
     <>
       <tr className={`border-b border-slate-100 last:border-b-0 ${fila.saving ? "opacity-60" : ""} hover:bg-slate-50`}>
-        <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-3 py-2 text-xs text-slate-500">{index}</td>
+        <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-2.5 py-2 text-xs text-slate-500">{index}</td>
 
-        {/* Concepto */}
-        <td className="px-3 py-2">
+        {/* Concepto: el texto real mide 60–90 caracteres, así que crece en alto en vez de cortarse */}
+        <td className="px-2.5 py-2">
           {readOnly ? (
-            <span className="block min-w-[140px] text-sm text-slate-800">{fila.concepto}</span>
+            <span className="block min-w-[16rem] text-sm leading-snug text-slate-800">{fila.concepto}</span>
           ) : (
-            <input
+            <textarea
+              rows={1}
               value={fila.editingConcepto}
-              onChange={(e) => onChange(fila.id, "editingConcepto", e.target.value)}
+              onChange={(e) => onChange(fila.id, "editingConcepto", e.target.value.replace(/\r?\n/g, " "))}
               onBlur={() => onBlur(fila.id)}
+              onKeyDown={(e) => {
+                // Enter confirma (como en el input de antes); no inserta saltos de línea.
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
+              }}
               aria-label={`Concepto del ${etiqueta}`}
-              className="h-8 w-full min-w-[140px] border border-transparent bg-transparent px-1 text-sm text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
+              className="w-full min-w-[16rem] resize-none [field-sizing:content] border border-transparent bg-transparent px-1 py-1 text-sm leading-snug text-slate-800 outline-none focus:border-cyan-400 focus:bg-white"
             />
           )}
-        </td>
-
-        {/* Beneficiarios (multi) */}
-        <td className="px-3 py-2 min-w-[200px]">
-          {readOnly ? (
-            <span className="text-sm text-slate-700">
-              {fila.beneficiarios.length > 0
-                ? fila.beneficiarios.map((b) => b.nombre).join(", ")
-                : "—"}
-            </span>
-          ) : (
-            <BeneficiarioCombobox
-              mode="multi"
-              value={fila.editingBeneficiarios}
-              onChange={(b) => onBeneficiariosChange(fila.id, b)}
-              placeholder="—"
-            />
-          )}
-        </td>
-
-        {/* N° soporte */}
-        <td className="px-3 py-2">
-          {readOnly ? (
-            <span className="text-sm text-slate-700">{fila.numSoporte ?? "—"}</span>
-          ) : (
-            <input
-              value={fila.editingNumSoporte}
-              onChange={(e) => onChange(fila.id, "editingNumSoporte", e.target.value)}
-              onBlur={() => onBlur(fila.id)}
-              placeholder="—"
-              aria-label={`Número de soporte del ${etiqueta}`}
-              className="h-8 w-full min-w-[100px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-cyan-400 focus:bg-white"
-            />
-          )}
-        </td>
-
-        {/* Facturas proveedor vinculadas (con monto) / vía Lucho / estado */}
-        <td className="px-3 py-2">
-          <div className="flex flex-col gap-0.5">
+          {/* A quién se le pagó */}
+          <div className="mt-1 max-w-[22rem]">
+            {readOnly ? (
+              <span className="block text-sm text-slate-600">
+                {fila.beneficiarios.length > 0
+                  ? fila.beneficiarios.map((b) => b.nombre).join(", ")
+                  : "—"}
+              </span>
+            ) : (
+              <BeneficiarioCombobox
+                mode="multi"
+                value={fila.editingBeneficiarios}
+                onChange={(b) => onBeneficiariosChange(fila.id, b)}
+                placeholder="Elegir beneficiario…"
+              />
+            )}
+          </div>
+          {/* Facturas que cubre, vía Lucho, comprobante y estado: debajo del concepto */}
+          <div className="mt-1 flex flex-wrap items-center gap-1 empty:hidden">
             {fila.aplicaciones.map((ap) => (
               <span
                 key={ap.facturaId}
-                className="inline-flex items-center border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700"
+                className="inline-flex items-center whitespace-nowrap border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[11px] font-semibold text-cyan-700"
               >
                 {ap.numFacturaVisible} · {formatCOP(ap.monto)}
               </span>
             ))}
             {fila.viaSocio ? (
-              <span className="inline-flex items-center border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+              <span className="inline-flex items-center whitespace-nowrap border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700">
                 vía Lucho
               </span>
             ) : null}
             {fila.faltaComprobante ? (
-              <span
-                className="inline-flex items-center gap-1 border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
-                title="Pago sin comprobante bancario"
-              >
-                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-                Falta comprobante
-              </span>
-            ) : null}
-            {fila.faltaComprobante && !readOnly ? (
-              <label
-                className={`inline-flex w-fit items-center gap-1 border border-amber-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-50 ${
-                  fila.saving ? "cursor-not-allowed opacity-60" : "cursor-pointer"
-                }`}
-                title="Adjuntar el comprobante bancario a este pago"
-              >
-                <Upload className="h-3 w-3" aria-hidden="true" />
-                Adjuntar comprobante
-                <input
-                  type="file"
-                  accept=".pdf,.jpg,.jpeg,.png"
-                  disabled={fila.saving}
-                  className="hidden"
-                  aria-label={`Adjuntar comprobante bancario del ${etiqueta}`}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) onAdjuntarComprobante(fila.id, file);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
+              readOnly ? (
+                <span
+                  className="inline-flex items-center gap-1 whitespace-nowrap border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700"
+                  title="Pago sin comprobante bancario"
+                >
+                  <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                  Falta comprobante
+                </span>
+              ) : (
+                // Una sola acción: avisa que falta el comprobante y deja adjuntarlo.
+                <label
+                  className={`inline-flex w-fit items-center gap-1 whitespace-nowrap border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 ${
+                    fila.saving ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                  }`}
+                  title="Falta el comprobante bancario de este pago: adjúntalo aquí"
+                >
+                  <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                  Falta comprobante · Adjuntar
+                  <input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    disabled={fila.saving}
+                    className="hidden"
+                    aria-label={`Adjuntar comprobante bancario del ${etiqueta}`}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) onAdjuntarComprobante(fila.id, file);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              )
             ) : null}
             {fila.esBloque && fila.grupoPagoId ? (
               onVerDetalleBloque ? (
                 <button
                   type="button"
                   onClick={() => onVerDetalleBloque(fila.grupoPagoId as string)}
-                  className="inline-flex w-fit items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-left text-[10px] font-semibold text-cyan-700 hover:bg-cyan-100"
+                  className="inline-flex w-fit items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-left text-[11px] font-semibold text-cyan-700 hover:bg-cyan-100"
                 >
                   Pago en bloque
                   {fila.grupoOtrosDOs.length > 0
@@ -2161,7 +2094,7 @@ function FilaPago({
                     : ""}
                 </button>
               ) : (
-                <span className="inline-flex w-fit items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700">
+                <span className="inline-flex w-fit items-center border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[11px] font-semibold text-cyan-700">
                   Pago en bloque
                   {fila.grupoOtrosDOs.length > 0
                     ? ` — también cubre: ${fila.grupoOtrosDOs.map((g) => g.consecutivo).join(", ")}`
@@ -2170,7 +2103,7 @@ function FilaPago({
               )
             ) : null}
             {fila.grupo && BigInt(fila.grupo.costoBancario || "0") > 0n ? (
-              <span className="text-[10px] text-slate-500">
+              <span className="text-[11px] text-slate-500">
                 Costo de la transferencia {formatCOP(fila.grupo.costoBancario)}
                 {" · "}
                 {COSTO_ASUMIDO_LABEL[fila.grupo.costoAsumidoPor] ?? fila.grupo.costoAsumidoPor}
@@ -2180,8 +2113,24 @@ function FilaPago({
           </div>
         </td>
 
+        {/* N° soporte */}
+        <td className="px-2.5 py-2">
+          {readOnly ? (
+            <span className="text-sm text-slate-700">{fila.numSoporte ?? "—"}</span>
+          ) : (
+            <input
+              value={fila.editingNumSoporte}
+              onChange={(e) => onChange(fila.id, "editingNumSoporte", e.target.value)}
+              onBlur={() => onBlur(fila.id)}
+              placeholder="—"
+              aria-label={`Número de soporte del ${etiqueta}`}
+              className="h-8 w-full min-w-[6.5rem] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none [field-sizing:content] placeholder:text-slate-500 focus:border-cyan-400 focus:bg-white"
+            />
+          )}
+        </td>
+
         {/* Valor — de solo lectura cuando el pago tiene facturas o es de un bloque (§B.4). */}
-        <td className="px-3 py-2 text-right">
+        <td className="px-2.5 py-2 text-right">
           {readOnly || !fila.editableDinero ? (
             <span
               className="text-sm font-medium text-slate-900"
@@ -2207,7 +2156,7 @@ function FilaPago({
         </td>
 
         {/* Canal de pago — de solo lectura en las mismas condiciones que el valor. */}
-        <td className="px-3 py-2">
+        <td className="px-2.5 py-2">
           {readOnly || !fila.editableDinero ? (
             <span className="text-sm text-slate-700">{canalPagoLabel(fila.canalPago)}</span>
           ) : (
@@ -2218,7 +2167,7 @@ function FilaPago({
                 onBlur(fila.id);
               }}
               aria-label={`Canal de pago del ${etiqueta}`}
-              className="h-8 w-full min-w-[190px] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
+              className="h-8 w-full min-w-[9rem] border border-transparent bg-transparent px-1 text-sm text-slate-700 outline-none focus:border-cyan-400 focus:bg-white"
             >
               {CANALES_PAGO.map((c) => (
                 <option key={c.value} value={c.value}>
@@ -2230,9 +2179,9 @@ function FilaPago({
         </td>
 
         {/* Fecha de pago */}
-        <td className="px-3 py-2">
+        <td className="px-2.5 py-2">
           {readOnly ? (
-            <span className="text-sm text-slate-700">
+            <span className="whitespace-nowrap text-sm text-slate-700">
               {fila.fechaRealPago ? formatDate(fila.fechaRealPago) : "—"}
             </span>
           ) : (
@@ -2248,17 +2197,17 @@ function FilaPago({
         </td>
 
         {/* Costo bancario — de solo lectura (calculado por backend) */}
-        <td className="px-3 py-2 text-right text-sm text-slate-600">
+        <td className="px-2.5 py-2 text-right text-sm text-slate-600">
           {formatCOP(fila.costoBancario)}
         </td>
 
         {/* Saldo corriente — recalculado en vivo en cliente */}
-        <td className={`px-3 py-2 text-right text-sm ${saldoColorClass(fila.saldoLocal)}`}>
+        <td className={`px-2.5 py-2 text-right text-sm ${saldoColorClass(fila.saldoLocal)}`}>
           {formatCOP(fila.saldoLocal)}
         </td>
 
         {/* Acciones */}
-        <td className="px-3 py-2">
+        <td className="px-2.5 py-2">
           {readOnly ? null : (
             <div className="flex items-center gap-1">
               {fila.estado === "REALIZADO" ? (
@@ -2277,7 +2226,7 @@ function FilaPago({
                 </button>
               ) : null}
               {fila.saving ? (
-                <Loader2 className="h-4 w-4 animate-spin text-slate-400" aria-hidden="true" />
+                <Loader2 className="h-4 w-4 animate-spin text-slate-500" aria-hidden="true" />
               ) : fila.dirty ? (
                 <span className="h-2 w-2 rounded-full bg-amber-400" title="Cambios pendientes" />
               ) : (
@@ -2306,7 +2255,7 @@ function FilaPago({
                   type="button"
                   onClick={() => onDelete(fila.id)}
                   disabled={isDeleting}
-                  className="inline-flex h-7 w-7 items-center justify-center text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                  className="inline-flex h-7 w-7 items-center justify-center text-slate-500 transition hover:text-rose-600 disabled:opacity-40"
                   aria-label={`Eliminar ${etiqueta}`}
                   title="Eliminar pago"
                 >
@@ -2325,7 +2274,7 @@ function FilaPago({
       {/* Fila de error de la fila */}
       {fila.errorFila ? (
         <tr className="bg-rose-50">
-          <td colSpan={11} className="px-3 py-1.5 text-xs text-rose-700" role="alert">
+          <td colSpan={9} className="px-3 py-1.5 text-xs text-rose-700" role="alert">
             <AlertTriangle className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
             {fila.errorFila} — los valores anteriores se restauraron.
           </td>
