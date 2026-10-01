@@ -46,7 +46,9 @@ prefijo (`prefijoConsecutivoPorCiudad[ciudad] ?? prefijoConsecutivo`).
   contador de Cartagena sigue desde ese número, no desde 0001 (sin choques: `DO.EXP.CTG26-…`).
 - **Son datos, no código:** el prefijo de Cartagena y Santa Marta y qué ciudades comparten el contador
   de exportación se cambian con un `UPDATE` (el seed solo los escribe al crear el tipo; en una base
-  existente no los pisa, salvo que repitan números: ver «Volver atrás»).
+  existente no los pisa, salvo que repitan números: ver «Volver atrás». Si se agrega una ciudad al enum
+  `Ciudad`, ponerle su prefijo en el mapa del seed: el seed lo agrega al mapa de la base sin tocar lo
+  demás).
   Ejemplos (ventana fuera de horario, con OK de Ernesto; después, `ver-contadores.ts`):
 
   ```sql
@@ -76,7 +78,10 @@ prefijo (`prefijoConsecutivoPorCiudad[ciudad] ?? prefijoConsecutivo`).
   tiene). Una ciudad que sale con **prefijo propio** (`DO.EXP.BGT`) empieza una serie nueva: sigue
   desde su propio número de exportación más alto (sus `DO.EXP26-…` viejos cuentan) o desde 0001; no
   hereda el piso del grupo. Si Santa Marta entrara al grupo, la clave nueva
-  (`EXPORTACION:BAQ+BGT+BUN+SMR:2026`) conserva el piso. Importación no cambia: su número lleva la
+  (`EXPORTACION:BAQ+BGT+BUN+SMR:2026`) conserva el piso del grupo **y el de Santa Marta**
+  (`EXPORTACION:SMR:2026`), con o sin su prefijo propio: un contador compartido sigue desde el mayor de
+  los dos. Si el de Santa Marta era más alto (p. ej. 30 contra 12), la serie `DO.EXP26` salta de la 0013
+  a la 0031: es un hueco, no una repetición. Importación no cambia: su número lleva la
   ciudad y cada contador solo mira su clave.
 - **Defensa:** `validarConfigContador` / `problemasDeNumeracion` rechazan cualquier configuración en la
   que dos contadores distintos (del mismo tipo o de dos tipos) imprimirían el mismo número, p. ej. sin
@@ -85,9 +90,10 @@ prefijo (`prefijoConsecutivoPorCiudad[ciudad] ?? prefijoConsecutivo`).
   gastar número); los demás siguen. `ver-contadores.ts` y `GET /api/tramites/consecutivos` lo muestran
   en `problema` (`ver-contadores.ts` sale con código 2, también con `--json`).
 - **Número ya ocupado:** si el número que tocaría ya lo tiene otro DO (p. ej. uno de otro tipo cargado
-  a mano con ese texto), `createTramite` no reintenta cinco veces el mismo número: responde 500
-  `NUMERACION_MAL_CONFIGURADA` diciendo cuál, sin gastar número; `ver-contadores.ts` y la vista previa
-  lo muestran. Se arregla fijando un piso del contador por encima de ese número.
+  a mano con ese texto), `createTramite` reintenta (por si lo tomó una carga sin candado en ese
+  instante) y, si sigue ocupado, responde 500 `NUMERACION_MAL_CONFIGURADA` diciendo cuál, sin gastar
+  número; `ver-contadores.ts` y la vista previa lo muestran. Se arregla fijando un piso del contador por
+  encima de ese número.
 - **Formulario «Crear trámite»:** en Exportación la ciudad ya no viene puesta (decide el contador) y la
   vista previa muestra «contador de exportación de Cartagena» y el número que tomará.
 - **Ojo con las cargas históricas** (revisión adversarial, 30-sep-2026): el importador de Grupo E
@@ -182,7 +188,10 @@ comunes `[]` y no lee `prefijoConsecutivoPorCiudad` (la columna y el mapa pueden
 
 **Volver adelante** (desplegar otra vez esta versión): no hace falta SQL a mano. El seed repone las
 ciudades comunes de Exportación (y los prefijos, si hace falta) cuando lo que hay en la base repetiría
-números (`numeracionParaSeed`; en el log: «EXPORTACION: numeración de la base repuesta…»), y el
+números (`numeracionParaSeed`; en el log: «EXPORTACION: numeración de la base repuesta…»; si nada del
+seed lo arregla, deja la base como está y avisa «⚠ EXPORTACION: … se deja como está»), y el
 contador del grupo cuenta el piso `EXPORTACION:AAAA` y los `DO.EXP26-…` creados en el intermedio, de
-cualquier ciudad. Un cambio de Camila en las ciudades comunes hecho antes de la reversa se pierde (el
+cualquier ciudad. Cartagena y Santa Marta siguen desde el número más alto que la imagen vieja les dio
+(p. ej. un `DO.EXP26-0043` de Cartagena → `DO.EXP.CTG26-0044`): un hueco en su serie, no una
+repetición (como el «Caso borde»). Un cambio de Camila en las ciudades comunes hecho antes de la reversa se pierde (el
 seed viejo las dejó en `[]`): volver a aplicarlo con su `UPDATE`. Verificar con `ver-contadores.ts`.

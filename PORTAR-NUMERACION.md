@@ -74,18 +74,22 @@ Formatos: `DO.EXP26-0013` (Barranquilla, Bogotá, Buenaventura: exacto a las car
     (`pisoCuentaParaContador`); así, cambiar las ciudades del grupo con SQL no repite números ni pierde
     el piso 12. Importación, Clasificación y Otros: mismo resultado que antes.
   - `createTramite` revisa dentro del candado que el consecutivo no exista (`consecutivoOcupado`) y
-    lanza `NumeracionMalConfiguradaError` en vez de reintentar cinco veces el mismo número;
-    `estadoContadores` lo pone en `problema`.
+    lanza `NumeracionMalConfiguradaError` diciendo cuál; se reintenta como un P2002 (por si lo tomó una
+    carga sin candado) y solo el último intento lo deja salir. `estadoContadores` lo pone en `problema`.
   - `prisma/seed.ts` usa `numeracionParaSeed` (puro, `consecutivo.ts`): respeta ciudades comunes y
-    prefijos de la base salvo que repitan números (vuelta de ea1e3c0 o reversa SQL), y entonces repone
-    los del seed. Una rama que toque el bucle de `tiposTramite` debe conservarlo.
+    prefijos de la base salvo que repitan números (vuelta de ea1e3c0, reversa SQL o una ciudad nueva en
+    el enum), y entonces repone lo mínimo del seed que lo arregle (primero solo el prefijo de las
+    ciudades que la base no nombra); si nada lo arregla, deja la base y avisa con `⚠`. Una rama que
+    toque el bucle de `tiposTramite` debe conservarlo.
+  - `pisoCuentaParaContador`: una ciudad que entra a un grupo trae el piso de su clave propia
+    (`EXPORTACION:SMR:AAAA`), con o sin prefijo propio (2.ª ronda de revisión).
   - La migración `20260930120000` solo cambió comentarios y la descripción (sin cambio de esquema); la
     descripción de Exportación ya no nombra ciudades ni números. Reversa completa: `docs/NUMERACION.md`
     § «Volver atrás».
   - `ver-contadores.ts --json` también sale con código 2 si hay `problema`.
   - Tests nuevos: bloque «cambiar las ciudades del grupo…» y `numeracionParaSeed` en
     `consecutivo-exportacion-ciudad.test.ts`; bloque «cambiar las ciudades del grupo de exportación…»
-    en `exportacion-por-ciudad.integration.test.ts` (años 2072–2077).
+    en `exportacion-por-ciudad.integration.test.ts` (años 2072–2078).
 
 ## Centavos (#4)
 
