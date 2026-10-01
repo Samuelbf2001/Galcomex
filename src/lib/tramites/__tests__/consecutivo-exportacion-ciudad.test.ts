@@ -425,6 +425,23 @@ describe("cambiar las ciudades del grupo no repite números (serie impresa y pis
     const grupo = alcance(SMR_CON_EL_GRUPO, "SMR");
     expect(grupo.clave).toBe("EXPORTACION:BAQ+BGT+BUN+SMR:2026");
     expect(pisoCuentaParaContador(SMR_CON_EL_GRUPO, "EXPORTACION", grupo, "EXPORTACION:BAQ+BGT+BUN:2026")).toBe(true);
+    // Y el de la clave propia de Santa Marta (su serie sigue en el grupo).
+    expect(pisoCuentaParaContador(SMR_CON_EL_GRUPO, "EXPORTACION", grupo, "EXPORTACION:SMR:2026")).toBe(true);
+  });
+
+  it("Santa Marta entra al grupo SIN quitarle su prefijo: el grupo hereda el piso de DO.EXP.SMR", () => {
+    // 2.ª ronda de revisión: con el mapa intacto, el piso de Santa Marta se perdía
+    // y el grupo volvía a dar DO.EXP.SMR26-0013 (carpeta que Camila ya tenía).
+    const smrConSuPrefijo: ConfigConsecutivo = { ...EXPORTACION, ciudadesContadorComun: ["BAQ", "BGT", "BUN", "SMR"] };
+    const grupo = alcance(smrConSuPrefijo, "BAQ");
+    expect(validarConfigContador(smrConSuPrefijo, CIUDADES)).toBeNull();
+    expect(pisoCuentaParaContador(smrConSuPrefijo, "EXPORTACION", grupo, "EXPORTACION:SMR:2026")).toBe(true);
+    const pisos = [
+      { clave: "EXPORTACION:BAQ+BGT+BUN:2026", ultimoNumero: 12 },
+      { clave: "EXPORTACION:SMR:2026", ultimoNumero: 30 },
+      { clave: "EXPORTACION:CTG:2026", ultimoNumero: 40 },
+    ];
+    expect(pisoDelContador(smrConSuPrefijo, "EXPORTACION", grupo, pisos)).toBe(30);
   });
 
   it("otro tipo, otro año o una clave rara no cuentan", () => {
@@ -458,6 +475,7 @@ describe("numeracionParaSeed: el seed respeta los datos salvo que repitan númer
       ciudadesContadorComun: ["BAQ", "BGT", "BUN"],
       prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR" },
       repuesta: null,
+      sinArreglo: null,
     });
   });
 
@@ -466,7 +484,36 @@ describe("numeracionParaSeed: el seed respeta los datos salvo que repitan númer
       ciudadesContadorComun: ["BAQ", "BUN"],
       prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR", BGT: "DO.EXP.BGT" },
     };
-    expect(numeracionParaSeed(EXPORTACION, bgtAparte, true, CIUDADES)).toEqual({ ...bgtAparte, repuesta: null });
+    expect(numeracionParaSeed(EXPORTACION, bgtAparte, true, CIUDADES)).toEqual({ ...bgtAparte, repuesta: null, sinArreglo: null });
+  });
+
+  // Revisión del 30-sep-2026 (2.ª ronda): una ciudad nueva en el enum `Ciudad`
+  // (como BGT el 21-sep) dejaba inválida la configuración de Camila y el seed
+  // la cambiaba por la suya entera, aunque eso tampoco sirviera.
+  describe("una ciudad nueva en el enum no borra lo de Camila", () => {
+    const CON_MDE = [...CIUDADES, "MDE"];
+    const deCamila = {
+      ciudadesContadorComun: ["BAQ", "BUN"],
+      prefijoConsecutivoPorCiudad: { CTG: "DO.CTGEXP", SMR: "DO.EXP.SMR", BGT: "DO.EXP.BGT" },
+    };
+
+    it("con el prefijo de la ciudad nueva en el seed: se agrega solo esa entrada", () => {
+      const seed = { ...EXPORTACION, prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR", MDE: "DO.EXP.MDE" } };
+      const r = numeracionParaSeed(seed, deCamila, true, CON_MDE);
+      expect(r).toMatchObject({
+        ciudadesContadorComun: ["BAQ", "BUN"],
+        prefijoConsecutivoPorCiudad: { CTG: "DO.CTGEXP", SMR: "DO.EXP.SMR", BGT: "DO.EXP.BGT", MDE: "DO.EXP.MDE" },
+        sinArreglo: null,
+      });
+      expect(r.repuesta).toMatch(/MDE/);
+      expect(validarConfigContador({ ...seed, ...r }, CON_MDE)).toBeNull();
+    });
+
+    it("sin el prefijo de la ciudad nueva en el seed: nada lo arregla y la base queda como está", () => {
+      const r = numeracionParaSeed(EXPORTACION, deCamila, true, CON_MDE);
+      expect(r).toMatchObject({ ...deCamila, repuesta: null });
+      expect(r.sinArreglo).toMatch(/imprimirían el mismo número/);
+    });
   });
 
   it("vuelta de la imagen ea1e3c0 (ciudades comunes []): repone las ciudades y deja los prefijos", () => {
@@ -485,13 +532,19 @@ describe("numeracionParaSeed: el seed respeta los datos salvo que repitan númer
     expect(r).toMatchObject({
       ciudadesContadorComun: ["BAQ", "BGT", "BUN"],
       prefijoConsecutivoPorCiudad: { CTG: "DO.EXP.CTG", SMR: "DO.EXP.SMR" },
+      sinArreglo: null,
     });
     expect(r.repuesta).not.toBeNull();
   });
 
   it("Importación: las ciudades comunes las pone el seed (no son dato) y el mapa se respeta", () => {
     const r = numeracionParaSeed(IMPORTACION, { ciudadesContadorComun: [], prefijoConsecutivoPorCiudad: {} }, false, CIUDADES);
-    expect(r).toEqual({ ciudadesContadorComun: ["BAQ", "BGT", "BUN"], prefijoConsecutivoPorCiudad: {}, repuesta: null });
+    expect(r).toEqual({
+      ciudadesContadorComun: ["BAQ", "BGT", "BUN"],
+      prefijoConsecutivoPorCiudad: {},
+      repuesta: null,
+      sinArreglo: null,
+    });
     expect(numeracionParaSeed(CLASIFICACION, actualDe(CLASIFICACION), false, CIUDADES).repuesta).toBeNull();
   });
 });

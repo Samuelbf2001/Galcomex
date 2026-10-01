@@ -12,7 +12,7 @@
  * 30-sep-2026) cambiar las ciudades del grupo sin repetir números.
  *
  * Necesita la migración 20260930120000 (Exportación por ciudad). Años
- * 2088–2091 y 2072–2077: ningún otro archivo de tests los usa. Sin
+ * 2088–2091 y 2072–2078: ningún otro archivo de tests los usa. Sin
  * DATABASE_URL (o sin la BD) los tests salen «skipped».
  */
 import "dotenv/config";
@@ -31,10 +31,11 @@ import {
 
 const TEST_PREFIX = "vitest-expo-ciudad";
 const runId = `${TEST_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const ANIOS = [2088, 2089, 2090, 2091, 2072, 2073, 2074, 2075, 2076, 2077];
+const ANIOS = [2088, 2089, 2090, 2091, 2072, 2073, 2074, 2075, 2076, 2077, 2078];
 const [ANIO_CINCO, ANIO_BORDE, ANIO_CONCURRENCIA, ANIO_CONFIG] = ANIOS;
 // Revisión del 30-sep-2026: cambiar las ciudades del grupo con datos.
-const [ANIO_SALE, ANIO_SOLO_PISO, ANIO_COMO_2026, ANIO_ENTRA, ANIO_ROLLBACK, ANIO_OCUPADO] = ANIOS.slice(4);
+const [ANIO_SALE, ANIO_SOLO_PISO, ANIO_COMO_2026, ANIO_ENTRA, ANIO_ROLLBACK, ANIO_OCUPADO, ANIO_ENTRA_CON_PREFIJO] =
+  ANIOS.slice(4);
 
 /** «Bogotá exporta aparte» (el ejemplo de docs/NUMERACION.md). */
 const BOGOTA_APARTE = {
@@ -457,6 +458,26 @@ describe("cambiar las ciudades del grupo de exportación no repite números", ()
     );
   });
 
+  it("Santa Marta entra al grupo con su prefijo: el grupo sigue desde su piso, sin repetir carpetas DO.EXP.SMR", async (ctx) => {
+    // 2.ª ronda de revisión: con el UPDATE mínimo (solo las ciudades comunes),
+    // el grupo daba DO.EXP.SMR78-0013 aunque Camila tenía hasta la 0030.
+    const f = db(ctx);
+    const anio = ANIO_ENTRA_CON_PREFIJO;
+    const aa = String(anio).slice(-2);
+    await pisoGrupoExportacion(anio, 12);
+    await piso(`EXPORTACION:SMR:${anio}`, anio, 30);
+    await conConfigExportacion(
+      { ciudadesContadorComun: [Ciudad.BAQ, Ciudad.BGT, Ciudad.BUN, Ciudad.SMR] },
+      async () => {
+        const fila = (await estadoContadores(anio)).find((c) => c.clave === `EXPORTACION:BAQ+BGT+BUN+SMR:${anio}`);
+        expect(fila).toMatchObject({ piso: 30, problema: null });
+        expect((await exportacion(f, Ciudad.SMR, anio)).consecutivo).toBe(`DO.EXP.SMR${aa}-0031`);
+        // Un solo contador: Barranquilla sigue después (hueco en DO.EXP, no repetición).
+        expect((await exportacion(f, Ciudad.BAQ, anio)).consecutivo).toBe(`DO.EXP${aa}-0032`);
+      },
+    );
+  });
+
   it("vuelta de un rollback: el grupo cuenta el piso por año y la exportación de Cartagena numerada DO.EXP", async (ctx) => {
     const f = db(ctx);
     const aa = String(ANIO_ROLLBACK).slice(-2);
@@ -469,7 +490,7 @@ describe("cambiar las ciudades del grupo de exportación no repite números", ()
     expect((await exportacion(f, Ciudad.BAQ, ANIO_ROLLBACK)).consecutivo).toBe(`DO.EXP${aa}-0022`);
   });
 
-  it("si el número ya lo tiene otro DO (p. ej. cargado a mano en otro tipo): error claro, sin reintentos ni número gastado", async (ctx) => {
+  it("si el número ya lo tiene otro DO (p. ej. cargado a mano en otro tipo): error claro, sin número gastado", async (ctx) => {
     const f = db(ctx);
     const aa = String(ANIO_OCUPADO).slice(-2);
     await existente(f, "OTRO", Ciudad.BAQ, ANIO_OCUPADO, 1, `DO.EXP${aa}-0001`);

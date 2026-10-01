@@ -254,7 +254,9 @@ export function filtroDelContador<C extends string>(
  * (`EXPORTACION:2026`)— que cubren alguna ciudad de este contador que imprime
  * con el prefijo general (`DO.EXP`): esa serie es la misma aunque cambie el
  * grupo. Una ciudad con prefijo propio (`DO.EXP.CTG`, `DO.EXP.BGT`) imprime una
- * serie nueva y no hereda pisos de otros contadores (sí los de su clave).
+ * serie nueva y no hereda pisos de otros contadores (sí los de su clave). Y una
+ * ciudad que ENTRA a un grupo trae el piso de su clave propia anterior
+ * (`EXPORTACION:SMR:2026`): el grupo sigue desde el mayor de los dos.
  */
 export function pisoCuentaParaContador(
   config: ConfigConsecutivo,
@@ -275,6 +277,10 @@ export function pisoCuentaParaContador(
 
   // Contador por año: todas sus ciudades imprimen el prefijo general.
   if (alcance.ciudades === null) return true;
+  // El piso de la clave propia de una ciudad que ahora está en este contador
+  // (Santa Marta entra al grupo): su serie sigue aquí, con su prefijo propio o
+  // con el general. Sin esto el grupo volvería a dar números de esa serie.
+  if (cubre !== null && cubre.length === 1 && alcance.ciudades.includes(cubre[0])) return true;
   const conPrefijoGeneral = alcance.ciudades.filter(
     (ciudad) => prefijoDeCiudad(config, ciudad) === config.prefijoConsecutivo,
   );
@@ -474,31 +480,56 @@ export function validarConfigContador(config: ConfigConsecutivo, ciudades: reado
  * haya (las ciudades comunes solo si `comunesSonDato`; los prefijos siempre),
  * salvo que eso, con la forma que fija el seed, repita números. Pasa al volver
  * de la imagen ea1e3c0 (su seed deja las ciudades comunes de Exportación en
- * `[]`) o después de la reversa SQL: sin esto Exportación quedaría frenada
- * entera (NUMERACION_MAL_CONFIGURADA) hasta un UPDATE a mano. Entonces se
- * reponen las ciudades comunes del seed y, si aun así no alcanza, también sus
- * prefijos. `repuesta` = el error que había (null = se respetó la base).
+ * `[]`), después de la reversa SQL o cuando se agrega una ciudad al enum: sin
+ * esto Exportación quedaría frenada entera (NUMERACION_MAL_CONFIGURADA) hasta
+ * un UPDATE a mano. Entonces se prueba, del que más conserva de la base al que
+ * menos, y se toma el primero que no repite números:
+ *   1. lo de la base + el prefijo del seed de las ciudades que la base no nombra
+ *      (ni en el mapa ni en las comunes): una ciudad nueva no borra lo de Camila;
+ *   2. las ciudades comunes del seed con los prefijos de la base (vuelta de ea1e3c0);
+ *   3. todo lo del seed (reversa SQL).
+ * Si ninguno sirve, se deja la base como está (no se escribe algo que también
+ * repetiría números y borraría lo de Camila): `sinArreglo` = el error, y
+ * `createTramite` sigue frenando ese tipo. `repuesta` = el error que había y se
+ * arregló (null = se respetó la base).
  */
 export function numeracionParaSeed<C extends string>(
   seed: ConfigConsecutivo & { ciudadesContadorComun?: readonly C[] },
   actual: { ciudadesContadorComun: readonly C[]; prefijoConsecutivoPorCiudad: unknown } | null,
   comunesSonDato: boolean,
   ciudades: readonly string[],
-): { ciudadesContadorComun: C[]; prefijoConsecutivoPorCiudad: unknown; repuesta: string | null } {
+): { ciudadesContadorComun: C[]; prefijoConsecutivoPorCiudad: unknown; repuesta: string | null; sinArreglo: string | null } {
   const comunesSeed = [...(seed.ciudadesContadorComun ?? actual?.ciudadesContadorComun ?? [])];
   const mapaSeed = seed.prefijoConsecutivoPorCiudad ?? {};
-  if (!actual) return { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapaSeed, repuesta: null };
-
-  const errorCon = (comunes: readonly C[], mapa: unknown) =>
-    validarConfigContador({ ...seed, ciudadesContadorComun: comunes, prefijoConsecutivoPorCiudad: mapa }, ciudades);
-  const comunes = comunesSonDato ? [...actual.ciudadesContadorComun] : comunesSeed;
-  const mapa = actual.prefijoConsecutivoPorCiudad ?? {};
-  const error = errorCon(comunes, mapa);
-  if (!error) return { ciudadesContadorComun: comunes, prefijoConsecutivoPorCiudad: mapa, repuesta: null };
-  if (!errorCon(comunesSeed, mapa)) {
-    return { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapa, repuesta: error };
+  if (!actual) {
+    return { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapaSeed, repuesta: null, sinArreglo: null };
   }
-  return { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapaSeed, repuesta: error };
+
+  type Numeracion = { ciudadesContadorComun: C[]; prefijoConsecutivoPorCiudad: unknown };
+  const errorCon = (n: Numeracion) => validarConfigContador({ ...seed, ...n }, ciudades);
+  const base: Numeracion = {
+    ciudadesContadorComun: comunesSonDato ? [...actual.ciudadesContadorComun] : comunesSeed,
+    prefijoConsecutivoPorCiudad: actual.prefijoConsecutivoPorCiudad ?? {},
+  };
+  const error = errorCon(base);
+  if (!error) return { ...base, repuesta: null, sinArreglo: null };
+
+  const candidatos: Numeracion[] = [];
+  const mapaBase = base.prefijoConsecutivoPorCiudad;
+  if (esObjetoPlano(mapaBase) && esObjetoPlano(mapaSeed)) {
+    const nombradas = new Set<string>([...Object.keys(mapaBase), ...base.ciudadesContadorComun]);
+    const nuevas = Object.entries(mapaSeed).filter(([ciudad]) => !nombradas.has(ciudad));
+    if (nuevas.length > 0) {
+      candidatos.push({ ...base, prefijoConsecutivoPorCiudad: { ...Object.fromEntries(nuevas), ...mapaBase } });
+    }
+  }
+  candidatos.push(
+    { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapaBase },
+    { ciudadesContadorComun: comunesSeed, prefijoConsecutivoPorCiudad: mapaSeed },
+  );
+  const arreglo = candidatos.find((candidato) => !errorCon(candidato));
+  if (arreglo) return { ...arreglo, repuesta: error, sinArreglo: null };
+  return { ...base, repuesta: null, sinArreglo: error };
 }
 
 /** Un problema de numeración del catálogo y a qué contadores toca. */

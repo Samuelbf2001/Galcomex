@@ -307,8 +307,9 @@ async function main() {
   // Datos de numeración que el seed NO pisa en una base existente (ver arriba):
   // el prefijo por ciudad de todos los tipos y, en estos tipos, qué ciudades
   // comparten contador. Salvo que lo que haya repita números (vuelta de la
-  // imagen ea1e3c0 o reversa SQL): entonces se reponen los del seed
-  // (`numeracionParaSeed`). Una configuración válida de Camila no se toca.
+  // imagen ea1e3c0, reversa SQL o una ciudad nueva en el enum): entonces se
+  // repone lo mínimo del seed que lo arregle (`numeracionParaSeed`); si nada lo
+  // arregla, la base queda como está. Una configuración válida de Camila no se toca.
   const comunesSonDato = new Set(["EXPORTACION"]);
   const ciudades = Object.values(Ciudad);
   for (const tipo of tiposTramite) {
@@ -319,6 +320,11 @@ async function main() {
     const numeracion = numeracionParaSeed(tipo, actual, comunesSonDato.has(tipo.codigo), ciudades);
     if (numeracion.repuesta) {
       console.log(`• ${tipo.codigo}: numeración de la base repuesta a la del seed (${numeracion.repuesta})`);
+    }
+    if (numeracion.sinArreglo) {
+      console.warn(
+        `⚠ ${tipo.codigo}: la numeración de la base repite números y el seed no la arregla; se deja como está y ese tipo no numera hasta corregirla con SQL (${numeracion.sinArreglo})`,
+      );
     }
     await prisma.tipoTramite.upsert({
       where: { codigo: tipo.codigo },

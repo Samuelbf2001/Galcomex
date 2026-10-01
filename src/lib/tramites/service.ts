@@ -891,8 +891,9 @@ async function consecutivoOcupado(db: Prisma.TransactionClient | typeof prisma, 
 
 /**
  * Mensaje cuando el número que tocaría ya lo tiene otro DO (p. ej. uno de otro
- * tipo cargado a mano con ese texto). No se reintenta: el mismo cálculo daría
- * el mismo número; hay que subir el piso del contador por encima de ese número.
+ * tipo cargado a mano con ese texto). `createTramite` reintenta (por si lo tomó
+ * una carga sin candado en ese instante); si sigue ocupado, el mismo cálculo da
+ * el mismo número: hay que subir el piso del contador por encima de ese número.
  */
 function mensajeNumeroOcupado(consecutivo: string, contador: string): string {
   return (
@@ -1247,8 +1248,8 @@ export async function createTramite(
           const { ultimo, piso } = await ultimoYPisoDelContador(tx, tipo, alcance);
           const numero = siguienteNumero(ultimo, piso);
           const consecutivo = formatConsecutivo(tipo, input.ciudad, anio, numero);
-          // Sin esto, un texto que ya existe daba P2002 y los reintentos
-          // repetían el mismo número cinco veces (contador trabado, 500 mudo).
+          // Sin esto, un texto que ya existe daba P2002 y, tras cinco reintentos
+          // con el mismo número, un 500 mudo. Ahora el último intento dice cuál.
           if (await consecutivoOcupado(tx, consecutivo)) {
             throw new NumeracionMalConfiguradaError(
               tipo.nombre,
@@ -1315,7 +1316,11 @@ export async function createTramite(
         },
       );
     } catch (error) {
-      if (attempt < attempts && shouldRetryPrisma(error)) {
+      // Número ocupado (NumeracionMalConfiguradaError dentro del candado): se
+      // reintenta como un P2002, por si lo tomó una carga sin candado (Grupo E,
+      // scripts/historico-*) en ese instante; si sigue ocupado, el último
+      // intento lanza el error.
+      if (attempt < attempts && (shouldRetryPrisma(error) || error instanceof NumeracionMalConfiguradaError)) {
         continue;
       }
 
