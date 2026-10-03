@@ -152,6 +152,17 @@ export const checklistUpdateSchema = z.object({
   recibido: z.boolean(),
 });
 
+/** Día calendario "AAAA-MM-DD" real (rechaza "2026-02-30"). */
+const fechaFiltro = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha debe tener el formato AAAA-MM-DD")
+  .refine((texto) => {
+    const [anio, mes, dia] = texto.split("-").map(Number);
+    const d = new Date(Date.UTC(anio, mes - 1, dia));
+    return d.getUTCFullYear() === anio && d.getUTCMonth() === mes - 1 && d.getUTCDate() === dia;
+  }, "Fecha inválida")
+  .optional();
+
 export const tramiteQuerySchema = z.object({
   q: z.string().trim().optional(),
   estado: z.nativeEnum(EstadoTramite).optional(),
@@ -163,6 +174,12 @@ export const tramiteQuerySchema = z.object({
     .enum(["true", "false"])
     .optional()
     .transform((value) => (value === undefined ? undefined : value === "true")),
+  // Rangos de fechas (2-oct-2026): días calendario "AAAA-MM-DD", ambos
+  // extremos incluidos. Apertura = fecha de creación del DO.
+  etaDesde: fechaFiltro,
+  etaHasta: fechaFiltro,
+  aperturaDesde: fechaFiltro,
+  aperturaHasta: fechaFiltro,
   /** Columna de orden (A8); ausente = orden de siempre (DO más nuevo primero). */
   ordenarPor: z.enum(CAMPOS_ORDEN_TRAMITE).optional(),
   direccion: z.enum(["asc", "desc"]).optional(),

@@ -76,6 +76,7 @@ import {
   type DireccionOrden,
   type OrdenTramitesCampo,
 } from "@/lib/tramites/orden";
+import { OFFSET_BOGOTA_MS, rangoDiasCalendario } from "@/lib/tramites/rango-fechas";
 import { estadosSiguientes } from "@/lib/tramites/transiciones";
 import { resolverFacturableFlujoCorto } from "@/lib/tramites/flujo-corto";
 
@@ -1390,6 +1391,11 @@ export type TramiteListQuery = {
   tipoCliente?: TipoCliente;
   /** true = solo facturados, false = solo no facturados, undefined = sin filtro. */
   facturado?: boolean;
+  /** Rangos de días "AAAA-MM-DD", extremos incluidos. Apertura = createdAt. */
+  etaDesde?: string;
+  etaHasta?: string;
+  aperturaDesde?: string;
+  aperturaHasta?: string;
   /** Columna de orden (A8); ausente = orden de siempre. La vista kanban nunca la manda. */
   ordenarPor?: OrdenTramitesCampo;
   direccion?: DireccionOrden;
@@ -1455,6 +1461,21 @@ export async function listTramites(
       estado: { notIn: ESTADOS_FACTURADOS },
       borradores: { none: { estado: EstadoBorrador.FACTURADO } },
     });
+  }
+
+  // La ETA se guarda como fecha-calendario (00:00 UTC del día); la apertura
+  // (createdAt) es un instante, así que sus días se cortan a medianoche de Bogotá.
+  const rangoEta = rangoDiasCalendario(query.etaDesde, query.etaHasta, 0);
+  if (rangoEta) {
+    and.push({ eta: rangoEta });
+  }
+  const rangoApertura = rangoDiasCalendario(
+    query.aperturaDesde,
+    query.aperturaHasta,
+    OFFSET_BOGOTA_MS,
+  );
+  if (rangoApertura) {
+    and.push({ createdAt: rangoApertura });
   }
 
   if (options.socioScope) {

@@ -46,7 +46,14 @@ export type TramiteFilters = {
   clienteId?: string;
   tipoCliente?: string;
   facturado?: FacturadoFilter;
+  /** "AAAA-MM-DD"; vacío = sin límite. */
+  etaDesde?: string;
+  etaHasta?: string;
+  aperturaDesde?: string;
+  aperturaHasta?: string;
 };
+
+const FILTROS_FECHA = ["etaDesde", "etaHasta", "aperturaDesde", "aperturaHasta"] as const;
 
 /**
  * Columnas ordenables de la tabla de trámites (A8). Referencia (coalesce de
@@ -129,6 +136,11 @@ function buildTramitesQuery(
 
   if (filters.facturado && filters.facturado !== "todos") {
     params.set("facturado", filters.facturado === "si" ? "true" : "false");
+  }
+
+  for (const campo of FILTROS_FECHA) {
+    const valor = filters[campo];
+    if (valor) params.set(campo, valor);
   }
 
   const query = params.toString();

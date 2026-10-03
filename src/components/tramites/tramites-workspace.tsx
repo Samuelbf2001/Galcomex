@@ -177,6 +177,10 @@ function useTramitesResultado(
     filters.clienteId ?? "",
     filters.tipoCliente ?? "",
     filters.facturado ?? "",
+    filters.etaDesde ?? "",
+    filters.etaHasta ?? "",
+    filters.aperturaDesde ?? "",
+    filters.aperturaHasta ?? "",
     page.take,
     page.skip,
     orden ? `${orden.campo}:${orden.direccion}` : "",
@@ -1283,6 +1287,59 @@ export function CreateTramiteDialog({
 
 type ViewMode = "tabla" | "kanban";
 
+const CLASE_FECHA_FILTRO =
+  "h-10 w-full min-w-0 border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100";
+
+/** Par de fechas «desde – hasta» de la barra de filtros (ambos días incluidos). */
+function RangoFechasFiltro({
+  titulo,
+  desde,
+  hasta,
+  onDesde,
+  onHasta,
+}: {
+  titulo: string;
+  desde: string;
+  hasta: string;
+  onDesde: (valor: string) => void;
+  onHasta: (valor: string) => void;
+}) {
+  const invertido = Boolean(desde && hasta && desde > hasta);
+  return (
+    <fieldset className="min-w-0">
+      <legend className="mb-1 text-xs font-medium text-slate-600">{titulo}</legend>
+      <div className="flex items-center gap-2">
+        <label className="min-w-0 flex-1">
+          <span className="sr-only">{titulo}: desde</span>
+          <input
+            type="date"
+            value={desde}
+            max={hasta || undefined}
+            onChange={(event) => onDesde(event.target.value)}
+            className={CLASE_FECHA_FILTRO}
+          />
+        </label>
+        <span className="text-xs text-slate-500" aria-hidden="true">
+          a
+        </span>
+        <label className="min-w-0 flex-1">
+          <span className="sr-only">{titulo}: hasta</span>
+          <input
+            type="date"
+            value={hasta}
+            min={desde || undefined}
+            onChange={(event) => onHasta(event.target.value)}
+            className={CLASE_FECHA_FILTRO}
+          />
+        </label>
+      </div>
+      {invertido ? (
+        <p className="mt-1 text-xs text-amber-700">La fecha «desde» es posterior a «hasta».</p>
+      ) : null}
+    </fieldset>
+  );
+}
+
 export function TramitesWorkspace() {
   const router = useRouter();
   const puedeCrearDO = usePermiso(ROLES_CREAR_DO);
@@ -1298,6 +1355,11 @@ export function TramitesWorkspace() {
   const [tipoCliente, setTipoCliente] = useParametroUrl("tipo", allFilter);
   const [facturadoUrl, setFacturadoUrl] = useParametroUrl("facturado", "todos");
   const facturado = facturadoUrl as FacturadoFilter;
+  // Rangos de fechas (2-oct-2026): "AAAA-MM-DD", vacío = sin límite.
+  const [etaDesde, setEtaDesde] = useParametroUrl("etaDesde", "");
+  const [etaHasta, setEtaHasta] = useParametroUrl("etaHasta", "");
+  const [aperturaDesde, setAperturaDesde] = useParametroUrl("aperturaDesde", "");
+  const [aperturaHasta, setAperturaHasta] = useParametroUrl("aperturaHasta", "");
   const setFacturado = setFacturadoUrl as (valor: FacturadoFilter) => void;
   const [vistaUrl, setVistaUrl] = useParametroUrl("vista", "tabla");
   const viewMode: ViewMode = vistaUrl === "kanban" ? "kanban" : "tabla";
@@ -1357,8 +1419,23 @@ export function TramitesWorkspace() {
       clienteId,
       tipoCliente,
       facturado,
+      etaDesde,
+      etaHasta,
+      aperturaDesde,
+      aperturaHasta,
     }),
-    [debouncedSearch, estado, ciudad, clienteId, tipoCliente, facturado],
+    [
+      debouncedSearch,
+      estado,
+      ciudad,
+      clienteId,
+      tipoCliente,
+      facturado,
+      etaDesde,
+      etaHasta,
+      aperturaDesde,
+      aperturaHasta,
+    ],
   );
 
   // Cambiar cualquier filtro o la búsqueda vuelve a la página 1: el rango
@@ -1401,7 +1478,8 @@ export function TramitesWorkspace() {
     ciudad !== allFilter ||
     clienteId !== allFilter ||
     tipoCliente !== allFilter ||
-    facturado !== "todos";
+    facturado !== "todos" ||
+    Boolean(etaDesde || etaHasta || aperturaDesde || aperturaHasta);
 
   function limpiarFiltros() {
     setSearch("");
@@ -1412,6 +1490,10 @@ export function TramitesWorkspace() {
     setClienteId(allFilter);
     setTipoCliente(allFilter);
     setFacturado("todos");
+    setEtaDesde("");
+    setEtaHasta("");
+    setAperturaDesde("");
+    setAperturaHasta("");
   }
 
   // Carga inicial (sin filas todavía) → skeleton que reserva el alto de la
@@ -1597,6 +1679,24 @@ export function TramitesWorkspace() {
                 <option value="no">No facturados</option>
               </select>
             </label>
+          </div>
+
+          {/* Rangos de fechas: cada rango es «desde – hasta», ambos días incluidos. */}
+          <div className="grid gap-3 md:grid-cols-2">
+            <RangoFechasFiltro
+              titulo="Fecha de apertura"
+              desde={aperturaDesde}
+              hasta={aperturaHasta}
+              onDesde={setAperturaDesde}
+              onHasta={setAperturaHasta}
+            />
+            <RangoFechasFiltro
+              titulo="ETA"
+              desde={etaDesde}
+              hasta={etaHasta}
+              onDesde={setEtaDesde}
+              onHasta={setEtaHasta}
+            />
           </div>
         </div>
       </div>
