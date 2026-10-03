@@ -549,11 +549,7 @@ export function HojaTramite({
           tipoRecaudoComisionInternaLM={hoja.borrador.tipoRecaudoComisionInternaLM}
           canalPagoComisionInternaLM={hoja.borrador.canalPagoComisionInternaLM}
           costoComisionInternaLM={hoja.borrador.costoComisionInternaLM}
-          editable={
-            (userRol === "ADMIN" || userRol === "REVISOR") &&
-            (hoja.borrador.estado === "BORRADOR" ||
-              hoja.borrador.estado === "EN_REVISION")
-          }
+          editable={userRol === "ADMIN" || userRol === "REVISOR"}
           onUpdated={handleUpdated}
         />
       ) : null}
@@ -662,6 +658,7 @@ export function HojaTramite({
                   borrador={hoja.borrador}
                   saldoTrasPagos={saldoTrasPagos}
                   costosBancariosTotalLive={costosBancariosTotalLive}
+                  cruceInterno={cruceLM}
                 />
               ) : (
                 <tr className="bg-slate-50">
@@ -690,11 +687,7 @@ export function HojaTramite({
         <CruceLM
           cruce={cruceLM}
           borradorId={hoja.borrador.id}
-          editable={
-            (userRol === "ADMIN" || userRol === "REVISOR") &&
-            (hoja.borrador.estado === "BORRADOR" ||
-              hoja.borrador.estado === "EN_REVISION")
-          }
+          editable={userRol === "ADMIN" || userRol === "REVISOR"}
           onUpdated={handleUpdated}
         />
       ) : null}
@@ -713,21 +706,42 @@ function ColaFactura({
   borrador,
   saldoTrasPagos,
   costosBancariosTotalLive,
+  cruceInterno,
 }: {
   borrador: BorradorHoja;
   saldoTrasPagos: string;
   costosBancariosTotalLive: string;
+  /**
+   * Cuenta interna con Lucho (solo cuando hay cruce LM). Con ella la cola sigue
+   * el Excel de Lucho: la comisión es la interna (la de factura no se le cobra
+   * al cliente), el 4x1000 es el interno (base anticipo) y los costos incluyen
+   * el del tipo de pago de la comisión. Así el saldo final de la tabla es el
+   * mismo `saldoLMInterno` del cruce.
+   */
+  cruceInterno?: {
+    comisionInternaLM: string;
+    cuatroXMil: string;
+    costos: string;
+  } | null;
 }) {
   // Igual que el Excel: el saldo sigue bajando con cada descuento.
   // costosBancariosTotalLive se usa en vez de borrador.costosBancarios para que
   // los pagos añadidos tras crear el borrador queden reflejados correctamente.
+  // El IVA es siempre el de la factura al cliente (línea IVA_COMISION).
   let saldo = bigOrZero(saldoTrasPagos);
-  const filas: { label: string; valor: string; isAddition?: boolean }[] = [
-    { label: "Comisión Galcomex", valor: borrador.comision },
-    { label: "IVA comisión", valor: borrador.ivaComision },
-    { label: "Impuesto 4x1000", valor: borrador.impuesto4x1000 },
-    { label: "Costos bancarios", valor: costosBancariosTotalLive },
-  ];
+  const filas: { label: string; valor: string; isAddition?: boolean }[] = cruceInterno
+    ? [
+        { label: "Comisión interna Galcomex→Lucho", valor: cruceInterno.comisionInternaLM },
+        { label: "IVA comisión (factura)", valor: borrador.ivaComision },
+        { label: "Impuesto 4x1000", valor: cruceInterno.cuatroXMil },
+        { label: "Costos bancarios", valor: cruceInterno.costos },
+      ]
+    : [
+        { label: "Comisión Galcomex", valor: borrador.comision },
+        { label: "IVA comisión", valor: borrador.ivaComision },
+        { label: "Impuesto 4x1000", valor: borrador.impuesto4x1000 },
+        { label: "Costos bancarios", valor: costosBancariosTotalLive },
+      ];
 
   // Si hay retenciones, se suman al saldo (reducen el pago del cliente)
   const retencionesVal = bigOrZero(borrador.retenciones);
@@ -1302,7 +1316,7 @@ function ComisionInternaBlock({
           type="button"
           onClick={() => setOpen(true)}
           disabled={!editable}
-          title={!editable ? "Solo ADMIN/REVISOR mientras el borrador esté en BORRADOR o EN_REVISION" : undefined}
+          title={!editable ? "Solo ADMIN o REVISOR pueden configurar la comisión interna" : undefined}
           className="inline-flex h-9 items-center gap-1.5 border border-violet-700 bg-white px-3 text-xs font-semibold text-violet-700 transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Configurar comisión

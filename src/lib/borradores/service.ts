@@ -1448,7 +1448,8 @@ export async function asignarAnticipoBorrador(
  * pagos + anticipos porque `borrador.costosBancarios` queda en 0 para SOCIO_LM
  * (la línea COSTOS_BANCARIOS no se materializa en ese flujo).
  *
- * Solo permitido para trámites SOCIO_LM en estados editables (BORRADOR, EN_REVISION).
+ * Solo para trámites SOCIO_LM; se permite en cualquier estado del borrador
+ * (también APROBADO y FACTURADO) porque no cambia la factura del cliente.
  */
 export type ActualizarComisionInternaLMInput = {
   comisionInternaLM: bigint;
@@ -1521,16 +1522,9 @@ export async function actualizarComisionInternaLM(
         message: "La comisión interna LM solo aplica a trámites SOCIO_LM",
       };
     }
-    if (
-      actual.estado !== EstadoBorrador.BORRADOR &&
-      actual.estado !== EstadoBorrador.EN_REVISION
-    ) {
-      return {
-        ok: false as const,
-        status: 422,
-        message: `No se puede editar la comisión interna en estado ${actual.estado}`,
-      };
-    }
+    // Sin restricción de estado: la comisión interna no entra en la factura del
+    // cliente (solo en el cruce con Lucho), así que puede ajustarse aunque la
+    // factura ya esté aprobada o emitida (decisión de Ernesto, 2-oct-2026).
 
     // Resolver el costo bancario del tipo de pago elegido para la comisión LM
     // contra matriz_recaudo (Lucho paga a Galcomex = entra plata) o matriz_pago
